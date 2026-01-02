@@ -13,11 +13,11 @@
     - [x] Sub-task: Implement `internal/core/config.go` to load settings from environment variables.
 - [x] Task: Conductor - User Manual Verification 'Project Skeleton & Configuration' (Protocol in workflow.md) f589b2f
 
-## Phase 2: API Connection & Market Discovery
-- [ ] Task: Implement Polymarket REST Client
-    - [ ] Sub-task: Write Tests for fetching market details (mocking API response).
-    - [ ] Sub-task: Create `internal/api/rest_client.go` to fetch market details (tokens, IDs) from REST API.
-- [ ] Task: Conductor - User Manual Verification 'API Connection & Market Discovery' (Protocol in workflow.md)
+## Phase 2: API Connection & Market Discovery [checkpoint: f386745]
+- [x] Task: Implement Polymarket REST Client b84c30e
+    - [x] Sub-task: Write Tests for fetching market details (mocking API response).
+    - [x] Sub-task: Create `internal/api/rest_client.go` to fetch market details (tokens, IDs) from REST API.
+- [x] Task: Conductor - User Manual Verification 'API Connection & Market Discovery' (Protocol in workflow.md) f386745
 
 ## Phase 3: WebSocket Data Ingestion
 - [ ] Task: Implement WebSocket Manager
