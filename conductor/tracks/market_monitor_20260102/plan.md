@@ -29,11 +29,18 @@
     - [x] Sub-task: Implement parsing logic in `internal/api/parser.go`.
 - [x] Task: Conductor - User Manual Verification 'WebSocket Data Ingestion' (Protocol in workflow.md) 0f221f0
 
-## Phase 4: Core Logic & Output
-- [ ] Task: Implement Discount Sum Calculator
-    - [ ] Sub-task: Write Tests for math verification (e.g., 0.48 + 0.48 = 0.96).
-    - [ ] Sub-task: Implement calculation logic in `internal/strategy/math.go`.
-- [ ] Task: Integrate & Run Market Monitor
-    - [ ] Sub-task: Write Integration Test for the full loop.
-    - [ ] Sub-task: Wire everything together in `cmd/bot/main.go` to subscribe, calculate, and log.
-- [ ] Task: Conductor - User Manual Verification 'Core Logic & Output' (Protocol in workflow.md)
+## Phase 4: Core Logic & Output [checkpoint: 878a66d]
+
+- [x] Task: Implement Discount Sum Calculator 4274031
+
+    - [x] Sub-task: Write Tests for math verification (e.g., 0.48 + 0.48 = 0.96).
+
+    - [x] Sub-task: Implement calculation logic in `internal/strategy/math.go`.
+
+- [x] Task: Integrate & Run Market Monitor cc92a79
+
+    - [x] Sub-task: Write Integration Test for the full loop.
+
+    - [x] Sub-task: Wire everything together in `cmd/bot/main.go` to subscribe, calculate, and log.
+
+- [x] Task: Conductor - User Manual Verification 'Core Logic & Output' (Protocol in workflow.md) 878a66d
