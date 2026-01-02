@@ -1,17 +1,16 @@
 # Technology Stack: PolyArb-15m
 
 ## 1. Core Runtime & Language
--   **Language:** Python 3.11+
--   **Package Manager:** Poetry (for dependency management and packaging)
+-   **Language:** Go 1.21+
+-   **Package Manager:** `go mod`
 
 ## 2. Key Libraries & Frameworks
--   **Polymarket Interaction:** `py-clob-client` (Official Python SDK)
--   **Blockchain Interaction:** `web3.py` (Polygon Network)
--   **Concurrency:** `asyncio` (Standard library, for high-frequency websocket data handling)
--   **Data Processing:** `pandas` (Optional, for potentially complex calculation or historical analysis if needed, otherwise native python structures for speed)
--   **Environment Management:** `python-dotenv` (for secure API key management)
+-   **WebSocket:** `nhooyr.io/websocket` or `github.com/gorilla/websocket`
+-   **HTTP Client:** `net/http` (Standard library)
+-   **Environment Management:** `github.com/joho/godotenv`
+-   **Concurrency:** Goroutines and Channels (Native Go)
 
 ## 3. Development Tools
--   **Linting & Formatting:** `ruff` (Fast Python linter and code formatter)
--   **Type Checking:** `mypy` (Static type checker)
--   **Testing:** `pytest` (Testing framework)
+-   **Formatting:** `gofmt` / `goimports`
+-   **Linting:** `golangci-lint`
+-   **Testing:** `testing` (Standard library)

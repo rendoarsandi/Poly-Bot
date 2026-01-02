@@ -1,0 +1,10 @@
+# Environment variables
+.env
+
+# Go
+bin/
+coverage.out
+
+# IDEs
+.vscode/
+.idea/

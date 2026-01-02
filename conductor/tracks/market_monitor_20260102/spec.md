@@ -7,7 +7,7 @@ This track focuses on establishing the fundamental data ingestion pipeline for t
 
 ### 2.1 Connection & Configuration
 -   **Config Management:** Load API credentials (though not strictly used for public data, good to set up) and target market parameters from environment variables (`.env`).
--   **WebSocket Client:** Implement a robust WebSocket client using `py-clob-client` or raw `websockets` if the SDK requires it, capable of maintaining a persistent connection.
+-   **WebSocket Client:** Implement a robust WebSocket client using `nhooyr.io/websocket` or `github.com/gorilla/websocket`, capable of maintaining a persistent connection.
 
 ### 2.2 Data Ingestion
 -   **Market Discovery:** Capability to look up a market by its slug (e.g., "btc-price-16-00") to retrieve its `condition_id` or `token_id`s required for subscription.
@@ -29,7 +29,7 @@ This track focuses on establishing the fundamental data ingestion pipeline for t
 ## 3. Non-Functional Requirements
 -   **Latency:** Processing from socket message to log output should be minimized (<50ms).
 -   **Resilience:** Auto-reconnect on WebSocket disconnect.
--   **Type Safety:** Strict type hinting for all data structures (e.g., `OrderBook`, `PriceLevel`).
+-   **Type Safety:** Strong type safety using Go structs for all data models (e.g., `OrderBook`, `PriceLevel`).
 
 ## 4. Out of Scope
 -   Placing actual orders (Execution).
