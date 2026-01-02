@@ -2,12 +2,12 @@
 
 ## 1. Codebase Structure & Maintainability
 -   **Modular Architecture:** The codebase will be organized into distinct modules to ensure separation of concerns and scalability.
-    -   `src/api`: Handles all interactions with the Polymarket CLOB API and Polygon blockchain.
-    -   `src/strategy`: Contains the core "Gabagool" algorithm, discount sum calculations, and ladder quoting logic.
-    -   `src/risk`: Dedicated module for risk management, exposure limits, and the "Kill Switch."
-    -   `src/core`: Shared utilities, configuration, and data models.
+    -   `internal/api`: Handles all interactions with the Polymarket CLOB API and Polygon blockchain.
+    -   `internal/strategy`: Contains the core "Gabagool" algorithm, discount sum calculations, and ladder quoting logic.
+    -   `internal/risk`: Dedicated module for risk management, exposure limits, and the "Kill Switch."
+    -   `internal/core`: Shared utilities, configuration, and data models.
 -   **Performance Optimization:** While modular, the critical "decision loop" (reading websocket data -> calculating spread -> placing order) will be optimized for low latency. Heavy abstractions will be avoided in the hot path.
--   **Type Safety & Documentation:** All code will use Python type hints (`typing` module) and include docstrings for public functions and classes to facilitate maintenance and onboarding.
+-   **Type Safety & Documentation:** All code will use Go's strong typing and include GoDoc comments for public functions and types to facilitate maintenance and onboarding.
 
 ## 2. Logging & Monitoring
 -   **Structured Logging:** Logs will be structured (JSON format preferred for production, readable text for development) to capture timestamps, log levels, and relevant context (e.g., `market_id`, `order_price`, `latency_ms`).

@@ -8,3 +8,7 @@ coverage.out
 # IDEs
 .vscode/
 .idea/
+
+# Binaries
+bot
+market-bot

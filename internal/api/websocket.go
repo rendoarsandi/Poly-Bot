@@ -17,7 +17,7 @@ type WSManager struct {
 
 func NewWSManager(url string) *WSManager {
 	if url == "" {
-		url = "ws://clob.polymarket.com/ws"
+		url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 	}
 	return &WSManager{URL: url}
 }

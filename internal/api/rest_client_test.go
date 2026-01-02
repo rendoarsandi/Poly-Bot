@@ -36,15 +36,25 @@ func TestNewRestClientDefault(t *testing.T) {
 	}
 }
 
-func TestGetMarketError(t *testing.T) {
+func TestListMarkets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"data": [
+				{"market_slug": "market-1", "active": true, "closed": false},
+				{"market_slug": "market-2", "active": true, "closed": false}
+			]
+		}`))
 	}))
 	defer server.Close()
 
 	client := NewRestClient(server.URL)
-	_, err := client.GetMarket("not-found")
-	if err == nil {
-		t.Fatal("Expected error for 404 response, got nil")
+	markets, err := client.ListMarkets()
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(markets) != 2 {
+		t.Errorf("Expected 2 markets, got %d", len(markets))
 	}
 }
