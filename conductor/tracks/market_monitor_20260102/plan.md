@@ -19,15 +19,15 @@
     - [x] Sub-task: Create `internal/api/rest_client.go` to fetch market details (tokens, IDs) from REST API.
 - [x] Task: Conductor - User Manual Verification 'API Connection & Market Discovery' (Protocol in workflow.md) f386745
 
-## Phase 3: WebSocket Data Ingestion
-- [ ] Task: Implement WebSocket Manager
-    - [ ] Sub-task: Write Tests for WebSocket connection handling (mock socket).
-    - [ ] Sub-task: Create `internal/api/websocket.go` to handle subscription and message loop using `nhooyr.io/websocket`.
-- [ ] Task: Implement Order Book Parser
-    - [ ] Sub-task: Write Tests for parsing raw JSON order book updates into Go structs.
-    - [ ] Sub-task: Define structs for `OrderBook` and `PriceLevel`.
-    - [ ] Sub-task: Implement parsing logic in `internal/api/parser.go`.
-- [ ] Task: Conductor - User Manual Verification 'WebSocket Data Ingestion' (Protocol in workflow.md)
+## Phase 3: WebSocket Data Ingestion [checkpoint: 0f221f0]
+- [x] Task: Implement WebSocket Manager 3deb24d
+    - [x] Sub-task: Write Tests for WebSocket connection handling (mock socket).
+    - [x] Sub-task: Create `internal/api/websocket.go` to handle subscription and message loop using `nhooyr.io/websocket`.
+- [x] Task: Implement Order Book Parser addb745
+    - [x] Sub-task: Write Tests for parsing raw JSON order book updates into Go structs.
+    - [x] Sub-task: Define structs for `OrderBook` and `PriceLevel`.
+    - [x] Sub-task: Implement parsing logic in `internal/api/parser.go`.
+- [x] Task: Conductor - User Manual Verification 'WebSocket Data Ingestion' (Protocol in workflow.md) 0f221f0
 
 ## Phase 4: Core Logic & Output
 - [ ] Task: Implement Discount Sum Calculator
