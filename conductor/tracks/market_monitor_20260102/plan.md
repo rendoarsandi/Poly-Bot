@@ -1,17 +1,17 @@
 # Plan: Market Monitor Loop
 
-## Phase 1: Project Skeleton & Configuration
-- [~] Task: Initialize Go module and dependencies
-    - [ ] Sub-task: Initialize go module using `go mod init github.com/username/Market-bot`.
-    - [ ] Sub-task: Install initial dependencies: `go get github.com/joho/godotenv`.
-    - [ ] Sub-task: Create `.env.example` and `.env` for API keys and config.
-- [ ] Task: Create Basic Directory Structure
-    - [ ] Sub-task: Create `cmd/bot/`, `internal/api/`, `internal/core/`, `internal/strategy/` directories.
-    - [ ] Sub-task: Create `cmd/bot/main.go` entry point.
-- [ ] Task: Implement Configuration Loader
-    - [ ] Sub-task: Write Tests for config loading in `internal/core/config_test.go`.
-    - [ ] Sub-task: Implement `internal/core/config.go` to load settings from environment variables.
-- [ ] Task: Conductor - User Manual Verification 'Project Skeleton & Configuration' (Protocol in workflow.md)
+## Phase 1: Project Skeleton & Configuration [checkpoint: f589b2f]
+- [x] Task: Initialize Go module and dependencies ff47b83
+    - [x] Sub-task: Initialize go module using `go mod init github.com/username/Market-bot`.
+    - [x] Sub-task: Install initial dependencies: `go get github.com/joho/godotenv`.
+    - [x] Sub-task: Create `.env.example` and `.env` for API keys and config.
+- [x] Task: Create Basic Directory Structure aa5c6e4
+    - [x] Sub-task: Create `cmd/bot/`, `internal/api/`, `internal/core/`, `internal/strategy/` directories.
+    - [x] Sub-task: Create `cmd/bot/main.go` entry point.
+- [x] Task: Implement Configuration Loader 59190a8
+    - [x] Sub-task: Write Tests for config loading in `internal/core/config_test.go`.
+    - [x] Sub-task: Implement `internal/core/config.go` to load settings from environment variables.
+- [x] Task: Conductor - User Manual Verification 'Project Skeleton & Configuration' (Protocol in workflow.md) f589b2f
 
 ## Phase 2: API Connection & Market Discovery
 - [ ] Task: Implement Polymarket REST Client
