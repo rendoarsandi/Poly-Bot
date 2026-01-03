@@ -508,8 +508,30 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						if !laddersPlaced || time.Since(lastLadderUpdate) > 30*time.Second {
 							targetSum := 0.96
 							fairPrice := targetSum / 2.0
-							tui.LogEvent("📈 Placing ladders @ $%.3f", fairPrice)
-							ladderMgr.PlaceAllLadders(outcomeNames, targetSum)
+
+							// Check inventory balance - pause overweight side
+							positions := engine.GetPositions()
+							pos1 := positions[outcomeNames[0]].Quantity
+							pos2 := positions[outcomeNames[1]].Quantity
+							imbalance := pos1 - pos2
+							const maxImbalance = 50.0 // Pause when 50+ shares imbalanced
+
+							if imbalance > maxImbalance {
+								// Too much of outcome[0], only place for outcome[1]
+								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s only", outcomeNames[0], imbalance, outcomeNames[1])
+								ladder := ladderMgr.GetOrCreateLadder(outcomeNames[1])
+								ladder.UpdateLadder(fairPrice)
+							} else if imbalance < -maxImbalance {
+								// Too much of outcome[1], only place for outcome[0]
+								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s only", outcomeNames[1], -imbalance, outcomeNames[0])
+								ladder := ladderMgr.GetOrCreateLadder(outcomeNames[0])
+								ladder.UpdateLadder(fairPrice)
+							} else {
+								// Balanced - place both
+								tui.LogEvent("📈 Placing ladders @ $%.3f", fairPrice)
+								ladderMgr.PlaceAllLadders(outcomeNames, targetSum)
+							}
+
 							laddersPlaced = true
 							lastLadderUpdate = time.Now()
 						}
