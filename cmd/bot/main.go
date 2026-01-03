@@ -235,6 +235,12 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	laddersPlaced := false
 	marketEnded := false
 
+	// Liquidity monitoring
+	lastGoodLiquidity := time.Now()
+	const liquidityTimeout = 45 * time.Second  // Exit if no liquidity for 45s
+	const minSpread = 0.001                    // Minimum spread to consider "liquid"
+	const maxSpread = 0.15                     // Max spread before considering "illiquid"
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -410,6 +416,45 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				if bid > 0 || ask > 0 {
 					orderBook.ProcessPriceUpdate(outcome, bid, ask)
 				}
+			}
+
+			// Check liquidity - if spread is reasonable, we have liquidity
+			hasLiquidity := false
+			if len(outcomeNames) == 2 {
+				for _, outcome := range outcomeNames {
+					bid := tokenBids[outcome]
+					ask := tokenAsks[outcome]
+					if bid > 0 && ask > 0 {
+						spread := ask - bid
+						if spread >= minSpread && spread <= maxSpread {
+							hasLiquidity = true
+							break
+						}
+					}
+				}
+			}
+
+			if hasLiquidity {
+				lastGoodLiquidity = time.Now()
+			} else if time.Since(lastGoodLiquidity) > liquidityTimeout {
+				// No liquidity for too long - exit to find new market
+				tui.LogEvent("💨 Liquidity dried up, finding new market...")
+				tui.Stop()
+				ladderMgr.CancelAllLadders()
+
+				// Liquidate if we have positions
+				positions := engine.GetPositions()
+				if len(positions) > 0 {
+					tui.LogEvent("📤 Liquidating positions before exit...")
+					engine.LiquidateAll()
+				}
+
+				finalStats := engine.GetStats()
+				result := &marketResult{
+					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
+					trades:      finalStats.TotalTrades - tradesAtStart,
+				}
+				return result, nil // Return normally to trigger new market search
 			}
 
 			// Check risk
