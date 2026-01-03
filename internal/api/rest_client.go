@@ -57,18 +57,27 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 	currentTs := now.Unix()
 
 	// Calculate the current 15m window START
-	// Polymarket slugs use the window START timestamp, not END
-	// Round down to nearest 900 to get the START of current window
 	currentWindowStart := (currentTs / 900) * 900
+
+	// Time remaining in current window
+	currentWindowEnd := currentWindowStart + 900
+	timeRemaining := currentWindowEnd - currentTs
 
 	var markets []Market
 
-	// Check current window and next 2 windows
-	// Start from current window (i=0), then next window (i=1), etc.
 	for _, asset := range assets {
-		for i := 0; i < 3; i++ {
-			windowStart := currentWindowStart + (int64(i) * 900)
+		// Strategy: If >2 minutes left in current window, use current
+		// Otherwise look at next window (more time to trade)
+		var windowsToCheck []int64
 
+		if timeRemaining > 120 { // More than 2 minutes left
+			windowsToCheck = []int64{currentWindowStart}
+		} else {
+			// Current window ending soon, prefer next window but check current too
+			windowsToCheck = []int64{currentWindowStart + 900, currentWindowStart}
+		}
+
+		for _, windowStart := range windowsToCheck {
 			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
@@ -95,7 +104,7 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				continue
 			}
 
-			// Check if market has any liquidity (at least one side has orders)
+			// Check if market has any liquidity
 			hasLiquidity := false
 			for _, token := range market.Tokens {
 				book, err := c.GetOrderBook(token.TokenID)
@@ -106,11 +115,10 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 			}
 
 			if !hasLiquidity {
-				fmt.Printf("⚠️  %s has no liquidity, skipping...\n", slug)
-				continue
+				continue // Silent skip
 			}
 
-			market.Slug = slug // Use the 15m slug
+			market.Slug = slug
 			markets = append(markets, *market)
 			break // Found market for this asset
 		}

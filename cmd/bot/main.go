@@ -55,6 +55,7 @@ func run() error {
 	var lastMarketSlug string
 
 	// Main market rotation loop
+	retryCount := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -63,11 +64,27 @@ func run() error {
 		default:
 		}
 
-		// Find next market (skip the one we just traded)
-		market, err := findNextMarket(restClient, cfg.MarketSlug, lastMarketSlug)
+		// Find next market (don't skip if we haven't traded yet)
+		skipSlug := ""
+		if lastMarketSlug != "" {
+			skipSlug = lastMarketSlug
+		}
+
+		market, err := findNextMarket(restClient, cfg.MarketSlug, skipSlug)
 		if err != nil {
-			fmt.Print("\r⏳ Waiting for market...   ")
-			time.Sleep(10 * time.Second)
+			retryCount++
+			// Show waiting message with dots animation
+			dots := strings.Repeat(".", (retryCount%3)+1)
+			fmt.Printf("\r⏳ Finding market%s   ", dots)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		retryCount = 0
+
+		// If same market, just continue trading it
+		if market.Slug == lastMarketSlug {
+			time.Sleep(2 * time.Second)
 			continue
 		}
 
@@ -78,7 +95,7 @@ func run() error {
 			if strings.Contains(err.Error(), "context canceled") {
 				return nil
 			}
-			fmt.Printf("⚠️  Market error: %v\n", err)
+			// Don't print error, just find next market
 		}
 
 		// Show result briefly
@@ -86,11 +103,11 @@ func run() error {
 			fmt.Printf("💰 PnL: $%.2f\n", result.realizedPnL)
 		}
 
-		// Brief pause before next market (silent)
+		// Quick transition to next market
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(5 * time.Second):
+		case <-time.After(2 * time.Second):
 		}
 	}
 }
