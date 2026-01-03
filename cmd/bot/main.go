@@ -349,8 +349,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastReconnectCount := int32(0) // Track reconnections
 
 	const liquidityTimeout = 45 * time.Second
-	const restFetchInterval = 10 * time.Second
-	const gammaFetchInterval = 10 * time.Second
+	const restFetchInterval = 5 * time.Second   // More frequent REST polling
+	const gammaFetchInterval = 5 * time.Second  // More frequent CLOB polling
 
 	ladderConfig := paper.LadderConfig{
 		Levels:         3,
@@ -500,6 +500,19 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 
 			priceChanged := false
+
+			// Debug: Log raw WebSocket message occasionally
+			if msg != nil && len(msg) > 0 {
+				// Log first 200 chars of message for debugging
+				msgStr := string(msg)
+				if len(msgStr) > 200 {
+					msgStr = msgStr[:200] + "..."
+				}
+				// Only log occasionally to avoid spam
+				if time.Now().Unix()%30 == 0 {
+					t.TUI.LogEvent("[%s] 📨 WS msg: %s", t.ID, msgStr)
+				}
+			}
 
 			// Parse WebSocket messages
 			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {

@@ -298,7 +298,7 @@ func (c *RestClient) GetCLOBBidAsk(tokenMap map[string]string) (map[string]Gamma
 			continue
 		}
 
-		var bestBid, bestAsk float64 = 0, 1
+		var bestBid, bestAsk float64 = 0, 0
 
 		// Find best bid (highest)
 		for _, b := range book.Bids {
@@ -311,19 +311,41 @@ func (c *RestClient) GetCLOBBidAsk(tokenMap map[string]string) (map[string]Gamma
 		// Find best ask (lowest)
 		for _, a := range book.Asks {
 			p, _ := parseFloat(a.Price)
-			if p < bestAsk && p > 0 {
+			if p > 0 && (bestAsk == 0 || p < bestAsk) {
 				bestAsk = p
 			}
-		}
-
-		if bestAsk >= 1 {
-			bestAsk = 0
 		}
 
 		prices[outcome] = GammaPriceResult{
 			Bid: bestBid,
 			Ask: bestAsk,
 		}
+	}
+
+	// For binary markets with Up/Down, infer missing prices from complement
+	// Up ask ≈ 1 - Down bid, Up bid ≈ 1 - Down ask
+	upPrices, hasUp := prices["Up"]
+	downPrices, hasDown := prices["Down"]
+
+	if hasUp && hasDown {
+		// Infer Up prices from Down if missing
+		if upPrices.Bid == 0 && downPrices.Ask > 0 {
+			upPrices.Bid = 1.0 - downPrices.Ask
+		}
+		if upPrices.Ask == 0 && downPrices.Bid > 0 {
+			upPrices.Ask = 1.0 - downPrices.Bid
+		}
+
+		// Infer Down prices from Up if missing
+		if downPrices.Bid == 0 && upPrices.Ask > 0 {
+			downPrices.Bid = 1.0 - upPrices.Ask
+		}
+		if downPrices.Ask == 0 && upPrices.Bid > 0 {
+			downPrices.Ask = 1.0 - upPrices.Bid
+		}
+
+		prices["Up"] = upPrices
+		prices["Down"] = downPrices
 	}
 
 	return prices, nil
