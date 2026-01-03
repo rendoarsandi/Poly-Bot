@@ -159,12 +159,19 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 		if err != nil {
 			fmt.Printf("   ❌ %s (%s...): ERROR - %v\n", t.Outcome, t.TokenID[:20], err)
 		} else {
+			// Find BEST bid (highest) and BEST ask (lowest) by iterating
 			bestBid, bestAsk := 0.0, 1.0
-			if len(book.Bids) > 0 {
-				bestBid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+			for _, b := range book.Bids {
+				p, _ := strconv.ParseFloat(b.Price, 64)
+				if p > bestBid {
+					bestBid = p
+				}
 			}
-			if len(book.Asks) > 0 {
-				bestAsk, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+			for _, a := range book.Asks {
+				p, _ := strconv.ParseFloat(a.Price, 64)
+				if p < bestAsk && p > 0 {
+					bestAsk = p
+				}
 			}
 			fmt.Printf("   ✅ %s (%s...): bid=$%.3f ask=$%.3f (%d bids, %d asks)\n",
 				t.Outcome, t.TokenID[:20], bestBid, bestAsk, len(book.Bids), len(book.Asks))
@@ -382,9 +389,6 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			// Poll REST API for accurate order book data (every 2 seconds)
 			if time.Since(lastRESTFetch) >= restFetchInterval {
 				for _, token := range market.Tokens {
-					// DEBUG: Log the token ID being fetched
-					tui.LogEvent("🔍 Fetching token %s: %s...", token.Outcome, token.TokenID[:30])
-
 					book, err := restClient.GetOrderBook(token.TokenID)
 					if err != nil {
 						tui.LogEvent("❌ REST error %s: %v", token.Outcome, err)
@@ -392,14 +396,28 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					}
 					outcome := token.Outcome
 
-					// Use first bid/ask since they're already sorted by best price
+					// CLOB returns bids sorted ASCENDING (lowest first) and asks sorted DESCENDING (highest first)
+					// So best bid (highest) is at the END of bids array
+					// And best ask (lowest) is at the END of asks array
 					bestBid := 0.0
 					bestAsk := 1.0
 					if len(book.Bids) > 0 {
-						bestBid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+						// Best bid = highest price = LAST element (or find max)
+						for _, b := range book.Bids {
+							p, _ := strconv.ParseFloat(b.Price, 64)
+							if p > bestBid {
+								bestBid = p
+							}
+						}
 					}
 					if len(book.Asks) > 0 {
-						bestAsk, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+						// Best ask = lowest price = LAST element (or find min)
+						for _, a := range book.Asks {
+							p, _ := strconv.ParseFloat(a.Price, 64)
+							if p < bestAsk && p > 0 {
+								bestAsk = p
+							}
+						}
 					}
 
 					                                        // Debug: log REST API response
