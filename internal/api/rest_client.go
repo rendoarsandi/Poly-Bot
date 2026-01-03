@@ -142,3 +142,33 @@ func (c *RestClient) GetMarket(slug string) (*Market, error) {
 
 	return &market, nil
 }
+
+// OrderBookResponse represents the CLOB order book
+type OrderBookResponse struct {
+	Market    string       `json:"market"`
+	AssetID   string       `json:"asset_id"`
+	Timestamp string       `json:"timestamp"`
+	Bids      []PriceLevel `json:"bids"`
+	Asks      []PriceLevel `json:"asks"`
+}
+
+// GetOrderBook fetches the current order book for a token from REST API
+func (c *RestClient) GetOrderBook(tokenID string) (*OrderBookResponse, error) {
+	url := fmt.Sprintf("%s/book?token_id=%s", c.BaseURL, tokenID)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch order book: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch order book: status %d", resp.StatusCode)
+	}
+
+	var book OrderBookResponse
+	if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
+		return nil, fmt.Errorf("failed to decode order book: %w", err)
+	}
+
+	return &book, nil
+}

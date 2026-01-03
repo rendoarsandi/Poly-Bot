@@ -248,7 +248,11 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 	// Liquidity monitoring
 	lastGoodLiquidity := time.Now()
-	const liquidityTimeout = 45 * time.Second  // Exit if no liquidity for 45s
+	const liquidityTimeout = 45 * time.Second // Exit if no liquidity for 45s
+
+	// REST API polling for accurate prices
+	lastRESTFetch := time.Time{}
+	const restFetchInterval = 2 * time.Second
 
 	for {
 		select {
@@ -339,6 +343,37 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					return nil, err
 				}
 				continue
+			}
+
+			// Poll REST API for accurate order book data (every 2 seconds)
+			if time.Since(lastRESTFetch) >= restFetchInterval {
+				for _, token := range market.Tokens {
+					book, err := restClient.GetOrderBook(token.TokenID)
+					if err != nil {
+						continue
+					}
+					outcome := token.Outcome
+					bid, ask := 0.0, 0.0
+					if len(book.Bids) > 0 {
+						bid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+					}
+					if len(book.Asks) > 0 {
+						ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+					}
+					if bid > 0 {
+						tokenBids[outcome] = bid
+					}
+					if ask > 0 {
+						tokenAsks[outcome] = ask
+					}
+					if bid > 0 && ask > 0 {
+						midPrice := (bid + ask) / 2.0
+						floatPrices[outcome] = midPrice
+						engine.UpdatePrice(outcome, midPrice)
+						engine.UpdateBidAsk(outcome, bid, ask)
+					}
+				}
+				lastRESTFetch = time.Now()
 			}
 
 			priceChanged := false
