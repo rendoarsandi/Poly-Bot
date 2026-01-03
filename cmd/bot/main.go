@@ -280,13 +280,13 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	lastGoodLiquidity := time.Now()
 	const liquidityTimeout = 45 * time.Second // Exit if no liquidity for 45s
 
-	// REST API polling for accurate prices
+	// REST API polling for accurate prices - fetch immediately on start
 	lastRESTFetch := time.Time{}
-	const restFetchInterval = 2 * time.Second
+	const restFetchInterval = 1 * time.Second // More frequent updates
 
-	// Gamma API polling for real market prices (verification)
+	// Gamma API polling for real market prices (verification) - fetch immediately
 	lastGammaFetch := time.Time{}
-	const gammaFetchInterval = 5 * time.Second
+	const gammaFetchInterval = 2 * time.Second // More frequent for accurate display
 
 	for {
 		select {
@@ -448,6 +448,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			}
 
 			// Fetch real prices from Gamma API (what Polymarket website shows)
+			// These are the authoritative prices for trading decisions
 			if time.Since(lastGammaFetch) >= gammaFetchInterval {
 				realPricesBA, err := restClient.GetGammaBidAskBySlug(market.Slug)
 				if err != nil {
@@ -458,6 +459,12 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					for outcome, pa := range realPricesBA {
 						realBids[outcome] = pa.Bid
 						realAsks[outcome] = pa.Ask
+						// Use Gamma prices as authoritative for trading
+						tokenBids[outcome] = pa.Bid
+						tokenAsks[outcome] = pa.Ask
+						floatPrices[outcome] = (pa.Bid + pa.Ask) / 2
+						engine.UpdatePrice(outcome, floatPrices[outcome])
+						engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
 					}
 					tui.UpdateRealMarket(realBids, realAsks)
 				}
