@@ -19,7 +19,7 @@ import (
 
 const (
 	StartingBalance = 1000.0 // $1000 paper trading balance
-	StatsInterval   = 15     // Print stats every 15 seconds
+	UseLiveUI       = true   // Set to false for traditional logging
 )
 
 func contains(s, substr string) bool {
@@ -173,11 +173,10 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 	// Initialize per-market components
 	orderBook := paper.NewOrderBook()
-	display := paper.NewDisplay(engine, time.Duration(StatsInterval)*time.Second)
 
 	ladderConfig := paper.LadderConfig{
 		Levels:         3,
-		SharesPerLevel: 25,    // Reduced from 50 to 25
+		SharesPerLevel: 25,
 		PriceStep:      0.01,
 		BasePrice:      0.48,
 	}
@@ -186,9 +185,9 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	riskConfig := paper.RiskConfig{
 		MaxExposure:        500.0,
 		MaxUnmatchedRatio:  0.20,
-		MaxUnmatchedShares: 75.0,   // Reduced from 150 to 75 (3 levels × 25)
+		MaxUnmatchedShares: 75.0,
 		SkewThreshold:      0.15,
-		KillSwitchDrawdown: 1.0,    // Disabled for testing (100% = never triggers)
+		KillSwitchDrawdown: 1.0,
 	}
 	riskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomeNames)
 
@@ -199,23 +198,28 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	if err != nil {
 		endTime = time.Now().Add(15 * time.Minute)
 	}
-	fmt.Printf("⏰ Market ends at: %s (%v remaining)\n",
-		endTime.Format("15:04:05"),
-		endTime.Sub(time.Now()).Round(time.Second))
 	marketMonitor.SetMarket(market.Slug, market.ConditionID, outcomeNames, endTime)
+
+	// Initialize TUI
+	tui := paper.NewTUI(engine, orderBook)
+	tui.SetMarket(market.Slug, outcomeNames, endTime)
 
 	// Order fill callback
 	orderBook.SetFillCallback(func(order *paper.LimitOrder, fillQty, fillPrice float64) {
-		trade, err := engine.Buy(order.Outcome, fillPrice, fillQty)
+		_, err := engine.Buy(order.Outcome, fillPrice, fillQty)
 		if err != nil {
-			log.Printf("Fill error: %v", err)
+			tui.LogEvent("❌ Fill error: %v", err)
 			return
 		}
-		display.PrintTrade(trade)
+		saved := order.Price - fillPrice
+		tui.LogEvent("✅ FILL %s %.0f @ $%.3f (saved $%.3f)", order.Outcome, fillQty, fillPrice, saved)
 	})
 
-	fmt.Println("\n🚀 Starting trading loop...\n")
-	printStrategyConfig(ladderConfig, riskConfig)
+	// Start TUI render loop
+	if UseLiveUI {
+		tui.StartRenderLoop(500 * time.Millisecond)
+		defer tui.Stop()
+	}
 
 	// Track starting realized PnL to calculate this market's profit
 	startingRealizedPnL := engine.GetStats().RealizedPnL
@@ -225,8 +229,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	tokenPrices := make(map[string]string)
 	tokenBids := make(map[string]float64)
 	tokenAsks := make(map[string]float64)
-	lastOutput := time.Now()
-	lastStats := time.Now()
+	floatPrices := make(map[string]float64)
 	lastLadderUpdate := time.Now()
 	laddersPlaced := false
 	marketEnded := false
@@ -234,30 +237,26 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	for {
 		select {
 		case <-ctx.Done():
+			tui.Stop()
 			ladderMgr.CancelAllLadders()
-			// Auto-close all positions on shutdown
 			positions := engine.GetPositions()
 			if len(positions) > 0 {
-				fmt.Println("\n🔴 EMERGENCY EXIT: Liquidating all positions...")
-				proceeds := engine.LiquidateAll()
-				fmt.Printf("💵 Sold all positions for $%.2f\n", proceeds)
+				tui.LogEvent("🔴 EMERGENCY EXIT: Liquidating...")
+				engine.LiquidateAll()
 			}
-			display.PrintStats()
 			return nil, ctx.Err()
 
 		default:
 			// Check kill switch
 			if riskMgr.IsKillSwitchTriggered() {
+				tui.SetKillSwitch("Risk limits exceeded")
+				tui.Stop()
 				ladderMgr.CancelAllLadders()
-				// Auto-close all positions on kill switch
 				positions := engine.GetPositions()
 				if len(positions) > 0 {
-					fmt.Println("\n🚨 KILL SWITCH: Liquidating all positions...")
-					proceeds := engine.LiquidateAll()
-					fmt.Printf("💵 Sold all positions for $%.2f\n", proceeds)
+					engine.LiquidateAll()
 				}
 				riskMgr.ExecuteKillSwitch()
-				display.PrintStats()
 				return nil, fmt.Errorf("kill switch triggered")
 			}
 
@@ -267,27 +266,19 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			// Handle market ending
 			if marketState == paper.MarketStateEnding && !marketEnded {
 				marketEnded = true
+				tui.LogEvent("⏳ Market ended, resolving...")
 				ladderMgr.CancelAllLadders()
 
-				// Wait a bit for resolution (in real trading, we'd poll the API)
-				fmt.Println("\n⏳ Market ended. Waiting for resolution...")
-
-				// Simulate resolution based on final prices (paper trading)
-				// In real trading, you'd poll the API for actual resolution
 				time.Sleep(5 * time.Second)
 
-				// Determine winner based on final prices (simulate)
 				winner := simulateResolution(outcomeNames, tokenPrices)
-				fmt.Printf("🏆 Market resolved: %s wins!\n", winner)
+				tui.LogEvent("🏆 Winner: %s", winner)
 
-				// Redeem positions
 				payout := engine.Redeem(winner)
-				fmt.Printf("💵 Redeemed positions for $%.2f\n", payout)
+				tui.LogEvent("💵 Redeemed: $%.2f", payout)
 
-				// Show final stats for this market
-				display.PrintStats()
+				tui.Stop()
 
-				// Calculate this market's result
 				finalStats := engine.GetStats()
 				result := &marketResult{
 					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
@@ -297,7 +288,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				return result, nil
 			}
 
-			// Read WebSocket message with timeout
+			// Read WebSocket message
 			msg, err := wsMgr.ReadMessage(ctx)
 			if err != nil {
 				if strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "canceled") {
@@ -324,7 +315,6 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					tokenAsks[outcome] = ask
 				}
 
-				// Use MID PRICE for position valuation (more accurate than just bid)
 				midPrice := 0.0
 				if bid > 0 && ask > 0 {
 					midPrice = (bid + ask) / 2.0
@@ -338,8 +328,8 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 				if midPrice > 0 {
 					engine.UpdatePrice(outcome, midPrice)
+					floatPrices[outcome] = midPrice
 				}
-				// Also update bid/ask for realistic taker simulation
 				if bid > 0 || ask > 0 {
 					engine.UpdateBidAsk(outcome, bid, ask)
 				}
@@ -387,17 +377,15 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 			}
 
+			// Update TUI with prices
+			tui.UpdatePrices(floatPrices, tokenBids, tokenAsks)
+
 			// Process order fills
 			for outcome := range tokenPrices {
 				bid := tokenBids[outcome]
 				ask := tokenAsks[outcome]
 				if bid > 0 || ask > 0 {
-					filledOrders := orderBook.ProcessPriceUpdate(outcome, bid, ask)
-					for _, order := range filledOrders {
-						fmt.Printf("✅ Filled: %s %s %.0f @ $%.3f (limit was $%.3f, saved $%.3f)\n",
-							order.Side, order.Outcome, order.Quantity,
-							order.FillPrice, order.Price, order.Price-order.FillPrice)
-					}
+					orderBook.ProcessPriceUpdate(outcome, bid, ask)
 				}
 			}
 
@@ -405,22 +393,20 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			action, reason := riskMgr.Evaluate()
 			switch action {
 			case paper.RiskActionKillSwitch:
-				fmt.Printf("🚨 RISK: %s\n", reason)
+				tui.LogEvent("🚨 KILL: %s", reason)
+				tui.SetKillSwitch(reason)
 				ladderMgr.CancelAllLadders()
-				// Auto-close all positions
 				positions := engine.GetPositions()
 				if len(positions) > 0 {
-					fmt.Println("🔴 Liquidating all positions...")
-					proceeds := engine.LiquidateAll()
-					fmt.Printf("💵 Sold all positions for $%.2f\n", proceeds)
+					engine.LiquidateAll()
 				}
 				riskMgr.ExecuteKillSwitch()
-				display.PrintStats()
+				tui.Stop()
 				return nil, fmt.Errorf("kill switch: %s", reason)
 
 			case paper.RiskActionRebalance:
 				if time.Since(lastLadderUpdate) > 5*time.Second {
-					fmt.Printf("⚖️  REBALANCING: %s\n", reason)
+					tui.LogEvent("⚖️ Rebalancing: %s", reason)
 					lightSide, adjustment := riskMgr.GetSkewAdjustment()
 					if lightSide != "" && adjustment > 0 {
 						ladder := ladderMgr.GetOrCreateLadder(lightSide)
@@ -431,7 +417,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 
 			case paper.RiskActionReduceSize:
-				fmt.Printf("📉 REDUCING SIZE: %s\n", reason)
+				tui.LogEvent("📉 Reducing size: %s", reason)
 				for _, ladder := range ladderMgr.Ladders {
 					ladder.Config.SharesPerLevel *= 0.5
 					ladder.PlaceLadder()
@@ -449,41 +435,18 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					sum := p1 + p2
 					margin := (1.0 - sum) * 100
 
-					// Price output
-					if time.Since(lastOutput) > 3*time.Second {
-						symbol := "📊"
-						if margin > 2 {
-							symbol = "🔥"
-						}
-						remaining := marketMonitor.GetTimeToEnd()
-						fmt.Printf("%s [%s] Sum: %.4f (%.2f%%) | %s: %.3f, %s: %.3f | ⏱️ %v\n",
-							symbol, time.Now().Format("15:04:05"),
-							sum, margin,
-							outcomeNames[0], p1, outcomeNames[1], p2,
-							remaining.Round(time.Second))
-						lastOutput = time.Now()
-					}
-
 					// Place ladders if opportunity
 					if margin >= 2.0 && riskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*p1) {
 						if !laddersPlaced || time.Since(lastLadderUpdate) > 30*time.Second {
 							targetSum := 0.96
 							fairPrice := targetSum / 2.0
-							fmt.Printf("📈 Placing ladders @ $%.3f\n", fairPrice)
+							tui.LogEvent("📈 Placing ladders @ $%.3f", fairPrice)
 							ladderMgr.PlaceAllLadders(outcomeNames, targetSum)
 							laddersPlaced = true
 							lastLadderUpdate = time.Now()
 						}
 					}
 				}
-			}
-
-			// Periodic stats
-			if time.Since(lastStats) > time.Duration(StatsInterval)*time.Second {
-				display.PrintStats()
-				riskMgr.PrintStatus()
-				marketMonitor.PrintStatus()
-				lastStats = time.Now()
 			}
 		}
 	}
@@ -498,28 +461,14 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 	p1, _ := strconv.ParseFloat(prices[outcomes[0]], 64)
 	p2, _ := strconv.ParseFloat(prices[outcomes[1]], 64)
 
-	// Higher probability wins (simulate)
-	// In reality, this would come from the API
 	if p1 > p2 {
 		return outcomes[0]
 	} else if p2 > p1 {
 		return outcomes[1]
 	}
 
-	// Random if equal
 	if rand.Float64() > 0.5 {
 		return outcomes[0]
 	}
 	return outcomes[1]
-}
-
-func printStrategyConfig(ladder paper.LadderConfig, risk paper.RiskConfig) {
-	fmt.Println("┌─────────────────────────────────────────────────┐")
-	fmt.Println("│           GABAGOOL STRATEGY CONFIG              │")
-	fmt.Println("├─────────────────────────────────────────────────┤")
-	fmt.Printf("│ Ladder: %d levels × %.0f shares @ $%.2f step     │\n",
-		ladder.Levels, ladder.SharesPerLevel, ladder.PriceStep)
-	fmt.Printf("│ Max Exposure: $%.0f | Kill DD: %.0f%%              │\n",
-		risk.MaxExposure, risk.KillSwitchDrawdown*100)
-	fmt.Println("└─────────────────────────────────────────────────┘")
 }
