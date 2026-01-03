@@ -195,9 +195,10 @@ func (mm *MarketMonitor) PrintStatus() {
 }
 
 // ParseEndTimeFromSlug extracts end time from market slug (e.g., btc-updown-15m-1767358800)
+// The slug contains the START timestamp, so we add 15 minutes to get END time
 func ParseEndTimeFromSlug(slug string) (time.Time, error) {
-	// The slug format typically ends with a unix timestamp
-	// e.g., btc-updown-15m-1767358800
+	// The slug format ends with the window START timestamp
+	// e.g., btc-updown-15m-1767358800 -> starts at 1767358800, ends at 1767358800 + 900
 	var timestamp int64
 	_, err := fmt.Sscanf(slug[len(slug)-10:], "%d", &timestamp)
 	if err != nil {
@@ -216,5 +217,7 @@ func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("could not parse timestamp from slug: %s", slug)
 	}
 
-	return time.Unix(timestamp, 0), nil
+	// Add 15 minutes (900 seconds) to get the END time
+	endTimestamp := timestamp + 900
+	return time.Unix(endTimestamp, 0), nil
 }
