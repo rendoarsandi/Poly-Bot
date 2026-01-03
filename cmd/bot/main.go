@@ -50,6 +50,9 @@ func run() error {
 
 	restClient := api.NewRestClient("")
 
+	// Track last traded market to avoid re-entering
+	var lastMarketSlug string
+
 	// Main market rotation loop
 	for {
 		select {
@@ -59,8 +62,8 @@ func run() error {
 		default:
 		}
 
-		// Find next market
-		market, err := findNextMarket(restClient, cfg.MarketSlug)
+		// Find next market (skip the one we just traded)
+		market, err := findNextMarket(restClient, cfg.MarketSlug, lastMarketSlug)
 		if err != nil {
 			fmt.Printf("⚠️  No market found: %v. Retrying in 30s...\n", err)
 			time.Sleep(30 * time.Second)
@@ -68,6 +71,7 @@ func run() error {
 		}
 
 		// Trade this market
+		lastMarketSlug = market.Slug
 		result, err := tradeMarket(ctx, market, engine, restClient)
 		if err != nil {
 			if strings.Contains(err.Error(), "context canceled") {
@@ -96,12 +100,12 @@ type marketResult struct {
 	trades      int
 }
 
-func findNextMarket(restClient *api.RestClient, preferredSlug string) (*api.Market, error) {
+func findNextMarket(restClient *api.RestClient, preferredSlug string, skipSlug string) (*api.Market, error) {
 	var market *api.Market
 	var err error
 
-	// Try preferred slug first
-	if preferredSlug != "" {
+	// Try preferred slug first (unless it's the one we're skipping)
+	if preferredSlug != "" && preferredSlug != skipSlug {
 		market, err = restClient.GetMarket(preferredSlug)
 		if err == nil && market.Active && !market.Closed {
 			return market, nil
@@ -112,8 +116,12 @@ func findNextMarket(restClient *api.RestClient, preferredSlug string) (*api.Mark
 	fmt.Println("🔎 Scanning for active 15m markets...")
 	markets, err := restClient.Get15mMarkets(nil)
 	if err == nil && len(markets) > 0 {
-		fmt.Printf("✅ Found: %s\n", markets[0].Slug)
-		return &markets[0], nil
+		for _, m := range markets {
+			if m.Slug != skipSlug && m.Active && !m.Closed {
+				fmt.Printf("✅ Found: %s\n", m.Slug)
+				return &m, nil
+			}
+		}
 	}
 
 	// Fallback to general scanner
@@ -125,9 +133,12 @@ func findNextMarket(restClient *api.RestClient, preferredSlug string) (*api.Mark
 			if slug == "" {
 				slug = m.Slug
 			}
+			if slug == skipSlug {
+				continue // Skip the market we just traded
+			}
 			if (contains(slug, "bitcoin") || contains(slug, "btc") || contains(slug, "eth")) && contains(slug, "price") {
 				market, err = restClient.GetMarket(slug)
-				if err == nil {
+				if err == nil && market.Active && !market.Closed {
 					return market, nil
 				}
 			}
@@ -271,22 +282,46 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			// Handle market ending
 			if marketState == paper.MarketStateEnding && !marketEnded {
 				marketEnded = true
-				tui.LogEvent("⏳ Market ended, resolving...")
+				tui.Stop() // Stop TUI first so we can print details
+
+				fmt.Println("\n" + strings.Repeat("═", 50))
+				fmt.Println("⏳ MARKET ENDING - RESOLUTION")
+				fmt.Println(strings.Repeat("═", 50))
+
+				// Show positions before resolution
+				positions := engine.GetPositions()
+				if len(positions) > 0 {
+					fmt.Println("\n📦 Positions to resolve:")
+					for outcome, pos := range positions {
+						price := floatPrices[outcome]
+						fmt.Printf("   • %s: %.0f shares @ $%.3f avg (current: $%.3f)\n",
+							outcome, pos.Quantity, pos.AvgPrice, price)
+					}
+				} else {
+					fmt.Println("\n📦 No positions to resolve")
+				}
+
 				ladderMgr.CancelAllLadders()
 
+				fmt.Println("\n⏳ Waiting 5s for final price settlement...")
 				time.Sleep(5 * time.Second)
 
 				winner := simulateResolution(outcomeNames, tokenPrices)
-				tui.LogEvent("🏆 Winner: %s", winner)
+				fmt.Printf("\n🏆 WINNER: %s\n", winner)
 
 				payout := engine.Redeem(winner)
-				tui.LogEvent("💵 Redeemed: $%.2f", payout)
-
-				tui.Stop()
+				fmt.Printf("💵 Total Payout: $%.2f\n", payout)
 
 				finalStats := engine.GetStats()
+				marketPnL := finalStats.RealizedPnL - startingRealizedPnL
+				fmt.Printf("\n📊 Market Summary:\n")
+				fmt.Printf("   • Trades: %d\n", finalStats.TotalTrades-tradesAtStart)
+				fmt.Printf("   • Market PnL: $%.2f\n", marketPnL)
+				fmt.Printf("   • Total Balance: $%.2f\n", finalStats.CurrentBalance)
+				fmt.Println(strings.Repeat("═", 50))
+
 				result := &marketResult{
-					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
+					realizedPnL: marketPnL,
 					trades:      finalStats.TotalTrades - tradesAtStart,
 				}
 
