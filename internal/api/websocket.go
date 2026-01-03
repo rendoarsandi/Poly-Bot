@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -62,6 +63,26 @@ func (m *WSManager) ReadMessage(ctx context.Context) ([]byte, error) {
 
 	_, p, err := m.conn.Read(ctx)
 	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// ReadMessageWithTimeout reads with a timeout, returning nil if timeout exceeded
+func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Duration) ([]byte, error) {
+	if m.conn == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	_, p, err := m.conn.Read(timeoutCtx)
+	if err != nil {
+		// If it's just a timeout, return nil without error
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return p, nil

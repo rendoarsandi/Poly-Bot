@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,8 +23,38 @@ const (
 	UseLiveUI       = true   // Set to false for traditional logging
 )
 
-func contains(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+// MarketTrader holds state for trading a single market
+type MarketTrader struct {
+	ID          string // "ETH" or "SOL"
+	Market      *api.Market
+	Engine      *paper.Engine
+	OrderBook   *paper.OrderBook
+	LadderMgr   *paper.LadderManager
+	RiskMgr     *paper.RiskManager
+	Monitor     *paper.MarketMonitor
+	TokenMap    map[string]string // tokenID -> outcome
+	Outcomes    []string
+	EndTime     time.Time
+	RestClient  *api.RestClient
+	WSMgr       *api.WSManager
+	TUI         *paper.TUI // Shared TUI
+
+	// Price tracking
+	TokenBids     map[string]float64
+	TokenAsks     map[string]float64
+	TokenFullBids map[string][]paper.MarketLevel
+	TokenFullAsks map[string][]paper.MarketLevel
+	FloatPrices   map[string]float64
+
+	// State
+	LaddersPlaced bool
+	MarketEnded   bool
+	mu            sync.Mutex
+}
+
+type marketResult struct {
+	realizedPnL float64
+	trades      int
 }
 
 func main() {
@@ -38,159 +69,239 @@ func run() error {
 
 	// Clear screen at startup
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("🎰 POLYARB-15M Starting...")
+	fmt.Println("🎰 POLYARB-15M Starting (Multi-Asset: BTC, ETH, SOL, XRP)...")
 
 	// Initialize persistent components (survive market rotation)
 	engine := paper.NewEngine(StartingBalance)
 
 	// Load config
-	cfg, err := core.LoadConfig()
+	_, err := core.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	restClient := api.NewRestClient("")
 
-	// Track last traded market to avoid re-entering
-	var lastMarketSlug string
+	// Create shared order book and TUI (persistent across market rotations)
+	orderBook := paper.NewOrderBook()
+	tui := paper.NewTUI(engine, orderBook)
 
-	// Main market rotation loop
-	retryCount := 0
+	// Start TUI render loop
+	if UseLiveUI {
+		tui.StartRenderLoop(500 * time.Millisecond)
+		defer tui.Stop()
+	}
+
+	// Main loop - continuously trade markets and rotate to next when expired
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("\n🛑 Shutting down...")
+			tui.Stop()
+			fmt.Println("\n👋 Shutting down - liquidating positions...")
+
+			// Liquidate all positions before exit
+			positions := engine.GetPositions()
+			if len(positions) > 0 {
+				fmt.Println("💰 Cashing out positions at current market prices...")
+				proceeds := engine.LiquidateAll()
+				fmt.Printf("💵 Liquidation proceeds: $%.2f\n", proceeds)
+			}
+
+			stats := engine.GetStats()
+			fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d\n",
+				stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades)
 			return nil
 		default:
 		}
 
-		// Find next market (don't skip if we haven't traded yet)
-		skipSlug := ""
-		if lastMarketSlug != "" {
-			skipSlug = lastMarketSlug
-		}
-
-		market, err := findNextMarket(restClient, cfg.MarketSlug, skipSlug)
-		if err != nil {
-			retryCount++
-			// Show waiting message with dots animation
-			dots := strings.Repeat(".", (retryCount%3)+1)
-			fmt.Printf("\r⏳ Finding market%s   ", dots)
-			time.Sleep(3 * time.Second)
+		// Find all available markets (BTC, ETH, SOL, XRP)
+		markets := findMarkets(ctx, restClient, tui)
+		if len(markets) == 0 {
+			tui.LogEvent("⏳ No markets available, waiting...")
+			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		retryCount = 0
+		// Create traders for all found markets
+		var wg sync.WaitGroup
+		results := make(chan *marketResult, len(markets))
+		errors := make(chan error, len(markets))
 
-		// If same market, just continue trading it
-		if market.Slug == lastMarketSlug {
+		tradersStarted := 0
+		for assetID, market := range markets {
+			// Parse end time and outcomes
+			endTime, err := paper.ParseEndTimeFromSlug(market.Slug)
+			if err != nil {
+				endTime = time.Now().Add(15 * time.Minute)
+			}
+			outcomes := getOutcomes(market)
+			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
+			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
+
+			trader := createTrader(assetID, market, engine, orderBook, restClient, tui, outcomes, endTime)
+			wg.Add(1)
+			tradersStarted++
+			go func(id string, t *MarketTrader) {
+				defer wg.Done()
+				result, err := runTrader(ctx, t)
+				if err != nil {
+					errors <- fmt.Errorf("%s: %w", id, err)
+					return
+				}
+				results <- result
+			}(assetID, trader)
+		}
+
+		tui.LogEvent("📈 Started %d concurrent market traders", tradersStarted)
+
+		// Wait for all traders to complete
+		wg.Wait()
+		close(results)
+		close(errors)
+
+		// Collect results
+		totalPnL := 0.0
+		totalTrades := 0
+		for result := range results {
+			if result != nil {
+				totalPnL += result.realizedPnL
+				totalTrades += result.trades
+			}
+		}
+
+		// Log market rotation with detailed stats
+		stats := engine.GetStats()
+		tui.LogEvent("📊 Round PnL: $%.2f | Total Balance: $%.2f | Rotating...", totalPnL, stats.CurrentBalance)
+
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		// Brief pause before finding next markets
+		time.Sleep(3 * time.Second)
+
+		// Clear old market data from TUI for fresh display
+		tui.ClearMarkets()
+		orderBook.CancelAllOrders()
+	}
+}
+
+// findMarkets searches for BTC, ETH, SOL, XRP 15m markets
+func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
+	found := make(map[string]*api.Market)
+	assets := []string{"btc", "eth", "sol", "xrp"}
+
+	for attempts := 0; attempts < 10; attempts++ {
+		select {
+		case <-ctx.Done():
+			return found
+		default:
+		}
+
+		markets, err := restClient.Get15mMarkets(nil)
+		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// Trade this market
-		lastMarketSlug = market.Slug
-		result, err := tradeMarket(ctx, market, engine, restClient)
-		if err != nil {
-			if strings.Contains(err.Error(), "context canceled") {
-				return nil
-			}
-			// Error occurred, wait before retry
-			fmt.Printf("⚠️ Market error, retrying in 5s...\n")
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-
-		// Show result briefly
-		if result != nil && result.realizedPnL != 0 {
-			fmt.Printf("💰 PnL: $%.2f\n", result.realizedPnL)
-		}
-
-		// Wait for next window after market completes
-		fmt.Println("\n⏳ Waiting for next market window...")
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(10 * time.Second):
-		}
-	}
-}
-
-type marketResult struct {
-	realizedPnL float64
-	trades      int
-}
-
-func findNextMarket(restClient *api.RestClient, preferredSlug string, skipSlug string) (*api.Market, error) {
-	var market *api.Market
-	var err error
-
-	// Try preferred slug first (unless it's the one we're skipping)
-	if preferredSlug != "" && preferredSlug != skipSlug {
-		market, err = restClient.GetMarket(preferredSlug)
-		if err == nil && market.Active && !market.Closed {
-			return market, nil
-		}
-	}
-
-	// Scan for 15m markets (silent - no spam)
-	markets, err := restClient.Get15mMarkets(nil)
-	if err == nil && len(markets) > 0 {
 		for _, m := range markets {
-			if m.Slug != skipSlug && m.Active && !m.Closed {
-				return &m, nil
-			}
-		}
-	}
-
-	// Fallback to general scanner (silent)
-	allMarkets, err := restClient.ListMarkets()
-	if err == nil {
-		for _, m := range allMarkets {
-			slug := m.MarketSlug
-			if slug == "" {
-				slug = m.Slug
-			}
-			if slug == skipSlug {
+			if !m.Active || m.Closed {
 				continue
 			}
-			if (contains(slug, "bitcoin") || contains(slug, "btc") || contains(slug, "eth")) && contains(slug, "price") {
-				market, err = restClient.GetMarket(slug)
-				if err == nil && market.Active && !market.Closed {
-					return market, nil
+			slug := strings.ToLower(m.Slug)
+			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
+
+			for _, asset := range assets {
+				key := strings.ToUpper(asset)
+				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
+					mCopy := m
+					found[key] = &mCopy
 				}
 			}
 		}
+
+		// Return if we found at least one market
+		if len(found) > 0 {
+			return found
+		}
+
+		time.Sleep(3 * time.Second)
 	}
 
-	return nil, fmt.Errorf("no suitable markets found")
+	return found
 }
 
-func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, restClient *api.RestClient) (*marketResult, error) {
-	// Clear screen for clean TUI
-	fmt.Print("\033[H\033[2J")
+func getOutcomes(market *api.Market) []string {
+	outcomes := make([]string, 0, len(market.Tokens))
+	for _, token := range market.Tokens {
+		outcomes = append(outcomes, token.Outcome)
+	}
+	return outcomes
+}
 
-	fmt.Printf("📊 Connecting to: %s\n", market.Slug)
+func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook *paper.OrderBook, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time) *MarketTrader {
+	tokenMap := make(map[string]string)
+	for _, token := range market.Tokens {
+		tokenMap[token.TokenID] = token.Outcome
+	}
 
-	// Setup WebSocket (silent)
+	ladderConfig := paper.LadderConfig{
+		Levels:         3,
+		SharesPerLevel: 25,
+		PriceStep:      0.01,
+		BasePrice:      0.0,
+	}
+	ladderMgr := paper.NewLadderManager(orderBook, ladderConfig)
+
+	riskConfig := paper.RiskConfig{
+		MaxExposure:        1000.0,
+		MaxUnmatchedRatio:  0.40,
+		MaxUnmatchedShares: 150.0,
+		SkewThreshold:      0.30,
+		KillSwitchDrawdown: 999.0,
+	}
+	riskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
+
+	monitor := paper.NewMarketMonitor(engine, orderBook, ladderMgr, riskMgr)
+	monitor.SetMarket(market.Slug, market.ConditionID, outcomes, endTime)
+
+	return &MarketTrader{
+		ID:            id,
+		Market:        market,
+		Engine:        engine,
+		OrderBook:     orderBook,
+		LadderMgr:     ladderMgr,
+		RiskMgr:       riskMgr,
+		Monitor:       monitor,
+		TokenMap:      tokenMap,
+		Outcomes:      outcomes,
+		EndTime:       endTime,
+		RestClient:    restClient,
+		TUI:           tui,
+		TokenBids:     make(map[string]float64),
+		TokenAsks:     make(map[string]float64),
+		TokenFullBids: make(map[string][]paper.MarketLevel),
+		TokenFullAsks: make(map[string][]paper.MarketLevel),
+		FloatPrices:   make(map[string]float64),
+	}
+}
+
+func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
+	// Setup WebSocket
 	wsMgr := api.NewWSManager("")
 	if err := wsMgr.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("websocket connect failed: %w", err)
 	}
 	defer wsMgr.Close()
+	t.WSMgr = wsMgr
 
 	// Subscribe to Order Books
 	var assetIDs []string
-	var outcomeNames []string
-	tokenMap := make(map[string]string)
-	for _, token := range market.Tokens {
+	for _, token := range t.Market.Tokens {
 		assetIDs = append(assetIDs, token.TokenID)
-		tokenMap[token.TokenID] = token.Outcome
-		outcomeNames = append(outcomeNames, token.Outcome)
 	}
 
 	sub := map[string]interface{}{
@@ -201,287 +312,173 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 		return nil, fmt.Errorf("subscribe failed: %w", err)
 	}
 
-	// Initialize per-market components
-	orderBook := paper.NewOrderBook()
+	// Order fill callback
+	t.OrderBook.SetFillCallback(func(order *paper.LimitOrder, fillQty, fillPrice float64) {
+		_, err := t.Engine.Buy(order.Outcome, fillPrice, fillQty)
+		if err != nil {
+			t.TUI.LogEvent("[%s] ❌ Fill error: %v", t.ID, err)
+			return
+		}
+		saved := order.Price - fillPrice
+		t.TUI.LogEvent("[%s] ✅ FILL %s %.0f @ $%.3f (saved $%.3f)", t.ID, order.Outcome, fillQty, fillPrice, saved)
+	})
+
+	// Track starting realized PnL
+	startingRealizedPnL := t.Engine.GetStats().RealizedPnL
+	tradesAtStart := t.Engine.GetStats().TotalTrades
+
+	tokenPrices := make(map[string]string)
+	lastLadderUpdate := time.Now()
+	lastGoodLiquidity := time.Now()
+	lastRESTFetch := time.Time{}
+	lastGammaFetch := time.Time{}
+
+	const liquidityTimeout = 45 * time.Second
+	const restFetchInterval = 10 * time.Second
+	const gammaFetchInterval = 10 * time.Second
 
 	ladderConfig := paper.LadderConfig{
 		Levels:         3,
 		SharesPerLevel: 25,
 		PriceStep:      0.01,
-		BasePrice:      0.0, // Will be set dynamically from real market data
+		BasePrice:      0.0,
 	}
-	ladderMgr := paper.NewLadderManager(orderBook, ladderConfig)
-
-	// TESTING: Kill switch disabled, risk limits 2x
-	riskConfig := paper.RiskConfig{
-		MaxExposure:        1000.0, // 2x (was 500)
-		MaxUnmatchedRatio:  0.40,   // 2x (was 0.20)
-		MaxUnmatchedShares: 150.0,  // 2x (was 75)
-		SkewThreshold:      0.30,   // 2x (was 0.15)
-		KillSwitchDrawdown: 999.0,  // Disabled (was 1.0)
-	}
-	riskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomeNames)
-
-	marketMonitor := paper.NewMarketMonitor(engine, orderBook, ladderMgr, riskMgr)
-
-	// Parse market end time
-	endTime, err := paper.ParseEndTimeFromSlug(market.Slug)
-	if err != nil {
-		endTime = time.Now().Add(15 * time.Minute)
-	}
-	marketMonitor.SetMarket(market.Slug, market.ConditionID, outcomeNames, endTime)
-
-	// Initialize TUI
-	tui := paper.NewTUI(engine, orderBook)
-	tui.SetMarket(market.Slug, outcomeNames, endTime)
-
-	// Order fill callback
-	orderBook.SetFillCallback(func(order *paper.LimitOrder, fillQty, fillPrice float64) {
-		_, err := engine.Buy(order.Outcome, fillPrice, fillQty)
-		if err != nil {
-			tui.LogEvent("❌ Fill error: %v", err)
-			return
-		}
-		saved := order.Price - fillPrice
-		tui.LogEvent("✅ FILL %s %.0f @ $%.3f (saved $%.3f)", order.Outcome, fillQty, fillPrice, saved)
-	})
-
-	// Start TUI render loop
-	if UseLiveUI {
-		tui.StartRenderLoop(500 * time.Millisecond)
-		defer tui.Stop()
-	}
-
-	// Track starting realized PnL to calculate this market's profit
-	startingRealizedPnL := engine.GetStats().RealizedPnL
-	tradesAtStart := engine.GetStats().TotalTrades
-
-	        // Data loop
-
-	        tokenPrices := make(map[string]string)
-
-	        tokenBids := make(map[string]float64)
-
-	        tokenAsks := make(map[string]float64)
-
-	        tokenFullBids := make(map[string][]paper.MarketLevel)
-
-	        tokenFullAsks := make(map[string][]paper.MarketLevel)
-
-	        floatPrices := make(map[string]float64)
-
-	        lastLadderUpdate := time.Now()
-
-	
-	laddersPlaced := false
-	marketEnded := false
-
-	// Liquidity monitoring
-	lastGoodLiquidity := time.Now()
-	const liquidityTimeout = 45 * time.Second // Exit if no liquidity for 45s
-
-	// REST API polling for accurate prices - fetch immediately on start
-	lastRESTFetch := time.Time{}
-	const restFetchInterval = 1 * time.Second // More frequent updates
-
-	// Gamma API polling for real market prices (verification) - fetch immediately
-	lastGammaFetch := time.Time{}
-	const gammaFetchInterval = 2 * time.Second // More frequent for accurate display
 
 	for {
 		select {
 		case <-ctx.Done():
-			tui.Stop()
-			ladderMgr.CancelAllLadders()
-			positions := engine.GetPositions()
+			t.LadderMgr.CancelAllLadders()
+			positions := t.Engine.GetPositions()
 			if len(positions) > 0 {
-				tui.LogEvent("🔴 EMERGENCY EXIT: Liquidating...")
-				engine.LiquidateAll()
+				t.TUI.LogEvent("[%s] 🔴 EMERGENCY EXIT: Liquidating...", t.ID)
+				t.Engine.LiquidateAll()
 			}
 			return nil, ctx.Err()
 
 		default:
 			// Check kill switch
-			if riskMgr.IsKillSwitchTriggered() {
-				tui.SetKillSwitch("Risk limits exceeded")
-				tui.Stop()
-				ladderMgr.CancelAllLadders()
-				positions := engine.GetPositions()
+			if t.RiskMgr.IsKillSwitchTriggered() {
+				t.TUI.SetKillSwitch("Risk limits exceeded")
+				t.LadderMgr.CancelAllLadders()
+				positions := t.Engine.GetPositions()
 				if len(positions) > 0 {
-					engine.LiquidateAll()
+					t.Engine.LiquidateAll()
 				}
-				riskMgr.ExecuteKillSwitch()
+				t.RiskMgr.ExecuteKillSwitch()
 				return nil, fmt.Errorf("kill switch triggered")
 			}
 
 			// Check market state
-			marketState := marketMonitor.CheckState()
+			marketState := t.Monitor.CheckState()
 
 			// Handle market ending
-			if marketState == paper.MarketStateEnding && !marketEnded {
-				marketEnded = true
-				tui.Stop() // Stop TUI first so we can print details
+			timeToEnd := time.Until(t.EndTime)
+			isExpired := timeToEnd <= 0
 
-				fmt.Println("\n" + strings.Repeat("═", 50))
-				fmt.Println("⏳ MARKET ENDING - RESOLUTION")
-				fmt.Println(strings.Repeat("═", 50))
+			if isExpired && !t.MarketEnded {
+				t.MarketEnded = true
+				t.TUI.LogEvent("[%s] ⏳ MARKET EXPIRED - AWAITING RESOLUTION", t.ID)
 
-				// Show positions before resolution
-				positions := engine.GetPositions()
-				if len(positions) > 0 {
-					fmt.Println("\n📦 Positions to resolve:")
-					for outcome, pos := range positions {
-						price := floatPrices[outcome]
-						fmt.Printf("   • %s: %.0f shares @ $%.3f avg (current: $%.3f)\n",
-							outcome, pos.Quantity, pos.AvgPrice, price)
+				time.Sleep(10 * time.Second)
+
+				winner := simulateResolution(t.Outcomes, tokenPrices)
+				t.TUI.LogEvent("[%s] 🏆 WINNER: %s", t.ID, winner)
+
+				// Use detailed redemption
+				result := t.Engine.RedeemWithDetails(winner)
+				if result.WinningShares > 0 || result.LosingShares > 0 {
+					t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
+						t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)
+					if result.LosingShares > 0 {
+						t.TUI.LogEvent("[%s] 💀 LOSS: %.0f shares → $0 (lost: $%.2f)",
+							t.ID, result.LosingShares, result.LosingCost)
 					}
+					pnlSign := "+"
+					pnlColor := "🟢"
+					if result.TotalPnL < 0 {
+						pnlSign = ""
+						pnlColor = "🔴"
+					}
+					t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
 				} else {
-					fmt.Println("\n📦 No positions to resolve")
+					t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
 				}
 
-				// Open orders just expire - no need to cancel, they're void now
-				openOrders := orderBook.GetOpenOrders()
-				if len(openOrders) > 0 {
-					fmt.Printf("📝 %d unfilled orders expired (void)\n", len(openOrders))
-				}
-
-				fmt.Println("\n⏳ Waiting 5s for final price settlement...")
-				time.Sleep(5 * time.Second)
-
-				winner := simulateResolution(outcomeNames, tokenPrices)
-				fmt.Printf("\n🏆 WINNER: %s\n", winner)
-
-				payout := engine.Redeem(winner)
-				fmt.Printf("💵 Total Payout: $%.2f\n", payout)
-
-				finalStats := engine.GetStats()
+				finalStats := t.Engine.GetStats()
 				marketPnL := finalStats.RealizedPnL - startingRealizedPnL
-				fmt.Printf("\n📊 Market Summary:\n")
-				fmt.Printf("   • Trades: %d\n", finalStats.TotalTrades-tradesAtStart)
-				fmt.Printf("   • Market PnL: $%.2f\n", marketPnL)
-				fmt.Printf("   • Total Balance: $%.2f\n", finalStats.CurrentBalance)
-				fmt.Println(strings.Repeat("═", 50))
 
-				result := &marketResult{
+				return &marketResult{
 					realizedPnL: marketPnL,
 					trades:      finalStats.TotalTrades - tradesAtStart,
-				}
-
-				return result, nil
+				}, nil
 			}
 
-			// Read WebSocket message
-			msg, err := wsMgr.ReadMessage(ctx)
+			if marketState == paper.MarketStateEnding && !t.MarketEnded {
+				if !t.LaddersPlaced {
+					t.TUI.LogEvent("[%s] ⏳ Market ending in %v...", t.ID, timeToEnd.Round(time.Second))
+					t.LaddersPlaced = true
+				}
+			}
+
+			// Read WebSocket message with timeout so REST polling still happens
+			msg, err := wsMgr.ReadMessageWithTimeout(ctx, 2*time.Second)
 			if err != nil {
 				if strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "canceled") {
 					return nil, err
 				}
-				continue
+				// Don't continue - still do REST polling below
 			}
 
-			// Poll REST API for accurate order book data (every 2 seconds)
+			// Poll REST API for order book data
 			if time.Since(lastRESTFetch) >= restFetchInterval {
-				for _, token := range market.Tokens {
-					book, err := restClient.GetOrderBook(token.TokenID)
+				for _, token := range t.Market.Tokens {
+					book, err := t.RestClient.GetOrderBook(token.TokenID)
 					if err != nil {
-						tui.LogEvent("❌ REST error %s: %v", token.Outcome, err)
 						continue
 					}
 					outcome := token.Outcome
-
-					// CLOB returns bids sorted ASCENDING (lowest first) and asks sorted DESCENDING (highest first)
-					// So best bid (highest) is at the END of bids array
-					// And best ask (lowest) is at the END of asks array
-					bestBid := 0.0
-					bestAsk := 1.0
-					if len(book.Bids) > 0 {
-						// Best bid = highest price = LAST element (or find max)
-						for _, b := range book.Bids {
-							p, _ := strconv.ParseFloat(b.Price, 64)
-							if p > bestBid {
-								bestBid = p
-							}
-						}
-					}
-					if len(book.Asks) > 0 {
-						// Best ask = lowest price = LAST element (or find min)
-						for _, a := range book.Asks {
-							p, _ := strconv.ParseFloat(a.Price, 64)
-							if p < bestAsk && p > 0 {
-								bestAsk = p
-							}
-						}
-					}
-
-					// Store full order book for fill simulation (NOT for pricing)
-					tokenFullBids[outcome] = toMarketLevels(book.Bids)
-					tokenFullAsks[outcome] = toMarketLevels(book.Asks)
-					// Don't update tokenBids/tokenAsks here - Gamma API is our price source
+					t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
+					t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
 				}
 				lastRESTFetch = time.Now()
 			}
 
-			// Fetch REAL-TIME prices from CLOB order books (not Gamma - it's cached/stale)
+			// Fetch CLOB prices
 			if time.Since(lastGammaFetch) >= gammaFetchInterval {
-				// Create reverse map: tokenID -> outcome name
 				reverseTokenMap := make(map[string]string)
-				for tokenID, outcome := range tokenMap {
+				for tokenID, outcome := range t.TokenMap {
 					reverseTokenMap[tokenID] = outcome
 				}
 
-				realPricesBA, err := restClient.GetCLOBBidAsk(reverseTokenMap)
-				if err != nil {
-					tui.LogEvent("⚠️ CLOB API error: %v", err)
-				} else if len(realPricesBA) > 0 {
+				realPricesBA, err := t.RestClient.GetCLOBBidAsk(reverseTokenMap)
+				if err == nil && len(realPricesBA) > 0 {
 					for outcome, pa := range realPricesBA {
 						if pa.Bid > 0 || pa.Ask > 0 {
-							tokenBids[outcome] = pa.Bid
-							tokenAsks[outcome] = pa.Ask
-							floatPrices[outcome] = (pa.Bid + pa.Ask) / 2
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", floatPrices[outcome])
-							engine.UpdatePrice(outcome, floatPrices[outcome])
-							engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
+							t.TokenBids[outcome] = pa.Bid
+							t.TokenAsks[outcome] = pa.Ask
+							t.FloatPrices[outcome] = (pa.Bid + pa.Ask) / 2
+							tokenPrices[outcome] = fmt.Sprintf("%.3f", t.FloatPrices[outcome])
+							t.Engine.UpdatePrice(outcome, t.FloatPrices[outcome])
+							t.Engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
 						}
 					}
-					tui.UpdateRealMarket(tokenBids, tokenAsks)
-					tui.UpdatePrices(floatPrices, tokenBids, tokenAsks)
-					}
+					t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+				}
 				lastGammaFetch = time.Now()
 			}
 
 			priceChanged := false
-			msgCount := 0 // Debug counter
 
-			// updatePrice only updates order book levels for fill simulation
-			// It does NOT update tokenBids/tokenAsks - those come from Gamma API only
-			updatePrice := func(assetID, priceStr string, bid, ask float64, fullBids, fullAsks []paper.MarketLevel) {
-				outcome := tokenMap[assetID]
-				if outcome == "" {
-					return
-				}
-				// Only store full order book for fill simulation
-				if len(fullBids) > 0 {
-					tokenFullBids[outcome] = fullBids
-				}
-				if len(fullAsks) > 0 {
-					tokenFullAsks[outcome] = fullAsks
-				}
-				// Mark price changed for trading logic trigger
-				priceChanged = true
-			}
-
-			// Parse messages - find BEST bid (max) and BEST ask (min)
+			// Parse WebSocket messages
 			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
 				for _, b := range books {
 					bid, ask := 0.0, 1.0
-					// Best bid = HIGHEST price
 					for _, order := range b.Bids {
 						p, _ := strconv.ParseFloat(order.Price, 64)
 						if p > bid {
 							bid = p
 						}
 					}
-					// Best ask = LOWEST price
 					for _, order := range b.Asks {
 						p, _ := strconv.ParseFloat(order.Price, 64)
 						if p < ask && p > 0 {
@@ -489,21 +486,32 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						}
 					}
 					if ask >= 1.0 {
-						ask = 0.0 // No valid ask
+						ask = 0.0
 					}
-					priceStr := fmt.Sprintf("%.3f", (bid+ask)/2)
-					updatePrice(b.AssetID, priceStr, bid, ask, toMarketLevels(b.Bids), toMarketLevels(b.Asks))
+					outcome := t.TokenMap[b.AssetID]
+					if outcome != "" {
+						t.TokenBids[outcome] = bid
+						t.TokenAsks[outcome] = ask
+						if bid > 0 && ask > 0 && ask < 1.0 {
+							mid := (bid + ask) / 2
+							t.FloatPrices[outcome] = mid
+							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+							t.Engine.UpdatePrice(outcome, mid)
+							t.Engine.UpdateBidAsk(outcome, bid, ask)
+						}
+						t.TokenFullBids[outcome] = toMarketLevels(b.Bids)
+						t.TokenFullAsks[outcome] = toMarketLevels(b.Asks)
+						priceChanged = true
+					}
 				}
 			} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 				bid, ask := 0.0, 1.0
-				// Best bid = HIGHEST price
 				for _, order := range book.Bids {
 					p, _ := strconv.ParseFloat(order.Price, 64)
 					if p > bid {
 						bid = p
 					}
 				}
-				// Best ask = LOWEST price
 				for _, order := range book.Asks {
 					p, _ := strconv.ParseFloat(order.Price, 64)
 					if p < ask && p > 0 {
@@ -511,47 +519,47 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					}
 				}
 				if ask >= 1.0 {
-					ask = 0.0 // No valid ask
+					ask = 0.0
 				}
-				priceStr := fmt.Sprintf("%.3f", (bid+ask)/2)
-				updatePrice(book.AssetID, priceStr, bid, ask, toMarketLevels(book.Bids), toMarketLevels(book.Asks))
-					
-			} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
-				// PriceUpdate - just mark as changed, don't update bids/asks
-				// Gamma API is our only trusted price source
-				if len(update.PriceChanges) > 0 {
+				outcome := t.TokenMap[book.AssetID]
+				if outcome != "" {
+					t.TokenBids[outcome] = bid
+					t.TokenAsks[outcome] = ask
+					if bid > 0 && ask > 0 && ask < 1.0 {
+						mid := (bid + ask) / 2
+						t.FloatPrices[outcome] = mid
+						tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+						t.Engine.UpdatePrice(outcome, mid)
+						t.Engine.UpdateBidAsk(outcome, bid, ask)
+					}
+					t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
+					t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
 					priceChanged = true
 				}
-			} else {
-				// Debug: log unparsed messages (first few only)
-				if msgCount < 3 {
-					// Try to get a preview of the message
-					preview := string(msg)
-					if len(preview) > 100 {
-						preview = preview[:100] + "..."
-					}
-					tui.LogEvent("📭 Unknown msg: %s", preview)
-					msgCount++
+			} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
+				priceChanged = true
+			}
+
+			// Update TUI with prices
+			if priceChanged {
+				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+			}
+
+			// Process order fills
+			for outcome := range tokenPrices {
+				bids := t.TokenFullBids[outcome]
+				asks := t.TokenFullAsks[outcome]
+				if len(bids) > 0 || len(asks) > 0 {
+					t.OrderBook.ProcessPriceUpdate(outcome, bids, asks)
 				}
 			}
 
-			// TUI is updated by Gamma API fetch above - no need to update here
-
-			// Process order fills
-			                        for outcome := range tokenPrices {
-			                                bids := tokenFullBids[outcome]
-			                                asks := tokenFullAsks[outcome]
-			                                if len(bids) > 0 || len(asks) > 0 {
-			                                        orderBook.ProcessPriceUpdate(outcome, bids, asks)
-			                                }
-			                        }
-						// Check liquidity - if we have reasonable bid/ask prices, we have liquidity
+			// Check liquidity
 			hasLiquidity := false
-			if len(outcomeNames) == 2 {
-				for _, outcome := range outcomeNames {
-					bid := tokenBids[outcome]
-					ask := tokenAsks[outcome]
-					// Consider liquid if we have any valid bid or ask in reasonable range
+			if len(t.Outcomes) == 2 {
+				for _, outcome := range t.Outcomes {
+					bid := t.TokenBids[outcome]
+					ask := t.TokenAsks[outcome]
 					if (bid >= 0.15 && bid <= 0.85) || (ask >= 0.15 && ask <= 0.85) {
 						hasLiquidity = true
 						break
@@ -562,163 +570,70 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			if hasLiquidity {
 				lastGoodLiquidity = time.Now()
 			} else if time.Since(lastGoodLiquidity) > liquidityTimeout {
-				// No liquidity for too long - find another market but keep positions
-				tui.Stop()
-
-				positions := engine.GetPositions()
+				positions := t.Engine.GetPositions()
 				if len(positions) > 0 {
-					fmt.Println("\n💨 Liquidity dried up - keeping positions for expiration")
-					fmt.Println("📦 Positions held:")
-					for outcome, pos := range positions {
-						fmt.Printf("   • %s: %.0f shares @ $%.3f avg\n", outcome, pos.Quantity, pos.AvgPrice)
+					if !t.LaddersPlaced {
+						t.TUI.LogEvent("[%s] ⏳ Waiting for resolution with positions...", t.ID)
+						t.LaddersPlaced = true
 					}
-					fmt.Println("⏳ These will resolve when market expires naturally")
-					fmt.Println("🔄 Finding another market to trade...")
-				} else {
-					fmt.Println("\n💨 Liquidity dried up - finding another market...")
+					t.LadderMgr.CancelAllLadders()
+					lastGoodLiquidity = time.Now()
+					continue
 				}
 
-				// Don't liquidate - just cancel open orders and move on
-				ladderMgr.CancelAllLadders()
+				t.TUI.LogEvent("[%s] 💨 Liquidity dried up", t.ID)
+				t.LadderMgr.CancelAllLadders()
 
-				finalStats := engine.GetStats()
-				result := &marketResult{
+				finalStats := t.Engine.GetStats()
+				return &marketResult{
 					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
 					trades:      finalStats.TotalTrades - tradesAtStart,
-				}
-				return result, nil // Return to find new market, positions remain
+				}, nil
 			}
 
-			// Check risk
-			action, reason := riskMgr.Evaluate()
-			switch action {
-			case paper.RiskActionKillSwitch:
-				tui.LogEvent("🚨 KILL: %s", reason)
-				tui.SetKillSwitch(reason)
-				ladderMgr.CancelAllLadders()
-				positions := engine.GetPositions()
-				if len(positions) > 0 {
-					engine.LiquidateAll()
-				}
-				riskMgr.ExecuteKillSwitch()
-				tui.Stop()
-				return nil, fmt.Errorf("kill switch: %s", reason)
+			// Trading logic
+			if priceChanged && len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
+				ask1 := t.TokenAsks[t.Outcomes[0]]
+				ask2 := t.TokenAsks[t.Outcomes[1]]
 
-			case paper.RiskActionRebalance:
-				if time.Since(lastLadderUpdate) > 5*time.Second {
-					tui.LogEvent("⚖️ Rebalancing: %s", reason)
-					lightSide, adjustment := riskMgr.GetSkewAdjustment()
-					if lightSide != "" && adjustment > 0 {
-						ladder := ladderMgr.GetOrCreateLadder(lightSide)
-						ladder.Config.BasePrice += adjustment
-						ladder.PlaceLadder()
-					}
-					lastLadderUpdate = time.Now()
-				}
-
-			case paper.RiskActionReduceSize:
-				tui.LogEvent("📉 Reducing size: %s", reason)
-				for _, ladder := range ladderMgr.Ladders {
-					ladder.Config.SharesPerLevel *= 0.5
-					ladder.PlaceLadder()
-				}
-			}
-
-			// Trading logic (only when market is active)
-			if priceChanged && len(tokenPrices) == 2 && len(outcomeNames) == 2 && marketState == paper.MarketStateActive {
-				// Get actual market asks (what we'd pay to buy)
-				ask1 := tokenAsks[outcomeNames[0]]
-				ask2 := tokenAsks[outcomeNames[1]]
-
-				// Log market state periodically
-				if !laddersPlaced && time.Since(lastLadderUpdate) > 5*time.Second {
-					if ask1 == 0 || ask2 == 0 {
-						tui.LogEvent("⏳ Waiting for asks: %s=$%.2f, %s=$%.2f", outcomeNames[0], ask1, outcomeNames[1], ask2)
-					} else if ask1 < 0.10 || ask1 > 0.90 || ask2 < 0.10 || ask2 > 0.90 {
-						tui.LogEvent("⚠️ Asks out of range: %s=$%.2f, %s=$%.2f", outcomeNames[0], ask1, outcomeNames[1], ask2)
-					} else {
-						sum := ask1 + ask2
-						margin := (1.0 - sum) * 100
-						if margin < 2.0 {
-							tui.LogEvent("📊 No arb: %s=$%.2f + %s=$%.2f = $%.2f (margin %.1f%%)", outcomeNames[0], ask1, outcomeNames[1], ask2, sum, margin)
-						}
-					}
-					lastLadderUpdate = time.Now()
-				}
-
-				// Only trade if we have real ask prices in sane range
 				if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
 					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
-					// Place ladders if opportunity exists (sum < 1.0 means arbitrage)
-					if margin >= 2.0 && riskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*ask1) {
-						// Check if market prices have moved significantly from our ladder prices
-						// This makes the bot more responsive to real market movements
-						ladder1 := ladderMgr.GetOrCreateLadder(outcomeNames[0])
-						ladder2 := ladderMgr.GetOrCreateLadder(outcomeNames[1])
+					const minMarginPercent = 1.5
 
-						bidOffset := 0.02 // Bid 2 cents below ask
-						targetPrice1 := ask1 - bidOffset
-						targetPrice2 := ask2 - bidOffset
+					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*(ask1+ask2)) {
+						baseShares := ladderConfig.SharesPerLevel
+						shares := baseShares
 
-						// Calculate price drift from current ladder base prices
-						priceDrift1 := 0.0
-						priceDrift2 := 0.0
-						if ladder1.Config.BasePrice > 0 {
-							priceDrift1 = targetPrice1 - ladder1.Config.BasePrice
-							if priceDrift1 < 0 {
-								priceDrift1 = -priceDrift1
-							}
-						}
-						if ladder2.Config.BasePrice > 0 {
-							priceDrift2 = targetPrice2 - ladder2.Config.BasePrice
-							if priceDrift2 < 0 {
-								priceDrift2 = -priceDrift2
-							}
+						if margin >= 5.0 {
+							shares = baseShares * 4
+						} else if margin >= 4.0 {
+							shares = baseShares * 3
+						} else if margin >= 3.0 {
+							shares = baseShares * 2
 						}
 
-						// Update ladders if: not placed yet, significant price drift (>3 cents), or 10 seconds elapsed
-						needsUpdate := !laddersPlaced ||
-							priceDrift1 >= 0.03 || priceDrift2 >= 0.03 ||
-							time.Since(lastLadderUpdate) > 10*time.Second
-
-						if needsUpdate {
-							// Check inventory balance - pause overweight side
-							positions := engine.GetPositions()
-							pos1 := positions[outcomeNames[0]].Quantity
-							pos2 := positions[outcomeNames[1]].Quantity
-							imbalance := pos1 - pos2
-							const maxImbalance = 50.0
-
-							if imbalance > maxImbalance {
-								// Too much of outcome[0], only place for outcome[1]
-								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[0], imbalance, outcomeNames[1], targetPrice2)
-								ladder2.Config.BasePrice = targetPrice2
-								ladder2.PlaceLadder()
-							} else if imbalance < -maxImbalance {
-								// Too much of outcome[1], only place for outcome[0]
-								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[1], -imbalance, outcomeNames[0], targetPrice1)
-								ladder1.Config.BasePrice = targetPrice1
-								ladder1.PlaceLadder()
-							} else {
-								// Balanced - place both at real prices
-								tui.LogEvent("📈 Placing ladders: %s@$%.3f, %s@$%.3f (margin %.1f%%)",
-									outcomeNames[0], targetPrice1, outcomeNames[1], targetPrice2, margin)
-
-								ladder1.Config.BasePrice = targetPrice1
-								ladder1.PlaceLadder()
-
-								ladder2.Config.BasePrice = targetPrice2
-								ladder2.PlaceLadder()
-							}
-
-							laddersPlaced = true
-							lastLadderUpdate = time.Now()
+						cost := shares * (ask1 + ask2)
+						if !t.RiskMgr.CanPlaceOrder(cost) {
+							shares = baseShares
 						}
+
+						profit := shares * (1.0 - sum)
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares, profit $%.2f (%.1f%%)",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, profit, margin)
+
+						t.Engine.Buy(t.Outcomes[0], ask1, shares)
+						t.Engine.Buy(t.Outcomes[1], ask2, shares)
+
+						lastLadderUpdate = time.Now()
+						t.LaddersPlaced = true
 					}
 				}
 			}
+
+			// Suppress unused variable warning
+			_ = lastLadderUpdate
 		}
 	}
 }
@@ -738,34 +653,18 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 		return outcomes[1]
 	}
 
-	        if rand.Float64() > 0.5 {
-
-	                return outcomes[0]
-
-	        }
-
-	        return outcomes[1]
-
+	if rand.Float64() > 0.5 {
+		return outcomes[0]
 	}
+	return outcomes[1]
+}
 
-	
-
-	func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
-
-		result := make([]paper.MarketLevel, len(levels))
-
-		for i, l := range levels {
-
-			p, _ := strconv.ParseFloat(l.Price, 64)
-
-			s, _ := strconv.ParseFloat(l.Size, 64)
-
-			result[i] = paper.MarketLevel{Price: p, Size: s}
-
-		}
-
-		return result
-
+func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
+	result := make([]paper.MarketLevel, len(levels))
+	for i, l := range levels {
+		p, _ := strconv.ParseFloat(l.Price, 64)
+		s, _ := strconv.ParseFloat(l.Size, 64)
+		result[i] = paper.MarketLevel{Price: p, Size: s}
 	}
-
-	
+	return result
+}

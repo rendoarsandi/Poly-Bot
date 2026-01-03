@@ -202,6 +202,20 @@ func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 	return &trade, nil
 }
 
+// RedemptionResult holds detailed info about a market redemption
+type RedemptionResult struct {
+	WinningOutcome string
+	WinningShares  float64
+	WinningPayout  float64
+	WinningCost    float64
+	WinningPnL     float64
+	LosingOutcome  string
+	LosingShares   float64
+	LosingCost     float64
+	TotalPayout    float64
+	TotalPnL       float64
+}
+
 // Redeem simulates market resolution payout
 // winningOutcome is the outcome that won (pays $1 per share)
 // Polymarket charges NO fees (0% on trading, deposits, withdrawals, and payouts)
@@ -242,6 +256,55 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 
 	e.updateDrawdown()
 	return payout
+}
+
+// RedeemWithDetails simulates market resolution and returns detailed results
+func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	result := &RedemptionResult{
+		WinningOutcome: winningOutcome,
+	}
+
+	for outcome, pos := range e.positions {
+		if outcome == winningOutcome {
+			// Winning shares pay $1 each (no fees!)
+			proceeds := pos.Quantity * 1.0
+			pnl := proceeds - pos.TotalCost
+			e.realizedPnL += pnl
+			e.currentBalance += proceeds
+
+			result.WinningShares = pos.Quantity
+			result.WinningPayout = proceeds
+			result.WinningCost = pos.TotalCost
+			result.WinningPnL = pnl
+			result.TotalPayout += proceeds
+
+			if pnl > 0 {
+				e.winningTrades++
+			} else {
+				e.losingTrades++
+			}
+		} else {
+			// Losing shares are worthless
+			e.realizedPnL -= pos.TotalCost
+			e.losingTrades++
+
+			result.LosingOutcome = outcome
+			result.LosingShares = pos.Quantity
+			result.LosingCost = pos.TotalCost
+		}
+	}
+
+	// Calculate total PnL
+	result.TotalPnL = result.WinningPnL - result.LosingCost
+
+	// Clear all positions
+	e.positions = make(map[string]*Position)
+
+	e.updateDrawdown()
+	return result
 }
 
 // LiquidateAll sells all positions at current BID prices (taker - chasing liquidity)
@@ -340,7 +403,11 @@ func (e *Engine) GetEquity() float64 {
 func (e *Engine) getUnrealizedValue() float64 {
 	value := 0.0
 	for outcome, pos := range e.positions {
-		if price, ok := e.currentPrices[outcome]; ok {
+		// Use BID price for valuation (what we could sell for)
+		// This is more conservative and realistic
+		if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+			value += pos.Quantity * bid
+		} else if price, ok := e.currentPrices[outcome]; ok {
 			value += pos.Quantity * price
 		} else {
 			// Use cost basis if no current price
@@ -357,7 +424,11 @@ func (e *Engine) GetUnrealizedPnL() float64 {
 
 	unrealized := 0.0
 	for outcome, pos := range e.positions {
-		if price, ok := e.currentPrices[outcome]; ok {
+		// Use BID price for valuation (what we could sell for)
+		if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+			currentValue := pos.Quantity * bid
+			unrealized += currentValue - pos.TotalCost
+		} else if price, ok := e.currentPrices[outcome]; ok {
 			currentValue := pos.Quantity * price
 			unrealized += currentValue - pos.TotalCost
 		}

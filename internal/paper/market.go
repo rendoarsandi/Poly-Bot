@@ -97,8 +97,8 @@ func (mm *MarketMonitor) CheckState() MarketState {
 		return MarketStateEnding
 	}
 
-	// Last 2 minutes - stop placing new orders
-	if timeToEnd < 2*time.Minute {
+	// Last 30 seconds - stop placing new orders (but don't trigger resolution yet)
+	if timeToEnd < 30*time.Second {
 		if mm.currentMarket.State == MarketStateActive {
 			mm.currentMarket.State = MarketStateEnding
 			fmt.Printf("⏰ Market ending in %v - stopping new orders\n", timeToEnd.Round(time.Second))

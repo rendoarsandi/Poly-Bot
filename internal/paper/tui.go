@@ -28,6 +28,17 @@ const (
 	BgYellow       = "\033[43m"
 )
 
+// MarketData holds data for a single market in the TUI
+type MarketData struct {
+	Slug       string
+	Outcomes   []string
+	EndTime    time.Time
+	Bids       map[string]float64
+	Asks       map[string]float64
+	RealBids   map[string]float64
+	RealAsks   map[string]float64
+}
+
 // TUI provides a live terminal user interface
 type TUI struct {
 	mu sync.Mutex
@@ -36,10 +47,11 @@ type TUI struct {
 	engine    *Engine
 	orderBook *OrderBook
 
-	// State
-	marketSlug   string
-	outcomes     []string
-	endTime      time.Time
+	// State - now supports multiple markets
+	markets      map[string]*MarketData // key = market identifier (e.g., "ETH", "SOL")
+	marketSlug   string                 // Legacy - primary market
+	outcomes     []string               // Legacy - primary market outcomes
+	endTime      time.Time              // Legacy - primary market end time
 	lastPrices   map[string]float64
 	lastBids     map[string]float64
 	lastAsks     map[string]float64
@@ -73,6 +85,7 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 	return &TUI{
 		engine:        engine,
 		orderBook:     orderBook,
+		markets:       make(map[string]*MarketData),
 		lastPrices:    make(map[string]float64),
 		lastBids:      make(map[string]float64),
 		lastAsks:      make(map[string]float64),
@@ -80,9 +93,50 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		realAsks:      make(map[string]float64),
 		pendingOrders: make(map[string][]PendingOrder),
 		eventLog:      make([]string, 0),
-		maxEvents:     8,
+		maxEvents:     10,
 		width:         80,
 		running:       true,
+	}
+}
+
+// AddMarket adds a market to the multi-market display
+func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.markets[id] = &MarketData{
+		Slug:     slug,
+		Outcomes: outcomes,
+		EndTime:  endTime,
+		Bids:     make(map[string]float64),
+		Asks:     make(map[string]float64),
+		RealBids: make(map[string]float64),
+		RealAsks: make(map[string]float64),
+	}
+}
+
+// ClearMarkets clears all market data for rotation to new markets
+func (t *TUI) ClearMarkets() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.markets = make(map[string]*MarketData)
+	t.lastPrices = make(map[string]float64)
+	t.lastBids = make(map[string]float64)
+	t.lastAsks = make(map[string]float64)
+}
+
+// UpdateMarketPrices updates prices for a specific market
+func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if m, ok := t.markets[marketID]; ok {
+		for k, v := range bids {
+			m.Bids[k] = v
+			m.RealBids[k] = v
+		}
+		for k, v := range asks {
+			m.Asks[k] = v
+			m.RealAsks[k] = v
+		}
 	}
 }
 
@@ -206,7 +260,7 @@ func (t *TUI) Render() {
 
 func (t *TUI) renderHeader() string {
 	line := strings.Repeat("═", t.width)
-	title := " 🎰 POLYARB-15M PAPER TRADING BOT "
+	title := " 🎰 POLYARB-15M MULTI-ASSET PAPER TRADING "
 	padding := (t.width - len(title)) / 2
 	if padding < 0 {
 		padding = 0
@@ -221,6 +275,12 @@ func (t *TUI) renderHeader() string {
 func (t *TUI) renderMarketInfo() string {
 	var sb strings.Builder
 
+	// If we have multiple markets, render them all
+	if len(t.markets) > 0 {
+		return t.renderMultiMarketInfo()
+	}
+
+	// Legacy single market rendering
 	remaining := time.Until(t.endTime)
 	if remaining < 0 {
 		remaining = 0
@@ -239,93 +299,217 @@ func (t *TUI) renderMarketInfo() string {
 
 	if len(t.outcomes) == 2 {
 		sb.WriteString("\n")
-
-		// ══════════════════════════════════════════════════════════════
-		// PANEL 1: REAL MARKET (what we see on Polymarket website)
-		// ══════════════════════════════════════════════════════════════
-		sb.WriteString(fmt.Sprintf("%s┌─ 🌐 REAL MARKET (Polymarket Website) ─────────────────────┐%s\n", ColorCyan, Reset))
-		realBid1 := t.realBids[t.outcomes[0]]
-		realAsk1 := t.realAsks[t.outcomes[0]]
-		realBid2 := t.realBids[t.outcomes[1]]
-		realAsk2 := t.realAsks[t.outcomes[1]]
-
-		if realAsk1 > 0 || realAsk2 > 0 {
-			sb.WriteString(fmt.Sprintf("│  %s: bid $%.3f / ask $%.3f\n", t.outcomes[0], realBid1, realAsk1))
-			sb.WriteString(fmt.Sprintf("│  %s: bid $%.3f / ask $%.3f\n", t.outcomes[1], realBid2, realAsk2))
-		} else {
-			sb.WriteString("│  (waiting for real market data...)\n")
-		}
-		sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorCyan, Reset))
-
-		// ══════════════════════════════════════════════════════════════
-		// PANEL 2: BOT READING (what our bot receives from API)
-		// ══════════════════════════════════════════════════════════════
-		sb.WriteString(fmt.Sprintf("%s┌─ 🤖 BOT READING (REST API Response) ──────────────────────┐%s\n", ColorYellow, Reset))
-		bid1 := t.lastBids[t.outcomes[0]]
-		ask1 := t.lastAsks[t.outcomes[0]]
-		bid2 := t.lastBids[t.outcomes[1]]
-		ask2 := t.lastAsks[t.outcomes[1]]
-
-		// Check for mismatch with real market
-		mismatch1 := false
-		mismatch2 := false
-		if realAsk1 > 0 && (abs(ask1-realAsk1) > 0.05 || abs(bid1-realBid1) > 0.05) {
-			mismatch1 = true
-		}
-		if realAsk2 > 0 && (abs(ask2-realAsk2) > 0.05 || abs(bid2-realBid2) > 0.05) {
-			mismatch2 = true
-		}
-
-		color1 := ""
-		color2 := ""
-		if mismatch1 {
-			color1 = ColorRed
-		}
-		if mismatch2 {
-			color2 = ColorRed
-		}
-
-		sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.3f / ask $%.3f%s", color1, t.outcomes[0], bid1, ask1, Reset))
-		if mismatch1 {
-			sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
-		}
-		sb.WriteString("\n")
-
-		sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.3f / ask $%.3f%s", color2, t.outcomes[1], bid2, ask2, Reset))
-		if mismatch2 {
-			sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
-		}
-		sb.WriteString("\n")
-
-		// Calculate margin
-		sum := ask1 + ask2
-		margin := (1.0 - sum) * 100
-		marginColor := ColorWhite
-		if margin >= 3 {
-			marginColor = ColorGreen
-		} else if margin >= 2 {
-			marginColor = ColorYellow
-		} else if margin < 1 {
-			marginColor = ColorRed
-		}
-		sb.WriteString(fmt.Sprintf("│  📈 Ask Sum: %.3f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
-		sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorYellow, Reset))
-
-		// ══════════════════════════════════════════════════════════════
-		// PANEL 3: BOT ORDERS (what orders the bot will place)
-		// ══════════════════════════════════════════════════════════════
-		sb.WriteString(fmt.Sprintf("%s┌─ 📋 BOT PLANNED ORDERS ───────────────────────────────────┐%s\n", ColorGreen, Reset))
-		if len(t.pendingOrders) > 0 {
-			for outcome, orders := range t.pendingOrders {
-				for _, o := range orders {
-					sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.3f\n", o.Side, outcome, o.Qty, o.Price))
-				}
-			}
-		} else {
-			sb.WriteString("│  (no pending orders)\n")
-		}
-		sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorGreen, Reset))
+		sb.WriteString(t.renderSingleMarketPrices(t.outcomes, t.lastBids, t.lastAsks, t.realBids, t.realAsks))
 	}
+
+	return sb.String()
+}
+
+// renderMultiMarketInfo renders info for multiple markets
+func (t *TUI) renderMultiMarketInfo() string {
+	var sb strings.Builder
+
+	totalMargin := 0.0
+	marketCount := 0
+
+	// Define asset order and colors for consistent display
+	assetOrder := []string{"BTC", "ETH", "SOL", "XRP"}
+	assetColors := map[string]string{
+		"BTC": ColorYellow,  // Bitcoin - gold/yellow
+		"ETH": ColorCyan,    // Ethereum - cyan/blue
+		"SOL": ColorMagenta, // Solana - purple
+		"XRP": ColorGreen,   // XRP - green
+	}
+	assetEmojis := map[string]string{
+		"BTC": "₿",
+		"ETH": "Ξ",
+		"SOL": "◎",
+		"XRP": "✕",
+	}
+
+	for _, id := range assetOrder {
+		m, ok := t.markets[id]
+		if !ok {
+			continue
+		}
+
+		remaining := time.Until(m.EndTime)
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		// Color based on time remaining
+		timeColor := ColorGreen
+		if remaining < 2*time.Minute {
+			timeColor = ColorRed
+		} else if remaining < 5*time.Minute {
+			timeColor = ColorYellow
+		}
+
+		// Get asset-specific color
+		headerColor := assetColors[id]
+		if headerColor == "" {
+			headerColor = ColorWhite
+		}
+		emoji := assetEmojis[id]
+		if emoji == "" {
+			emoji = "•"
+		}
+
+		sb.WriteString(fmt.Sprintf("%s%s═══ %s %s ══════════════════════════════════════════════%s\n", Bold, headerColor, emoji, id, Reset))
+		sb.WriteString(fmt.Sprintf("   📊 %s\n", m.Slug))
+		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s remaining\n", timeColor, remaining.Round(time.Second), Reset))
+
+		if len(m.Outcomes) == 2 {
+			bid1 := m.Bids[m.Outcomes[0]]
+			ask1 := m.Asks[m.Outcomes[0]]
+			bid2 := m.Bids[m.Outcomes[1]]
+			ask2 := m.Asks[m.Outcomes[1]]
+
+			// For binary markets, infer missing prices from complement
+			// Up bid ≈ 1 - Down ask, Up ask ≈ 1 - Down bid
+			if bid1 == 0 && ask2 > 0 {
+				bid1 = 1.0 - ask2
+			}
+			if ask1 == 0 && bid2 > 0 {
+				ask1 = 1.0 - bid2
+			}
+			if bid2 == 0 && ask1 > 0 {
+				bid2 = 1.0 - ask1
+			}
+			if ask2 == 0 && bid1 > 0 {
+				ask2 = 1.0 - bid1
+			}
+
+			sb.WriteString(fmt.Sprintf("   %s: bid $%.3f / ask $%.3f\n", m.Outcomes[0], bid1, ask1))
+			sb.WriteString(fmt.Sprintf("   %s: bid $%.3f / ask $%.3f\n", m.Outcomes[1], bid2, ask2))
+
+			// Calculate margin - only show valid data
+			if ask1 > 0 && ask2 > 0 {
+				sum := ask1 + ask2
+				margin := (1.0 - sum) * 100
+				marginColor := ColorWhite
+				if margin >= 3 {
+					marginColor = ColorGreen
+				} else if margin >= 2 {
+					marginColor = ColorYellow
+				} else if margin < 1 {
+					marginColor = ColorRed
+				}
+				sb.WriteString(fmt.Sprintf("   📈 Sum: $%.3f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
+				totalMargin += margin
+				marketCount++
+			} else {
+				sb.WriteString(fmt.Sprintf("   📈 %s(waiting for price data...)%s\n", ColorYellow, Reset))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Summary line
+	if marketCount > 0 {
+		avgMargin := totalMargin / float64(marketCount)
+		avgColor := ColorWhite
+		if avgMargin >= 2 {
+			avgColor = ColorGreen
+		} else if avgMargin < 1 {
+			avgColor = ColorRed
+		}
+		sb.WriteString(fmt.Sprintf("%s📊 COMBINED: %d markets | Avg Margin: %s%.1f%%%s%s\n", Bold, marketCount, avgColor, avgMargin, Reset, Reset))
+	}
+
+	return sb.String()
+}
+
+// renderSingleMarketPrices renders price panels for a single market (legacy)
+func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, realAsks map[string]float64) string {
+	var sb strings.Builder
+
+	// ══════════════════════════════════════════════════════════════
+	// PANEL 1: REAL MARKET (what we see on Polymarket website)
+	// ══════════════════════════════════════════════════════════════
+	sb.WriteString(fmt.Sprintf("%s┌─ 🌐 REAL MARKET (Polymarket Website) ─────────────────────┐%s\n", ColorCyan, Reset))
+	realBid1 := realBids[outcomes[0]]
+	realAsk1 := realAsks[outcomes[0]]
+	realBid2 := realBids[outcomes[1]]
+	realAsk2 := realAsks[outcomes[1]]
+
+	if realAsk1 > 0 || realAsk2 > 0 {
+		sb.WriteString(fmt.Sprintf("│  %s: bid $%.3f / ask $%.3f\n", outcomes[0], realBid1, realAsk1))
+		sb.WriteString(fmt.Sprintf("│  %s: bid $%.3f / ask $%.3f\n", outcomes[1], realBid2, realAsk2))
+	} else {
+		sb.WriteString("│  (waiting for real market data...)\n")
+	}
+	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorCyan, Reset))
+
+	// ══════════════════════════════════════════════════════════════
+	// PANEL 2: BOT READING (what our bot receives from API)
+	// ══════════════════════════════════════════════════════════════
+	sb.WriteString(fmt.Sprintf("%s┌─ 🤖 BOT READING (REST API Response) ──────────────────────┐%s\n", ColorYellow, Reset))
+	bid1 := bids[outcomes[0]]
+	ask1 := asks[outcomes[0]]
+	bid2 := bids[outcomes[1]]
+	ask2 := asks[outcomes[1]]
+
+	// Check for mismatch with real market
+	mismatch1 := false
+	mismatch2 := false
+	if realAsk1 > 0 && (abs(ask1-realAsk1) > 0.05 || abs(bid1-realBid1) > 0.05) {
+		mismatch1 = true
+	}
+	if realAsk2 > 0 && (abs(ask2-realAsk2) > 0.05 || abs(bid2-realBid2) > 0.05) {
+		mismatch2 = true
+	}
+
+	color1 := ""
+	color2 := ""
+	if mismatch1 {
+		color1 = ColorRed
+	}
+	if mismatch2 {
+		color2 = ColorRed
+	}
+
+	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.3f / ask $%.3f%s", color1, outcomes[0], bid1, ask1, Reset))
+	if mismatch1 {
+		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.3f / ask $%.3f%s", color2, outcomes[1], bid2, ask2, Reset))
+	if mismatch2 {
+		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
+	}
+	sb.WriteString("\n")
+
+	// Calculate margin
+	sum := ask1 + ask2
+	margin := (1.0 - sum) * 100
+	marginColor := ColorWhite
+	if margin >= 3 {
+		marginColor = ColorGreen
+	} else if margin >= 2 {
+		marginColor = ColorYellow
+	} else if margin < 1 {
+		marginColor = ColorRed
+	}
+	sb.WriteString(fmt.Sprintf("│  📈 Ask Sum: %.3f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
+	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorYellow, Reset))
+
+	// ══════════════════════════════════════════════════════════════
+	// PANEL 3: BOT ORDERS (what orders the bot will place)
+	// ══════════════════════════════════════════════════════════════
+	sb.WriteString(fmt.Sprintf("%s┌─ 📋 BOT PLANNED ORDERS ───────────────────────────────────┐%s\n", ColorGreen, Reset))
+	if len(t.pendingOrders) > 0 {
+		for outcome, orders := range t.pendingOrders {
+			for _, o := range orders {
+				sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.3f\n", o.Side, outcome, o.Qty, o.Price))
+			}
+		}
+	} else {
+		sb.WriteString("│  (no pending orders)\n")
+	}
+	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorGreen, Reset))
 
 	return sb.String()
 }
@@ -376,41 +560,54 @@ func (t *TUI) renderPositions() string {
 	}
 	sb.WriteString("\n")
 
-	for outcome, pos := range positions {
-		price := t.lastPrices[outcome]
-		unrealized := (price * pos.Quantity) - pos.TotalCost
-
-		pnlColor := ColorGreen
-		pnlSign := "+"
-		if unrealized < 0 {
-			pnlColor = ColorRed
-			pnlSign = ""
-		}
-
-		sb.WriteString(fmt.Sprintf("   • %s: %.0f @ $%.3f avg | %s%s$%.2f%s\n",
-			outcome, pos.Quantity, pos.AvgPrice,
-			pnlColor, pnlSign, unrealized, Reset))
+	// Calculate matched pairs for arbitrage display
+	var matchedQty float64
+	var matchedCost float64
+	var outcomes []string
+	for outcome := range positions {
+		outcomes = append(outcomes, outcome)
 	}
 
-	// Show balance
-	if len(t.outcomes) == 2 {
-		pos1 := positions[t.outcomes[0]]
-		pos2 := positions[t.outcomes[1]]
-		unmatched := pos1.Quantity - pos2.Quantity
-		if unmatched < 0 {
-			unmatched = -unmatched
+	// Find matched quantity (minimum of all positions)
+	if len(positions) == 2 && len(outcomes) == 2 {
+		pos1 := positions[outcomes[0]]
+		pos2 := positions[outcomes[1]]
+		matchedQty = pos1.Quantity
+		if pos2.Quantity < matchedQty {
+			matchedQty = pos2.Quantity
+		}
+		// Cost of matched pairs
+		matchedCost = (pos1.AvgPrice + pos2.AvgPrice) * matchedQty
+	}
+
+	for outcome, pos := range positions {
+		sb.WriteString(fmt.Sprintf("   • %s: %.0f @ $%.3f avg (cost $%.2f)\n",
+			outcome, pos.Quantity, pos.AvgPrice, pos.TotalCost))
+	}
+
+	// Show arbitrage profit for matched pairs
+	if matchedQty > 0 {
+		// Matched pairs pay $1 per share at resolution
+		guaranteedPayout := matchedQty * 1.0
+		guaranteedProfit := guaranteedPayout - matchedCost
+
+		profitColor := ColorGreen
+		profitSign := "+"
+		if guaranteedProfit < 0 {
+			profitColor = ColorRed
+			profitSign = ""
 		}
 
-		balanceColor := ColorGreen
-		if unmatched > 50 {
-			balanceColor = ColorYellow
-		}
-		if unmatched > 75 {
-			balanceColor = ColorRed
-		}
+		sb.WriteString(fmt.Sprintf("   🎯 Matched: %.0f pairs | Payout: $%.2f | %sProfit: %s$%.2f%s\n",
+			matchedQty, guaranteedPayout, profitColor, profitSign, guaranteedProfit, Reset))
 
-		sb.WriteString(fmt.Sprintf("   ⚖️  Unmatched: %s%.0f shares%s\n",
-			balanceColor, unmatched, Reset))
+		// Show unmatched shares (risky exposure)
+		for outcome, pos := range positions {
+			unmatched := pos.Quantity - matchedQty
+			if unmatched > 0 {
+				sb.WriteString(fmt.Sprintf("   ⚠️  Unmatched %s: %.0f shares (risky)\n", outcome, unmatched))
+			}
+		}
 	}
 
 	return sb.String()
