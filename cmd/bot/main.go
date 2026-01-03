@@ -472,24 +472,31 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			if hasLiquidity {
 				lastGoodLiquidity = time.Now()
 			} else if time.Since(lastGoodLiquidity) > liquidityTimeout {
-				// No liquidity for too long - exit to find new market
-				tui.LogEvent("💨 Liquidity dried up, finding new market...")
+				// No liquidity for too long - find another market but keep positions
 				tui.Stop()
-				ladderMgr.CancelAllLadders()
 
-				// Liquidate if we have positions
 				positions := engine.GetPositions()
 				if len(positions) > 0 {
-					tui.LogEvent("📤 Liquidating positions before exit...")
-					engine.LiquidateAll()
+					fmt.Println("\n💨 Liquidity dried up - keeping positions for expiration")
+					fmt.Println("📦 Positions held:")
+					for outcome, pos := range positions {
+						fmt.Printf("   • %s: %.0f shares @ $%.3f avg\n", outcome, pos.Quantity, pos.AvgPrice)
+					}
+					fmt.Println("⏳ These will resolve when market expires naturally")
+					fmt.Println("🔄 Finding another market to trade...\n")
+				} else {
+					fmt.Println("\n💨 Liquidity dried up - finding another market...\n")
 				}
+
+				// Don't liquidate - just cancel open orders and move on
+				ladderMgr.CancelAllLadders()
 
 				finalStats := engine.GetStats()
 				result := &marketResult{
 					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
 					trades:      finalStats.TotalTrades - tradesAtStart,
 				}
-				return result, nil // Return normally to trigger new market search
+				return result, nil // Return to find new market, positions remain
 			}
 
 			// Check risk
