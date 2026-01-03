@@ -354,27 +354,38 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						continue
 					}
 					outcome := token.Outcome
-					bid, ask := 0.0, 0.0
-					if len(book.Bids) > 0 {
-						bid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+
+					// Find best bid (highest) and best ask (lowest)
+					bestBid := 0.0
+					bestAsk := 1.0
+					for _, b := range book.Bids {
+						p, _ := strconv.ParseFloat(b.Price, 64)
+						if p > bestBid {
+							bestBid = p
+						}
 					}
-					if len(book.Asks) > 0 {
-						ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+					for _, a := range book.Asks {
+						p, _ := strconv.ParseFloat(a.Price, 64)
+						if p < bestAsk && p > 0 {
+							bestAsk = p
+						}
 					}
+
 					// Debug: log REST API response
-					tui.LogEvent("📡 REST %s: bid=$%.3f ask=$%.3f (bids:%d asks:%d)",
-						outcome, bid, ask, len(book.Bids), len(book.Asks))
-					if bid > 0 {
-						tokenBids[outcome] = bid
+					tui.LogEvent("📡 REST %s: bestBid=$%.3f bestAsk=$%.3f",
+						outcome, bestBid, bestAsk)
+
+					if bestBid > 0 {
+						tokenBids[outcome] = bestBid
 					}
-					if ask > 0 {
-						tokenAsks[outcome] = ask
+					if bestAsk < 1.0 {
+						tokenAsks[outcome] = bestAsk
 					}
-					if bid > 0 && ask > 0 {
-						midPrice := (bid + ask) / 2.0
+					if bestBid > 0 && bestAsk < 1.0 {
+						midPrice := (bestBid + bestAsk) / 2.0
 						floatPrices[outcome] = midPrice
 						engine.UpdatePrice(outcome, midPrice)
-						engine.UpdateBidAsk(outcome, bid, ask)
+						engine.UpdateBidAsk(outcome, bestBid, bestAsk)
 					}
 				}
 				lastRESTFetch = time.Now()
