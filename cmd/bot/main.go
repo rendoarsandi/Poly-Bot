@@ -301,7 +301,11 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					fmt.Println("\n📦 No positions to resolve")
 				}
 
-				ladderMgr.CancelAllLadders()
+				// Open orders just expire - no need to cancel, they're void now
+				openOrders := orderBook.GetOpenOrders()
+				if len(openOrders) > 0 {
+					fmt.Printf("📝 %d unfilled orders expired (void)\n", len(openOrders))
+				}
 
 				fmt.Println("\n⏳ Waiting 5s for final price settlement...")
 				time.Sleep(5 * time.Second)
