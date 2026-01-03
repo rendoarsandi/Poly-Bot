@@ -540,6 +540,22 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				ask1 := tokenAsks[outcomeNames[0]]
 				ask2 := tokenAsks[outcomeNames[1]]
 
+				// Log market state periodically
+				if !laddersPlaced && time.Since(lastLadderUpdate) > 5*time.Second {
+					if ask1 == 0 || ask2 == 0 {
+						tui.LogEvent("⏳ Waiting for asks: %s=$%.2f, %s=$%.2f", outcomeNames[0], ask1, outcomeNames[1], ask2)
+					} else if ask1 < 0.10 || ask1 > 0.90 || ask2 < 0.10 || ask2 > 0.90 {
+						tui.LogEvent("⚠️ Asks out of range: %s=$%.2f, %s=$%.2f", outcomeNames[0], ask1, outcomeNames[1], ask2)
+					} else {
+						sum := ask1 + ask2
+						margin := (1.0 - sum) * 100
+						if margin < 2.0 {
+							tui.LogEvent("📊 No arb: %s=$%.2f + %s=$%.2f = $%.2f (margin %.1f%%)", outcomeNames[0], ask1, outcomeNames[1], ask2, sum, margin)
+						}
+					}
+					lastLadderUpdate = time.Now()
+				}
+
 				// Only trade if we have real ask prices in sane range
 				if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
 					sum := ask1 + ask2
