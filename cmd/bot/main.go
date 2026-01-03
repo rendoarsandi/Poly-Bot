@@ -36,8 +36,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Print startup header
-	paper.PrintHeader(StartingBalance)
+	// Clear screen at startup
+	fmt.Print("\033[H\033[2J")
+	fmt.Println("🎰 POLYARB-15M Starting...")
 
 	// Initialize persistent components (survive market rotation)
 	engine := paper.NewEngine(StartingBalance)
@@ -65,8 +66,8 @@ func run() error {
 		// Find next market (skip the one we just traded)
 		market, err := findNextMarket(restClient, cfg.MarketSlug, lastMarketSlug)
 		if err != nil {
-			fmt.Printf("⚠️  No market found: %v. Retrying in 30s...\n", err)
-			time.Sleep(30 * time.Second)
+			fmt.Print("\r⏳ Waiting for market...   ")
+			time.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -80,17 +81,16 @@ func run() error {
 			fmt.Printf("⚠️  Market error: %v\n", err)
 		}
 
-		// Show result
-		if result != nil {
-			fmt.Printf("\n💰 Market %s completed: Realized PnL: $%.2f\n", market.Slug, result.realizedPnL)
+		// Show result briefly
+		if result != nil && result.realizedPnL != 0 {
+			fmt.Printf("💰 PnL: $%.2f\n", result.realizedPnL)
 		}
 
-		// Brief pause before next market
-		fmt.Println("\n🔄 Looking for next market in 10 seconds...")
+		// Brief pause before next market (silent)
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(10 * time.Second):
+		case <-time.After(5 * time.Second):
 		}
 	}
 }
@@ -112,20 +112,17 @@ func findNextMarket(restClient *api.RestClient, preferredSlug string, skipSlug s
 		}
 	}
 
-	// Scan for 15m markets
-	fmt.Println("🔎 Scanning for active 15m markets...")
+	// Scan for 15m markets (silent - no spam)
 	markets, err := restClient.Get15mMarkets(nil)
 	if err == nil && len(markets) > 0 {
 		for _, m := range markets {
 			if m.Slug != skipSlug && m.Active && !m.Closed {
-				fmt.Printf("✅ Found: %s\n", m.Slug)
 				return &m, nil
 			}
 		}
 	}
 
-	// Fallback to general scanner
-	fmt.Println("🔎 Falling back to general scanner...")
+	// Fallback to general scanner (silent)
 	allMarkets, err := restClient.ListMarkets()
 	if err == nil {
 		for _, m := range allMarkets {
@@ -134,7 +131,7 @@ func findNextMarket(restClient *api.RestClient, preferredSlug string, skipSlug s
 				slug = m.Slug
 			}
 			if slug == skipSlug {
-				continue // Skip the market we just traded
+				continue
 			}
 			if (contains(slug, "bitcoin") || contains(slug, "btc") || contains(slug, "eth")) && contains(slug, "price") {
 				market, err = restClient.GetMarket(slug)
@@ -149,40 +146,12 @@ func findNextMarket(restClient *api.RestClient, preferredSlug string, skipSlug s
 }
 
 func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, restClient *api.RestClient) (*marketResult, error) {
-	fmt.Printf("\n📊 Trading Market: %s\n", market.Slug)
-	fmt.Printf("   Condition ID: %s\n", market.ConditionID)
+	// Clear screen for clean TUI
+	fmt.Print("\033[H\033[2J")
 
-	// DEBUG: Verify token IDs with REST API immediately
-	fmt.Println("\n🔍 DEBUG: Verifying token IDs...")
-	for _, t := range market.Tokens {
-		book, err := restClient.GetOrderBook(t.TokenID)
-		if err != nil {
-			fmt.Printf("   ❌ %s (%s...): ERROR - %v\n", t.Outcome, t.TokenID[:20], err)
-		} else {
-			// Find BEST bid (highest) and BEST ask (lowest) by iterating
-			bestBid, bestAsk := 0.0, 1.0
-			for _, b := range book.Bids {
-				p, _ := strconv.ParseFloat(b.Price, 64)
-				if p > bestBid {
-					bestBid = p
-				}
-			}
-			for _, a := range book.Asks {
-				p, _ := strconv.ParseFloat(a.Price, 64)
-				if p < bestAsk && p > 0 {
-					bestAsk = p
-				}
-			}
-			fmt.Printf("   ✅ %s (%s...): bid=$%.3f ask=$%.3f (%d bids, %d asks)\n",
-				t.Outcome, t.TokenID[:20], bestBid, bestAsk, len(book.Bids), len(book.Asks))
-		}
-	}
-	for _, t := range market.Tokens {
-		fmt.Printf("   • %s: %s...\n", t.Outcome, t.TokenID[:20])
-	}
+	fmt.Printf("📊 Connecting to: %s\n", market.Slug)
 
-	// Setup WebSocket
-	fmt.Println("\n🔌 Connecting to WebSocket...")
+	// Setup WebSocket (silent)
 	wsMgr := api.NewWSManager("")
 	if err := wsMgr.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("websocket connect failed: %w", err)
@@ -206,7 +175,6 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	if err := wsMgr.Subscribe(ctx, sub); err != nil {
 		return nil, fmt.Errorf("subscribe failed: %w", err)
 	}
-	fmt.Println("✅ Subscribed to order book updates")
 
 	// Initialize per-market components
 	orderBook := paper.NewOrderBook()
