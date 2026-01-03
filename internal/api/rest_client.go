@@ -219,9 +219,28 @@ func (c *RestClient) GetOrderBook(tokenID string) (*OrderBookResponse, error) {
 	return &book, nil
 }
 
+// GammaPriceResult contains bid/ask prices for an outcome
+type GammaPriceResult struct {
+	Bid float64
+	Ask float64
+}
+
 // GetGammaPriceBySlug fetches the current price from Gamma API using slug
 func (c *RestClient) GetGammaPriceBySlug(slug string) (map[string]float64, error) {
-	// Use the markets endpoint with slug query param
+	result, err := c.GetGammaBidAskBySlug(slug)
+	if err != nil {
+		return nil, err
+	}
+	// Return mid prices for backward compatibility
+	prices := make(map[string]float64)
+	for outcome, pa := range result {
+		prices[outcome] = (pa.Bid + pa.Ask) / 2
+	}
+	return prices, nil
+}
+
+// GetGammaBidAskBySlug fetches bid/ask from Gamma API using slug
+func (c *RestClient) GetGammaBidAskBySlug(slug string) (map[string]GammaPriceResult, error) {
 	url := fmt.Sprintf("%s/markets?slug=%s", c.GammaURL, slug)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -234,7 +253,8 @@ func (c *RestClient) GetGammaPriceBySlug(slug string) (map[string]float64, error
 	}
 
 	var results []struct {
-		OutcomePrices string `json:"outcomePrices"` // JSON array like "[\"0.02\", \"0.98\"]"
+		BestBid float64 `json:"bestBid"`
+		BestAsk float64 `json:"bestAsk"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
@@ -245,21 +265,16 @@ func (c *RestClient) GetGammaPriceBySlug(slug string) (map[string]float64, error
 		return nil, fmt.Errorf("no market found for slug: %s", slug)
 	}
 
-	// Parse outcomePrices which is a JSON array string like "[\"0.725\", \"0.275\"]"
-	prices := make(map[string]float64)
-	var outcomePrices []string
-	if err := json.Unmarshal([]byte(results[0].OutcomePrices), &outcomePrices); err != nil {
-		return nil, fmt.Errorf("failed to parse outcomePrices: %w", err)
+	// For binary markets, the results contain bestBid/bestAsk for "Up" outcome
+	// "Down" is 1 - price
+	prices := make(map[string]GammaPriceResult)
+	prices["Up"] = GammaPriceResult{
+		Bid: results[0].BestBid,
+		Ask: results[0].BestAsk,
 	}
-
-	// Assume first is "Up" and second is "Down" for 15m markets
-	if len(outcomePrices) >= 2 {
-		if p, err := parseFloat(outcomePrices[0]); err == nil {
-			prices["Up"] = p
-		}
-		if p, err := parseFloat(outcomePrices[1]); err == nil {
-			prices["Down"] = p
-		}
+	prices["Down"] = GammaPriceResult{
+		Bid: 1 - results[0].BestAsk, // Down bid = 1 - Up ask
+		Ask: 1 - results[0].BestBid, // Down ask = 1 - Up bid
 	}
 
 	return prices, nil

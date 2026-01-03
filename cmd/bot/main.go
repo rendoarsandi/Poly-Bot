@@ -449,18 +449,15 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 			// Fetch real prices from Gamma API (what Polymarket website shows)
 			if time.Since(lastGammaFetch) >= gammaFetchInterval {
-				realPrices, err := restClient.GetGammaPriceBySlug(market.Slug)
+				realPricesBA, err := restClient.GetGammaBidAskBySlug(market.Slug)
 				if err != nil {
 					tui.LogEvent("⚠️ Gamma API error: %v", err)
 				} else {
 					realBids := make(map[string]float64)
 					realAsks := make(map[string]float64)
-					for outcome, price := range realPrices {
-						// Gamma returns "price" which is like last trade / mid
-						// Approximate bid/ask by +/- 0.005 spread
-						realBids[outcome] = price - 0.005
-						realAsks[outcome] = price + 0.005
-						tui.LogEvent("🌐 REAL %s: price=$%.3f", outcome, price)
+					for outcome, pa := range realPricesBA {
+						realBids[outcome] = pa.Bid
+						realAsks[outcome] = pa.Ask
 					}
 					tui.UpdateRealMarket(realBids, realAsks)
 				}
@@ -511,47 +508,51 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 			}
 
-			// Parse messages - log first few to debug
+			// Parse messages - find BEST bid (max) and BEST ask (min)
 			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
 				for _, b := range books {
-					bid, ask := 0.0, 0.0
-					if len(b.Bids) > 0 {
-						bid, _ = strconv.ParseFloat(b.Bids[0].Price, 64)
+					bid, ask := 0.0, 1.0
+					// Best bid = HIGHEST price
+					for _, order := range b.Bids {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > bid {
+							bid = p
+						}
 					}
-					if len(b.Asks) > 0 {
-						ask, _ = strconv.ParseFloat(b.Asks[0].Price, 64)
+					// Best ask = LOWEST price
+					for _, order := range b.Asks {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p < ask && p > 0 {
+							ask = p
+						}
 					}
-					// Debug: log first order book update
-					if msgCount < 2 {
-						outcome := tokenMap[b.AssetID]
-						tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
-						msgCount++
+					if ask >= 1.0 {
+						ask = 0.0 // No valid ask
 					}
-					                                        priceStr := ""
-					                                        if len(b.Bids) > 0 {
-					                                                priceStr = b.Bids[0].Price
-					                                        }
-					                                        updatePrice(b.AssetID, priceStr, bid, ask, toMarketLevels(b.Bids), toMarketLevels(b.Asks))
-					                                }
-					                        } else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
-					                                bid, ask := 0.0, 0.0
-					                                if len(book.Bids) > 0 {
-					                                        bid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
-					                                }
-					                                if len(book.Asks) > 0 {
-					                                        ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
-					                                }
-					                                // Debug: log first order book update
-					                                if msgCount < 2 {
-					                                        outcome := tokenMap[book.AssetID]
-					                                        tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
-					                                        msgCount++
-					                                }
-					                                priceStr := ""
-					                                if len(book.Bids) > 0 {
-					                                        priceStr = book.Bids[0].Price
-					                                }
-					                                updatePrice(book.AssetID, priceStr, bid, ask, toMarketLevels(book.Bids), toMarketLevels(book.Asks))
+					priceStr := fmt.Sprintf("%.3f", (bid+ask)/2)
+					updatePrice(b.AssetID, priceStr, bid, ask, toMarketLevels(b.Bids), toMarketLevels(b.Asks))
+				}
+			} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+				bid, ask := 0.0, 1.0
+				// Best bid = HIGHEST price
+				for _, order := range book.Bids {
+					p, _ := strconv.ParseFloat(order.Price, 64)
+					if p > bid {
+						bid = p
+					}
+				}
+				// Best ask = LOWEST price
+				for _, order := range book.Asks {
+					p, _ := strconv.ParseFloat(order.Price, 64)
+					if p < ask && p > 0 {
+						ask = p
+					}
+				}
+				if ask >= 1.0 {
+					ask = 0.0 // No valid ask
+				}
+				priceStr := fmt.Sprintf("%.3f", (bid+ask)/2)
+				updatePrice(book.AssetID, priceStr, bid, ask, toMarketLevels(book.Bids), toMarketLevels(book.Asks))
 					
 			} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 				// PriceUpdate contains individual order changes
