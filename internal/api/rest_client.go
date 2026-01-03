@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -54,7 +55,7 @@ type GammaMarket struct {
 	Closed       bool   `json:"closed"`
 }
 
-func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
+func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Market, error) {
 	if len(assets) == 0 {
 		assets = []string{"btc", "eth", "sol", "xrp"}
 	}
@@ -87,8 +88,16 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
-			resp, err := http.Get(url)
+			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+			if err != nil {
+				continue
+			}
+
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil || resp.StatusCode != http.StatusOK {
+				if resp != nil {
+					resp.Body.Close()
+				}
 				continue
 			}
 
@@ -139,7 +148,7 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 			// Check if market has any liquidity
 			hasLiquidity := false
 			for _, token := range market.Tokens {
-				book, err := c.GetOrderBook(token.TokenID)
+				book, err := c.GetOrderBook(ctx, token.TokenID)
 				if err == nil && (len(book.Bids) > 0 || len(book.Asks) > 0) {
 					hasLiquidity = true
 					break
@@ -158,8 +167,14 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 	return markets, nil
 }
 
-func (c *RestClient) ListMarkets() ([]Market, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/markets?active=true&closed=false", c.BaseURL))
+func (c *RestClient) ListMarkets(ctx context.Context) ([]Market, error) {
+	url := fmt.Sprintf("%s/markets?active=true&closed=false", c.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list markets: %w", err)
 	}
@@ -177,8 +192,14 @@ func (c *RestClient) ListMarkets() ([]Market, error) {
 	return result.Data, nil
 }
 
-func (c *RestClient) GetMarket(slug string) (*Market, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/markets/%s", c.BaseURL, slug))
+func (c *RestClient) GetMarket(ctx context.Context, slug string) (*Market, error) {
+	url := fmt.Sprintf("%s/markets/%s", c.BaseURL, slug)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch market: %w", err)
 	}
@@ -206,9 +227,14 @@ type OrderBookResponse struct {
 }
 
 // GetOrderBook fetches the current order book for a token from REST API
-func (c *RestClient) GetOrderBook(tokenID string) (*OrderBookResponse, error) {
+func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBookResponse, error) {
 	url := fmt.Sprintf("%s/book?token_id=%s", c.BaseURL, tokenID)
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch order book: %w", err)
 	}
@@ -233,8 +259,8 @@ type GammaPriceResult struct {
 }
 
 // GetGammaPriceBySlug fetches the current price from Gamma API using slug
-func (c *RestClient) GetGammaPriceBySlug(slug string) (map[string]float64, error) {
-	result, err := c.GetGammaBidAskBySlug(slug)
+func (c *RestClient) GetGammaPriceBySlug(ctx context.Context, slug string) (map[string]float64, error) {
+	result, err := c.GetGammaBidAskBySlug(ctx, slug)
 	if err != nil {
 		return nil, err
 	}
@@ -247,9 +273,14 @@ func (c *RestClient) GetGammaPriceBySlug(slug string) (map[string]float64, error
 }
 
 // GetGammaBidAskBySlug fetches bid/ask from Gamma API using slug
-func (c *RestClient) GetGammaBidAskBySlug(slug string) (map[string]GammaPriceResult, error) {
+func (c *RestClient) GetGammaBidAskBySlug(ctx context.Context, slug string) (map[string]GammaPriceResult, error) {
 	url := fmt.Sprintf("%s/markets?slug=%s", c.GammaURL, slug)
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch gamma price: %w", err)
 	}
@@ -289,11 +320,11 @@ func (c *RestClient) GetGammaBidAskBySlug(slug string) (map[string]GammaPriceRes
 
 // GetCLOBBidAsk fetches real-time bid/ask from CLOB order books for given token IDs
 // tokenMap maps token ID to outcome name (e.g., "Up" or "Down")
-func (c *RestClient) GetCLOBBidAsk(tokenMap map[string]string) (map[string]GammaPriceResult, error) {
+func (c *RestClient) GetCLOBBidAsk(ctx context.Context, tokenMap map[string]string) (map[string]GammaPriceResult, error) {
 	prices := make(map[string]GammaPriceResult)
 
 	for tokenID, outcome := range tokenMap {
-		book, err := c.GetOrderBook(tokenID)
+		book, err := c.GetOrderBook(ctx, tokenID)
 		if err != nil {
 			continue
 		}

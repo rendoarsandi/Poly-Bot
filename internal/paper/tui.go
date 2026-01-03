@@ -483,33 +483,44 @@ func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAs
 		displayOutcome = displayOutcome[:6]
 	}
 
-	// Show outcome with best bid/ask and depth
+	// Show outcome name
 	sb.WriteString(fmt.Sprintf("   %s%-6s%s ", Bold, displayOutcome, Reset))
 
 	// Show bids (green, right-aligned) - up to 3 levels
+	// Standardized format: Price@Size
 	sb.WriteString(fmt.Sprintf("%s", ColorGreen))
+	bidParts := make([]string, 0, 3)
 	if len(bids) > 0 {
-		// Show levels from worst to best (so best is closest to spread)
-		for i := min(2, len(bids)-1); i >= 0; i-- {
-			sb.WriteString(fmt.Sprintf("%.0f@%.2f ", bids[i].Size, bids[i].Price))
+		// Show levels from best to worst (best bid closest to center/spread)
+		for i := 0; i < min(3, len(bids)); i++ {
+			// Best bid is index 0
+			part := fmt.Sprintf("%.3f@%.0f", bids[i].Price, bids[i].Size)
+			bidParts = append([]string{part}, bidParts...)
 		}
 	} else if bestBid > 0 {
-		sb.WriteString(fmt.Sprintf("bid:%.3f ", bestBid))
+		bidParts = append(bidParts, fmt.Sprintf("%.3f@0", bestBid))
 	}
+	
+	bidStr := strings.Join(bidParts, " ")
+	sb.WriteString(fmt.Sprintf("%30s", bidStr))
 	sb.WriteString(Reset)
 
 	// Spread indicator
-	sb.WriteString(fmt.Sprintf("%s│%s ", ColorWhite, Reset))
+	sb.WriteString(fmt.Sprintf(" %s│%s ", ColorWhite, Reset))
 
-	// Show asks (red) - up to 3 levels
+	// Show asks (red, left-aligned) - up to 3 levels
 	sb.WriteString(fmt.Sprintf("%s", ColorRed))
+	askParts := make([]string, 0, 3)
 	if len(asks) > 0 {
 		for i := 0; i < min(3, len(asks)); i++ {
-			sb.WriteString(fmt.Sprintf("%.2f@%.0f ", asks[i].Price, asks[i].Size))
+			askParts = append(askParts, fmt.Sprintf("%.3f@%.0f", asks[i].Price, asks[i].Size))
 		}
 	} else if bestAsk > 0 {
-		sb.WriteString(fmt.Sprintf("ask:%.3f ", bestAsk))
+		askParts = append(askParts, fmt.Sprintf("%.3f@0", bestAsk))
 	}
+	
+	askStr := strings.Join(askParts, " ")
+	sb.WriteString(fmt.Sprintf("%-30s", askStr))
 	sb.WriteString(Reset)
 
 	sb.WriteString("\n")

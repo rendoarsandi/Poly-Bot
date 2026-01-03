@@ -228,7 +228,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 		default:
 		}
 
-		markets, err := restClient.Get15mMarkets(nil)
+		markets, err := restClient.Get15mMarkets(ctx, nil)
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -415,7 +415,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.MarketEnded = true
 				t.TUI.LogEvent("[%s] ⏳ MARKET EXPIRED - AWAITING RESOLUTION", t.ID)
 
-				time.Sleep(10 * time.Second)
+				// Context-aware sleep
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(10 * time.Second):
+				}
 
 				winner := simulateResolution(t.Outcomes, tokenPrices)
 				t.TUI.LogEvent("[%s] 🏆 WINNER: %s", t.ID, winner)
@@ -486,7 +491,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			if time.Since(lastRESTFetch) >= restInterval {
 				restUpdated := false
 				for _, token := range t.Market.Tokens {
-					book, err := t.RestClient.GetOrderBook(token.TokenID)
+					book, err := t.RestClient.GetOrderBook(ctx, token.TokenID)
 					if err != nil {
 						continue
 					}
@@ -519,7 +524,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					reverseTokenMap[tokenID] = outcome
 				}
 
-				realPricesBA, err := t.RestClient.GetCLOBBidAsk(reverseTokenMap)
+				realPricesBA, err := t.RestClient.GetCLOBBidAsk(ctx, reverseTokenMap)
 				if err == nil && len(realPricesBA) > 0 {
 					for outcome, pa := range realPricesBA {
 						if pa.Bid > 0 || pa.Ask > 0 {
@@ -615,19 +620,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				// Also update order book depth for live display
 				bidDepth := make(map[string][]paper.MarketLevel)
 				askDepth := make(map[string][]paper.MarketLevel)
-				for outcome := range t.TokenMap {
-					outcomeName := t.TokenMap[outcome]
-					if outcomeName == "" {
-						continue
-					}
-					if bids, ok := t.TokenFullBids[outcomeName]; ok {
-						bidDepth[outcomeName] = bids
-					}
-					if asks, ok := t.TokenFullAsks[outcomeName]; ok {
-						askDepth[outcomeName] = asks
-					}
-				}
-				// Also check by outcome directly
+				
+				// Map current trader's depth data for TUI
 				for _, outcome := range t.Outcomes {
 					if bids, ok := t.TokenFullBids[outcome]; ok {
 						bidDepth[outcome] = bids

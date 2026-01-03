@@ -158,7 +158,11 @@ func (m *WSManager) tryReconnect() {
 		m.mu.Unlock()
 
 		// Wait before reconnecting
-		time.Sleep(reconnectDelay * time.Duration(attempt))
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(reconnectDelay * time.Duration(attempt)):
+		}
 
 		// Try to reconnect
 		m.mu.Lock()

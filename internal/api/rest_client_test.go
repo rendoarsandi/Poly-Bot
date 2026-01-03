@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ func TestGetMarket(t *testing.T) {
 	defer server.Close()
 
 	client := NewRestClient(server.URL)
-	market, err := client.GetMarket("test-market")
+	market, err := client.GetMarket(context.Background(), "test-market")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -49,7 +50,7 @@ func TestListMarkets(t *testing.T) {
 	defer server.Close()
 
 	client := NewRestClient(server.URL)
-	markets, err := client.ListMarkets()
+	markets, err := client.ListMarkets(context.Background())
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
