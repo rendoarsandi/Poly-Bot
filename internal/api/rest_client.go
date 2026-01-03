@@ -117,15 +117,22 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				continue
 			}
 
-			// Build Market from Gamma data
+			// Parse outcomes (also JSON-encoded string array)
+			var outcomes []string
+			if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+				// Fallback to default
+				outcomes = []string{"Up", "Down"}
+			}
+
+			// Build Market from Gamma data with correct outcome mapping
 			market := &Market{
 				ConditionID: gm.ConditionID,
 				Slug:        slug,
 				Active:      gm.Active,
 				Closed:      gm.Closed,
 				Tokens: []Token{
-					{TokenID: tokenIds[0], Outcome: "Up"},
-					{TokenID: tokenIds[1], Outcome: "Down"},
+					{TokenID: tokenIds[0], Outcome: outcomes[0]},
+					{TokenID: tokenIds[1], Outcome: outcomes[1]},
 				},
 			}
 
