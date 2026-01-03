@@ -88,7 +88,7 @@ func run() error {
 
 	// Start TUI render loop
 	if UseLiveUI {
-		tui.StartRenderLoop(500 * time.Millisecond)
+		tui.StartRenderLoop(250 * time.Millisecond) // Fast refresh for live updates
 		defer tui.Stop()
 	}
 
@@ -118,7 +118,16 @@ func run() error {
 		markets := findMarkets(ctx, restClient, tui)
 		if len(markets) == 0 {
 			tui.LogEvent("⏳ No markets available, waiting...")
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				tui.Stop()
+				fmt.Println("\n👋 Shutting down...")
+				stats := engine.GetStats()
+				fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d\n",
+					stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades)
+				return nil
+			case <-time.After(5 * time.Second):
+			}
 			continue
 		}
 
@@ -194,8 +203,12 @@ func run() error {
 		default:
 		}
 
-		// Brief pause before finding next markets
-		time.Sleep(3 * time.Second)
+		// Brief pause before finding next markets (context-aware)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(3 * time.Second):
+		}
 
 		// Clear old market data from TUI for fresh display
 		tui.ClearMarkets()
@@ -217,7 +230,11 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 
 		markets, err := restClient.Get15mMarkets(nil)
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return found
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
 
@@ -242,7 +259,11 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			return found
 		}
 
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return found
+		case <-time.After(3 * time.Second):
+		}
 	}
 
 	return found
@@ -349,8 +370,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastReconnectCount := int32(0) // Track reconnections
 
 	const liquidityTimeout = 45 * time.Second
-	const restFetchInterval = 5 * time.Second   // More frequent REST polling
-	const gammaFetchInterval = 5 * time.Second  // More frequent CLOB polling
+	const restFetchInterval = 2 * time.Second  // Fast REST polling for order book
+	const gammaFetchInterval = 2 * time.Second // Fast CLOB polling for best bid/ask
 
 	ladderConfig := paper.LadderConfig{
 		Levels:         3,
@@ -463,6 +484,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				restInterval = 3 * time.Second // Faster polling when WS is down
 			}
 			if time.Since(lastRESTFetch) >= restInterval {
+				restUpdated := false
 				for _, token := range t.Market.Tokens {
 					book, err := t.RestClient.GetOrderBook(token.TokenID)
 					if err != nil {
@@ -471,8 +493,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					outcome := token.Outcome
 					t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
 					t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+					restUpdated = true
 				}
 				lastRESTFetch = time.Now()
+				// Update TUI with REST order book data
+				if restUpdated {
+					bidDepth := make(map[string][]paper.MarketLevel)
+					askDepth := make(map[string][]paper.MarketLevel)
+					for _, outcome := range t.Outcomes {
+						if bids, ok := t.TokenFullBids[outcome]; ok {
+							bidDepth[outcome] = bids
+						}
+						if asks, ok := t.TokenFullAsks[outcome]; ok {
+							askDepth[outcome] = asks
+						}
+					}
+					t.TUI.UpdateOrderBookDepth(t.ID, bidDepth, askDepth)
+				}
 			}
 
 			// Fetch CLOB prices
@@ -500,19 +537,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 
 			priceChanged := false
-
-			// Debug: Log raw WebSocket message occasionally
-			if msg != nil && len(msg) > 0 {
-				// Log first 200 chars of message for debugging
-				msgStr := string(msg)
-				if len(msgStr) > 200 {
-					msgStr = msgStr[:200] + "..."
-				}
-				// Only log occasionally to avoid spam
-				if time.Now().Unix()%30 == 0 {
-					t.TUI.LogEvent("[%s] 📨 WS msg: %s", t.ID, msgStr)
-				}
-			}
 
 			// Parse WebSocket messages
 			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
@@ -588,6 +612,31 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Update TUI with prices
 			if priceChanged {
 				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+				// Also update order book depth for live display
+				bidDepth := make(map[string][]paper.MarketLevel)
+				askDepth := make(map[string][]paper.MarketLevel)
+				for outcome := range t.TokenMap {
+					outcomeName := t.TokenMap[outcome]
+					if outcomeName == "" {
+						continue
+					}
+					if bids, ok := t.TokenFullBids[outcomeName]; ok {
+						bidDepth[outcomeName] = bids
+					}
+					if asks, ok := t.TokenFullAsks[outcomeName]; ok {
+						askDepth[outcomeName] = asks
+					}
+				}
+				// Also check by outcome directly
+				for _, outcome := range t.Outcomes {
+					if bids, ok := t.TokenFullBids[outcome]; ok {
+						bidDepth[outcome] = bids
+					}
+					if asks, ok := t.TokenFullAsks[outcome]; ok {
+						askDepth[outcome] = asks
+					}
+				}
+				t.TUI.UpdateOrderBookDepth(t.ID, bidDepth, askDepth)
 			}
 
 			// Process order fills

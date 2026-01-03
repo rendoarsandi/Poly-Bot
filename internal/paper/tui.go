@@ -68,8 +68,14 @@ type TUI struct {
 	// Bot's intended orders (before placement)
 	pendingOrders map[string][]PendingOrder
 
+	// Order book depth per market
+	orderBookDepth map[string]map[string][]MarketLevel // marketID -> outcome -> levels
+
 	// Display dimensions
 	width int
+
+	// Stop channel for clean shutdown
+	stopCh chan struct{}
 }
 
 // PendingOrder represents an order the bot intends to place
@@ -83,19 +89,21 @@ type PendingOrder struct {
 // NewTUI creates a new terminal UI
 func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 	return &TUI{
-		engine:        engine,
-		orderBook:     orderBook,
-		markets:       make(map[string]*MarketData),
-		lastPrices:    make(map[string]float64),
-		lastBids:      make(map[string]float64),
-		lastAsks:      make(map[string]float64),
-		realBids:      make(map[string]float64),
-		realAsks:      make(map[string]float64),
-		pendingOrders: make(map[string][]PendingOrder),
-		eventLog:      make([]string, 0),
-		maxEvents:     10,
-		width:         80,
-		running:       true,
+		engine:         engine,
+		orderBook:      orderBook,
+		markets:        make(map[string]*MarketData),
+		lastPrices:     make(map[string]float64),
+		lastBids:       make(map[string]float64),
+		lastAsks:       make(map[string]float64),
+		realBids:       make(map[string]float64),
+		realAsks:       make(map[string]float64),
+		pendingOrders:  make(map[string][]PendingOrder),
+		orderBookDepth: make(map[string]map[string][]MarketLevel),
+		eventLog:       make([]string, 0),
+		maxEvents:      10,
+		width:          80,
+		running:        true,
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -137,6 +145,35 @@ func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64)
 			m.Asks[k] = v
 			m.RealAsks[k] = v
 		}
+	}
+}
+
+// UpdateOrderBookDepth updates the full order book depth for a market
+func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]MarketLevel) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.orderBookDepth[marketID] == nil {
+		t.orderBookDepth[marketID] = make(map[string][]MarketLevel)
+	}
+
+	// Store bids (sorted by price descending - highest first)
+	for outcome, levels := range bids {
+		// Make a copy and keep top 5 levels
+		copied := make([]MarketLevel, 0, 5)
+		for i := 0; i < len(levels) && i < 5; i++ {
+			copied = append(copied, levels[i])
+		}
+		t.orderBookDepth[marketID][outcome+"_bids"] = copied
+	}
+
+	// Store asks (sorted by price ascending - lowest first)
+	for outcome, levels := range asks {
+		copied := make([]MarketLevel, 0, 5)
+		for i := 0; i < len(levels) && i < 5; i++ {
+			copied = append(copied, levels[i])
+		}
+		t.orderBookDepth[marketID][outcome+"_asks"] = copied
 	}
 }
 
@@ -208,8 +245,17 @@ func (t *TUI) SetKillSwitch(reason string) {
 // Stop stops the UI
 func (t *TUI) Stop() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	wasRunning := t.running
 	t.running = false
+	t.mu.Unlock()
+
+	// Signal stop channel only once
+	if wasRunning {
+		close(t.stopCh)
+		// Restore cursor and clear screen position
+		fmt.Print(ShowCursor)
+		fmt.Println() // Move to new line for clean exit
+	}
 }
 
 // Render draws the entire UI
@@ -381,8 +427,9 @@ func (t *TUI) renderMultiMarketInfo() string {
 				ask2 = 1.0 - bid1
 			}
 
-			sb.WriteString(fmt.Sprintf("   %s: bid $%.3f / ask $%.3f\n", m.Outcomes[0], bid1, ask1))
-			sb.WriteString(fmt.Sprintf("   %s: bid $%.3f / ask $%.3f\n", m.Outcomes[1], bid2, ask2))
+			// Display order book depth for each outcome
+			sb.WriteString(t.renderOrderBookForMarket(id, m.Outcomes[0], bid1, ask1))
+			sb.WriteString(t.renderOrderBookForMarket(id, m.Outcomes[1], bid2, ask2))
 
 			// Calculate margin - only show valid data
 			if ask1 > 0 && ask2 > 0 {
@@ -419,6 +466,62 @@ func (t *TUI) renderMultiMarketInfo() string {
 	}
 
 	return sb.String()
+}
+
+// renderOrderBookForMarket renders a compact order book display for a single outcome
+func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAsk float64) string {
+	var sb strings.Builder
+
+	// Get order book depth if available
+	depth := t.orderBookDepth[marketID]
+	bids := depth[outcome+"_bids"]
+	asks := depth[outcome+"_asks"]
+
+	// Format outcome name (truncate if too long)
+	displayOutcome := outcome
+	if len(displayOutcome) > 6 {
+		displayOutcome = displayOutcome[:6]
+	}
+
+	// Show outcome with best bid/ask and depth
+	sb.WriteString(fmt.Sprintf("   %s%-6s%s ", Bold, displayOutcome, Reset))
+
+	// Show bids (green, right-aligned) - up to 3 levels
+	sb.WriteString(fmt.Sprintf("%s", ColorGreen))
+	if len(bids) > 0 {
+		// Show levels from worst to best (so best is closest to spread)
+		for i := min(2, len(bids)-1); i >= 0; i-- {
+			sb.WriteString(fmt.Sprintf("%.0f@%.2f ", bids[i].Size, bids[i].Price))
+		}
+	} else if bestBid > 0 {
+		sb.WriteString(fmt.Sprintf("bid:%.3f ", bestBid))
+	}
+	sb.WriteString(Reset)
+
+	// Spread indicator
+	sb.WriteString(fmt.Sprintf("%s│%s ", ColorWhite, Reset))
+
+	// Show asks (red) - up to 3 levels
+	sb.WriteString(fmt.Sprintf("%s", ColorRed))
+	if len(asks) > 0 {
+		for i := 0; i < min(3, len(asks)); i++ {
+			sb.WriteString(fmt.Sprintf("%.2f@%.0f ", asks[i].Price, asks[i].Size))
+		}
+	} else if bestAsk > 0 {
+		sb.WriteString(fmt.Sprintf("ask:%.3f ", bestAsk))
+	}
+	sb.WriteString(Reset)
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// min returns the smaller of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // renderSingleMarketPrices renders price panels for a single market (legacy)
@@ -696,17 +799,23 @@ func (t *TUI) StartRenderLoop(interval time.Duration) {
 
 		// Hide cursor
 		fmt.Print(HideCursor)
-		defer fmt.Print(ShowCursor)
 
-		for range ticker.C {
-			t.mu.Lock()
-			running := t.running
-			t.mu.Unlock()
+		for {
+			select {
+			case <-t.stopCh:
+				fmt.Print(ShowCursor)
+				return
+			case <-ticker.C:
+				t.mu.Lock()
+				running := t.running
+				t.mu.Unlock()
 
-			if !running {
-				break
+				if !running {
+					fmt.Print(ShowCursor)
+					return
+				}
+				t.Render()
 			}
-			t.Render()
 		}
 	}()
 }
