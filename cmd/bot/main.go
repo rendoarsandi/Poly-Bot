@@ -182,12 +182,13 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	}
 	ladderMgr := paper.NewLadderManager(orderBook, ladderConfig)
 
+	// TESTING: Kill switch disabled, risk limits 2x
 	riskConfig := paper.RiskConfig{
-		MaxExposure:        500.0,
-		MaxUnmatchedRatio:  0.20,
-		MaxUnmatchedShares: 75.0,
-		SkewThreshold:      0.15,
-		KillSwitchDrawdown: 1.0,
+		MaxExposure:        1000.0, // 2x (was 500)
+		MaxUnmatchedRatio:  0.40,   // 2x (was 0.20)
+		MaxUnmatchedShares: 150.0,  // 2x (was 75)
+		SkewThreshold:      0.30,   // 2x (was 0.15)
+		KillSwitchDrawdown: 999.0,  // Disabled (was 1.0)
 	}
 	riskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomeNames)
 
