@@ -41,11 +41,17 @@ func NewRestClient(baseURL string) *RestClient {
 }
 
 type GammaEvent struct {
-	Slug    string   `json:"slug"`
-	EndDate string   `json:"endDate"`
-	Markets []struct {
-		ConditionID string `json:"conditionId"`
-	} `json:"markets"`
+	Slug    string        `json:"slug"`
+	EndDate string        `json:"endDate"`
+	Markets []GammaMarket `json:"markets"`
+}
+
+type GammaMarket struct {
+	ConditionID  string   `json:"conditionId"`
+	ClobTokenIds []string `json:"clobTokenIds"`
+	Outcomes     string   `json:"outcomes"`
+	Active       bool     `json:"active"`
+	Closed       bool     `json:"closed"`
 }
 
 func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
@@ -98,10 +104,28 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				continue
 			}
 
-			// Get full details from CLOB
-			market, err := c.GetMarket(event.Markets[0].ConditionID)
-			if err != nil || !market.Active || market.Closed {
+			gm := event.Markets[0]
+
+			// Skip if market is closed
+			if gm.Closed || !gm.Active {
 				continue
+			}
+
+			// Use clobTokenIds directly from Gamma (more reliable than CLOB GetMarket)
+			if len(gm.ClobTokenIds) < 2 {
+				continue
+			}
+
+			// Build Market from Gamma data
+			market := &Market{
+				ConditionID: gm.ConditionID,
+				Slug:        slug,
+				Active:      gm.Active,
+				Closed:      gm.Closed,
+				Tokens: []Token{
+					{TokenID: gm.ClobTokenIds[0], Outcome: "Up"},
+					{TokenID: gm.ClobTokenIds[1], Outcome: "Down"},
+				},
 			}
 
 			// Check if market has any liquidity
@@ -118,7 +142,6 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				continue // Silent skip
 			}
 
-			market.Slug = slug
 			markets = append(markets, *market)
 			break // Found market for this asset
 		}
