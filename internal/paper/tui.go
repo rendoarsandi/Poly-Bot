@@ -443,7 +443,7 @@ func (t *TUI) renderMultiMarketInfo() string {
 				} else if margin < 1 {
 					marginColor = ColorRed
 				}
-				sb.WriteString(fmt.Sprintf("   📈 Sum: $%.3f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
+				sb.WriteString(fmt.Sprintf("   📈 Sum: $%.2f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
 				totalMargin += margin
 				marketCount++
 			} else {
@@ -468,14 +468,22 @@ func (t *TUI) renderMultiMarketInfo() string {
 	return sb.String()
 }
 
-// renderOrderBookForMarket renders a compact order book display for a single outcome
+// renderOrderBookForMarket renders a simple bid/ask display for a single outcome
 func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAsk float64) string {
 	var sb strings.Builder
 
-	// Get order book depth if available
+	// Get best bid/ask from depth if available
 	depth := t.orderBookDepth[marketID]
 	bids := depth[outcome+"_bids"]
 	asks := depth[outcome+"_asks"]
+
+	// Use depth data for best prices if available
+	if len(bids) > 0 && bids[0].Price > bestBid {
+		bestBid = bids[0].Price
+	}
+	if len(asks) > 0 && asks[0].Price > 0 && (bestAsk == 0 || asks[0].Price < bestAsk) {
+		bestAsk = asks[0].Price
+	}
 
 	// Format outcome name (truncate if too long)
 	displayOutcome := outcome
@@ -483,45 +491,24 @@ func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAs
 		displayOutcome = displayOutcome[:6]
 	}
 
-	// Show outcome name
-	sb.WriteString(fmt.Sprintf("   %s%-6s%s ", Bold, displayOutcome, Reset))
+	// Simple format: Outcome  Bid | Ask
+	sb.WriteString(fmt.Sprintf("   %-6s  ", displayOutcome))
 
-	// Show bids (green, right-aligned) - up to 3 levels
-	// Standardized format: Price@Size
-	sb.WriteString(fmt.Sprintf("%s", ColorGreen))
-	bidParts := make([]string, 0, 3)
-	if len(bids) > 0 {
-		// Show levels from best to worst (best bid closest to center/spread)
-		for i := 0; i < min(3, len(bids)); i++ {
-			// Best bid is index 0
-			part := fmt.Sprintf("%.3f@%.0f", bids[i].Price, bids[i].Size)
-			bidParts = append([]string{part}, bidParts...)
-		}
-	} else if bestBid > 0 {
-		bidParts = append(bidParts, fmt.Sprintf("%.3f@0", bestBid))
+	// Show bid (green)
+	if bestBid > 0 {
+		sb.WriteString(fmt.Sprintf("%sBid: $%.2f%s", ColorGreen, bestBid, Reset))
+	} else {
+		sb.WriteString(fmt.Sprintf("%sBid: --.---%s", ColorGreen, Reset))
 	}
-	
-	bidStr := strings.Join(bidParts, " ")
-	sb.WriteString(fmt.Sprintf("%30s", bidStr))
-	sb.WriteString(Reset)
 
-	// Spread indicator
-	sb.WriteString(fmt.Sprintf(" %s│%s ", ColorWhite, Reset))
+	sb.WriteString("  │  ")
 
-	// Show asks (red, left-aligned) - up to 3 levels
-	sb.WriteString(fmt.Sprintf("%s", ColorRed))
-	askParts := make([]string, 0, 3)
-	if len(asks) > 0 {
-		for i := 0; i < min(3, len(asks)); i++ {
-			askParts = append(askParts, fmt.Sprintf("%.3f@%.0f", asks[i].Price, asks[i].Size))
-		}
-	} else if bestAsk > 0 {
-		askParts = append(askParts, fmt.Sprintf("%.3f@0", bestAsk))
+	// Show ask (red)
+	if bestAsk > 0 {
+		sb.WriteString(fmt.Sprintf("%sAsk: $%.2f%s", ColorRed, bestAsk, Reset))
+	} else {
+		sb.WriteString(fmt.Sprintf("%sAsk: --.---%s", ColorRed, Reset))
 	}
-	
-	askStr := strings.Join(askParts, " ")
-	sb.WriteString(fmt.Sprintf("%-30s", askStr))
-	sb.WriteString(Reset)
 
 	sb.WriteString("\n")
 	return sb.String()
@@ -549,8 +536,8 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	realAsk2 := realAsks[outcomes[1]]
 
 	if realAsk1 > 0 || realAsk2 > 0 {
-		sb.WriteString(fmt.Sprintf("│  %s: bid $%.3f / ask $%.3f\n", outcomes[0], realBid1, realAsk1))
-		sb.WriteString(fmt.Sprintf("│  %s: bid $%.3f / ask $%.3f\n", outcomes[1], realBid2, realAsk2))
+		sb.WriteString(fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f\n", outcomes[0], realBid1, realAsk1))
+		sb.WriteString(fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f\n", outcomes[1], realBid2, realAsk2))
 	} else {
 		sb.WriteString("│  (waiting for real market data...)\n")
 	}
@@ -584,13 +571,13 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 		color2 = ColorRed
 	}
 
-	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.3f / ask $%.3f%s", color1, outcomes[0], bid1, ask1, Reset))
+	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color1, outcomes[0], bid1, ask1, Reset))
 	if mismatch1 {
 		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.3f / ask $%.3f%s", color2, outcomes[1], bid2, ask2, Reset))
+	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color2, outcomes[1], bid2, ask2, Reset))
 	if mismatch2 {
 		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
 	}
@@ -607,7 +594,7 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	} else if margin < 1 {
 		marginColor = ColorRed
 	}
-	sb.WriteString(fmt.Sprintf("│  📈 Ask Sum: %.3f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
+	sb.WriteString(fmt.Sprintf("│  📈 Ask Sum: %.2f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
 	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorYellow, Reset))
 
 	// ══════════════════════════════════════════════════════════════
@@ -617,7 +604,7 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	if len(t.pendingOrders) > 0 {
 		for outcome, orders := range t.pendingOrders {
 			for _, o := range orders {
-				sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.3f\n", o.Side, outcome, o.Qty, o.Price))
+				sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.2f\n", o.Side, outcome, o.Qty, o.Price))
 			}
 		}
 	} else {
@@ -706,7 +693,7 @@ func (t *TUI) renderPositions() string {
 	}
 
 	for outcome, pos := range positions {
-		sb.WriteString(fmt.Sprintf("   • %s: %.0f @ $%.3f avg (cost $%.2f)\n",
+		sb.WriteString(fmt.Sprintf("   • %s: %.0f @ $%.2f avg (cost $%.2f)\n",
 			outcome, pos.Quantity, pos.AvgPrice, pos.TotalCost))
 	}
 

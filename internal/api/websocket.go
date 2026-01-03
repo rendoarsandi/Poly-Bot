@@ -248,6 +248,13 @@ func (m *WSManager) ReadMessage(ctx context.Context) ([]byte, error) {
 
 // ReadMessageWithTimeout reads with a timeout, returning nil if timeout exceeded
 func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Duration) ([]byte, error) {
+	// Check parent context first
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	if !m.connected.Load() {
 		// Try to trigger reconnection if not connected
 		if !m.reconnecting.Load() {
@@ -261,7 +268,7 @@ func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Dur
 	m.mu.Unlock()
 
 	if conn == nil {
-		return nil, fmt.Errorf("not connected")
+		return nil, nil
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -269,6 +276,12 @@ func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Dur
 
 	_, p, err := conn.Read(timeoutCtx)
 	if err != nil {
+		// Check if parent context was cancelled (Ctrl+C)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		// If it's just a timeout, return nil without error
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			return nil, nil

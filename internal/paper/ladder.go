@@ -1,9 +1,5 @@
 package paper
 
-import (
-	"fmt"
-)
-
 // LadderConfig configures ladder quoting parameters
 type LadderConfig struct {
 	Levels        int     // Number of price levels (e.g., 3)
@@ -45,8 +41,10 @@ func NewLadder(outcome string, config LadderConfig, orderBook *OrderBook) *Ladde
 func (l *Ladder) PlaceLadder() []*LimitOrder {
 	// Don't place orders if BasePrice hasn't been set from real market data
 	if l.Config.BasePrice <= 0.05 || l.Config.BasePrice >= 0.95 {
+		/*
 		fmt.Printf("⚠️ Skipping %s ladder: invalid BasePrice $%.3f (waiting for real market data)\n",
 			l.Outcome, l.Config.BasePrice)
+		*/
 		return nil
 	}
 
@@ -67,8 +65,10 @@ func (l *Ladder) PlaceLadder() []*LimitOrder {
 			i,
 		)
 		l.Orders = append(l.Orders, order)
+		/*
 		fmt.Printf("📝 Placed: %s L%d: %.0f shares @ $%.3f\n",
 			l.Outcome, i, l.Config.SharesPerLevel, price)
+		*/
 	}
 
 	return l.Orders
@@ -79,8 +79,10 @@ func (l *Ladder) PlaceLadder() []*LimitOrder {
 func (l *Ladder) UpdateLadder(fairPrice float64) []*LimitOrder {
 	// Validate fair price is within reasonable bounds
 	if fairPrice <= 0.05 || fairPrice >= 0.95 {
+		/*
 		fmt.Printf("⚠️ Skipping %s ladder update: fairPrice $%.3f out of range\n",
 			l.Outcome, fairPrice)
+		*/
 		return nil
 	}
 	// Adjust base price to be below fair price
@@ -167,7 +169,9 @@ func (lm *LadderManager) PlaceAllLaddersWithPrices(outcomes []string, prices map
 	for _, outcome := range outcomes {
 		price := prices[outcome]
 		if price <= 0.05 || price >= 0.95 {
+			/*
 			fmt.Printf("⚠️ Skipping %s: price $%.3f out of tradeable range\n", outcome, price)
+			*/
 			continue
 		}
 		ladder := lm.GetOrCreateLadder(outcome)
@@ -195,6 +199,7 @@ func (lm *LadderManager) GetAllOpenOrders() []*LimitOrder {
 
 // PrintLadders prints current ladder status
 func (lm *LadderManager) PrintLadders() {
+	/*
 	fmt.Println("📊 Current Ladders:")
 	for outcome, ladder := range lm.Ladders {
 		active := ladder.GetActiveOrders()
@@ -203,4 +208,5 @@ func (lm *LadderManager) PrintLadders() {
 			fmt.Printf("    L%d: %.0f shares @ $%.3f\n", order.LadderLevel, order.RemainingQty(), order.Price)
 		}
 	}
+	*/
 }

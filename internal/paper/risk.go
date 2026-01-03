@@ -219,16 +219,22 @@ func (rm *RiskManager) ExecuteKillSwitch() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	/*
 	fmt.Println()
 	fmt.Println("🚨🚨🚨 KILL SWITCH ACTIVATED 🚨🚨🚨")
 	fmt.Println("Reason:", rm.alerts[len(rm.alerts)-1].Reason)
+	*/
 
 	// Cancel all open orders
 	cancelled := rm.orderBook.CancelAllOrders()
+	/*
 	fmt.Printf("Cancelled %d open orders\n", cancelled)
+	*/
+	_ = cancelled
 
 	// Print final positions
 	positions := rm.engine.GetPositions()
+	/*
 	if len(positions) > 0 {
 		fmt.Println("Remaining positions (manual intervention required):")
 		for outcome, pos := range positions {
@@ -237,6 +243,8 @@ func (rm *RiskManager) ExecuteKillSwitch() {
 	}
 
 	fmt.Println("🛑 Bot halted. Please review positions manually.")
+	*/
+	_ = positions
 }
 
 // Reset resets the kill switch (use with caution)
@@ -270,6 +278,7 @@ func (rm *RiskManager) CanPlaceOrder(orderValue float64) bool {
 
 // PrintStatus prints current risk status
 func (rm *RiskManager) PrintStatus() {
+	/*
 	positions := rm.engine.GetPositions()
 	totalExposure, _ := rm.engine.GetExposure()
 	openOrderValue := rm.orderBook.GetOpenOrderValue()
@@ -295,4 +304,5 @@ func (rm *RiskManager) PrintStatus() {
 	if rm.killSwitchTriggered {
 		fmt.Println("  🚨 KILL SWITCH: ACTIVE")
 	}
+	*/
 }

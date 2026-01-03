@@ -73,15 +73,18 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 	var markets []Market
 
 	for _, asset := range assets {
-		// Strategy: If >2 minutes left in current window, use current
-		// Otherwise look at next window (more time to trade)
+		// Strategy: Check both current and next window
+		// Prefer the one with more time remaining
 		var windowsToCheck []int64
 
-		if timeRemaining > 120 { // More than 2 minutes left
+		if timeRemaining > 120 { // More than 2 minutes left in current
 			windowsToCheck = []int64{currentWindowStart}
-		} else {
-			// Current window ending soon, prefer next window but check current too
+		} else if timeRemaining > 0 { // Current window still active but ending soon
+			// Prefer next window, but also check current
 			windowsToCheck = []int64{currentWindowStart + 900, currentWindowStart}
+		} else {
+			// Current window expired, check next window
+			windowsToCheck = []int64{currentWindowStart + 900}
 		}
 
 		for _, windowStart := range windowsToCheck {
@@ -108,11 +111,11 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 			}
 			resp.Body.Close()
 
-			event := events[0]
-			if len(event.Markets) == 0 {
+			if len(events) == 0 || len(events[0].Markets) == 0 {
 				continue
 			}
 
+			event := events[0]
 			gm := event.Markets[0]
 
 			// Skip if market is closed
@@ -143,20 +146,6 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 					{TokenID: tokenIds[0], Outcome: outcomes[0]},
 					{TokenID: tokenIds[1], Outcome: outcomes[1]},
 				},
-			}
-
-			// Check if market has any liquidity
-			hasLiquidity := false
-			for _, token := range market.Tokens {
-				book, err := c.GetOrderBook(ctx, token.TokenID)
-				if err == nil && (len(book.Bids) > 0 || len(book.Asks) > 0) {
-					hasLiquidity = true
-					break
-				}
-			}
-
-			if !hasLiquidity {
-				continue // Silent skip
 			}
 
 			markets = append(markets, *market)

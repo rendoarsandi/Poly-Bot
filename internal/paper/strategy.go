@@ -110,9 +110,11 @@ func (s *Strategy) Evaluate(prices map[string]string) (traded bool, err error) {
 	}
 	s.display.PrintTrade(trade2)
 
+	/*
 	// Log the arbitrage
 	fmt.Printf("✅ ARBITRAGE EXECUTED: Bought %.0f of each side @ sum=%.4f (%.2f%% margin)\n",
 		s.orderSize, sum, margin*100)
+	*/
 
 	s.lastTradeTime = time.Now()
 	return true, nil
@@ -120,6 +122,8 @@ func (s *Strategy) Evaluate(prices map[string]string) (traded bool, err error) {
 
 // SimulateResolution simulates market resolution (for testing)
 func (s *Strategy) SimulateResolution(winningOutcome string) {
-	payout := s.engine.Redeem(winningOutcome)
+	s.engine.Redeem(winningOutcome)
+	/*
 	fmt.Printf("🏆 MARKET RESOLVED: %s won! Payout: $%.2f\n", winningOutcome, payout)
+	*/
 }

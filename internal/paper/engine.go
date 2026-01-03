@@ -246,14 +246,18 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 				e.losingTrades++
 			}
 
+			/*
 			fmt.Printf("💰 REDEEM %s: %.0f shares × $1.00 = $%.2f\n",
 				outcome, pos.Quantity, proceeds)
+			*/
 		} else {
 			// Losing shares are worthless
 			e.realizedPnL -= pos.TotalCost
 			e.losingTrades++
+			/*
 			fmt.Printf("💀 EXPIRED %s: %.0f shares worth $0 (lost $%.2f)\n",
 				outcome, pos.Quantity, pos.TotalCost)
+			*/
 		}
 	}
 
@@ -336,17 +340,23 @@ func (e *Engine) LiquidateAll() float64 {
 
 		if bid, ok := e.currentBids[outcome]; ok && bid >= minSanePrice && bid <= maxSanePrice {
 			price = bid // Use BID for taker sells
+			/*
 			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ BID $%.3f (chasing liquidity)\n",
 				outcome, pos.Quantity, bid)
+			*/
 		} else if p, ok := e.currentPrices[outcome]; ok && p >= minSanePrice && p <= maxSanePrice {
 			// Fallback to mid-price with simulated slippage (2% worse)
 			price = p * 0.98
+			/*
 			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (mid-2%% slippage)\n",
 				outcome, pos.Quantity, price)
+			*/
 		} else {
 			// Use cost basis as last resort
+			/*
 			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (cost basis - no valid price)\n",
 				outcome, pos.Quantity, price)
+			*/
 		}
 
 		proceeds := pos.Quantity * price

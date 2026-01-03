@@ -101,7 +101,7 @@ func (mm *MarketMonitor) CheckState() MarketState {
 	if timeToEnd < 30*time.Second {
 		if mm.currentMarket.State == MarketStateActive {
 			mm.currentMarket.State = MarketStateEnding
-			fmt.Printf("⏰ Market ending in %v - stopping new orders\n", timeToEnd.Round(time.Second))
+			// Removed direct Printf to avoid TUI interference
 			if mm.onMarketEnd != nil {
 				mm.onMarketEnd()
 			}
@@ -119,11 +119,8 @@ func (mm *MarketMonitor) prepareForResolution() {
 	}
 	mm.endMessagePrinted = true
 
-	fmt.Println("⏳ Market ended - preparing for resolution...")
-
 	// Cancel all open orders
-	cancelled := mm.ladderMgr.CancelAllLadders()
-	fmt.Printf("Cancelled %d ladder orders\n", cancelled)
+	mm.ladderMgr.CancelAllLadders()
 }
 
 // SimulateResolution simulates market resolution (for paper trading)
@@ -136,12 +133,8 @@ func (mm *MarketMonitor) SimulateResolution(winningOutcome string) {
 	mm.currentMarket.State = MarketStateResolved
 	mm.currentMarket.WinningOutcome = winningOutcome
 
-	fmt.Printf("\n🏆 MARKET RESOLVED: %s wins!\n", winningOutcome)
-
 	// Redeem positions
 	payout := mm.engine.Redeem(winningOutcome)
-
-	fmt.Printf("💰 Redeemed positions for $%.2f\n", payout)
 
 	if mm.onResolution != nil {
 		mm.onResolution(winningOutcome, payout)
@@ -172,6 +165,7 @@ func (mm *MarketMonitor) GetMarketInfo() *MarketInfo {
 
 // PrintStatus prints current market status
 func (mm *MarketMonitor) PrintStatus() {
+	/*
 	if mm.currentMarket == nil {
 		fmt.Println("📊 No market loaded")
 		return
@@ -192,6 +186,7 @@ func (mm *MarketMonitor) PrintStatus() {
 
 	fmt.Printf("%s Market: %s | Time remaining: %v | State: %s\n",
 		stateEmoji, mm.currentMarket.Slug, remaining.Round(time.Second), state)
+	*/
 }
 
 // ParseEndTimeFromSlug extracts end time from market slug (e.g., btc-updown-15m-1767358800)

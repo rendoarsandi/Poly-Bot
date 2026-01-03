@@ -64,8 +64,15 @@ func main() {
 }
 
 func run() error {
+	// Setup signal handling with immediate terminal restore
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Ensure terminal is restored on any exit
+	defer func() {
+		fmt.Print("\033[?25h") // Show cursor
+		fmt.Println()
+	}()
 
 	// Clear screen at startup
 	fmt.Print("\033[H\033[2J")
@@ -126,7 +133,7 @@ func run() error {
 				fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d\n",
 					stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades)
 				return nil
-			case <-time.After(5 * time.Second):
+			case <-time.After(2 * time.Second):
 			}
 			continue
 		}
@@ -168,8 +175,26 @@ func run() error {
 
 		tui.LogEvent("📈 Started %d concurrent market traders", tradersStarted)
 
-		// Wait for all traders to complete
-		wg.Wait()
+		// Wait for all traders to complete with a context-aware mechanism
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		// Wait for either all traders to finish OR context cancellation
+		select {
+		case <-done:
+			// All traders finished normally
+		case <-ctx.Done():
+			// Context cancelled - give traders 2 seconds to clean up
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				tui.LogEvent("⚠️ Force stopping traders...")
+			}
+		}
+
 		close(results)
 		close(errors)
 
@@ -207,7 +232,7 @@ func run() error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(3 * time.Second):
+		case <-time.After(1 * time.Second):
 		}
 
 		// Clear old market data from TUI for fresh display
@@ -262,7 +287,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 		select {
 		case <-ctx.Done():
 			return found
-		case <-time.After(3 * time.Second):
+		case <-time.After(1 * time.Second):
 		}
 	}
 
@@ -419,7 +444,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(10 * time.Second):
+				case <-time.After(2 * time.Second):
 				}
 
 				winner := simulateResolution(t.Outcomes, tokenPrices)

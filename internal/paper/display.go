@@ -1,8 +1,6 @@
 package paper
 
 import (
-	"fmt"
-	"strings"
 	"time"
 )
 
@@ -28,6 +26,7 @@ func (d *Display) ShouldPrint() bool {
 
 // PrintStats prints formatted trading statistics
 func (d *Display) PrintStats() {
+	/*
 	stats := d.engine.GetStats()
 	positions := d.engine.GetPositions()
 	totalExposure, _ := d.engine.GetExposure()
@@ -110,10 +109,12 @@ func (d *Display) PrintStats() {
 
 	fmt.Println(strings.Repeat("═", 50))
 	fmt.Println()
+	*/
 }
 
 // PrintTrade prints a single trade execution
 func (d *Display) PrintTrade(trade *Trade) {
+	/*
 	symbol := "🟢"
 	action := "BUY"
 	if trade.Side == "sell" {
@@ -129,16 +130,20 @@ func (d *Display) PrintTrade(trade *Trade) {
 		trade.Quantity,
 		trade.Price,
 		trade.Value)
+	*/
 }
 
 // PrintOpportunity prints when an arbitrage opportunity is detected
 func (d *Display) PrintOpportunity(sum float64, prices map[string]string) {
+	/*
 	margin := (1.0 - sum) * 100
 	fmt.Printf("🔥 OPPORTUNITY: Sum=%.4f (%.2f%% margin) | Prices: %v\n", sum, margin, prices)
+	*/
 }
 
 // PrintHeader prints startup header
 func PrintHeader(startingBalance float64) {
+	/*
 	fmt.Println()
 	fmt.Println(strings.Repeat("═", 50))
 	fmt.Println("  🎰 POLYARB-15M PAPER TRADING BOT")
@@ -147,4 +152,5 @@ func PrintHeader(startingBalance float64) {
 	fmt.Println("  📝 Mode: PAPER TRADING (no real money)")
 	fmt.Println(strings.Repeat("═", 50))
 	fmt.Println()
+	*/
 }
