@@ -47,11 +47,11 @@ type GammaEvent struct {
 }
 
 type GammaMarket struct {
-	ConditionID  string   `json:"conditionId"`
-	ClobTokenIds []string `json:"clobTokenIds"`
-	Outcomes     string   `json:"outcomes"`
-	Active       bool     `json:"active"`
-	Closed       bool     `json:"closed"`
+	ConditionID  string `json:"conditionId"`
+	ClobTokenIds string `json:"clobTokenIds"` // JSON-encoded string array
+	Outcomes     string `json:"outcomes"`
+	Active       bool   `json:"active"`
+	Closed       bool   `json:"closed"`
 }
 
 func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
@@ -111,8 +111,9 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				continue
 			}
 
-			// Use clobTokenIds directly from Gamma (more reliable than CLOB GetMarket)
-			if len(gm.ClobTokenIds) < 2 {
+			// Parse clobTokenIds (it's a JSON-encoded string array)
+			var tokenIds []string
+			if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err != nil || len(tokenIds) < 2 {
 				continue
 			}
 
@@ -123,8 +124,8 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				Active:      gm.Active,
 				Closed:      gm.Closed,
 				Tokens: []Token{
-					{TokenID: gm.ClobTokenIds[0], Outcome: "Up"},
-					{TokenID: gm.ClobTokenIds[1], Outcome: "Down"},
+					{TokenID: tokenIds[0], Outcome: "Up"},
+					{TokenID: tokenIds[1], Outcome: "Down"},
 				},
 			}
 
