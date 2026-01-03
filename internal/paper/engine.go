@@ -260,14 +260,23 @@ func (e *Engine) LiquidateAll() float64 {
 		// TAKER SELL: Use BID price (the price buyers are willing to pay)
 		// This is worse than mid-price, simulating realistic slippage
 		price := pos.AvgPrice // Fallback to cost basis
-		if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+
+		// Price sanity bounds - reject obviously bad data
+		const minSanePrice = 0.15
+		const maxSanePrice = 0.85
+
+		if bid, ok := e.currentBids[outcome]; ok && bid >= minSanePrice && bid <= maxSanePrice {
 			price = bid // Use BID for taker sells
 			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ BID $%.3f (chasing liquidity)\n",
 				outcome, pos.Quantity, bid)
-		} else if p, ok := e.currentPrices[outcome]; ok && p > 0 {
+		} else if p, ok := e.currentPrices[outcome]; ok && p >= minSanePrice && p <= maxSanePrice {
 			// Fallback to mid-price with simulated slippage (2% worse)
 			price = p * 0.98
 			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (mid-2%% slippage)\n",
+				outcome, pos.Quantity, price)
+		} else {
+			// Use cost basis as last resort
+			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (cost basis - no valid price)\n",
 				outcome, pos.Quantity, price)
 		}
 

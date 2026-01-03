@@ -238,8 +238,6 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	// Liquidity monitoring
 	lastGoodLiquidity := time.Now()
 	const liquidityTimeout = 45 * time.Second  // Exit if no liquidity for 45s
-	const minSpread = 0.001                    // Minimum spread to consider "liquid"
-	const maxSpread = 0.15                     // Max spread before considering "illiquid"
 
 	for {
 		select {
@@ -418,18 +416,16 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 			}
 
-			// Check liquidity - if spread is reasonable, we have liquidity
+			// Check liquidity - if we have reasonable bid/ask prices, we have liquidity
 			hasLiquidity := false
 			if len(outcomeNames) == 2 {
 				for _, outcome := range outcomeNames {
 					bid := tokenBids[outcome]
 					ask := tokenAsks[outcome]
-					if bid > 0 && ask > 0 {
-						spread := ask - bid
-						if spread >= minSpread && spread <= maxSpread {
-							hasLiquidity = true
-							break
-						}
+					// Consider liquid if we have any valid bid or ask in reasonable range
+					if (bid >= 0.15 && bid <= 0.85) || (ask >= 0.15 && ask <= 0.85) {
+						hasLiquidity = true
+						break
 					}
 				}
 			}
