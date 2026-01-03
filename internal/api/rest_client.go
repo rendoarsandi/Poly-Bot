@@ -287,6 +287,48 @@ func (c *RestClient) GetGammaBidAskBySlug(slug string) (map[string]GammaPriceRes
 	return prices, nil
 }
 
+// GetCLOBBidAsk fetches real-time bid/ask from CLOB order books for given token IDs
+// tokenMap maps token ID to outcome name (e.g., "Up" or "Down")
+func (c *RestClient) GetCLOBBidAsk(tokenMap map[string]string) (map[string]GammaPriceResult, error) {
+	prices := make(map[string]GammaPriceResult)
+
+	for tokenID, outcome := range tokenMap {
+		book, err := c.GetOrderBook(tokenID)
+		if err != nil {
+			continue
+		}
+
+		var bestBid, bestAsk float64 = 0, 1
+
+		// Find best bid (highest)
+		for _, b := range book.Bids {
+			p, _ := parseFloat(b.Price)
+			if p > bestBid {
+				bestBid = p
+			}
+		}
+
+		// Find best ask (lowest)
+		for _, a := range book.Asks {
+			p, _ := parseFloat(a.Price)
+			if p < bestAsk && p > 0 {
+				bestAsk = p
+			}
+		}
+
+		if bestAsk >= 1 {
+			bestAsk = 0
+		}
+
+		prices[outcome] = GammaPriceResult{
+			Bid: bestBid,
+			Ask: bestAsk,
+		}
+	}
+
+	return prices, nil
+}
+
 func parseFloat(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(s, "%f", &f)

@@ -421,26 +421,31 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				lastRESTFetch = time.Now()
 			}
 
-			// Fetch prices from Gamma API - this is the ONLY price source we trust
-			// Gamma shows what Polymarket website shows
+			// Fetch REAL-TIME prices from CLOB order books (not Gamma - it's cached/stale)
 			if time.Since(lastGammaFetch) >= gammaFetchInterval {
-				realPricesBA, err := restClient.GetGammaBidAskBySlug(market.Slug)
+				// Create reverse map: tokenID -> outcome name
+				reverseTokenMap := make(map[string]string)
+				for tokenID, outcome := range tokenMap {
+					reverseTokenMap[tokenID] = outcome
+				}
+
+				realPricesBA, err := restClient.GetCLOBBidAsk(reverseTokenMap)
 				if err != nil {
-					tui.LogEvent("⚠️ Gamma API error: %v", err)
-				} else {
+					tui.LogEvent("⚠️ CLOB API error: %v", err)
+				} else if len(realPricesBA) > 0 {
 					for outcome, pa := range realPricesBA {
-						// Set ALL price sources from Gamma
-						tokenBids[outcome] = pa.Bid
-						tokenAsks[outcome] = pa.Ask
-						floatPrices[outcome] = (pa.Bid + pa.Ask) / 2
-						tokenPrices[outcome] = fmt.Sprintf("%.3f", floatPrices[outcome])
-						engine.UpdatePrice(outcome, floatPrices[outcome])
-						engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
+						if pa.Bid > 0 || pa.Ask > 0 {
+							tokenBids[outcome] = pa.Bid
+							tokenAsks[outcome] = pa.Ask
+							floatPrices[outcome] = (pa.Bid + pa.Ask) / 2
+							tokenPrices[outcome] = fmt.Sprintf("%.3f", floatPrices[outcome])
+							engine.UpdatePrice(outcome, floatPrices[outcome])
+							engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
+						}
 					}
-					// Both panels show same Gamma data
 					tui.UpdateRealMarket(tokenBids, tokenAsks)
 					tui.UpdatePrices(floatPrices, tokenBids, tokenAsks)
-				}
+					}
 				lastGammaFetch = time.Now()
 			}
 
