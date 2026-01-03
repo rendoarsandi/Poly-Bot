@@ -95,7 +95,14 @@ func run() error {
 			if strings.Contains(err.Error(), "context canceled") {
 				return nil
 			}
-			// Don't print error, just find next market
+			// Error occurred, wait before retry
+			fmt.Printf("⚠️ Market error, retrying in 5s...\n")
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(5 * time.Second):
+			}
+			continue
 		}
 
 		// Show result briefly
@@ -103,11 +110,12 @@ func run() error {
 			fmt.Printf("💰 PnL: $%.2f\n", result.realizedPnL)
 		}
 
-		// Quick transition to next market
+		// Wait for next window after market completes
+		fmt.Println("\n⏳ Waiting for next market window...")
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 		}
 	}
 }
