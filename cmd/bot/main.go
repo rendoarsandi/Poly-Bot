@@ -122,6 +122,11 @@ func run() error {
 			continue
 		}
 
+		// Track starting equity for compounding calculation
+		startingEquity := engine.GetEquity()
+		compoundMultiplier := engine.GetCompoundMultiplier()
+		tui.LogEvent("💹 Round starting | Equity: $%.2f | Multiplier: %.2fx", startingEquity, compoundMultiplier)
+
 		// Create traders for all found markets
 		var wg sync.WaitGroup
 		results := make(chan *marketResult, len(markets))
@@ -172,6 +177,15 @@ func run() error {
 		// Log market rotation with detailed stats
 		stats := engine.GetStats()
 		tui.LogEvent("📊 Round PnL: $%.2f | Total Balance: $%.2f | Rotating...", totalPnL, stats.CurrentBalance)
+
+		// Update compounding multiplier based on round performance
+		engine.UpdateCompoundMultiplier(totalPnL, startingEquity)
+		newMultiplier := engine.GetCompoundMultiplier()
+		if totalPnL > 0 {
+			tui.LogEvent("📈 PROFIT! Multiplier: %.2fx → %.2fx (compounding)", compoundMultiplier, newMultiplier)
+		} else if totalPnL < 0 {
+			tui.LogEvent("📉 Loss. Multiplier: %.2fx → %.2fx", compoundMultiplier, newMultiplier)
+		}
 
 		// Check for context cancellation
 		select {
@@ -606,6 +620,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						baseShares := ladderConfig.SharesPerLevel
 						shares := baseShares
 
+						// Scale shares based on margin
 						if margin >= 5.0 {
 							shares = baseShares * 4
 						} else if margin >= 4.0 {
@@ -614,14 +629,24 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							shares = baseShares * 2
 						}
 
+						// Apply compounding multiplier from profitable rounds
+						compoundMult := t.Engine.GetCompoundMultiplier()
+						shares = float64(int(float64(shares) * compoundMult))
+
 						cost := shares * (ask1 + ask2)
 						if !t.RiskMgr.CanPlaceOrder(cost) {
+							// Scale back if over risk limit
 							shares = baseShares
 						}
 
 						profit := shares * (1.0 - sum)
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares, profit $%.2f (%.1f%%)",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, profit, margin)
+						if compoundMult > 1.0 {
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%)",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin)
+						} else {
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares, profit $%.2f (%.1f%%)",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, profit, margin)
+						}
 
 						t.Engine.Buy(t.Outcomes[0], ask1, shares)
 						t.Engine.Buy(t.Outcomes[1], ask2, shares)

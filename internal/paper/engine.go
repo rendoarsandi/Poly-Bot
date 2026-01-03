@@ -47,6 +47,11 @@ type Engine struct {
 	startingBalance float64
 	currentBalance  float64
 
+	// Compounding multiplier - increases with profitable rounds
+	compoundMultiplier float64
+	roundsCompleted    int
+	profitableRounds   int
+
 	// Positions: outcome -> position
 	positions map[string]*Position
 
@@ -71,14 +76,15 @@ type Engine struct {
 // NewEngine creates a new paper trading engine
 func NewEngine(startingBalance float64) *Engine {
 	return &Engine{
-		startingBalance: startingBalance,
-		currentBalance:  startingBalance,
-		peakBalance:     startingBalance,
-		positions:       make(map[string]*Position),
-		trades:          make([]Trade, 0),
-		currentPrices:   make(map[string]float64),
-		currentBids:     make(map[string]float64),
-		currentAsks:     make(map[string]float64),
+		startingBalance:    startingBalance,
+		currentBalance:     startingBalance,
+		peakBalance:        startingBalance,
+		compoundMultiplier: 1.0, // Start at 1x
+		positions:          make(map[string]*Position),
+		trades:             make([]Trade, 0),
+		currentPrices:      make(map[string]float64),
+		currentBids:        make(map[string]float64),
+		currentAsks:        make(map[string]float64),
 	}
 }
 
@@ -505,4 +511,55 @@ func (e *Engine) GetExposure() (totalExposure float64, maxSingleExposure float64
 func Round(val float64, precision int) float64 {
 	ratio := math.Pow(10, float64(precision))
 	return math.Round(val*ratio) / ratio
+}
+
+// GetCompoundMultiplier returns the current compounding multiplier
+func (e *Engine) GetCompoundMultiplier() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.compoundMultiplier
+}
+
+// UpdateCompoundMultiplier updates the multiplier based on round profit/loss
+// If profitable, multiplier increases proportionally (e.g., 5% profit = 1.05x)
+// If loss, multiplier resets to 1.0
+func (e *Engine) UpdateCompoundMultiplier(roundPnL float64, startingEquity float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.roundsCompleted++
+
+	if roundPnL > 0 && startingEquity > 0 {
+		// Calculate profit percentage
+		profitPercent := roundPnL / startingEquity
+
+		// Increase multiplier by profit percentage (compounding)
+		e.compoundMultiplier *= (1.0 + profitPercent)
+
+		// Cap at 3x to prevent excessive risk
+		if e.compoundMultiplier > 3.0 {
+			e.compoundMultiplier = 3.0
+		}
+
+		e.profitableRounds++
+	} else if roundPnL < 0 {
+		// On loss, reduce multiplier but don't go below 1.0
+		// Lose 50% of the bonus (multiplier - 1.0)
+		bonus := e.compoundMultiplier - 1.0
+		if bonus > 0 {
+			e.compoundMultiplier = 1.0 + (bonus * 0.5)
+		}
+		// If still losing, reset to 1.0
+		if e.compoundMultiplier < 1.0 {
+			e.compoundMultiplier = 1.0
+		}
+	}
+	// If breakeven (roundPnL == 0), keep multiplier unchanged
+}
+
+// GetCompoundStats returns compounding statistics
+func (e *Engine) GetCompoundStats() (multiplier float64, rounds int, profitable int) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds
 }

@@ -536,6 +536,15 @@ func (t *TUI) renderAccountStatus() string {
 		changeSign = ""
 	}
 
+	// Get compounding stats
+	multiplier, rounds, profitable := t.engine.GetCompoundStats()
+	multColor := ColorWhite
+	if multiplier >= 1.5 {
+		multColor = ColorGreen
+	} else if multiplier > 1.0 {
+		multColor = ColorYellow
+	}
+
 	sb.WriteString(fmt.Sprintf("%s💼 ACCOUNT%s\n", Bold, Reset))
 	sb.WriteString(fmt.Sprintf("   💵 Cash:     $%.2f\n", stats.CurrentBalance))
 	sb.WriteString(fmt.Sprintf("   📦 Exposure: $%.2f\n", totalExposure))
@@ -543,6 +552,8 @@ func (t *TUI) renderAccountStatus() string {
 		equity, changeColor, changeSign, netChange, Reset))
 	sb.WriteString(fmt.Sprintf("   📊 PnL:      Realized: $%.2f | Unrealized: $%.2f\n",
 		stats.RealizedPnL, stats.UnrealizedPnL))
+	sb.WriteString(fmt.Sprintf("   📈 Compound: %s%.2fx%s | Rounds: %d (%d profitable)\n",
+		multColor, multiplier, Reset, rounds, profitable))
 
 	return sb.String()
 }
