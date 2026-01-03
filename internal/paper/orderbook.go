@@ -2,6 +2,8 @@ package paper
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -33,6 +35,12 @@ type LimitOrder struct {
 // RemainingQty returns unfilled quantity
 func (o *LimitOrder) RemainingQty() float64 {
 	return o.Quantity - o.FilledQty
+}
+
+// MarketLevel represents a price level in the market's order book
+type MarketLevel struct {
+	Price float64
+	Size  float64
 }
 
 // OrderBook manages open limit orders and simulates fills
@@ -157,75 +165,125 @@ func (ob *OrderBook) CancelOrdersForOutcome(outcome string) int {
 	return count
 }
 
-// ProcessPriceUpdate checks if any orders should be filled based on new market prices
-// For BUY orders: fill if market ask < order price - queueBuffer (simulates queue priority)
-// For SELL orders: fill if market bid > order price + queueBuffer (simulates queue priority)
-// The queueBuffer simulates that you're not first in queue at your exact price level
-func (ob *OrderBook) ProcessPriceUpdate(outcome string, marketBid, marketAsk float64) []*LimitOrder {
+// ProcessPriceUpdate checks if any orders should be filled based on full market depth
+// For BUY orders: match against market asks <= order price - queueBuffer
+// For SELL orders: match against market bids >= order price + queueBuffer
+func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel) []*LimitOrder {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
 	var filledOrders []*LimitOrder
 
+	// Collect active orders for this outcome
+	var activeOrders []*LimitOrder
 	for _, order := range ob.orders {
-		if order.Outcome != outcome {
-			continue
+		if order.Outcome == outcome && (order.Status == OrderStatusOpen || order.Status == OrderStatusPartial) {
+			activeOrders = append(activeOrders, order)
 		}
-		if order.Status != OrderStatusOpen && order.Status != OrderStatusPartial {
-			continue
-		}
+	}
 
-		shouldFill := false
-		fillPrice := 0.0
+	// Sort orders by CreatedAt to simulate FIFO queue priority
+	sort.Slice(activeOrders, func(i, j int) bool {
+		return activeOrders[i].CreatedAt.Before(activeOrders[j].CreatedAt)
+	})
+
+	// We iterate through our orders and match them against the available market liquidity
+	for _, order := range activeOrders {
+		remaining := order.RemainingQty()
+		if remaining <= 0 {
+			continue
+		}
 
 		// Price sanity bounds for binary markets
-		const minSanePrice = 0.20 // Reject prices below 20 cents (likely bad data)
-		const maxSanePrice = 0.80 // Reject prices above 80 cents (likely bad data)
-		const maxPriceImprovement = 0.30 // Reject if fill is >30% better than limit (suspicious)
+		const minSanePrice = 0.20
+		const maxSanePrice = 0.80
+		const maxPriceImprovement = 0.30
 
 		if order.Side == "buy" {
-			// Buy limit order fills when market ask < our bid price - buffer
+			// BUY order matches against market ASKS
 			fillThreshold := order.Price - ob.queueBuffer
-			if marketAsk > 0 && marketAsk <= fillThreshold {
-				// Sanity check 1: absolute price bounds
-				if marketAsk < minSanePrice || marketAsk > maxSanePrice {
-					continue // Skip - price outside sane range
+			
+			for i := range asks {
+				ask := &asks[i]
+				if ask.Size <= 0 || ask.Price > fillThreshold {
+					continue
 				}
-				// Sanity check 2: reject suspiciously good fills (likely bad data)
-				priceImprovement := (order.Price - marketAsk) / order.Price
+
+				// Sanity checks
+				if ask.Price < minSanePrice || ask.Price > maxSanePrice {
+					continue
+				}
+				priceImprovement := (order.Price - ask.Price) / order.Price
 				if priceImprovement > maxPriceImprovement {
-					continue // Skip - too good to be true (>30% improvement)
+					continue
 				}
-				shouldFill = true
-				fillPrice = marketAsk
+
+				// Calculate fill amount
+				fillQty := math.Min(remaining, ask.Size)
+				if fillQty > 0 {
+					order.FilledQty += fillQty
+					order.FillPrice = ask.Price
+					ask.Size -= fillQty
+					remaining -= fillQty
+
+					if order.FilledQty >= order.Quantity-0.0001 {
+						order.Status = OrderStatusFilled
+					} else {
+						order.Status = OrderStatusPartial
+					}
+
+					filledOrders = append(filledOrders, order)
+					if ob.onFill != nil {
+						ob.onFill(order, fillQty, ask.Price)
+					}
+
+					if order.Status == OrderStatusFilled {
+						break
+					}
+				}
 			}
 		} else if order.Side == "sell" {
-			// Sell limit order fills when market bid > our ask price + buffer
+			// SELL order matches against market BIDS
 			fillThreshold := order.Price + ob.queueBuffer
-			if marketBid > 0 && marketBid >= fillThreshold {
-				// Sanity check 1: absolute price bounds
-				if marketBid < minSanePrice || marketBid > maxSanePrice {
+			
+			for i := range bids {
+				bid := &bids[i]
+				if bid.Size <= 0 || bid.Price < fillThreshold {
 					continue
 				}
-				// Sanity check 2: reject suspiciously good fills
-				priceImprovement := (marketBid - order.Price) / order.Price
+
+				// Sanity checks
+				if bid.Price < minSanePrice || bid.Price > maxSanePrice {
+					continue
+				}
+				priceImprovement := (bid.Price - order.Price) / order.Price
 				if priceImprovement > maxPriceImprovement {
 					continue
 				}
-				shouldFill = true
-				fillPrice = marketBid
-			}
-		}
 
-		if shouldFill {
-			fillQty := order.RemainingQty()
-			order.FilledQty = order.Quantity
-			order.FillPrice = fillPrice // Store actual fill price
-			order.Status = OrderStatusFilled
-			filledOrders = append(filledOrders, order)
+				// Calculate fill amount
+				fillQty := math.Min(remaining, bid.Size)
+				if fillQty > 0 {
+					order.FilledQty += fillQty
+					order.FillPrice = bid.Price
+					bid.Size -= fillQty
+					remaining -= fillQty
 
-			if ob.onFill != nil {
-				ob.onFill(order, fillQty, fillPrice)
+					if order.FilledQty >= order.Quantity-0.0001 {
+						order.Status = OrderStatusFilled
+					} else {
+						order.Status = OrderStatusPartial
+					}
+
+					filledOrders = append(filledOrders, order)
+					if ob.onFill != nil {
+						ob.onFill(order, fillQty, bid.Price)
+					}
+
+					if order.Status == OrderStatusFilled {
+						break
+					}
+				}
 			}
 		}
 	}

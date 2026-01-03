@@ -237,12 +237,23 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	startingRealizedPnL := engine.GetStats().RealizedPnL
 	tradesAtStart := engine.GetStats().TotalTrades
 
-	// Data loop
-	tokenPrices := make(map[string]string)
-	tokenBids := make(map[string]float64)
-	tokenAsks := make(map[string]float64)
-	floatPrices := make(map[string]float64)
-	lastLadderUpdate := time.Now()
+	        // Data loop
+
+	        tokenPrices := make(map[string]string)
+
+	        tokenBids := make(map[string]float64)
+
+	        tokenAsks := make(map[string]float64)
+
+	        tokenFullBids := make(map[string][]paper.MarketLevel)
+
+	        tokenFullAsks := make(map[string][]paper.MarketLevel)
+
+	        floatPrices := make(map[string]float64)
+
+	        lastLadderUpdate := time.Now()
+
+	
 	laddersPlaced := false
 	marketEnded := false
 
@@ -371,13 +382,27 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						}
 					}
 
-					// Debug: log REST API response
-					tui.LogEvent("📡 REST %s: bestBid=$%.3f bestAsk=$%.3f",
-						outcome, bestBid, bestAsk)
+					                                        // Debug: log REST API response
 
-					if bestBid > 0 {
-						tokenBids[outcome] = bestBid
-					}
+					                                        tui.LogEvent("📡 REST %s: bestBid=$%.3f bestAsk=$%.3f",
+
+					                                                outcome, bestBid, bestAsk)
+
+					
+
+					                                        tokenFullBids[outcome] = toMarketLevels(book.Bids)
+
+					                                        tokenFullAsks[outcome] = toMarketLevels(book.Asks)
+
+					
+
+					                                        if bestBid > 0 {
+
+					                                                tokenBids[outcome] = bestBid
+
+					                                        }
+
+					
 					if bestAsk < 1.0 {
 						tokenAsks[outcome] = bestAsk
 					}
@@ -394,23 +419,28 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			priceChanged := false
 			msgCount := 0 // Debug counter
 
-			updatePrice := func(assetID, priceStr string, bid, ask float64) {
-				outcome := tokenMap[assetID]
-				if outcome == "" {
-					return
-				}
-				if tokenPrices[outcome] != priceStr {
-					tokenPrices[outcome] = priceStr
-					priceChanged = true
-				}
-				if bid > 0 {
-					tokenBids[outcome] = bid
-				}
-				if ask > 0 {
-					tokenAsks[outcome] = ask
-				}
-
-				midPrice := 0.0
+			                        updatePrice := func(assetID, priceStr string, bid, ask float64, fullBids, fullAsks []paper.MarketLevel) {
+			                                outcome := tokenMap[assetID]
+			                                if outcome == "" {
+			                                        return
+			                                }
+			                                if tokenPrices[outcome] != priceStr {
+			                                        tokenPrices[outcome] = priceStr
+			                                        priceChanged = true
+			                                }
+			                                if len(fullBids) > 0 {
+			                                        tokenFullBids[outcome] = fullBids
+			                                }
+			                                if len(fullAsks) > 0 {
+			                                        tokenFullAsks[outcome] = fullAsks
+			                                }
+			                                if bid > 0 {
+			                                        tokenBids[outcome] = bid
+			                                }
+			                                if ask > 0 {
+			                                        tokenAsks[outcome] = ask
+			                                }
+							midPrice := 0.0
 				if bid > 0 && ask > 0 {
 					midPrice = (bid + ask) / 2.0
 				} else if bid > 0 {
@@ -446,31 +476,32 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
 						msgCount++
 					}
-					priceStr := ""
-					if len(b.Bids) > 0 {
-						priceStr = b.Bids[0].Price
-					}
-					updatePrice(b.AssetID, priceStr, bid, ask)
-				}
-			} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
-				bid, ask := 0.0, 0.0
-				if len(book.Bids) > 0 {
-					bid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
-				}
-				if len(book.Asks) > 0 {
-					ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
-				}
-				// Debug: log first order book update
-				if msgCount < 2 {
-					outcome := tokenMap[book.AssetID]
-					tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
-					msgCount++
-				}
-				priceStr := ""
-				if len(book.Bids) > 0 {
-					priceStr = book.Bids[0].Price
-				}
-				updatePrice(book.AssetID, priceStr, bid, ask)
+					                                        priceStr := ""
+					                                        if len(b.Bids) > 0 {
+					                                                priceStr = b.Bids[0].Price
+					                                        }
+					                                        updatePrice(b.AssetID, priceStr, bid, ask, toMarketLevels(b.Bids), toMarketLevels(b.Asks))
+					                                }
+					                        } else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+					                                bid, ask := 0.0, 0.0
+					                                if len(book.Bids) > 0 {
+					                                        bid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+					                                }
+					                                if len(book.Asks) > 0 {
+					                                        ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+					                                }
+					                                // Debug: log first order book update
+					                                if msgCount < 2 {
+					                                        outcome := tokenMap[book.AssetID]
+					                                        tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
+					                                        msgCount++
+					                                }
+					                                priceStr := ""
+					                                if len(book.Bids) > 0 {
+					                                        priceStr = book.Bids[0].Price
+					                                }
+					                                updatePrice(book.AssetID, priceStr, bid, ask, toMarketLevels(book.Bids), toMarketLevels(book.Asks))
+					
 			} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 				// PriceUpdate contains individual order changes
 				// We can use these to UPDATE bid/ask, but only if the price is reasonable
@@ -520,16 +551,15 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			// Update TUI with prices
 			tui.UpdatePrices(floatPrices, tokenBids, tokenAsks)
 
-			// Process order fills
-			for outcome := range tokenPrices {
-				bid := tokenBids[outcome]
-				ask := tokenAsks[outcome]
-				if bid > 0 || ask > 0 {
-					orderBook.ProcessPriceUpdate(outcome, bid, ask)
-				}
-			}
-
-			// Check liquidity - if we have reasonable bid/ask prices, we have liquidity
+			                        // Process order fills
+			                        for outcome := range tokenPrices {
+			                                bids := tokenFullBids[outcome]
+			                                asks := tokenFullAsks[outcome]
+			                                if len(bids) > 0 || len(asks) > 0 {
+			                                        orderBook.ProcessPriceUpdate(outcome, bids, asks)
+			                                }
+			                        }
+						// Check liquidity - if we have reasonable bid/ask prices, we have liquidity
 			hasLiquidity := false
 			if len(outcomeNames) == 2 {
 				for _, outcome := range outcomeNames {
@@ -699,8 +729,34 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 		return outcomes[1]
 	}
 
-	if rand.Float64() > 0.5 {
-		return outcomes[0]
+	        if rand.Float64() > 0.5 {
+
+	                return outcomes[0]
+
+	        }
+
+	        return outcomes[1]
+
 	}
-	return outcomes[1]
-}
+
+	
+
+	func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
+
+		result := make([]paper.MarketLevel, len(levels))
+
+		for i, l := range levels {
+
+			p, _ := strconv.ParseFloat(l.Price, 64)
+
+			s, _ := strconv.ParseFloat(l.Size, 64)
+
+			result[i] = paper.MarketLevel{Price: p, Size: s}
+
+		}
+
+		return result
+
+	}
+
+	

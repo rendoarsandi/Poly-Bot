@@ -10,5 +10,5 @@ coverage.out
 .idea/
 
 # Binaries
-bot
-market-bot
+/bot
+/market-bot
