@@ -342,6 +342,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			}
 
 			priceChanged := false
+			msgCount := 0 // Debug counter
 
 			updatePrice := func(assetID, priceStr string, bid, ask float64) {
 				outcome := tokenMap[assetID]
@@ -379,7 +380,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 			}
 
-			// Parse messages
+			// Parse messages - log first few to debug
 			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
 				for _, b := range books {
 					bid, ask := 0.0, 0.0
@@ -388,6 +389,12 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					}
 					if len(b.Asks) > 0 {
 						ask, _ = strconv.ParseFloat(b.Asks[0].Price, 64)
+					}
+					// Debug: log first order book update
+					if msgCount < 2 {
+						outcome := tokenMap[b.AssetID]
+						tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
+						msgCount++
 					}
 					priceStr := ""
 					if len(b.Bids) > 0 {
@@ -402,6 +409,12 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 				if len(book.Asks) > 0 {
 					ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+				}
+				// Debug: log first order book update
+				if msgCount < 2 {
+					outcome := tokenMap[book.AssetID]
+					tui.LogEvent("📥 OrderBook %s: bid=$%.3f ask=$%.3f", outcome, bid, ask)
+					msgCount++
 				}
 				priceStr := ""
 				if len(book.Bids) > 0 {
@@ -440,6 +453,17 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 							engine.UpdateBidAsk(outcome, tokenBids[outcome], tokenAsks[outcome])
 						}
 					}
+				}
+			} else {
+				// Debug: log unparsed messages (first few only)
+				if msgCount < 3 {
+					// Try to get a preview of the message
+					preview := string(msg)
+					if len(preview) > 100 {
+						preview = preview[:100] + "..."
+					}
+					tui.LogEvent("📭 Unknown msg: %s", preview)
+					msgCount++
 				}
 			}
 
