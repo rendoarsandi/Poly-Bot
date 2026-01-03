@@ -529,42 +529,52 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 			// Trading logic (only when market is active)
 			if priceChanged && len(tokenPrices) == 2 && len(outcomeNames) == 2 && marketState == paper.MarketStateActive {
-				p1Str := tokenPrices[outcomeNames[0]]
-				p2Str := tokenPrices[outcomeNames[1]]
+				// Get actual market asks (what we'd pay to buy)
+				ask1 := tokenAsks[outcomeNames[0]]
+				ask2 := tokenAsks[outcomeNames[1]]
 
-				if p1Str != "" && p2Str != "" {
-					p1, _ := strconv.ParseFloat(p1Str, 64)
-					p2, _ := strconv.ParseFloat(p2Str, 64)
-					sum := p1 + p2
+				// Only trade if we have real ask prices in sane range
+				if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
+					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
-					// Place ladders if opportunity
-					if margin >= 2.0 && riskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*p1) {
+					// Place ladders if opportunity exists (sum < 1.0 means arbitrage)
+					if margin >= 2.0 && riskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*ask1) {
 						if !laddersPlaced || time.Since(lastLadderUpdate) > 30*time.Second {
-							targetSum := 0.96
-							fairPrice := targetSum / 2.0
+							// Place bids slightly below actual asks
+							bidOffset := 0.02 // Bid 2 cents below ask
 
 							// Check inventory balance - pause overweight side
 							positions := engine.GetPositions()
 							pos1 := positions[outcomeNames[0]].Quantity
 							pos2 := positions[outcomeNames[1]].Quantity
 							imbalance := pos1 - pos2
-							const maxImbalance = 50.0 // Pause when 50+ shares imbalanced
+							const maxImbalance = 50.0
 
 							if imbalance > maxImbalance {
 								// Too much of outcome[0], only place for outcome[1]
-								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s only", outcomeNames[0], imbalance, outcomeNames[1])
+								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[0], imbalance, outcomeNames[1], ask2-bidOffset)
 								ladder := ladderMgr.GetOrCreateLadder(outcomeNames[1])
-								ladder.UpdateLadder(fairPrice)
+								ladder.Config.BasePrice = ask2 - bidOffset
+								ladder.PlaceLadder()
 							} else if imbalance < -maxImbalance {
 								// Too much of outcome[1], only place for outcome[0]
-								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s only", outcomeNames[1], -imbalance, outcomeNames[0])
+								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[1], -imbalance, outcomeNames[0], ask1-bidOffset)
 								ladder := ladderMgr.GetOrCreateLadder(outcomeNames[0])
-								ladder.UpdateLadder(fairPrice)
+								ladder.Config.BasePrice = ask1 - bidOffset
+								ladder.PlaceLadder()
 							} else {
-								// Balanced - place both
-								tui.LogEvent("📈 Placing ladders @ $%.3f", fairPrice)
-								ladderMgr.PlaceAllLadders(outcomeNames, targetSum)
+								// Balanced - place both at real prices
+								tui.LogEvent("📈 Placing ladders: %s@$%.3f, %s@$%.3f (margin %.1f%%)",
+									outcomeNames[0], ask1-bidOffset, outcomeNames[1], ask2-bidOffset, margin)
+
+								ladder1 := ladderMgr.GetOrCreateLadder(outcomeNames[0])
+								ladder1.Config.BasePrice = ask1 - bidOffset
+								ladder1.PlaceLadder()
+
+								ladder2 := ladderMgr.GetOrCreateLadder(outcomeNames[1])
+								ladder2.Config.BasePrice = ask2 - bidOffset
+								ladder2.PlaceLadder()
 							}
 
 							laddersPlaced = true
