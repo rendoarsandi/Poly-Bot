@@ -346,6 +346,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastGoodLiquidity := time.Now()
 	lastRESTFetch := time.Time{}
 	lastGammaFetch := time.Time{}
+	lastReconnectCount := int32(0) // Track reconnections
 
 	const liquidityTimeout = 45 * time.Second
 	const restFetchInterval = 10 * time.Second
@@ -443,8 +444,25 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				// Don't continue - still do REST polling below
 			}
 
+			// Check for WebSocket reconnection and log it
+			_, _, reconnects, _ := wsMgr.GetStats()
+			if reconnects > lastReconnectCount {
+				t.TUI.LogEvent("[%s] 🔄 WebSocket reconnected (attempt #%d)", t.ID, reconnects)
+				lastReconnectCount = reconnects
+			}
+
+			// Log if WebSocket seems stale (no data for a while)
+			if !wsMgr.IsConnected() && msg == nil {
+				// Will auto-reconnect, just note that we're relying on REST
+			}
+
 			// Poll REST API for order book data
-			if time.Since(lastRESTFetch) >= restFetchInterval {
+			// Increase frequency if WebSocket is down
+			restInterval := restFetchInterval
+			if !wsMgr.IsConnected() {
+				restInterval = 3 * time.Second // Faster polling when WS is down
+			}
+			if time.Since(lastRESTFetch) >= restInterval {
 				for _, token := range t.Market.Tokens {
 					book, err := t.RestClient.GetOrderBook(token.TokenID)
 					if err != nil {
