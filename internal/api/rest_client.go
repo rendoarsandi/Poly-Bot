@@ -56,10 +56,10 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 	now := time.Now().UTC()
 	currentTs := now.Unix()
 
-	// Calculate the current 15m window (the one that hasn't ended yet)
-	// Current window: round down to nearest 900, that's the START of current window
-	// The window END is start + 900
-	currentWindowEnd := ((currentTs / 900) + 1) * 900
+	// Calculate the current 15m window START
+	// Polymarket slugs use the window START timestamp, not END
+	// Round down to nearest 900 to get the START of current window
+	currentWindowStart := (currentTs / 900) * 900
 
 	var markets []Market
 
@@ -67,9 +67,9 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 	// Start from current window (i=0), then next window (i=1), etc.
 	for _, asset := range assets {
 		for i := 0; i < 3; i++ {
-			windowEnd := currentWindowEnd + (int64(i) * 900)
+			windowStart := currentWindowStart + (int64(i) * 900)
 
-			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowEnd)
+			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
 			resp, err := http.Get(url)
