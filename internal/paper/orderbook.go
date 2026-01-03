@@ -178,22 +178,33 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, marketBid, marketAsk flo
 		shouldFill := false
 		fillPrice := 0.0
 
+		// Price sanity bounds for binary markets (reject unrealistic prices)
+		const minSanePrice = 0.05
+		const maxSanePrice = 0.95
+
 		if order.Side == "buy" {
 			// Buy limit order fills when market ask < our bid price - buffer
 			// Example: limit at 0.50, buffer 0.001 -> fills when ask <= 0.499
 			// This simulates not being first in queue at exactly 0.50
 			fillThreshold := order.Price - ob.queueBuffer
 			if marketAsk > 0 && marketAsk <= fillThreshold {
-				shouldFill = true
-				fillPrice = marketAsk // We get filled at the market price
+				// Sanity check: reject fills at unrealistic prices
+				if marketAsk >= minSanePrice && marketAsk <= maxSanePrice {
+					shouldFill = true
+					fillPrice = marketAsk // We get filled at the market price
+				}
+				// If price is outside sane bounds, skip this fill (likely bad data)
 			}
 		} else if order.Side == "sell" {
 			// Sell limit order fills when market bid > our ask price + buffer
 			// Example: limit at 0.50, buffer 0.001 -> fills when bid >= 0.501
 			fillThreshold := order.Price + ob.queueBuffer
 			if marketBid > 0 && marketBid >= fillThreshold {
-				shouldFill = true
-				fillPrice = marketBid
+				// Sanity check: reject fills at unrealistic prices
+				if marketBid >= minSanePrice && marketBid <= maxSanePrice {
+					shouldFill = true
+					fillPrice = marketBid
+				}
 			}
 		}
 
