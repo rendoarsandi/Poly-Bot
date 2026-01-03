@@ -350,6 +350,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				for _, token := range market.Tokens {
 					book, err := restClient.GetOrderBook(token.TokenID)
 					if err != nil {
+						tui.LogEvent("❌ REST error %s: %v", token.Outcome, err)
 						continue
 					}
 					outcome := token.Outcome
@@ -360,6 +361,9 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					if len(book.Asks) > 0 {
 						ask, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
 					}
+					// Debug: log REST API response
+					tui.LogEvent("📡 REST %s: bid=$%.3f ask=$%.3f (bids:%d asks:%d)",
+						outcome, bid, ask, len(book.Bids), len(book.Asks))
 					if bid > 0 {
 						tokenBids[outcome] = bid
 					}
