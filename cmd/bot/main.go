@@ -382,6 +382,9 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			// Poll REST API for accurate order book data (every 2 seconds)
 			if time.Since(lastRESTFetch) >= restFetchInterval {
 				for _, token := range market.Tokens {
+					// DEBUG: Log the token ID being fetched
+					tui.LogEvent("🔍 Fetching token %s: %s...", token.Outcome, token.TokenID[:30])
+
 					book, err := restClient.GetOrderBook(token.TokenID)
 					if err != nil {
 						tui.LogEvent("❌ REST error %s: %v", token.Outcome, err)
@@ -389,20 +392,14 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					}
 					outcome := token.Outcome
 
-					// Find best bid (highest) and best ask (lowest)
+					// Use first bid/ask since they're already sorted by best price
 					bestBid := 0.0
 					bestAsk := 1.0
-					for _, b := range book.Bids {
-						p, _ := strconv.ParseFloat(b.Price, 64)
-						if p > bestBid {
-							bestBid = p
-						}
+					if len(book.Bids) > 0 {
+						bestBid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
 					}
-					for _, a := range book.Asks {
-						p, _ := strconv.ParseFloat(a.Price, 64)
-						if p < bestAsk && p > 0 {
-							bestAsk = p
-						}
+					if len(book.Asks) > 0 {
+						bestAsk, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
 					}
 
 					                                        // Debug: log REST API response
@@ -441,7 +438,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 			// Fetch real prices from Gamma API (what Polymarket website shows)
 			if time.Since(lastGammaFetch) >= gammaFetchInterval {
-				realPrices, err := restClient.GetGammaPrice(market.ConditionID)
+				realPrices, err := restClient.GetGammaPriceBySlug(market.Slug)
 				if err != nil {
 					tui.LogEvent("⚠️ Gamma API error: %v", err)
 				} else {

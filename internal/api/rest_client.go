@@ -187,20 +187,10 @@ func (c *RestClient) GetOrderBook(tokenID string) (*OrderBookResponse, error) {
 	return &book, nil
 }
 
-// GammaMarketPrice represents the price from Gamma API
-type GammaMarketPrice struct {
-	ConditionID string  `json:"condition_id"`
-	OutcomeYes  float64 `json:"outcomePrices"` // from outcomes array
-	Tokens      []struct {
-		TokenID string  `json:"token_id"`
-		Outcome string  `json:"outcome"`
-		Price   float64 `json:"price"`
-	} `json:"tokens"`
-}
-
-// GetGammaPrice fetches the current price from Gamma API (used on Polymarket website)
-func (c *RestClient) GetGammaPrice(conditionID string) (map[string]float64, error) {
-	url := fmt.Sprintf("%s/markets/%s", c.GammaURL, conditionID)
+// GetGammaPriceBySlug fetches the current price from Gamma API using slug
+func (c *RestClient) GetGammaPriceBySlug(slug string) (map[string]float64, error) {
+	// Use the markets endpoint with slug query param
+	url := fmt.Sprintf("%s/markets?slug=%s", c.GammaURL, slug)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch gamma price: %w", err)
@@ -211,23 +201,32 @@ func (c *RestClient) GetGammaPrice(conditionID string) (map[string]float64, erro
 		return nil, fmt.Errorf("failed to fetch gamma price: status %d", resp.StatusCode)
 	}
 
-	var result struct {
-		Tokens []struct {
-			TokenID string `json:"token_id"`
-			Outcome string `json:"outcome"`
-			Price   string `json:"price"`
-		} `json:"tokens"`
-		OutcomePrices string `json:"outcomePrices"` // JSON array like "[0.02, 0.98]"
+	var results []struct {
+		OutcomePrices string `json:"outcomePrices"` // JSON array like "[\"0.02\", \"0.98\"]"
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		return nil, fmt.Errorf("failed to decode gamma price: %w", err)
 	}
 
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no market found for slug: %s", slug)
+	}
+
+	// Parse outcomePrices which is a JSON array string like "[\"0.725\", \"0.275\"]"
 	prices := make(map[string]float64)
-	for _, t := range result.Tokens {
-		if p, err := parseFloat(t.Price); err == nil {
-			prices[t.Outcome] = p
+	var outcomePrices []string
+	if err := json.Unmarshal([]byte(results[0].OutcomePrices), &outcomePrices); err != nil {
+		return nil, fmt.Errorf("failed to parse outcomePrices: %w", err)
+	}
+
+	// Assume first is "Up" and second is "Down" for 15m markets
+	if len(outcomePrices) >= 2 {
+		if p, err := parseFloat(outcomePrices[0]); err == nil {
+			prices["Up"] = p
+		}
+		if p, err := parseFloat(outcomePrices[1]); err == nil {
+			prices["Down"] = p
 		}
 	}
 
