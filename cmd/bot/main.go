@@ -413,60 +413,33 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						}
 					}
 
-					                                        // Debug: log REST API response
-
-					                                        tui.LogEvent("📡 REST %s: bestBid=$%.3f bestAsk=$%.3f",
-
-					                                                outcome, bestBid, bestAsk)
-
-					
-
-					                                        tokenFullBids[outcome] = toMarketLevels(book.Bids)
-
-					                                        tokenFullAsks[outcome] = toMarketLevels(book.Asks)
-
-					
-
-					                                        if bestBid > 0 {
-
-					                                                tokenBids[outcome] = bestBid
-
-					                                        }
-
-					
-					if bestAsk < 1.0 {
-						tokenAsks[outcome] = bestAsk
-					}
-					if bestBid > 0 && bestAsk < 1.0 {
-						midPrice := (bestBid + bestAsk) / 2.0
-						floatPrices[outcome] = midPrice
-						engine.UpdatePrice(outcome, midPrice)
-						engine.UpdateBidAsk(outcome, bestBid, bestAsk)
-					}
+					// Store full order book for fill simulation (NOT for pricing)
+					tokenFullBids[outcome] = toMarketLevels(book.Bids)
+					tokenFullAsks[outcome] = toMarketLevels(book.Asks)
+					// Don't update tokenBids/tokenAsks here - Gamma API is our price source
 				}
 				lastRESTFetch = time.Now()
 			}
 
-			// Fetch real prices from Gamma API (what Polymarket website shows)
-			// These are the authoritative prices for trading decisions
+			// Fetch prices from Gamma API - this is the ONLY price source we trust
+			// Gamma shows what Polymarket website shows
 			if time.Since(lastGammaFetch) >= gammaFetchInterval {
 				realPricesBA, err := restClient.GetGammaBidAskBySlug(market.Slug)
 				if err != nil {
 					tui.LogEvent("⚠️ Gamma API error: %v", err)
 				} else {
-					realBids := make(map[string]float64)
-					realAsks := make(map[string]float64)
 					for outcome, pa := range realPricesBA {
-						realBids[outcome] = pa.Bid
-						realAsks[outcome] = pa.Ask
-						// Use Gamma prices as authoritative for trading
+						// Set ALL price sources from Gamma
 						tokenBids[outcome] = pa.Bid
 						tokenAsks[outcome] = pa.Ask
 						floatPrices[outcome] = (pa.Bid + pa.Ask) / 2
+						tokenPrices[outcome] = fmt.Sprintf("%.3f", floatPrices[outcome])
 						engine.UpdatePrice(outcome, floatPrices[outcome])
 						engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
 					}
-					tui.UpdateRealMarket(realBids, realAsks)
+					// Both panels show same Gamma data
+					tui.UpdateRealMarket(tokenBids, tokenAsks)
+					tui.UpdatePrices(floatPrices, tokenBids, tokenAsks)
 				}
 				lastGammaFetch = time.Now()
 			}
@@ -474,45 +447,22 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 			priceChanged := false
 			msgCount := 0 // Debug counter
 
-			                        updatePrice := func(assetID, priceStr string, bid, ask float64, fullBids, fullAsks []paper.MarketLevel) {
-			                                outcome := tokenMap[assetID]
-			                                if outcome == "" {
-			                                        return
-			                                }
-			                                if tokenPrices[outcome] != priceStr {
-			                                        tokenPrices[outcome] = priceStr
-			                                        priceChanged = true
-			                                }
-			                                if len(fullBids) > 0 {
-			                                        tokenFullBids[outcome] = fullBids
-			                                }
-			                                if len(fullAsks) > 0 {
-			                                        tokenFullAsks[outcome] = fullAsks
-			                                }
-			                                if bid > 0 {
-			                                        tokenBids[outcome] = bid
-			                                }
-			                                if ask > 0 {
-			                                        tokenAsks[outcome] = ask
-			                                }
-							midPrice := 0.0
-				if bid > 0 && ask > 0 {
-					midPrice = (bid + ask) / 2.0
-				} else if bid > 0 {
-					midPrice = bid
-				} else if ask > 0 {
-					midPrice = ask
-				} else if price, err := strconv.ParseFloat(priceStr, 64); err == nil {
-					midPrice = price
+			// updatePrice only updates order book levels for fill simulation
+			// It does NOT update tokenBids/tokenAsks - those come from Gamma API only
+			updatePrice := func(assetID, priceStr string, bid, ask float64, fullBids, fullAsks []paper.MarketLevel) {
+				outcome := tokenMap[assetID]
+				if outcome == "" {
+					return
 				}
-
-				if midPrice > 0 {
-					engine.UpdatePrice(outcome, midPrice)
-					floatPrices[outcome] = midPrice
+				// Only store full order book for fill simulation
+				if len(fullBids) > 0 {
+					tokenFullBids[outcome] = fullBids
 				}
-				if bid > 0 || ask > 0 {
-					engine.UpdateBidAsk(outcome, bid, ask)
+				if len(fullAsks) > 0 {
+					tokenFullAsks[outcome] = fullAsks
 				}
+				// Mark price changed for trading logic trigger
+				priceChanged = true
 			}
 
 			// Parse messages - find BEST bid (max) and BEST ask (min)
@@ -562,37 +512,10 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				updatePrice(book.AssetID, priceStr, bid, ask, toMarketLevels(book.Bids), toMarketLevels(book.Asks))
 					
 			} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
-				// PriceUpdate contains individual order changes
-				// We can use these to UPDATE bid/ask, but only if the price is reasonable
-				// compared to what we already have (prevents wild swings from single orders)
-				for _, pc := range update.PriceChanges {
-					price, _ := strconv.ParseFloat(pc.Price, 64)
-					outcome := tokenMap[pc.AssetID]
-					if outcome == "" || price <= 0 {
-						continue
-					}
-
-					tokenPrices[outcome] = pc.Price
+				// PriceUpdate - just mark as changed, don't update bids/asks
+				// Gamma API is our only trusted price source
+				if len(update.PriceChanges) > 0 {
 					priceChanged = true
-
-					// Update bid/ask only if we have existing data to compare
-					// and the new price is within 20% of current mid-price
-					currentMid := floatPrices[outcome]
-					if currentMid > 0 {
-						priceDiff := (price - currentMid) / currentMid
-						if priceDiff < 0 {
-							priceDiff = -priceDiff
-						}
-						// Only update if within 20% of current mid (reject outliers)
-						if priceDiff <= 0.20 {
-							if pc.Side == "buy" {
-								tokenBids[outcome] = price
-							} else {
-								tokenAsks[outcome] = price
-							}
-							engine.UpdateBidAsk(outcome, tokenBids[outcome], tokenAsks[outcome])
-						}
-					}
 				}
 			} else {
 				// Debug: log unparsed messages (first few only)
@@ -607,10 +530,9 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 			}
 
-			// Update TUI with prices
-			tui.UpdatePrices(floatPrices, tokenBids, tokenAsks)
+			// TUI is updated by Gamma API fetch above - no need to update here
 
-			                        // Process order fills
+			// Process order fills
 			                        for outcome := range tokenPrices {
 			                                bids := tokenFullBids[outcome]
 			                                asks := tokenFullAsks[outcome]
