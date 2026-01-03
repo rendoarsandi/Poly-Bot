@@ -63,6 +63,9 @@ type Engine struct {
 
 	// Current market prices for unrealized PnL
 	currentPrices map[string]float64
+	// Bid/Ask prices for realistic taker simulation
+	currentBids map[string]float64 // Price you get when SELLING (taker)
+	currentAsks map[string]float64 // Price you pay when BUYING (taker)
 }
 
 // NewEngine creates a new paper trading engine
@@ -74,6 +77,8 @@ func NewEngine(startingBalance float64) *Engine {
 		positions:       make(map[string]*Position),
 		trades:          make([]Trade, 0),
 		currentPrices:   make(map[string]float64),
+		currentBids:     make(map[string]float64),
+		currentAsks:     make(map[string]float64),
 	}
 }
 
@@ -83,6 +88,18 @@ func (e *Engine) UpdatePrice(outcome string, price float64) {
 	defer e.mu.Unlock()
 	e.currentPrices[outcome] = price
 	e.recalculateDrawdown()
+}
+
+// UpdateBidAsk updates bid/ask prices for realistic taker simulation
+func (e *Engine) UpdateBidAsk(outcome string, bid, ask float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if bid > 0 {
+		e.currentBids[outcome] = bid
+	}
+	if ask > 0 {
+		e.currentAsks[outcome] = ask
+	}
 }
 
 // Buy executes a simulated buy order
@@ -187,6 +204,7 @@ func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 
 // Redeem simulates market resolution payout
 // winningOutcome is the outcome that won (pays $1 per share)
+// Polymarket charges NO fees (0% on trading, deposits, withdrawals, and payouts)
 func (e *Engine) Redeem(winningOutcome string) float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -195,21 +213,27 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 
 	for outcome, pos := range e.positions {
 		if outcome == winningOutcome {
-			// Winning shares pay $1 each
+			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
 			e.realizedPnL += pnl
 			e.currentBalance += proceeds
 			payout += proceeds
+
 			if pnl > 0 {
 				e.winningTrades++
 			} else {
 				e.losingTrades++
 			}
+
+			fmt.Printf("💰 REDEEM %s: %.0f shares × $1.00 = $%.2f\n",
+				outcome, pos.Quantity, proceeds)
 		} else {
 			// Losing shares are worthless
 			e.realizedPnL -= pos.TotalCost
 			e.losingTrades++
+			fmt.Printf("💀 EXPIRED %s: %.0f shares worth $0 (lost $%.2f)\n",
+				outcome, pos.Quantity, pos.TotalCost)
 		}
 	}
 
@@ -220,7 +244,8 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 	return payout
 }
 
-// LiquidateAll sells all positions at current market prices (emergency exit)
+// LiquidateAll sells all positions at current BID prices (taker - chasing liquidity)
+// This simulates realistic emergency exit where you SELL at the BID (worse price)
 func (e *Engine) LiquidateAll() float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -232,10 +257,18 @@ func (e *Engine) LiquidateAll() float64 {
 			continue
 		}
 
-		// Get current price, default to cost basis if not available
-		price := pos.AvgPrice
-		if p, ok := e.currentPrices[outcome]; ok && p > 0 {
-			price = p
+		// TAKER SELL: Use BID price (the price buyers are willing to pay)
+		// This is worse than mid-price, simulating realistic slippage
+		price := pos.AvgPrice // Fallback to cost basis
+		if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+			price = bid // Use BID for taker sells
+			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ BID $%.3f (chasing liquidity)\n",
+				outcome, pos.Quantity, bid)
+		} else if p, ok := e.currentPrices[outcome]; ok && p > 0 {
+			// Fallback to mid-price with simulated slippage (2% worse)
+			price = p * 0.98
+			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (mid-2%% slippage)\n",
+				outcome, pos.Quantity, price)
 		}
 
 		proceeds := pos.Quantity * price

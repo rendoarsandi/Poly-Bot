@@ -59,6 +59,8 @@ func (l *Ladder) PlaceLadder() []*LimitOrder {
 			i,
 		)
 		l.Orders = append(l.Orders, order)
+		fmt.Printf("📝 Placed: %s L%d: %.0f shares @ $%.3f\n",
+			l.Outcome, i, l.Config.SharesPerLevel, price)
 	}
 
 	return l.Orders

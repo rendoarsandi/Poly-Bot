@@ -339,6 +339,10 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				if midPrice > 0 {
 					engine.UpdatePrice(outcome, midPrice)
 				}
+				// Also update bid/ask for realistic taker simulation
+				if bid > 0 || ask > 0 {
+					engine.UpdateBidAsk(outcome, bid, ask)
+				}
 			}
 
 			// Parse messages
@@ -390,8 +394,9 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				if bid > 0 || ask > 0 {
 					filledOrders := orderBook.ProcessPriceUpdate(outcome, bid, ask)
 					for _, order := range filledOrders {
-						fmt.Printf("✅ Filled: %s %s %.0f @ $%.3f\n",
-							order.Side, order.Outcome, order.Quantity, order.Price)
+						fmt.Printf("✅ Filled: %s %s %.0f @ $%.3f (limit was $%.3f, saved $%.3f)\n",
+							order.Side, order.Outcome, order.Quantity,
+							order.FillPrice, order.Price, order.Price-order.FillPrice)
 					}
 				}
 			}

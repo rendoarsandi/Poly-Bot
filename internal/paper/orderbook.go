@@ -22,9 +22,10 @@ type LimitOrder struct {
 	CreatedAt    time.Time
 	Outcome      string      // "Up", "Down", "Yes", "No"
 	Side         string      // "buy" or "sell"
-	Price        float64     // Target price
+	Price        float64     // Target price (limit)
 	Quantity     float64     // Total quantity
 	FilledQty    float64     // Amount filled
+	FillPrice    float64     // Actual fill price (may be better than limit)
 	Status       OrderStatus
 	LadderLevel  int         // Which ladder level (0 = best price, 1 = next, etc.)
 }
@@ -40,6 +41,10 @@ type OrderBook struct {
 	orders      map[int]*LimitOrder
 	nextOrderID int
 
+	// Realism settings
+	queueBuffer    float64       // Price buffer to simulate queue priority (e.g., 0.001 = must be 0.1 cent better)
+	orderDelay     time.Duration // Delay when placing orders (simulates API latency)
+
 	// Callbacks
 	onFill func(order *LimitOrder, fillQty float64, fillPrice float64)
 }
@@ -49,7 +54,27 @@ func NewOrderBook() *OrderBook {
 	return &OrderBook{
 		orders:      make(map[int]*LimitOrder),
 		nextOrderID: 1,
+		queueBuffer: 0.001, // Default: need price 0.1 cent better to fill
+		orderDelay:  200 * time.Millisecond, // Default: 200ms API latency
 	}
+}
+
+// NewOrderBookWithRealism creates an order book with custom realism settings
+func NewOrderBookWithRealism(queueBuffer float64, orderDelay time.Duration) *OrderBook {
+	return &OrderBook{
+		orders:      make(map[int]*LimitOrder),
+		nextOrderID: 1,
+		queueBuffer: queueBuffer,
+		orderDelay:  orderDelay,
+	}
+}
+
+// SetRealism configures realism settings
+func (ob *OrderBook) SetRealism(queueBuffer float64, orderDelay time.Duration) {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	ob.queueBuffer = queueBuffer
+	ob.orderDelay = orderDelay
 }
 
 // SetFillCallback sets the callback for when orders are filled
@@ -59,8 +84,13 @@ func (ob *OrderBook) SetFillCallback(cb func(order *LimitOrder, fillQty float64,
 	ob.onFill = cb
 }
 
-// PlaceOrder places a new limit order
+// PlaceOrder places a new limit order (includes simulated API delay)
 func (ob *OrderBook) PlaceOrder(outcome, side string, price, quantity float64, ladderLevel int) *LimitOrder {
+	// Simulate API latency before placing order
+	if ob.orderDelay > 0 {
+		time.Sleep(ob.orderDelay)
+	}
+
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
@@ -128,8 +158,9 @@ func (ob *OrderBook) CancelOrdersForOutcome(outcome string) int {
 }
 
 // ProcessPriceUpdate checks if any orders should be filled based on new market prices
-// For BUY orders: fill if market price <= order price (someone willing to sell at our bid)
-// For SELL orders: fill if market price >= order price (someone willing to buy at our ask)
+// For BUY orders: fill if market ask < order price - queueBuffer (simulates queue priority)
+// For SELL orders: fill if market bid > order price + queueBuffer (simulates queue priority)
+// The queueBuffer simulates that you're not first in queue at your exact price level
 func (ob *OrderBook) ProcessPriceUpdate(outcome string, marketBid, marketAsk float64) []*LimitOrder {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
@@ -148,16 +179,19 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, marketBid, marketAsk flo
 		fillPrice := 0.0
 
 		if order.Side == "buy" {
-			// Buy limit order fills when market ask <= our bid price
-			// (someone is willing to sell at or below our price)
-			if marketAsk > 0 && marketAsk <= order.Price {
+			// Buy limit order fills when market ask < our bid price - buffer
+			// Example: limit at 0.50, buffer 0.001 -> fills when ask <= 0.499
+			// This simulates not being first in queue at exactly 0.50
+			fillThreshold := order.Price - ob.queueBuffer
+			if marketAsk > 0 && marketAsk <= fillThreshold {
 				shouldFill = true
-				fillPrice = marketAsk // We get filled at the better price
+				fillPrice = marketAsk // We get filled at the market price
 			}
 		} else if order.Side == "sell" {
-			// Sell limit order fills when market bid >= our ask price
-			// (someone is willing to buy at or above our price)
-			if marketBid > 0 && marketBid >= order.Price {
+			// Sell limit order fills when market bid > our ask price + buffer
+			// Example: limit at 0.50, buffer 0.001 -> fills when bid >= 0.501
+			fillThreshold := order.Price + ob.queueBuffer
+			if marketBid > 0 && marketBid >= fillThreshold {
 				shouldFill = true
 				fillPrice = marketBid
 			}
@@ -166,6 +200,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, marketBid, marketAsk flo
 		if shouldFill {
 			fillQty := order.RemainingQty()
 			order.FilledQty = order.Quantity
+			order.FillPrice = fillPrice // Store actual fill price
 			order.Status = OrderStatusFilled
 			filledOrders = append(filledOrders, order)
 
