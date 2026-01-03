@@ -365,15 +365,17 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 				}
 				updatePrice(book.AssetID, priceStr, bid, ask)
 			} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
+				// NOTE: PriceUpdate contains individual order changes, NOT the best bid/ask
+				// We should NOT use these for fill simulation - only use full OrderBook snapshots
+				// Just update the "last price" display, but don't trigger fills
 				for _, pc := range update.PriceChanges {
 					price, _ := strconv.ParseFloat(pc.Price, 64)
-					bid, ask := 0.0, 0.0
-					if pc.Side == "buy" {
-						bid = price
-					} else {
-						ask = price
+					outcome := tokenMap[pc.AssetID]
+					if outcome != "" && price > 0 {
+						// Only update display price, don't update bid/ask for fills
+						tokenPrices[outcome] = pc.Price
+						priceChanged = true
 					}
-					updatePrice(pc.AssetID, pc.Price, bid, ask)
 				}
 			}
 
