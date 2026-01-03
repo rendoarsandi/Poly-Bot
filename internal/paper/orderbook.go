@@ -178,33 +178,42 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, marketBid, marketAsk flo
 		shouldFill := false
 		fillPrice := 0.0
 
-		// Price sanity bounds for binary markets (reject unrealistic prices)
-		const minSanePrice = 0.05
-		const maxSanePrice = 0.95
+		// Price sanity bounds for binary markets
+		const minSanePrice = 0.20 // Reject prices below 20 cents (likely bad data)
+		const maxSanePrice = 0.80 // Reject prices above 80 cents (likely bad data)
+		const maxPriceImprovement = 0.30 // Reject if fill is >30% better than limit (suspicious)
 
 		if order.Side == "buy" {
 			// Buy limit order fills when market ask < our bid price - buffer
-			// Example: limit at 0.50, buffer 0.001 -> fills when ask <= 0.499
-			// This simulates not being first in queue at exactly 0.50
 			fillThreshold := order.Price - ob.queueBuffer
 			if marketAsk > 0 && marketAsk <= fillThreshold {
-				// Sanity check: reject fills at unrealistic prices
-				if marketAsk >= minSanePrice && marketAsk <= maxSanePrice {
-					shouldFill = true
-					fillPrice = marketAsk // We get filled at the market price
+				// Sanity check 1: absolute price bounds
+				if marketAsk < minSanePrice || marketAsk > maxSanePrice {
+					continue // Skip - price outside sane range
 				}
-				// If price is outside sane bounds, skip this fill (likely bad data)
+				// Sanity check 2: reject suspiciously good fills (likely bad data)
+				priceImprovement := (order.Price - marketAsk) / order.Price
+				if priceImprovement > maxPriceImprovement {
+					continue // Skip - too good to be true (>30% improvement)
+				}
+				shouldFill = true
+				fillPrice = marketAsk
 			}
 		} else if order.Side == "sell" {
 			// Sell limit order fills when market bid > our ask price + buffer
-			// Example: limit at 0.50, buffer 0.001 -> fills when bid >= 0.501
 			fillThreshold := order.Price + ob.queueBuffer
 			if marketBid > 0 && marketBid >= fillThreshold {
-				// Sanity check: reject fills at unrealistic prices
-				if marketBid >= minSanePrice && marketBid <= maxSanePrice {
-					shouldFill = true
-					fillPrice = marketBid
+				// Sanity check 1: absolute price bounds
+				if marketBid < minSanePrice || marketBid > maxSanePrice {
+					continue
 				}
+				// Sanity check 2: reject suspiciously good fills
+				priceImprovement := (marketBid - order.Price) / order.Price
+				if priceImprovement > maxPriceImprovement {
+					continue
+				}
+				shouldFill = true
+				fillPrice = marketBid
 			}
 		}
 
