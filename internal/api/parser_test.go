@@ -11,10 +11,10 @@ func TestParseOrderBook(t *testing.T) {
 		"market": "test-condition",
 		"timestamp": "123456789",
 		"hash": "somehash",
-		"buys": [
+		"bids": [
 			{"price": "0.48", "size": "100"}
 		],
-		"sells": [
+		"asks": [
 			{"price": "0.50", "size": "200"}
 		]
 	}`
@@ -28,19 +28,22 @@ func TestParseOrderBook(t *testing.T) {
 		t.Errorf("Expected AssetID 'yes-token', got %s", book.AssetID)
 	}
 
-	if len(book.Buys) != 1 || book.Buys[0].Price != "0.48" {
-		t.Errorf("Expected Buy Price '0.48', got %+v", book.Buys)
+	if len(book.Bids) != 1 || book.Bids[0].Price != "0.48" {
+		t.Errorf("Expected Bid Price '0.48', got %+v", book.Bids)
 	}
 
-	if len(book.Sells) != 1 || book.Sells[0].Price != "0.50" {
-		t.Errorf("Expected Sell Price '0.50', got %+v", book.Sells)
+	if len(book.Asks) != 1 || book.Asks[0].Price != "0.50" {
+		t.Errorf("Expected Ask Price '0.50', got %+v", book.Asks)
 	}
 }
 
-func TestParseOrderBookWrongEvent(t *testing.T) {
-	rawJSON := `{"event_type": "not-a-book"}`
-	_, err := ParseOrderBook([]byte(rawJSON))
-	if err == nil {
-		t.Fatal("Expected error for wrong event type, got nil")
+func TestParseOrderBookEmptyBidsAsks(t *testing.T) {
+	rawJSON := `{"event_type": "book", "asset_id": "test", "bids": [], "asks": []}`
+	book, err := ParseOrderBook([]byte(rawJSON))
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(book.Bids) != 0 || len(book.Asks) != 0 {
+		t.Errorf("Expected empty bids and asks, got bids=%d asks=%d", len(book.Bids), len(book.Asks))
 	}
 }

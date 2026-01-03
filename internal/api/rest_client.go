@@ -55,22 +55,21 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 
 	now := time.Now().UTC()
 	currentTs := now.Unix()
-	// Start from next window (current might be ending)
-	windowStart := ((currentTs / 900) + 1) * 900
+
+	// Calculate the current 15m window (the one that hasn't ended yet)
+	// Current window: round down to nearest 900, that's the START of current window
+	// The window END is start + 900
+	currentWindowEnd := ((currentTs / 900) + 1) * 900
 
 	var markets []Market
 
-	// Check next 3 windows (skip current which might be ending)
+	// Check current window and next 2 windows
+	// Start from current window (i=0), then next window (i=1), etc.
 	for _, asset := range assets {
 		for i := 0; i < 3; i++ {
-			ts := windowStart + (int64(i) * 900)
+			windowEnd := currentWindowEnd + (int64(i) * 900)
 
-			// Skip if window has already ended
-			if ts < currentTs {
-				continue
-			}
-
-			slug := fmt.Sprintf("%s-updown-15m-%d", asset, ts)
+			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowEnd)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
 			resp, err := http.Get(url)
@@ -96,9 +95,24 @@ func (c *RestClient) Get15mMarkets(assets []string) ([]Market, error) {
 				continue
 			}
 
+			// Check if market has any liquidity (at least one side has orders)
+			hasLiquidity := false
+			for _, token := range market.Tokens {
+				book, err := c.GetOrderBook(token.TokenID)
+				if err == nil && (len(book.Bids) > 0 || len(book.Asks) > 0) {
+					hasLiquidity = true
+					break
+				}
+			}
+
+			if !hasLiquidity {
+				fmt.Printf("⚠️  %s has no liquidity, skipping...\n", slug)
+				continue
+			}
+
 			market.Slug = slug // Use the 15m slug
 			markets = append(markets, *market)
-			break // Found next market for this asset
+			break // Found market for this asset
 		}
 	}
 
@@ -171,4 +185,57 @@ func (c *RestClient) GetOrderBook(tokenID string) (*OrderBookResponse, error) {
 	}
 
 	return &book, nil
+}
+
+// GammaMarketPrice represents the price from Gamma API
+type GammaMarketPrice struct {
+	ConditionID string  `json:"condition_id"`
+	OutcomeYes  float64 `json:"outcomePrices"` // from outcomes array
+	Tokens      []struct {
+		TokenID string  `json:"token_id"`
+		Outcome string  `json:"outcome"`
+		Price   float64 `json:"price"`
+	} `json:"tokens"`
+}
+
+// GetGammaPrice fetches the current price from Gamma API (used on Polymarket website)
+func (c *RestClient) GetGammaPrice(conditionID string) (map[string]float64, error) {
+	url := fmt.Sprintf("%s/markets/%s", c.GammaURL, conditionID)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch gamma price: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch gamma price: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Tokens []struct {
+			TokenID string `json:"token_id"`
+			Outcome string `json:"outcome"`
+			Price   string `json:"price"`
+		} `json:"tokens"`
+		OutcomePrices string `json:"outcomePrices"` // JSON array like "[0.02, 0.98]"
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode gamma price: %w", err)
+	}
+
+	prices := make(map[string]float64)
+	for _, t := range result.Tokens {
+		if p, err := parseFloat(t.Price); err == nil {
+			prices[t.Outcome] = p
+		}
+	}
+
+	return prices, nil
+}
+
+func parseFloat(s string) (float64, error) {
+	var f float64
+	_, err := fmt.Sscanf(s, "%f", &f)
+	return f, err
 }

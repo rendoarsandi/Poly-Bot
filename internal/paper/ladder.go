@@ -18,7 +18,7 @@ func DefaultLadderConfig() LadderConfig {
 		Levels:         3,
 		SharesPerLevel: 100,
 		PriceStep:      0.01, // 1 cent steps
-		BasePrice:      0.48,
+		BasePrice:      0.0,  // Must be set from real market data before placing orders
 	}
 }
 
@@ -41,13 +41,21 @@ func NewLadder(outcome string, config LadderConfig, orderBook *OrderBook) *Ladde
 }
 
 // PlaceLadder places all ladder orders
+// Returns nil if BasePrice is not set (must be initialized from real market data first)
 func (l *Ladder) PlaceLadder() []*LimitOrder {
+	// Don't place orders if BasePrice hasn't been set from real market data
+	if l.Config.BasePrice <= 0.05 || l.Config.BasePrice >= 0.95 {
+		fmt.Printf("⚠️ Skipping %s ladder: invalid BasePrice $%.3f (waiting for real market data)\n",
+			l.Outcome, l.Config.BasePrice)
+		return nil
+	}
+
 	l.CancelAll() // Cancel existing orders first
 	l.Orders = make([]*LimitOrder, 0, l.Config.Levels)
 
 	for i := 0; i < l.Config.Levels; i++ {
 		price := l.Config.BasePrice - (float64(i) * l.Config.PriceStep)
-		if price <= 0 {
+		if price <= 0.01 { // Minimum viable price
 			break
 		}
 
@@ -66,8 +74,15 @@ func (l *Ladder) PlaceLadder() []*LimitOrder {
 	return l.Orders
 }
 
-// UpdateLadder updates ladder based on new fair price
+// UpdateLadder updates ladder based on new fair price from real market data
+// Returns nil if fairPrice is out of valid range
 func (l *Ladder) UpdateLadder(fairPrice float64) []*LimitOrder {
+	// Validate fair price is within reasonable bounds
+	if fairPrice <= 0.05 || fairPrice >= 0.95 {
+		fmt.Printf("⚠️ Skipping %s ladder update: fairPrice $%.3f out of range\n",
+			l.Outcome, fairPrice)
+		return nil
+	}
 	// Adjust base price to be below fair price
 	l.Config.BasePrice = fairPrice - 0.02 // Bid 2 cents below fair value
 	return l.PlaceLadder()
@@ -135,6 +150,7 @@ func (lm *LadderManager) GetOrCreateLadder(outcome string) *Ladder {
 }
 
 // PlaceAllLadders places ladders for all outcomes based on target sum
+// DEPRECATED: Use PlaceAllLaddersWithPrices for real market data
 func (lm *LadderManager) PlaceAllLadders(outcomes []string, targetSum float64) {
 	// Calculate fair price per side (assuming 50/50)
 	fairPricePerSide := targetSum / 2.0
@@ -142,6 +158,20 @@ func (lm *LadderManager) PlaceAllLadders(outcomes []string, targetSum float64) {
 	for _, outcome := range outcomes {
 		ladder := lm.GetOrCreateLadder(outcome)
 		ladder.UpdateLadder(fairPricePerSide)
+	}
+}
+
+// PlaceAllLaddersWithPrices places ladders for all outcomes using real market prices
+// prices maps outcome name to the actual market ask price from Polymarket
+func (lm *LadderManager) PlaceAllLaddersWithPrices(outcomes []string, prices map[string]float64) {
+	for _, outcome := range outcomes {
+		price := prices[outcome]
+		if price <= 0.05 || price >= 0.95 {
+			fmt.Printf("⚠️ Skipping %s: price $%.3f out of tradeable range\n", outcome, price)
+			continue
+		}
+		ladder := lm.GetOrCreateLadder(outcome)
+		ladder.UpdateLadder(price)
 	}
 }
 

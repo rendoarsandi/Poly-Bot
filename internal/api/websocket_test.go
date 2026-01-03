@@ -87,7 +87,7 @@ func TestWSManagerSubscribeRead(t *testing.T) {
 
 func TestWSManagerDefault(t *testing.T) {
 	mgr := NewWSManager("")
-	if mgr.URL != "ws://clob.polymarket.com/ws" {
+	if mgr.URL != "wss://ws-subscriptions-clob.polymarket.com/ws/market" {
 		t.Errorf("Expected default URL, got %s", mgr.URL)
 	}
 }

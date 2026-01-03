@@ -151,6 +151,25 @@ func findNextMarket(restClient *api.RestClient, preferredSlug string, skipSlug s
 func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, restClient *api.RestClient) (*marketResult, error) {
 	fmt.Printf("\n📊 Trading Market: %s\n", market.Slug)
 	fmt.Printf("   Condition ID: %s\n", market.ConditionID)
+
+	// DEBUG: Verify token IDs with REST API immediately
+	fmt.Println("\n🔍 DEBUG: Verifying token IDs...")
+	for _, t := range market.Tokens {
+		book, err := restClient.GetOrderBook(t.TokenID)
+		if err != nil {
+			fmt.Printf("   ❌ %s (%s...): ERROR - %v\n", t.Outcome, t.TokenID[:20], err)
+		} else {
+			bestBid, bestAsk := 0.0, 1.0
+			if len(book.Bids) > 0 {
+				bestBid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+			}
+			if len(book.Asks) > 0 {
+				bestAsk, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+			}
+			fmt.Printf("   ✅ %s (%s...): bid=$%.3f ask=$%.3f (%d bids, %d asks)\n",
+				t.Outcome, t.TokenID[:20], bestBid, bestAsk, len(book.Bids), len(book.Asks))
+		}
+	}
 	for _, t := range market.Tokens {
 		fmt.Printf("   • %s: %s...\n", t.Outcome, t.TokenID[:20])
 	}
@@ -189,7 +208,7 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 		Levels:         3,
 		SharesPerLevel: 25,
 		PriceStep:      0.01,
-		BasePrice:      0.48,
+		BasePrice:      0.0, // Will be set dynamically from real market data
 	}
 	ladderMgr := paper.NewLadderManager(orderBook, ladderConfig)
 
@@ -264,6 +283,10 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 	// REST API polling for accurate prices
 	lastRESTFetch := time.Time{}
 	const restFetchInterval = 2 * time.Second
+
+	// Gamma API polling for real market prices (verification)
+	lastGammaFetch := time.Time{}
+	const gammaFetchInterval = 5 * time.Second
 
 	for {
 		select {
@@ -414,6 +437,26 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 					}
 				}
 				lastRESTFetch = time.Now()
+			}
+
+			// Fetch real prices from Gamma API (what Polymarket website shows)
+			if time.Since(lastGammaFetch) >= gammaFetchInterval {
+				realPrices, err := restClient.GetGammaPrice(market.ConditionID)
+				if err != nil {
+					tui.LogEvent("⚠️ Gamma API error: %v", err)
+				} else {
+					realBids := make(map[string]float64)
+					realAsks := make(map[string]float64)
+					for outcome, price := range realPrices {
+						// Gamma returns "price" which is like last trade / mid
+						// Approximate bid/ask by +/- 0.005 spread
+						realBids[outcome] = price - 0.005
+						realAsks[outcome] = price + 0.005
+						tui.LogEvent("🌐 REAL %s: price=$%.3f", outcome, price)
+					}
+					tui.UpdateRealMarket(realBids, realAsks)
+				}
+				lastGammaFetch = time.Now()
 			}
 
 			priceChanged := false
@@ -587,9 +630,9 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 						fmt.Printf("   • %s: %.0f shares @ $%.3f avg\n", outcome, pos.Quantity, pos.AvgPrice)
 					}
 					fmt.Println("⏳ These will resolve when market expires naturally")
-					fmt.Println("🔄 Finding another market to trade...\n")
+					fmt.Println("🔄 Finding another market to trade...")
 				} else {
-					fmt.Println("\n💨 Liquidity dried up - finding another market...\n")
+					fmt.Println("\n💨 Liquidity dried up - finding another market...")
 				}
 
 				// Don't liquidate - just cancel open orders and move on
@@ -667,10 +710,37 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 					// Place ladders if opportunity exists (sum < 1.0 means arbitrage)
 					if margin >= 2.0 && riskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*ask1) {
-						if !laddersPlaced || time.Since(lastLadderUpdate) > 30*time.Second {
-							// Place bids slightly below actual asks
-							bidOffset := 0.02 // Bid 2 cents below ask
+						// Check if market prices have moved significantly from our ladder prices
+						// This makes the bot more responsive to real market movements
+						ladder1 := ladderMgr.GetOrCreateLadder(outcomeNames[0])
+						ladder2 := ladderMgr.GetOrCreateLadder(outcomeNames[1])
 
+						bidOffset := 0.02 // Bid 2 cents below ask
+						targetPrice1 := ask1 - bidOffset
+						targetPrice2 := ask2 - bidOffset
+
+						// Calculate price drift from current ladder base prices
+						priceDrift1 := 0.0
+						priceDrift2 := 0.0
+						if ladder1.Config.BasePrice > 0 {
+							priceDrift1 = targetPrice1 - ladder1.Config.BasePrice
+							if priceDrift1 < 0 {
+								priceDrift1 = -priceDrift1
+							}
+						}
+						if ladder2.Config.BasePrice > 0 {
+							priceDrift2 = targetPrice2 - ladder2.Config.BasePrice
+							if priceDrift2 < 0 {
+								priceDrift2 = -priceDrift2
+							}
+						}
+
+						// Update ladders if: not placed yet, significant price drift (>3 cents), or 10 seconds elapsed
+						needsUpdate := !laddersPlaced ||
+							priceDrift1 >= 0.03 || priceDrift2 >= 0.03 ||
+							time.Since(lastLadderUpdate) > 10*time.Second
+
+						if needsUpdate {
 							// Check inventory balance - pause overweight side
 							positions := engine.GetPositions()
 							pos1 := positions[outcomeNames[0]].Quantity
@@ -680,27 +750,23 @@ func tradeMarket(ctx context.Context, market *api.Market, engine *paper.Engine, 
 
 							if imbalance > maxImbalance {
 								// Too much of outcome[0], only place for outcome[1]
-								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[0], imbalance, outcomeNames[1], ask2-bidOffset)
-								ladder := ladderMgr.GetOrCreateLadder(outcomeNames[1])
-								ladder.Config.BasePrice = ask2 - bidOffset
-								ladder.PlaceLadder()
+								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[0], imbalance, outcomeNames[1], targetPrice2)
+								ladder2.Config.BasePrice = targetPrice2
+								ladder2.PlaceLadder()
 							} else if imbalance < -maxImbalance {
 								// Too much of outcome[1], only place for outcome[0]
-								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[1], -imbalance, outcomeNames[0], ask1-bidOffset)
-								ladder := ladderMgr.GetOrCreateLadder(outcomeNames[0])
-								ladder.Config.BasePrice = ask1 - bidOffset
-								ladder.PlaceLadder()
+								tui.LogEvent("⚖️ Pausing %s (%.0f ahead), placing %s @ $%.3f", outcomeNames[1], -imbalance, outcomeNames[0], targetPrice1)
+								ladder1.Config.BasePrice = targetPrice1
+								ladder1.PlaceLadder()
 							} else {
 								// Balanced - place both at real prices
 								tui.LogEvent("📈 Placing ladders: %s@$%.3f, %s@$%.3f (margin %.1f%%)",
-									outcomeNames[0], ask1-bidOffset, outcomeNames[1], ask2-bidOffset, margin)
+									outcomeNames[0], targetPrice1, outcomeNames[1], targetPrice2, margin)
 
-								ladder1 := ladderMgr.GetOrCreateLadder(outcomeNames[0])
-								ladder1.Config.BasePrice = ask1 - bidOffset
+								ladder1.Config.BasePrice = targetPrice1
 								ladder1.PlaceLadder()
 
-								ladder2 := ladderMgr.GetOrCreateLadder(outcomeNames[1])
-								ladder2.Config.BasePrice = ask2 - bidOffset
+								ladder2.Config.BasePrice = targetPrice2
 								ladder2.PlaceLadder()
 							}
 
