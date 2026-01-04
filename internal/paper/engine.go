@@ -300,8 +300,8 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 
 	payout := 0.0
 
-	for outcome, pos := range e.positions {
-		if outcome == winningOutcome {
+	for _, pos := range e.positions {
+		if pos.Outcome == winningOutcome {
 			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
@@ -314,19 +314,10 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 			} else {
 				e.losingTrades++
 			}
-
-			/*
-			fmt.Printf("💰 REDEEM %s: %.0f shares × $1.00 = $%.2f\n",
-				outcome, pos.Quantity, proceeds)
-			*/
 		} else {
 			// Losing shares are worthless
 			e.realizedPnL -= pos.TotalCost
 			e.losingTrades++
-			/*
-			fmt.Printf("💀 EXPIRED %s: %.0f shares worth $0 (lost $%.2f)\n",
-				outcome, pos.Quantity, pos.TotalCost)
-			*/
 		}
 	}
 
@@ -346,8 +337,9 @@ func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
 		WinningOutcome: winningOutcome,
 	}
 
-	for outcome, pos := range e.positions {
-		if outcome == winningOutcome {
+	for _, pos := range e.positions {
+		// Correctly match the outcome even if the key has a "MarketID:" prefix
+		if pos.Outcome == winningOutcome {
 			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
@@ -370,14 +362,11 @@ func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
 			e.realizedPnL -= pos.TotalCost
 			e.losingTrades++
 
-			result.LosingOutcome = outcome
+			result.LosingOutcome = pos.Outcome
 			result.LosingShares = pos.Quantity
 			result.LosingCost = pos.TotalCost
 		}
 	}
-
-	// Calculate total PnL
-	result.TotalPnL = result.WinningPnL - result.LosingCost
 
 	// Clear all positions
 	e.positions = make(map[string]*Position)

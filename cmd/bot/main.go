@@ -485,9 +485,9 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 	ladderMgr := paper.NewLadderManager(orderBook, ladderConfig)
 
 	riskConfig := paper.RiskConfig{
-		MaxExposure:        1000.0,
+		MaxExposure:        2000.0,
 		MaxUnmatchedRatio:  0.40,
-		MaxUnmatchedShares: 150.0,
+		MaxUnmatchedShares: 300.0,
 		SkewThreshold:      0.30,
 		KillSwitchDrawdown: 999.0,
 	}
@@ -621,13 +621,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		default:
 			// Check safety timeout - force exit if trader runs too long
 			if time.Now().After(traderDeadline) {
-				t.TUI.LogEvent("[%s] ⚠️ SAFETY TIMEOUT - Forcing market exit", t.ID)
+				logEvent(t.TUI, t.CSVLogger, t.Engine, "WARN", t.ID, "TIMEOUT", "SAFETY TIMEOUT - Forcing market exit")
 				t.LadderMgr.CancelAllLadders()
 
-				// Simulate resolution based on last known prices
-				winner := simulateResolution(t.Outcomes, tokenPrices)
+				// Use more robust resolution simulation
+				winner := t.determineWinner()
 				if winner != "" {
-					t.TUI.LogEvent("[%s] 🏆 Timeout resolution: %s", t.ID, winner)
+					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
 					t.Engine.RedeemWithDetails(winner)
 				}
 
@@ -659,11 +659,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			if isExpired && !t.MarketEnded {
 				t.MarketEnded = true
-				t.TUI.LogEvent("[%s] ⏳ MARKET EXPIRED - resolving immediately", t.ID)
+				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
 
-				// No waiting - resolve immediately based on last known prices
-				winner := simulateResolution(t.Outcomes, tokenPrices)
-				t.TUI.LogEvent("[%s] 🏆 WINNER: %s", t.ID, winner)
+				// Use more robust resolution simulation
+				winner := t.determineWinner()
+				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
 
 				// Use detailed redemption
 				result := t.Engine.RedeemWithDetails(winner)
@@ -898,8 +898,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
-					const minMarginPercent = 2.0    // Minimum margin % to trigger arbitrage trade
-					const baseSharesPerTrade = 25.0 // Base shares per trade
+					const minMarginPercent = 2.0     // Minimum margin % to trigger arbitrage trade
+					const baseSharesPerTrade = 100.0 // Base shares per trade ($100 min)
 
 					// Evaluate portfolio risk before trading
 					riskAction, riskReason := t.RiskMgr.Evaluate()
@@ -918,13 +918,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						// Only scale if risk allows
 						if riskAction != paper.RiskActionReduceSize {
-							// Scale shares based on margin
+							// Scale shares based on margin - more aggressive since opportunities are rare
 							if margin >= 5.0 {
-								shares = baseShares * 4
+								shares = baseShares * 4 // 400 shares
 							} else if margin >= 4.0 {
-								shares = baseShares * 3
+								shares = baseShares * 3 // 300 shares
 							} else if margin >= 3.0 {
-								shares = baseShares * 2
+								shares = baseShares * 2 // 200 shares
 							}
 						}
 
@@ -968,6 +968,31 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 		}
 	}
+}
+
+// determineWinner picks the winning outcome based on last known prices
+func (t *MarketTrader) determineWinner() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.Outcomes) == 0 {
+		return ""
+	}
+
+	// For 2-outcome markets (Up/Down)
+	if len(t.Outcomes) == 2 {
+		p1 := t.FloatPrices[t.Outcomes[0]]
+		p2 := t.FloatPrices[t.Outcomes[1]]
+
+		if p1 > p2 {
+			return t.Outcomes[0]
+		} else if p2 > p1 {
+			return t.Outcomes[1]
+		}
+	}
+
+	// Fallback: Pick first outcome if no data
+	return t.Outcomes[0]
 }
 
 // simulateResolution determines winner based on final prices (for paper trading)
