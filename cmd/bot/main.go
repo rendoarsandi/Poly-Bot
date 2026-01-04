@@ -489,13 +489,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 	tokenPrices := make(map[string]string)
 	lastGoodLiquidity := time.Now()
-	lastRESTFetch := time.Time{}
-	lastGammaFetch := time.Time{}
 	lastReconnectCount := int32(0) // Track reconnections
+	lastPriceUpdate := time.Now()
 
 	const liquidityTimeout = 45 * time.Second
-	const restFetchInterval = 50 * time.Millisecond  // Ultra-fast REST polling (50ms = 20/sec)
-	const gammaFetchInterval = 50 * time.Millisecond // Ultra-fast CLOB polling (50ms)
+	const wsPriceTimeout = 5 * time.Second // Max time without WS price update before warning
 
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
@@ -594,119 +592,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 			}
 
-			// ============ PRICE UPDATES - DO THESE FIRST ============
-			// Poll REST API for order book data BEFORE WebSocket
-			// This ensures prices update even if WS is slow
-			restInterval := restFetchInterval
-			if !wsMgr.IsConnected() {
-				restInterval = 25 * time.Millisecond // Ultra-fast when WS is down
-			}
-			if time.Since(lastRESTFetch) >= restInterval {
-				// Fetch order books in PARALLEL for all tokens
-				type bookResult struct {
-					outcome string
-					book    *api.OrderBookResponse
-					err     error
-				}
-				numTokens := len(t.Market.Tokens)
-				results := make(chan bookResult, numTokens) // Buffered to prevent goroutine leaks
-
-				for _, token := range t.Market.Tokens {
-					go func(tokenID, outcome string) {
-						book, err := t.RestClient.GetOrderBook(ctx, tokenID)
-						// Non-blocking send - if channel is full, skip (shouldn't happen with proper buffer)
-						select {
-						case results <- bookResult{outcome: outcome, book: book, err: err}:
-						default:
-						}
-					}(token.TokenID, token.Outcome)
-				}
-
-				// Collect results (with timeout and context check)
-				timeout := time.After(500 * time.Millisecond)
-			collectLoop:
-				for i := 0; i < numTokens; i++ {
-					select {
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					case res := <-results:
-						if res.err != nil || res.book == nil {
-							continue
-						}
-						outcome := res.outcome
-						book := res.book
-						t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
-						t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
-
-						// Extract best bid/ask from order book
-						bestBid := 0.0
-						bestAsk := 0.0
-						for _, level := range book.Bids {
-							p, _ := strconv.ParseFloat(level.Price, 64)
-							if p > bestBid {
-								bestBid = p
-							}
-						}
-						for _, level := range book.Asks {
-							p, _ := strconv.ParseFloat(level.Price, 64)
-							if p > 0 && (bestAsk == 0 || p < bestAsk) {
-								bestAsk = p
-							}
-						}
-
-						// Update prices from REST data
-						if bestBid > 0 {
-							t.TokenBids[outcome] = bestBid
-						}
-						if bestAsk > 0 && bestAsk < 1.0 {
-							t.TokenAsks[outcome] = bestAsk
-						}
-						if bestBid > 0 && bestAsk > 0 && bestAsk < 1.0 {
-							mid := (bestBid + bestAsk) / 2
-							t.FloatPrices[outcome] = mid
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdatePrice(outcome, mid)
-							t.Engine.UpdateBidAsk(outcome, bestBid, bestAsk)
-							// Also update per-market bid/ask for P&L calculation
-							t.Engine.UpdateMarketBidAsk(t.ID, outcome, bestBid, bestAsk)
-						}
-					case <-timeout:
-						// Timeout - break out of the for loop (not just select)
-						break collectLoop
-					}
-				}
-				// Update TUI after REST fetch
-				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
-				lastRESTFetch = time.Now()
-			}
-
-			// Fetch CLOB prices (alternative source)
-			if time.Since(lastGammaFetch) >= gammaFetchInterval {
-				reverseTokenMap := make(map[string]string)
-				for tokenID, outcome := range t.TokenMap {
-					reverseTokenMap[tokenID] = outcome
-				}
-
-				realPricesBA, err := t.RestClient.GetCLOBBidAsk(ctx, reverseTokenMap)
-				if err == nil && len(realPricesBA) > 0 {
-					for outcome, pa := range realPricesBA {
-						if pa.Bid > 0 || pa.Ask > 0 {
-							t.TokenBids[outcome] = pa.Bid
-							t.TokenAsks[outcome] = pa.Ask
-							t.FloatPrices[outcome] = (pa.Bid + pa.Ask) / 2
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", t.FloatPrices[outcome])
-							t.Engine.UpdatePrice(outcome, t.FloatPrices[outcome])
-							t.Engine.UpdateBidAsk(outcome, pa.Bid, pa.Ask)
-							// Also update per-market bid/ask for P&L calculation
-							t.Engine.UpdateMarketBidAsk(t.ID, outcome, pa.Bid, pa.Ask)
-						}
-					}
-					// Update TUI after CLOB fetch
-					t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
-				}
-				lastGammaFetch = time.Now()
-			}
-
+			// ============ WEBSOCKET-ONLY PRICE UPDATES (FASTEST) ============
 			// Check for WebSocket reconnection and log it
 			_, _, reconnects, _ := wsMgr.GetStats()
 			if reconnects > lastReconnectCount {
@@ -716,14 +602,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Process ALL available WebSocket messages (real-time, non-blocking)
 			// This drains the channel to get the latest data
+			messagesProcessed := 0
 			for {
 				select {
 				case msg, ok := <-wsMsgChan:
 					if !ok {
-						// Channel closed, WebSocket done - rely on REST API
+						// Channel closed, WebSocket done
 						wsChannelClosed = true
 						goto doneProcessingWS
 					}
+					messagesProcessed++
+					lastPriceUpdate = time.Now()
+
 					// Parse and process WebSocket message immediately
 					if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
 						for _, b := range books {
@@ -757,8 +647,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								}
 								t.TokenFullBids[outcome] = toMarketLevels(b.Bids)
 								t.TokenFullAsks[outcome] = toMarketLevels(b.Asks)
-								// Update TUI immediately on WS data
-								t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 							}
 						}
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
@@ -792,8 +680,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 							t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
 							t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
-							// Update TUI immediately on WS data
-							t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 						}
 					}
 				default:
@@ -803,14 +689,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 		doneProcessingWS:
 
-			// If WebSocket channel closed, log once and rely on REST
-			if wsChannelClosed && !t.LaddersPlaced {
-				t.TUI.LogEvent("[%s] ⚠️ WebSocket closed, using REST API only", t.ID)
+			// Update TUI after processing WS messages
+			if messagesProcessed > 0 {
+				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 			}
 
-			// Update TUI with prices EVERY tick (not just when changed)
-			// This ensures the display always reflects current data
-			t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+			// Warn if no WS updates for too long
+			if time.Since(lastPriceUpdate) > wsPriceTimeout && !wsChannelClosed {
+				if !t.LaddersPlaced {
+					t.TUI.LogEvent("[%s] ⚠️ No WS updates for %.0fs", t.ID, time.Since(lastPriceUpdate).Seconds())
+				}
+			}
+
+			// If WebSocket channel closed, log once
+			if wsChannelClosed && !t.LaddersPlaced {
+				t.TUI.LogEvent("[%s] ⚠️ WebSocket closed - no price feed", t.ID)
+				t.LaddersPlaced = true // Prevent repeated logging
+			}
 
 			// Also update order book depth for live display
 			bidDepth := make(map[string][]paper.MarketLevel)
@@ -898,7 +793,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
-					const minMarginPercent = 1.5
+					const minMarginPercent = 3.0 // Increased from 1.5% for better risk/reward
 					const baseSharesPerTrade = 25.0 // Base shares per trade
 
 					// Evaluate portfolio risk before trading
