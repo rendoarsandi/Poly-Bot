@@ -133,23 +133,22 @@ func run() error {
 		defer tui.Stop()
 	}
 
-	// Goroutine monitor - detect leaks
+	// Goroutine monitor - only log critical leaks (disabled for normal operation)
 	go func() {
 		lastCount := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(30 * time.Second):
+			case <-time.After(60 * time.Second):
 				count := runtime.NumGoroutine()
-				if count > lastCount+10 {
-					tui.LogEvent("⚠️ Goroutine count: %d (+%d)", count, count-lastCount)
-				}
-				lastCount = count
-				// Force GC if goroutine count is high
-				if count > 100 {
+				// Only warn if goroutine count is extremely high (likely leak)
+				if count > 200 {
+					tui.LogEvent("⚠️ High goroutine count: %d", count)
 					runtime.GC()
 				}
+				lastCount = count
+				_ = lastCount // Silence unused warning
 			}
 		}
 	}()

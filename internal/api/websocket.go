@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	// Heartbeat interval - send ping every 10 seconds for faster dead connection detection
-	heartbeatInterval = 10 * time.Second
+	// Heartbeat interval - check connection every 30 seconds
+	// Longer interval to handle Android background throttling
+	heartbeatInterval = 30 * time.Second
 	// If no message received in this time, consider connection dead
-	readTimeout = 15 * time.Second
+	// (Only used as fallback - ping is primary health check)
+	readTimeout = 60 * time.Second
 	// Max reconnection attempts before giving up
 	maxReconnectAttempts = 10
 	// Delay between reconnection attempts (starts at 1s, doubles each attempt)
@@ -102,28 +104,39 @@ func (m *WSManager) heartbeatLoop() {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
+	consecutivePingFailures := 0
+	const maxPingFailures = 3 // Allow a few failures before reconnecting
+
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
 			if !m.connected.Load() {
+				consecutivePingFailures = 0
 				continue
 			}
 
 			// Send ping to verify connection is alive
 			m.mu.Lock()
 			if m.conn != nil {
-				ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+				// Use longer timeout - Android may throttle when backgrounded
+				ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
 				err := m.conn.Ping(ctx)
 				cancel()
 				if err != nil {
-					// Ping failed - connection is dead, trigger reconnect
+					consecutivePingFailures++
 					m.mu.Unlock()
-					go m.tryReconnect()
+
+					// Only reconnect after multiple failures (handles temporary throttling)
+					if consecutivePingFailures >= maxPingFailures {
+						consecutivePingFailures = 0
+						go m.tryReconnect()
+					}
 					continue
 				}
 				// Ping succeeded - connection is alive
+				consecutivePingFailures = 0
 				m.lastHeartbeat.Store(time.Now().Unix())
 				// Also update lastMessage so inactive markets don't show as stale
 				// (connection is alive, just no trading activity)
@@ -383,8 +396,9 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				continue
 			}
 
-			// Read with a reasonable timeout
-			readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			// Read with a longer timeout - inactive markets may not send data for a while
+			// This is NOT an error condition, just means no trading activity
+			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, p, err := conn.Read(readCtx)
 			cancel()
 
@@ -395,14 +409,22 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				default:
 				}
 
+				// Check if it's just a timeout (normal for inactive markets)
+				if readCtx.Err() == context.DeadlineExceeded {
+					// Timeout is normal - connection is still alive
+					// The heartbeat ping will verify actual connection health
+					continue
+				}
+
+				// Real error (not timeout) - might need reconnection
 				consecutiveErrors++
 				if consecutiveErrors >= maxConsecutiveErrors {
-					// Too many errors, force reconnection
+					// Too many real errors, force reconnection
 					m.connected.Store(false)
 					consecutiveErrors = 0
 				}
 
-				// Trigger reconnection on error
+				// Trigger reconnection on real error
 				if !m.reconnecting.Load() {
 					go m.tryReconnect()
 				}
