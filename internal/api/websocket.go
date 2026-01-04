@@ -74,13 +74,17 @@ func (m *WSManager) Connect(ctx context.Context) error {
 }
 
 func (m *WSManager) connectInternal(ctx context.Context) error {
+	// Add connection timeout
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	opts := &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	}
 
-	c, _, err := websocket.Dial(ctx, m.URL, opts)
+	c, _, err := websocket.Dial(dialCtx, m.URL, opts)
 	if err != nil {
-		return fmt.Errorf("failed to dial: %w", err)
+		return fmt.Errorf("failed to dial %s: %w", m.URL, err)
 	}
 
 	// Set read limit to handle large order books

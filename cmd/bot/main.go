@@ -439,10 +439,31 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 }
 
 func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
-	// Setup WebSocket
+	// Setup WebSocket with retry
 	wsMgr := api.NewWSManager("")
-	if err := wsMgr.Connect(ctx); err != nil {
-		return nil, fmt.Errorf("websocket connect failed: %w", err)
+	var wsErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		wsErr = wsMgr.Connect(ctx)
+		if wsErr == nil {
+			break
+		}
+		t.TUI.LogEvent("[%s] ⚠️ WS connect attempt %d failed: %v", t.ID, attempt, wsErr)
+		if attempt < 3 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+	}
+	if wsErr != nil {
+		return nil, fmt.Errorf("websocket connect failed after 3 attempts: %w", wsErr)
 	}
 	defer wsMgr.Close()
 	t.WSMgr = wsMgr
