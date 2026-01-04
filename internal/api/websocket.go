@@ -93,11 +93,18 @@ func (m *WSManager) connectInternal(ctx context.Context) error {
 	c.SetReadLimit(1024 * 1024) // 1MB
 
 	m.conn = c
+	
 	m.connected.Store(true)
 	m.lastMessage.Store(time.Now().Unix())
 	m.lastHeartbeat.Store(time.Now().Unix())
 
 	return nil
+}
+
+func (m *WSManager) getConn() *websocket.Conn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn
 }
 
 func (m *WSManager) heartbeatLoop() {
@@ -117,16 +124,19 @@ func (m *WSManager) heartbeatLoop() {
 				continue
 			}
 
-			// Send ping to verify connection is alive
+			// Get connection safely with minimal lock time
 			m.mu.Lock()
-			if m.conn != nil {
+			conn := m.conn
+			m.mu.Unlock()
+
+			if conn != nil {
+				// Send ping outside of lock to prevent blocking
 				// Use longer timeout - Android may throttle when backgrounded
 				ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
-				err := m.conn.Ping(ctx)
+				err := conn.Ping(ctx)
 				cancel()
 				if err != nil {
 					consecutivePingFailures++
-					m.mu.Unlock()
 
 					// Only reconnect after multiple failures (handles temporary throttling)
 					if consecutivePingFailures >= maxPingFailures {
@@ -142,7 +152,6 @@ func (m *WSManager) heartbeatLoop() {
 				// (connection is alive, just no trading activity)
 				m.lastMessage.Store(time.Now().Unix())
 			}
-			m.mu.Unlock()
 		}
 	}
 }
@@ -235,14 +244,12 @@ func (m *WSManager) Close() error {
 }
 
 func (m *WSManager) Subscribe(ctx context.Context, payload interface{}) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.conn == nil {
+	conn := m.getConn()
+	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	err := wsjson.Write(ctx, m.conn, payload)
+	err := wsjson.Write(ctx, conn, payload)
 	if err != nil {
 		return err
 	}
@@ -256,11 +263,12 @@ func (m *WSManager) Subscribe(ctx context.Context, payload interface{}) error {
 }
 
 func (m *WSManager) ReadMessage(ctx context.Context) ([]byte, error) {
-	if m.conn == nil {
+	conn := m.getConn()
+	if conn == nil {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	_, p, err := m.conn.Read(ctx)
+	_, p, err := conn.Read(ctx)
 	if err != nil {
 		// Trigger reconnection on read error
 		go m.tryReconnect()
@@ -289,10 +297,7 @@ func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Dur
 		return nil, nil
 	}
 
-	m.mu.Lock()
-	conn := m.conn
-	m.mu.Unlock()
-
+	conn := m.getConn()
 	if conn == nil {
 		return nil, nil
 	}
@@ -351,7 +356,7 @@ func (m *WSManager) TimeSinceLastMessage() time.Duration {
 // StartStreaming starts a goroutine that continuously reads messages and sends to channel
 // Returns a channel that receives messages in real-time
 func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
-	msgChan := make(chan []byte, 100) // Buffer for bursts
+	msgChan := make(chan []byte, 1000) // Increased buffer for bursts
 
 	go func() {
 		defer close(msgChan)
@@ -383,10 +388,7 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				continue
 			}
 
-			m.mu.Lock()
-			conn := m.conn
-			m.mu.Unlock()
-
+			conn := m.getConn()
 			if conn == nil {
 				select {
 				case <-ctx.Done():

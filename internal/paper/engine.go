@@ -103,6 +103,34 @@ func (e *Engine) UpdatePrice(outcome string, price float64) {
 	e.recalculateDrawdown()
 }
 
+// UpdateMarketData performs a batch update of price and bid/ask data for an outcome
+func (e *Engine) UpdateMarketData(marketID, outcome string, price, bid, ask float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if price > 0 {
+		e.currentPrices[outcome] = price
+	}
+	if bid > 0 {
+		e.currentBids[outcome] = bid
+	}
+	if ask > 0 {
+		e.currentAsks[outcome] = ask
+	}
+
+	if marketID != "" {
+		key := marketID + ":" + outcome
+		if bid > 0 {
+			e.marketBids[key] = bid
+		}
+		if ask > 0 {
+			e.marketAsks[key] = ask
+		}
+	}
+
+	e.recalculateDrawdown()
+}
+
 // UpdateBidAsk updates bid/ask prices for realistic taker simulation
 func (e *Engine) UpdateBidAsk(outcome string, bid, ask float64) {
 	e.mu.Lock()

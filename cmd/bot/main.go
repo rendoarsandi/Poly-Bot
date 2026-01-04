@@ -662,9 +662,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									mid := (bid + ask) / 2
 									t.FloatPrices[outcome] = mid
 									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-									t.Engine.UpdatePrice(outcome, mid)
-									t.Engine.UpdateBidAsk(outcome, bid, ask)
-									t.Engine.UpdateMarketBidAsk(t.ID, outcome, bid, ask)
+									// Use batch update for better performance
+									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 								}
 								t.TokenFullBids[outcome] = toMarketLevels(b.Bids)
 								t.TokenFullAsks[outcome] = toMarketLevels(b.Asks)
@@ -695,9 +694,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								mid := (bid + ask) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-								t.Engine.UpdatePrice(outcome, mid)
-								t.Engine.UpdateBidAsk(outcome, bid, ask)
-								t.Engine.UpdateMarketBidAsk(t.ID, outcome, bid, ask)
+								// Use batch update for better performance
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
 							t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
 							t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
