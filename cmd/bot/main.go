@@ -39,7 +39,8 @@ type MarketTrader struct {
 	EndTime     time.Time
 	RestClient  *api.RestClient
 	WSMgr       *api.WSManager
-	TUI         *paper.TUI // Shared TUI
+	TUI         *paper.TUI       // Shared TUI
+	CSVLogger   *core.CSVLogger // Optional CSV diagnostic logger
 
 	// Price tracking
 	TokenBids     map[string]float64
@@ -81,7 +82,25 @@ func restoreTerminal() {
 	fmt.Println()
 }
 
+// logEvent is a helper to log to both TUI and CSV logger safely
+func logEvent(tui *paper.TUI, csv *core.CSVLogger, engine *paper.Engine, level, asset, event, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if tui != nil {
+		tui.LogEvent(msg)
+	}
+	if csv != nil {
+		equity := 0.0
+		if engine != nil {
+			equity = engine.GetEquity()
+		}
+		csv.Log(level, asset, event, msg, equity)
+	}
+}
+
 func run() error {
+	var engine *paper.Engine
+	var csvLogger *core.CSVLogger
+
 	// Setup signal handling with immediate terminal restore
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -90,7 +109,16 @@ func run() error {
 	defer func() {
 		if r := recover(); r != nil {
 			restoreTerminal()
-			fmt.Printf("\n🚨 PANIC RECOVERED: %v\n", r)
+			stack := make([]byte, 4096)
+			length := runtime.Stack(stack, false)
+			fmt.Printf("\n🚨 PANIC RECOVERED: %v\n%s\n", r, stack[:length])
+			if csvLogger != nil {
+				equity := 0.0
+				if engine != nil {
+					equity = engine.GetEquity()
+				}
+				csvLogger.Log("CRITICAL", "SYSTEM", "PANIC", fmt.Sprintf("%v", r), equity)
+			}
 		}
 	}()
 
@@ -119,19 +147,30 @@ func run() error {
 	fmt.Println("🎰 POLYARB-15M Starting (Multi-Asset: BTC, ETH, SOL, XRP)...")
 
 	// Initialize persistent components (survive market rotation)
-	engine := paper.NewEngine(StartingBalance)
+	engine = paper.NewEngine(StartingBalance)
 
 	// Load config
-	_, err := core.LoadConfig()
+	cfg, err := core.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	fmt.Println("✅ Config loaded successfully")
+	_ = cfg // Reserved for future use
 
 	restClient := api.NewRestClient("")
 
 	// Create shared order book and TUI (persistent across market rotations)
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
+
+	// Initialize CSV Logger for long-term diagnostics
+	csvLogger, err = core.NewCSVLogger("bot_activity.csv")
+	if err != nil {
+		fmt.Printf("⚠️ Warning: Could not initialize CSV logger: %v\n", err)
+	} else {
+		defer csvLogger.Close()
+	}
+	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support", 0)
 
 	// Start TUI render loop
 	if UseLiveUI {
@@ -151,6 +190,9 @@ func run() error {
 				// Only warn if goroutine count is extremely high (likely leak)
 				if count > 200 {
 					tui.LogEvent("⚠️ High goroutine count: %d", count)
+					if csvLogger != nil {
+						csvLogger.Log("WARN", "SYSTEM", "HIGH_GOROUTINES", fmt.Sprintf("Count: %d", count), engine.GetEquity())
+					}
 					runtime.GC()
 				}
 				lastCount = count
@@ -192,6 +234,9 @@ func run() error {
 				fmt.Println("💰 Cashing out positions at current market prices...")
 				proceeds := engine.LiquidateAll()
 				fmt.Printf("💵 Liquidation proceeds: $%.2f\n", proceeds)
+				if csvLogger != nil {
+					csvLogger.Log("INFO", "SYSTEM", "LIQUIDATION", fmt.Sprintf("Proceeds: %.2f", proceeds), engine.GetEquity())
+				}
 			}
 
 			stats := engine.GetStats()
@@ -202,9 +247,10 @@ func run() error {
 		}
 
 		// Find all available markets (BTC, ETH, SOL, XRP)
+		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active 15m markets...")
 		markets := findMarkets(ctx, restClient, tui)
 		if len(markets) == 0 {
-			tui.LogEvent("⏳ No markets found, retrying in 2s...")
+			logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "NO_MARKETS", "No active markets found, retrying...")
 			select {
 			case <-ctx.Done():
 				tui.Stop()
@@ -221,7 +267,7 @@ func run() error {
 		// Track starting equity for compounding calculation
 		startingEquity := engine.GetEquity()
 		compoundMultiplier := engine.GetCompoundMultiplier()
-		tui.LogEvent("💹 Round starting | Equity: $%.2f | Multiplier: %.2fx", startingEquity, compoundMultiplier)
+		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "ROUND_START", "Round starting with %d markets | Multiplier: %.2fx", len(markets), compoundMultiplier)
 
 		// Create traders for all found markets
 		var wg sync.WaitGroup
@@ -237,22 +283,30 @@ func run() error {
 			}
 			outcomes := getOutcomes(market)
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
+			// Reduced logging: Only TUI for startup info
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
 
-			trader := createTrader(assetID, market, engine, orderBook, restClient, tui, outcomes, endTime)
+			trader := createTrader(assetID, market, engine, orderBook, restClient, tui, outcomes, endTime, csvLogger)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
 				defer wg.Done()
+				// Create a sub-context for this specific trader to prevent goroutine leaks
+				tCtx, tCancel := context.WithCancel(ctx)
+				defer tCancel()
+
 				// Panic recovery for trader goroutine
 				defer func() {
 					if r := recover(); r != nil {
-						tui.LogEvent("[%s] 🚨 PANIC: %v - restarting...", id, r)
+						stack := make([]byte, 4096)
+						length := runtime.Stack(stack, false)
+						logEvent(t.TUI, t.CSVLogger, t.Engine, "CRITICAL", id, "PANIC", "Panic: %v\n%s", r, stack[:length])
 						errors <- fmt.Errorf("%s: panic: %v", id, r)
 					}
 				}()
-				result, err := runTrader(ctx, t)
+				result, err := runTrader(tCtx, t)
 				if err != nil {
+					logEvent(t.TUI, t.CSVLogger, t.Engine, "ERROR", id, "TRADER_ERROR", "Trader failed: %v", err)
 					errors <- fmt.Errorf("%s: %w", id, err)
 					return
 				}
@@ -260,7 +314,7 @@ func run() error {
 			}(assetID, trader)
 		}
 
-		tui.LogEvent("📈 Started %d concurrent market traders", tradersStarted)
+		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "TRADERS_RUNNING", "Started %d concurrent market traders", tradersStarted)
 
 		// Wait for all traders to complete with a context-aware mechanism
 		done := make(chan struct{})
@@ -416,7 +470,7 @@ func getOutcomes(market *api.Market) []string {
 	return outcomes
 }
 
-func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook *paper.OrderBook, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time) *MarketTrader {
+func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook *paper.OrderBook, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger) *MarketTrader {
 	tokenMap := make(map[string]string)
 	for _, token := range market.Tokens {
 		tokenMap[token.TokenID] = token.Outcome
@@ -455,6 +509,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 		EndTime:       endTime,
 		RestClient:    restClient,
 		TUI:           tui,
+		CSVLogger:     csvLogger,
 		TokenBids:     make(map[string]float64),
 		TokenAsks:     make(map[string]float64),
 		TokenFullBids: make(map[string][]paper.MarketLevel),
@@ -480,7 +535,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		if wsErr == nil {
 			break
 		}
-		t.TUI.LogEvent("[%s] ⚠️ WS connect attempt %d failed: %v", t.ID, attempt, wsErr)
+		logEvent(t.TUI, t.CSVLogger, t.Engine, "WARN", t.ID, "WS_CONNECT_FAIL", "WS connect attempt %d failed: %v", attempt, wsErr)
 		if attempt < 3 {
 			select {
 			case <-ctx.Done():
@@ -518,17 +573,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 	// Start WebSocket streaming in background - REAL-TIME updates via channel
 	wsMsgChan := wsMgr.StartStreaming(ctx)
-	t.TUI.LogEvent("[%s] 📡 WebSocket streaming started (real-time)", t.ID)
+	t.TUI.LogEvent("[%s] 📡 WebSocket streaming started", t.ID)
 
 	// Order fill callback
 	t.OrderBook.SetFillCallback(func(order *paper.LimitOrder, fillQty, fillPrice float64) {
 		_, err := t.Engine.Buy(order.Outcome, fillPrice, fillQty)
 		if err != nil {
 			t.TUI.LogEvent("[%s] ❌ Fill error: %v", t.ID, err)
+			if t.CSVLogger != nil {
+				t.CSVLogger.Log("ERROR", t.ID, "FILL_ERROR", err.Error(), t.Engine.GetEquity())
+			}
 			return
 		}
 		saved := order.Price - fillPrice
 		t.TUI.LogEvent("[%s] ✅ FILL %s %.0f @ $%.3f (saved $%.3f)", t.ID, order.Outcome, fillQty, fillPrice, saved)
+		if t.CSVLogger != nil {
+			t.CSVLogger.Log("TRADE", t.ID, "FILL", fmt.Sprintf("%s %.0f @ $%.3f", order.Outcome, fillQty, fillPrice), t.Engine.GetEquity())
+		}
 	})
 
 	// Track starting realized PnL
@@ -624,6 +685,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
 				}
 
+				if t.CSVLogger != nil {
+					t.CSVLogger.Log("INFO", t.ID, "REDEEM", fmt.Sprintf("Winner: %s, PnL: %.2f", winner, result.TotalPnL), t.Engine.GetEquity())
+				}
+
 				finalStats := t.Engine.GetStats()
 				marketPnL := finalStats.RealizedPnL - startingRealizedPnL
 
@@ -645,6 +710,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			_, _, reconnects, _ := wsMgr.GetStats()
 			if reconnects > lastReconnectCount {
 				t.TUI.LogEvent("[%s] 🔄 WebSocket reconnected (attempt #%d)", t.ID, reconnects)
+				if t.CSVLogger != nil {
+					t.CSVLogger.Log("INFO", t.ID, "WS_RECONNECT", fmt.Sprintf("Attempt #%d", reconnects), t.Engine.GetEquity())
+				}
 				lastReconnectCount = reconnects
 			}
 
@@ -693,8 +761,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									// Use batch update for better performance
 									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 								}
-								t.TokenFullBids[outcome] = toMarketLevels(b.Bids)
-								t.TokenFullAsks[outcome] = toMarketLevels(b.Asks)
+								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, b.Bids)
+								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, b.Asks)
 							}
 						}
 						if foundForThisTrader {
@@ -729,8 +797,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								// Use batch update for better performance
 								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
-							t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
-							t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+							t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
+							t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
 						}
 					}
 				default:
@@ -743,6 +811,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Update TUI after processing WS messages
 			if messagesProcessed > 0 {
 				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+			} else if wsMgr.IsConnected() && wsMgr.TimeSinceLastMessage() < 5*time.Second {
+				// If WebSocket is healthy but no message this tick, "touch" to prevent stale warnings
+				t.TUI.TouchMarket(t.ID)
 			}
 
 			// Check WebSocket connection health for REST fallback decision
@@ -876,6 +947,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, profit, margin)
 						}
 
+						if t.CSVLogger != nil {
+							t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
+						}
+
 						t.Engine.BuyForMarket(t.ID, t.Outcomes[0], ask1, shares)
 						t.Engine.BuyForMarket(t.ID, t.Outcomes[1], ask2, shares)
 
@@ -916,17 +991,17 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 	return outcomes[1]
 }
 
-func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
+func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.MarketLevel {
 	result := make([]paper.MarketLevel, len(levels))
 	for i, l := range levels {
 		p, err := strconv.ParseFloat(l.Price, 64)
 		if err != nil {
-			log.Printf("Warning: failed to parse price '%s': %v", l.Price, err)
+			tui.LogEvent("[%s] Warning: failed to parse price '%s': %v", id, l.Price, err)
 			continue
 		}
 		s, err := strconv.ParseFloat(l.Size, 64)
 		if err != nil {
-			log.Printf("Warning: failed to parse size '%s': %v", l.Size, err)
+			tui.LogEvent("[%s] Warning: failed to parse size '%s': %v", id, l.Size, err)
 			continue
 		}
 		result[i] = paper.MarketLevel{Price: p, Size: s}
@@ -999,8 +1074,8 @@ t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price
 			tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 		}
-		t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
-		t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+		t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
+		t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
 		t.mu.Unlock()
 
 		// Count as success if we got any valid data

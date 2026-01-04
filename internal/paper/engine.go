@@ -515,7 +515,10 @@ func (e *Engine) getUnrealizedValue() float64 {
 func (e *Engine) GetUnrealizedPnL() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	return e.getUnrealizedPnL()
+}
 
+func (e *Engine) getUnrealizedPnL() float64 {
 	unrealized := 0.0
 	for outcome, pos := range e.positions {
 		// Use BID price for valuation (what we could sell for)
@@ -540,7 +543,7 @@ func (e *Engine) GetStats() Stats {
 		WinningTrades:   e.winningTrades,
 		LosingTrades:    e.losingTrades,
 		RealizedPnL:     e.realizedPnL,
-		UnrealizedPnL:   e.GetUnrealizedPnL(),
+		UnrealizedPnL:   e.getUnrealizedPnL(),
 		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
 		PeakBalance:     e.peakBalance,
 		CurrentBalance:  e.currentBalance,

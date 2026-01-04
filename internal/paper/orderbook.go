@@ -177,9 +177,15 @@ func (ob *OrderBook) CancelOrdersForOutcome(outcome string) int {
 // For SELL orders: match against market bids >= order price + queueBuffer
 func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel) []*LimitOrder {
 	ob.mu.Lock()
-	defer ob.mu.Unlock()
 
 	var filledOrders []*LimitOrder
+	
+	type fillRecord struct {
+		order     *LimitOrder
+		fillQty   float64
+		fillPrice float64
+	}
+	var fills []fillRecord
 
 	// Collect active orders for this outcome
 	var activeOrders []*LimitOrder
@@ -240,9 +246,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 					}
 
 					filledOrders = append(filledOrders, order)
-					if ob.onFill != nil {
-						ob.onFill(order, fillQty, ask.Price)
-					}
+					fills = append(fills, fillRecord{order, fillQty, ask.Price})
 
 					if order.Status == OrderStatusFilled {
 						break
@@ -283,15 +287,24 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 					}
 
 					filledOrders = append(filledOrders, order)
-					if ob.onFill != nil {
-						ob.onFill(order, fillQty, bid.Price)
-					}
+					fills = append(fills, fillRecord{order, fillQty, bid.Price})
 
 					if order.Status == OrderStatusFilled {
 						break
 					}
 				}
 			}
+		}
+	}
+	
+	// Release lock BEFORE calling external callbacks
+	onFill := ob.onFill
+	ob.mu.Unlock()
+
+	// Execute callbacks outside of lock to prevent deadlocks
+	if onFill != nil {
+		for _, f := range fills {
+			onFill(f.order, f.fillQty, f.fillPrice)
 		}
 	}
 

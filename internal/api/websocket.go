@@ -62,9 +62,18 @@ func (m *WSManager) Connect(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.conn != nil {
+		return nil
+	}
+
+	// Cancel old context if any
+	if m.cancel != nil {
+		m.cancel()
+	}
+
 	// Store context for reconnection
 	m.ctx, m.cancel = context.WithCancel(ctx)
-
+	
 	if err := m.connectInternal(m.ctx); err != nil {
 		return err
 	}
@@ -107,6 +116,12 @@ func (m *WSManager) getConn() *websocket.Conn {
 	return m.conn
 }
 
+func (m *WSManager) getContext() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ctx
+}
+
 func (m *WSManager) heartbeatLoop() {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
@@ -115,8 +130,13 @@ func (m *WSManager) heartbeatLoop() {
 	const maxPingFailures = 3 // Allow a few failures before reconnecting
 
 	for {
+		ctx := m.getContext()
+		if ctx == nil {
+			return
+		}
+
 		select {
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if !m.connected.Load() {
@@ -132,9 +152,9 @@ func (m *WSManager) heartbeatLoop() {
 			if conn != nil {
 				// Send ping outside of lock to prevent blocking
 				// Use longer timeout - Android may throttle when backgrounded
-				ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
-				err := conn.Ping(ctx)
-				cancel()
+				pingCtx, pingCancel := context.WithTimeout(ctx, 15*time.Second)
+				err := conn.Ping(pingCtx)
+				pingCancel()
 				if err != nil {
 					consecutivePingFailures++
 
@@ -165,10 +185,18 @@ func (m *WSManager) tryReconnect() {
 
 	m.connected.Store(false)
 
+	m.mu.Lock()
+	ctx := m.ctx
+	m.mu.Unlock()
+	
+	if ctx == nil {
+		return
+	}
+
 attemptLoop:
 	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
 		select {
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -187,14 +215,14 @@ attemptLoop:
 			delay = 10 * time.Second
 		}
 		select {
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(delay):
 		}
 
 		// Try to reconnect
 		m.mu.Lock()
-		err := m.connectInternal(m.ctx)
+		err := m.connectInternal(ctx)
 		m.mu.Unlock()
 
 		if err != nil {
@@ -209,9 +237,9 @@ attemptLoop:
 
 		allSubscribed := true
 		for _, sub := range subscriptions {
-			ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
-			err := m.Subscribe(ctx, sub)
-			cancel()
+			subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
+			err := m.subscribeInternal(subCtx, sub, false)
+			subCancel()
 			if err != nil {
 				m.connected.Store(false)
 				allSubscribed = false
@@ -228,9 +256,11 @@ attemptLoop:
 }
 
 func (m *WSManager) Close() error {
+	m.mu.Lock()
 	if m.cancel != nil {
 		m.cancel()
 	}
+	m.mu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,6 +274,10 @@ func (m *WSManager) Close() error {
 }
 
 func (m *WSManager) Subscribe(ctx context.Context, payload interface{}) error {
+	return m.subscribeInternal(ctx, payload, true)
+}
+
+func (m *WSManager) subscribeInternal(ctx context.Context, payload interface{}, record bool) error {
 	conn := m.getConn()
 	if conn == nil {
 		return fmt.Errorf("not connected")
@@ -254,10 +288,12 @@ func (m *WSManager) Subscribe(ctx context.Context, payload interface{}) error {
 		return err
 	}
 
-	// Store subscription for reconnection
-	m.subMu.Lock()
-	m.subscriptions = append(m.subscriptions, payload)
-	m.subMu.Unlock()
+	if record {
+		// Store subscription for reconnection
+		m.subMu.Lock()
+		m.subscriptions = append(m.subscriptions, payload)
+		m.subMu.Unlock()
+	}
 
 	return nil
 }

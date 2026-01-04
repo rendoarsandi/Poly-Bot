@@ -292,7 +292,17 @@ func (t *TUI) Render() {
 		return
 	}
 
-	// Build the frame while holding the lock
+	// 1. Fetch data from other components BEFORE taking TUI lock
+	// This breaks the circular dependency: TUI.mu -> Engine.mu/OrderBook.mu
+	stats := t.engine.GetStats()
+	exposure, _ := t.engine.GetExposure()
+	equity := t.engine.GetEquity()
+	positions := t.engine.GetPositionsWithPnL()
+	orders := t.orderBook.GetOpenOrders()
+	multiplier, rounds, profitable := t.engine.GetCompoundStats()
+	enginePositions := t.engine.GetPositions()
+
+	// 2. Build the frame while holding the TUI lock
 	t.mu.Lock()
 
 	if !t.running {
@@ -326,15 +336,15 @@ func (t *TUI) Render() {
 	sb.WriteString("\n")
 
 	// Account Status
-	writeLine(t.renderAccountStatus())
+	writeLine(t.renderAccountStatus(stats, exposure, equity, multiplier, rounds, profitable, enginePositions))
 	sb.WriteString("\n")
 
 	// Positions
-	writeLine(t.renderPositions())
+	writeLine(t.renderPositions(positions))
 	sb.WriteString("\n")
 
 	// Open Orders
-	writeLine(t.renderOrders())
+	writeLine(t.renderOrders(orders))
 	sb.WriteString("\n")
 
 	// Event Log
@@ -351,16 +361,15 @@ func (t *TUI) Render() {
 	// Get the complete frame as a string
 	frame := sb.String()
 
-	// Release the lock BEFORE doing I/O to prevent deadlock
+	// Release the lock BEFORE doing I/O
 	t.mu.Unlock()
 
-	// Non-blocking send to frame channel - drop frame if channel full
-	// This prevents blocking when terminal output is slow (alt-tab)
+	// Non-blocking send to frame channel
 	select {
 	case t.frameCh <- frame:
-		// Frame queued for output
+		// Frame queued
 	default:
-		// Channel full, skip this frame (terminal is slow/blocked)
+		// Channel full, skip frame
 	}
 }
 
@@ -698,12 +707,8 @@ func abs(x float64) float64 {
 	return x
 }
 
-func (t *TUI) renderAccountStatus() string {
+func (t *TUI) renderAccountStatus(stats Stats, totalExposure, equity, multiplier float64, rounds, profitable int, positions map[string]Position) string {
 	var sb strings.Builder
-
-	stats := t.engine.GetStats()
-	totalExposure, _ := t.engine.GetExposure()
-	equity := t.engine.GetEquity()
 
 	netChange := equity - stats.StartingBalance
 	changeColor := ColorGreen
@@ -713,8 +718,6 @@ func (t *TUI) renderAccountStatus() string {
 		changeSign = ""
 	}
 
-	// Get compounding stats
-	multiplier, rounds, profitable := t.engine.GetCompoundStats()
 	multColor := ColorWhite
 	if multiplier >= 1.5 {
 		multColor = ColorGreen
@@ -723,8 +726,6 @@ func (t *TUI) renderAccountStatus() string {
 	}
 
 	// Calculate guaranteed arbitrage profit across all markets
-	positions := t.engine.GetPositions()
-
 	// Group positions by market
 	byMarket := make(map[string][]Position)
 	for _, pos := range positions {
@@ -770,10 +771,8 @@ func (t *TUI) renderAccountStatus() string {
 	return sb.String()
 }
 
-func (t *TUI) renderPositions() string {
+func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 	var sb strings.Builder
-
-	positionsWithPnL := t.engine.GetPositionsWithPnL()
 
 	sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s", Bold, Reset))
 
@@ -914,10 +913,8 @@ func (t *TUI) renderPositions() string {
 	return sb.String()
 }
 
-func (t *TUI) renderOrders() string {
+func (t *TUI) renderOrders(orders []*LimitOrder) string {
 	var sb strings.Builder
-
-	orders := t.orderBook.GetOpenOrders()
 
 	sb.WriteString(fmt.Sprintf("%s📝 OPEN ORDERS%s", Bold, Reset))
 
