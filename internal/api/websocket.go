@@ -378,6 +378,8 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 
 		consecutiveErrors := 0
 		const maxConsecutiveErrors = 10
+		lastReconnectAttempt := time.Time{}
+		const minReconnectInterval = 5 * time.Second
 
 		for {
 			select {
@@ -387,6 +389,11 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 			}
 
 			if !m.connected.Load() {
+				// Try reconnection if not already attempting and enough time has passed
+				if !m.reconnecting.Load() && time.Since(lastReconnectAttempt) > minReconnectInterval {
+					lastReconnectAttempt = time.Now()
+					go m.tryReconnect()
+				}
 				// Wait a bit and retry
 				select {
 				case <-ctx.Done():
@@ -406,9 +413,9 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				continue
 			}
 
-			// Read with a longer timeout - inactive markets may not send data for a while
-			// This is NOT an error condition, just means no trading activity
-			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			// Read with shorter timeout for faster stale detection
+			// 10 seconds is enough - if no data in 10s, we should check REST
+			readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			_, p, err := conn.Read(readCtx)
 			cancel()
 
@@ -423,6 +430,7 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				if readCtx.Err() == context.DeadlineExceeded {
 					// Timeout is normal - connection is still alive
 					// The heartbeat ping will verify actual connection health
+					consecutiveErrors = 0 // Reset on timeout (not a real error)
 					continue
 				}
 
@@ -432,11 +440,10 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 					// Too many real errors, force reconnection
 					m.connected.Store(false)
 					consecutiveErrors = 0
-				}
-
-				// Trigger reconnection on real error
-				if !m.reconnecting.Load() {
-					go m.tryReconnect()
+					if time.Since(lastReconnectAttempt) > minReconnectInterval {
+						lastReconnectAttempt = time.Now()
+						go m.tryReconnect()
+					}
 				}
 				continue
 			}
@@ -446,12 +453,24 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 			m.lastMessage.Store(time.Now().Unix())
 			m.messageCount.Add(1)
 
-			// Send to channel (non-blocking)
-			select {
-			case msgChan <- p:
-			default:
-				// Channel full, skip (shouldn't happen with buffer)
+			// Send to channel - prioritize newest message
+			// For single-producer, we drain one old message if full, then send
+			for {
+				select {
+				case msgChan <- p:
+					// Successfully sent
+					goto messageSent
+				default:
+					// Channel full - drain oldest message to make room
+					select {
+					case <-msgChan:
+						// Drained, loop will try to send again
+					default:
+						// Channel was drained by consumer, loop will try to send again
+					}
+				}
 			}
+		messageSent:
 		}
 	}()
 

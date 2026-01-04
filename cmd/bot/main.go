@@ -139,7 +139,7 @@ func run() error {
 		defer tui.Stop()
 	}
 
-	// Goroutine monitor - only log critical leaks (disabled for normal operation)
+	// Goroutine monitor and memory cleanup
 	go func() {
 		lastCount := 0
 		for {
@@ -155,6 +155,26 @@ func run() error {
 				}
 				lastCount = count
 				_ = lastCount // Silence unused warning
+
+				// Periodic memory cleanup - remove old filled/cancelled orders
+				orderBook.CleanupOldOrders(5 * time.Minute)
+			}
+		}
+	}()
+
+	// Android background keepalive - prevents OS from throttling when alt-tabbed
+	// Performs lightweight work every 500ms to maintain activity
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Lightweight activity to prevent Android throttling
+				// Just reading the time is enough to keep the process active
+				_ = time.Now().UnixNano()
 			}
 		}
 	}()
@@ -516,12 +536,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	tradesAtStart := t.Engine.GetStats().TotalTrades
 
 	tokenPrices := make(map[string]string)
-	lastGoodLiquidity := time.Now()
 	lastReconnectCount := int32(0)    // Track reconnections
 	lastWsWarnTime := time.Time{}     // Rate-limit WS warnings
 	lastForceReconnect := time.Time{} // Track forced reconnection attempts
 
-	const liquidityTimeout = 45 * time.Second
 	const wsWarnInterval = 15 * time.Second   // Only warn once per 15 seconds
 	const wsForceReconnect = 15 * time.Second // Force reconnection after 15 seconds stale
 
@@ -727,52 +745,117 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 			}
 
-			// Individual trader staleness watchdog (e.g. for XRP getting stuck)
-			// 1. FAST FALLBACK: If stale for 5s, poll REST API (every 2s)
-			if time.Since(t.LastUpdate) > 5*time.Second && time.Since(t.LastRestPoll) > 2*time.Second && marketState == paper.MarketStateActive {
-				t.LastRestPoll = time.Now()
-				// Don't log every poll to avoid spam, just once at start of staleness
-				if time.Since(t.LastUpdate) < 7*time.Second {
-					t.TUI.LogEvent("[%s] 🛰️ Stale WS (>5s), using REST fallback...", t.ID)
+			// Check if WS connection is healthy (even if no data for this specific asset)
+			// Polymarket only sends data when there's trading activity
+			// If WS is connected and healthy, don't show stale - just means no trades
+			wsConnected := wsMgr.IsConnected()
+			wsLastMsg := wsMgr.TimeSinceLastMessage()
+
+			// If WS is healthy (connected and got any message recently), touch the market
+			// This prevents false "STALE" warnings for inactive but connected markets
+			if wsConnected && wsLastMsg < 30*time.Second {
+				// WS is alive - if we have existing prices, keep them fresh
+				if len(t.TokenBids) > 0 || len(t.TokenAsks) > 0 {
+					t.TUI.TouchMarket(t.ID)
 				}
-				
-				// Poll REST for each token
-				for tokenID, outcome := range t.TokenMap {
-					book, err := t.RestClient.GetOrderBook(ctx, tokenID)
-					if err == nil {
-						bid, ask := 0.0, 1.0
-						for _, b := range book.Bids {
-							p, _ := strconv.ParseFloat(b.Price, 64)
-							if p > bid { bid = p }
-						}
-						for _, a := range book.Asks {
-							p, _ := strconv.ParseFloat(a.Price, 64)
-							if p < ask && p > 0 { ask = p }
-						}
-						if ask >= 1.0 { ask = 0.0 }
-						
-						if outcome != "" {
-							t.TokenBids[outcome] = bid
-							t.TokenAsks[outcome] = ask
-							if bid > 0 && ask > 0 {
-								mid := (bid + ask) / 2
-								t.FloatPrices[outcome] = mid
-								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
-							}
-							t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
-							t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
-						}
-					}
-				}
-				t.LastUpdate = time.Now() // Reset timer so we don't immediately force reconnect
-				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 			}
 
-			// 2. FORCE RECONNECT: If stale for 30s but market is active
-			if time.Since(t.LastUpdate) > 30*time.Second && marketState == paper.MarketStateActive {
+			// Individual trader staleness watchdog
+			// Only poll REST if WS is unhealthy OR we have no price data at all
+			staleTime := time.Since(t.LastUpdate)
+			restPollInterval := 2 * time.Second // How often to poll REST when stale
+			needsRestFallback := (!wsConnected || wsLastMsg > 15*time.Second) && staleTime > 3*time.Second
+
+			if needsRestFallback && time.Since(t.LastRestPoll) > restPollInterval {
+				t.LastRestPoll = time.Now()
+				staleSeconds := int(staleTime.Seconds())
+
+				// Poll REST synchronously for reliability
+				restSuccess := 0
+				restErrors := 0
+				restEmpty := 0
+				var lastErr error
+				for tokenID, outcome := range t.TokenMap {
+					// Use short timeout
+					restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
+					book, err := t.RestClient.GetOrderBook(restCtx, tokenID)
+					restCancel()
+
+					if err != nil {
+						restErrors++
+						lastErr = err
+						continue
+					}
+
+					// Check if book is empty
+					if len(book.Bids) == 0 && len(book.Asks) == 0 {
+						restEmpty++
+						continue
+					}
+
+					bid, ask := 0.0, 0.0
+					for _, b := range book.Bids {
+						p, _ := strconv.ParseFloat(b.Price, 64)
+						if p > bid {
+							bid = p
+						}
+					}
+					for _, a := range book.Asks {
+						p, _ := strconv.ParseFloat(a.Price, 64)
+						if p > 0 && (ask == 0 || p < ask) {
+							ask = p
+						}
+					}
+
+					// Always update with whatever data we got (even partial)
+					t.mu.Lock()
+					if bid > 0 {
+						t.TokenBids[outcome] = bid
+					}
+					if ask > 0 && ask < 1.0 {
+						t.TokenAsks[outcome] = ask
+					}
+					if bid > 0 && ask > 0 && ask < 1.0 {
+						mid := (bid + ask) / 2
+						t.FloatPrices[outcome] = mid
+						tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+						t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+					}
+					t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
+					t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+					t.mu.Unlock()
+
+					// Count as success if we got any valid data
+					if bid > 0 || (ask > 0 && ask < 1.0) || len(book.Bids) > 0 || len(book.Asks) > 0 {
+						restSuccess++
+					}
+				}
+
+				// Log result - minimal spam, maximum info
+				if restSuccess > 0 {
+					t.LastUpdate = time.Now()
+					t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+					// Only log recovery after significant staleness
+					if staleSeconds >= 5 {
+						t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)
+					}
+				} else if restErrors > 0 {
+					// Log errors every 10 seconds to avoid spam
+					if staleSeconds%10 == 0 || staleSeconds == 5 {
+						t.TUI.LogEvent("[%s] ❌ REST fail %ds: %v", t.ID, staleSeconds, lastErr)
+					}
+				} else if restEmpty == len(t.TokenMap) {
+					// All books empty - likely market ended
+					if staleSeconds%10 == 0 {
+						t.TUI.LogEvent("[%s] 📭 All books empty (%ds)", t.ID, staleSeconds)
+					}
+				}
+			}
+
+			// FORCE RECONNECT: If stale for 15s (reduced from 30s for faster recovery)
+			if time.Since(t.LastUpdate) > 15*time.Second {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
-					t.TUI.LogEvent("[%s] ⚠️ STALE DATA (30s) - forcing WS reset", t.ID)
+					t.TUI.LogEvent("[%s] ⚠️ STALE (15s) - forcing WS reconnect", t.ID)
 					lastForceReconnect = time.Now()
 					wsMgr.ForceReconnect()
 				}
@@ -823,58 +906,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 			}
 
-			// Check liquidity
-			hasLiquidity := false
-			if len(t.Outcomes) == 2 {
-				for _, outcome := range t.Outcomes {
-					bid := t.TokenBids[outcome]
-					ask := t.TokenAsks[outcome]
-					if (bid >= 0.15 && bid <= 0.85) || (ask >= 0.15 && ask <= 0.85) {
-						hasLiquidity = true
-						break
-					}
-				}
-			}
-
-			if hasLiquidity {
-				lastGoodLiquidity = time.Now()
-			} else if time.Since(lastGoodLiquidity) > liquidityTimeout {
-				positions := t.Engine.GetPositions()
-				if len(positions) > 0 {
-					// Check if market should have expired by now
-					if time.Now().After(t.EndTime) {
-						t.TUI.LogEvent("[%s] ⏰ Market expired, forcing resolution", t.ID)
-						winner := simulateResolution(t.Outcomes, tokenPrices)
-						t.TUI.LogEvent("[%s] 🏆 WINNER: %s", t.ID, winner)
-						result := t.Engine.RedeemWithDetails(winner)
-						if result.WinningShares > 0 || result.LosingShares > 0 {
-							t.TUI.LogEvent("[%s] 💰 Redemption: $%.2f", t.ID, result.TotalPnL)
-						}
-						finalStats := t.Engine.GetStats()
-						return &marketResult{
-							realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
-							trades:      finalStats.TotalTrades - tradesAtStart,
-						}, nil
-					}
-
-					if !t.LaddersPlaced {
-						t.TUI.LogEvent("[%s] ⏳ Waiting for resolution with positions...", t.ID)
-						t.LaddersPlaced = true
-					}
-					t.LadderMgr.CancelAllLadders()
-					// Don't reset lastGoodLiquidity - let the safety timeout catch infinite loops
-					continue
-				}
-
-				t.TUI.LogEvent("[%s] 💨 Liquidity dried up", t.ID)
-				t.LadderMgr.CancelAllLadders()
-
-				finalStats := t.Engine.GetStats()
-				return &marketResult{
-					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
-					trades:      finalStats.TotalTrades - tradesAtStart,
-				}, nil
-			}
+			// Check if market has ended (only exit condition that matters)
+			// DON'T exit on "liquidity dried up" - volatile markets can have extreme prices
+			// and that's normal market behavior, not a reason to exit
 
 			// Trading logic - check every tick for arbitrage opportunities
 			if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
@@ -885,7 +919,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
-					const minMarginPercent = 3.0 // Increased from 1.5% for better risk/reward
+					const minMarginPercent = 2.0    // Minimum margin % to trigger arbitrage trade
 					const baseSharesPerTrade = 25.0 // Base shares per trade
 
 					// Evaluate portfolio risk before trading

@@ -56,8 +56,9 @@ type Engine struct {
 	// Positions: "marketID:outcome" -> position
 	positions map[string]*Position
 
-	// Trade history
-	trades []Trade
+	// Trade history (capped to prevent memory growth)
+	trades    []Trade
+	maxTrades int
 
 	// Stats tracking
 	totalTrades   int
@@ -85,6 +86,7 @@ func NewEngine(startingBalance float64) *Engine {
 		currentBalance:     startingBalance,
 		peakBalance:        startingBalance,
 		compoundMultiplier: 1.0, // Start at 1x
+		maxTrades:          1000, // Cap trade history to prevent memory growth
 		positions:          make(map[string]*Position),
 		trades:             make([]Trade, 0),
 		currentPrices:      make(map[string]float64),
@@ -214,7 +216,7 @@ func (e *Engine) BuyForMarket(marketID, outcome string, price, quantity float64)
 		Quantity:  quantity,
 		Value:     cost,
 	}
-	e.trades = append(e.trades, trade)
+	e.addTrade(trade)
 
 	return &trade, nil
 }
@@ -270,7 +272,7 @@ func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 		Quantity:  quantity,
 		Value:     proceeds,
 	}
-	e.trades = append(e.trades, trade)
+	e.addTrade(trade)
 
 	return &trade, nil
 }
@@ -448,7 +450,7 @@ func (e *Engine) LiquidateAll() float64 {
 			Quantity:  pos.Quantity,
 			Value:     proceeds,
 		}
-		e.trades = append(e.trades, trade)
+		e.addTrade(trade)
 	}
 
 	// Clear all positions
@@ -460,6 +462,15 @@ func (e *Engine) LiquidateAll() float64 {
 
 func (e *Engine) updateDrawdown() {
 	e.recalculateDrawdown()
+}
+
+// addTrade records a trade and trims history if needed (must be called with lock held)
+func (e *Engine) addTrade(trade Trade) {
+	e.trades = append(e.trades, trade)
+	// Trim trade history if it exceeds max to prevent memory growth
+	if len(e.trades) > e.maxTrades {
+		e.trades = e.trades[len(e.trades)-e.maxTrades:]
+	}
 }
 
 // recalculateDrawdown updates max drawdown based on current equity

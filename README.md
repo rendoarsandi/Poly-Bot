@@ -29,6 +29,9 @@ The bot acts as a **Market Maker**, placing limit orders on both sides of a bina
 | **Auto-Redemption** | Redeems winning shares on market resolution |
 | **Market Rotation** | Automatically moves to next market after resolution |
 | **Paper Trading** | Simulated trading with no real money |
+| **WebSocket + REST Fallback** | Dual data sources for reliable price feeds |
+| **Android Background Support** | Keeps running when terminal is backgrounded |
+| **Memory Management** | Automatic cleanup of old orders and trade history |
 
 ## Installation
 
@@ -281,6 +284,20 @@ Market-bot/
 - **Outcome Risk**: Rare "ambiguous" resolutions can cause losses
 - **Liquidity Risk**: Low liquidity markets may not fill orders
 - **Slippage**: Fast markets may fill at worse prices
+
+## Stability & Reliability
+
+The bot includes several stability features for long-running sessions:
+
+| Feature | Description |
+|---------|-------------|
+| **WebSocket Auto-Reconnect** | Automatically reconnects on disconnection with exponential backoff |
+| **REST Fallback** | Polls REST API every 2s when WebSocket is unhealthy |
+| **Force Reconnect** | Forces WebSocket reconnection after 15s of no data |
+| **Trade History Cap** | Limits stored trades to 1000 to prevent memory growth |
+| **Order Cleanup** | Removes filled/cancelled orders older than 5 minutes |
+| **Android Keepalive** | Background ticker prevents OS from throttling the process |
+| **Graceful Shutdown** | Clean exit on Ctrl+C with position liquidation |
 
 ## License
 

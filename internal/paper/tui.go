@@ -160,6 +160,16 @@ func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64)
 	}
 }
 
+// TouchMarket updates the LastUpdate timestamp without changing prices
+// Use this when connection is healthy but no new data to report
+func (t *TUI) TouchMarket(marketID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if m, ok := t.markets[marketID]; ok {
+		m.LastUpdate = time.Now()
+	}
+}
+
 // UpdateOrderBookDepth updates the full order book depth for a market
 func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]MarketLevel) {
 	t.mu.Lock()
@@ -459,10 +469,10 @@ func (t *TUI) renderMultiMarketInfo() string {
 		updateAge := time.Since(m.LastUpdate)
 		updateColor := ColorGreen
 		updateWarning := ""
-		if updateAge > 30*time.Second {
+		if updateAge > 10*time.Second {
 			updateColor = ColorRed
 			updateWarning = " ⚠️ STALE!"
-		} else if updateAge > 10*time.Second {
+		} else if updateAge > 5*time.Second {
 			updateColor = ColorYellow
 			updateWarning = " (slow)"
 		} else if updateAge > 2*time.Second {

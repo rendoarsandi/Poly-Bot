@@ -53,6 +53,9 @@ type OrderBook struct {
 	queueBuffer    float64       // Price buffer to simulate queue priority (e.g., 0.001 = must be 0.1 cent better)
 	orderDelay     time.Duration // Delay when placing orders (simulates API latency)
 
+	// Memory management
+	lastCleanup time.Time
+
 	// Callbacks
 	onFill func(order *LimitOrder, fillQty float64, fillPrice float64)
 }
@@ -64,6 +67,7 @@ func NewOrderBook() *OrderBook {
 		nextOrderID: 1,
 		queueBuffer: 0.001, // Default: need price 0.1 cent better to fill
 		orderDelay:  200 * time.Millisecond, // Default: 200ms API latency
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -345,4 +349,28 @@ func (ob *OrderBook) GetOpenOrdersByOutcome() map[string]float64 {
 		}
 	}
 	return result
+}
+
+// CleanupOldOrders removes filled/cancelled orders older than maxAge to prevent memory growth
+// This should be called periodically (e.g., every minute)
+func (ob *OrderBook) CleanupOldOrders(maxAge time.Duration) int {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	// Don't cleanup too frequently
+	if time.Since(ob.lastCleanup) < time.Minute {
+		return 0
+	}
+	ob.lastCleanup = time.Now()
+
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for id, order := range ob.orders {
+		if (order.Status == OrderStatusFilled || order.Status == OrderStatusCancelled) &&
+			order.CreatedAt.Before(cutoff) {
+			delete(ob.orders, id)
+			removed++
+		}
+	}
+	return removed
 }
