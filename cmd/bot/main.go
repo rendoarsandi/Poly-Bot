@@ -51,6 +51,9 @@ type MarketTrader struct {
 	// Last time ANY price update was received for this trader
 	LastUpdate time.Time
 
+	// Last time we performed a REST fallback poll
+	LastRestPoll time.Time
+
 	// State
 	LaddersPlaced bool
 	MarketEnded   bool
@@ -438,6 +441,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 		TokenFullAsks: make(map[string][]paper.MarketLevel),
 		FloatPrices:   make(map[string]float64),
 		LastUpdate:    time.Now(),
+		LastRestPoll:  time.Now(),
 	}
 }
 
@@ -724,7 +728,48 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 
 			// Individual trader staleness watchdog (e.g. for XRP getting stuck)
-			// If we haven't seen an update for 30s but market is active and others are updating
+			// 1. FAST FALLBACK: If stale for 5s, poll REST API (every 2s)
+			if time.Since(t.LastUpdate) > 5*time.Second && time.Since(t.LastRestPoll) > 2*time.Second && marketState == paper.MarketStateActive {
+				t.LastRestPoll = time.Now()
+				// Don't log every poll to avoid spam, just once at start of staleness
+				if time.Since(t.LastUpdate) < 7*time.Second {
+					t.TUI.LogEvent("[%s] 🛰️ Stale WS (>5s), using REST fallback...", t.ID)
+				}
+				
+				// Poll REST for each token
+				for tokenID, outcome := range t.TokenMap {
+					book, err := t.RestClient.GetOrderBook(ctx, tokenID)
+					if err == nil {
+						bid, ask := 0.0, 1.0
+						for _, b := range book.Bids {
+							p, _ := strconv.ParseFloat(b.Price, 64)
+							if p > bid { bid = p }
+						}
+						for _, a := range book.Asks {
+							p, _ := strconv.ParseFloat(a.Price, 64)
+							if p < ask && p > 0 { ask = p }
+						}
+						if ask >= 1.0 { ask = 0.0 }
+						
+						if outcome != "" {
+							t.TokenBids[outcome] = bid
+							t.TokenAsks[outcome] = ask
+							if bid > 0 && ask > 0 {
+								mid := (bid + ask) / 2
+								t.FloatPrices[outcome] = mid
+								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+							}
+							t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
+							t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+						}
+					}
+				}
+				t.LastUpdate = time.Now() // Reset timer so we don't immediately force reconnect
+				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+			}
+
+			// 2. FORCE RECONNECT: If stale for 30s but market is active
 			if time.Since(t.LastUpdate) > 30*time.Second && marketState == paper.MarketStateActive {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
 					t.TUI.LogEvent("[%s] ⚠️ STALE DATA (30s) - forcing WS reset", t.ID)
