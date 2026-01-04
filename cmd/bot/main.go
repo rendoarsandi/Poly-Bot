@@ -455,8 +455,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastReconnectCount := int32(0) // Track reconnections
 
 	const liquidityTimeout = 45 * time.Second
-	const restFetchInterval = 100 * time.Millisecond // Fast REST polling (100ms = 10/sec)
-	const gammaFetchInterval = 100 * time.Millisecond // Fast CLOB polling (100ms)
+	const restFetchInterval = 50 * time.Millisecond  // Ultra-fast REST polling (50ms = 20/sec)
+	const gammaFetchInterval = 50 * time.Millisecond // Ultra-fast CLOB polling (50ms)
 
 	ladderConfig := paper.LadderConfig{
 		Levels:         3,
@@ -570,49 +570,75 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// This ensures prices update even if WS is slow
 			restInterval := restFetchInterval
 			if !wsMgr.IsConnected() {
-				restInterval = 100 * time.Millisecond // Super fast when WS is down
+				restInterval = 25 * time.Millisecond // Ultra-fast when WS is down
 			}
 			if time.Since(lastRESTFetch) >= restInterval {
+				// Fetch order books in PARALLEL for all tokens
+				type bookResult struct {
+					outcome string
+					book    *api.OrderBookResponse
+				}
+				results := make(chan bookResult, len(t.Market.Tokens))
+
 				for _, token := range t.Market.Tokens {
-					book, err := t.RestClient.GetOrderBook(ctx, token.TokenID)
-					if err != nil {
-						continue
-					}
-					outcome := token.Outcome
-					t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
-					t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
-
-					// Extract best bid/ask from order book
-					bestBid := 0.0
-					bestAsk := 0.0
-					for _, level := range book.Bids {
-						p, _ := strconv.ParseFloat(level.Price, 64)
-						if p > bestBid {
-							bestBid = p
+					go func(tokenID, outcome string) {
+						book, err := t.RestClient.GetOrderBook(ctx, tokenID)
+						if err != nil {
+							results <- bookResult{outcome: outcome, book: nil}
+							return
 						}
-					}
-					for _, level := range book.Asks {
-						p, _ := strconv.ParseFloat(level.Price, 64)
-						if p > 0 && (bestAsk == 0 || p < bestAsk) {
-							bestAsk = p
-						}
-					}
+						results <- bookResult{outcome: outcome, book: book}
+					}(token.TokenID, token.Outcome)
+				}
 
-					// Update prices from REST data
-					if bestBid > 0 {
-						t.TokenBids[outcome] = bestBid
-					}
-					if bestAsk > 0 && bestAsk < 1.0 {
-						t.TokenAsks[outcome] = bestAsk
-					}
-					if bestBid > 0 && bestAsk > 0 && bestAsk < 1.0 {
-						mid := (bestBid + bestAsk) / 2
-						t.FloatPrices[outcome] = mid
-						tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-						t.Engine.UpdatePrice(outcome, mid)
-						t.Engine.UpdateBidAsk(outcome, bestBid, bestAsk)
-						// Also update per-market bid/ask for P&L calculation
-						t.Engine.UpdateMarketBidAsk(t.ID, outcome, bestBid, bestAsk)
+				// Collect results (with timeout)
+				timeout := time.After(100 * time.Millisecond)
+				for i := 0; i < len(t.Market.Tokens); i++ {
+					select {
+					case res := <-results:
+						if res.book == nil {
+							continue
+						}
+						outcome := res.outcome
+						book := res.book
+						t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
+						t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+
+						// Extract best bid/ask from order book
+						bestBid := 0.0
+						bestAsk := 0.0
+						for _, level := range book.Bids {
+							p, _ := strconv.ParseFloat(level.Price, 64)
+							if p > bestBid {
+								bestBid = p
+							}
+						}
+						for _, level := range book.Asks {
+							p, _ := strconv.ParseFloat(level.Price, 64)
+							if p > 0 && (bestAsk == 0 || p < bestAsk) {
+								bestAsk = p
+							}
+						}
+
+						// Update prices from REST data
+						if bestBid > 0 {
+							t.TokenBids[outcome] = bestBid
+						}
+						if bestAsk > 0 && bestAsk < 1.0 {
+							t.TokenAsks[outcome] = bestAsk
+						}
+						if bestBid > 0 && bestAsk > 0 && bestAsk < 1.0 {
+							mid := (bestBid + bestAsk) / 2
+							t.FloatPrices[outcome] = mid
+							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+							t.Engine.UpdatePrice(outcome, mid)
+							t.Engine.UpdateBidAsk(outcome, bestBid, bestAsk)
+							// Also update per-market bid/ask for P&L calculation
+							t.Engine.UpdateMarketBidAsk(t.ID, outcome, bestBid, bestAsk)
+						}
+					case <-timeout:
+						// Timeout, continue with what we have
+						break
 					}
 				}
 				// Update TUI after REST fetch
@@ -885,9 +911,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Suppress unused variable warnings
 			_ = lastLadderUpdate
 
-			// Small sleep to prevent CPU spinning
-			// Use 20ms for low latency trading (50 ticks/sec)
-			time.Sleep(20 * time.Millisecond)
+			// Minimal sleep for ultra-low latency trading
+			// 10ms = 100 ticks/sec - balance between responsiveness and CPU
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }

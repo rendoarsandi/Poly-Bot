@@ -9,19 +9,23 @@ import (
 	"time"
 )
 
-// Optimized HTTP client with connection pooling and timeouts for low latency
+// Optimized HTTP client with connection pooling and timeouts for ultra-low latency
 var httpClient = &http.Client{
-	Timeout: 5 * time.Second,
+	Timeout: 3 * time.Second, // Reduced timeout for faster failure detection
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        200,              // More idle connections
+		MaxIdleConnsPerHost: 50,               // More per-host connections
+		MaxConnsPerHost:     100,              // Allow more concurrent connections
+		IdleConnTimeout:     120 * time.Second,
+		DisableCompression:  true,             // Skip compression for speed
 		DialContext: (&net.Dialer{
-			Timeout:   3 * time.Second,
-			KeepAlive: 30 * time.Second,
+			Timeout:   2 * time.Second,
+			KeepAlive: 60 * time.Second,
 		}).DialContext,
-		TLSHandshakeTimeout:   3 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
+		TLSHandshakeTimeout:   2 * time.Second,
+		ResponseHeaderTimeout: 3 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true, // Use HTTP/2 for multiplexing
 	},
 }
 
