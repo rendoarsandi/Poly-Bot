@@ -12,14 +12,14 @@ import (
 )
 
 const (
-	// Heartbeat interval - send ping every 30 seconds
-	heartbeatInterval = 30 * time.Second
+	// Heartbeat interval - send ping every 10 seconds for faster dead connection detection
+	heartbeatInterval = 10 * time.Second
 	// If no message received in this time, consider connection dead
-	readTimeout = 45 * time.Second
+	readTimeout = 15 * time.Second
 	// Max reconnection attempts before giving up
-	maxReconnectAttempts = 5
-	// Delay between reconnection attempts
-	reconnectDelay = 2 * time.Second
+	maxReconnectAttempts = 10
+	// Delay between reconnection attempts (starts at 1s, doubles each attempt)
+	reconnectDelay = 1 * time.Second
 )
 
 type WSManager struct {
@@ -146,6 +146,7 @@ func (m *WSManager) tryReconnect() {
 
 	m.connected.Store(false)
 
+attemptLoop:
 	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
 		select {
 		case <-m.ctx.Done():
@@ -161,11 +162,15 @@ func (m *WSManager) tryReconnect() {
 		}
 		m.mu.Unlock()
 
-		// Wait before reconnecting
+		// Exponential backoff with cap at 10 seconds
+		delay := reconnectDelay * time.Duration(1<<uint(attempt-1))
+		if delay > 10*time.Second {
+			delay = 10 * time.Second
+		}
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-time.After(reconnectDelay * time.Duration(attempt)):
+		case <-time.After(delay):
 		}
 
 		// Try to reconnect
@@ -179,17 +184,24 @@ func (m *WSManager) tryReconnect() {
 
 		// Re-subscribe to all previous subscriptions
 		m.subMu.Lock()
-		for _, sub := range m.subscriptions {
+		subscriptions := make([]interface{}, len(m.subscriptions))
+		copy(subscriptions, m.subscriptions)
+		m.subMu.Unlock()
+
+		allSubscribed := true
+		for _, sub := range subscriptions {
 			ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 			err := m.Subscribe(ctx, sub)
 			cancel()
 			if err != nil {
-				m.subMu.Unlock()
 				m.connected.Store(false)
-				continue
+				allSubscribed = false
+				break
 			}
 		}
-		m.subMu.Unlock()
+		if !allSubscribed {
+			continue attemptLoop
+		}
 
 		m.reconnectCount.Add(1)
 		return
@@ -303,6 +315,14 @@ func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Dur
 // IsConnected returns current connection status
 func (m *WSManager) IsConnected() bool {
 	return m.connected.Load()
+}
+
+// ForceReconnect triggers a reconnection attempt from external code
+func (m *WSManager) ForceReconnect() {
+	// Mark as disconnected to trigger reconnection
+	m.connected.Store(false)
+	// Trigger reconnection in background
+	go m.tryReconnect()
 }
 
 // GetStats returns connection statistics

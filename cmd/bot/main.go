@@ -512,9 +512,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastGoodLiquidity := time.Now()
 	lastReconnectCount := int32(0) // Track reconnections
 	lastPriceUpdate := time.Now()
+	lastWsWarnTime := time.Time{}           // Rate-limit WS warnings
+	lastForceReconnect := time.Time{}       // Track forced reconnection attempts
 
 	const liquidityTimeout = 45 * time.Second
-	const wsPriceTimeout = 5 * time.Second // Max time without WS price update before warning
+	const wsWarnInterval = 15 * time.Second    // Only warn once per 15 seconds
+	const wsForceReconnect = 15 * time.Second  // Force reconnection after 15 seconds stale
 
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
@@ -715,17 +718,26 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 			}
 
-			// Warn if no WS updates for too long
-			if time.Since(lastPriceUpdate) > wsPriceTimeout && !wsChannelClosed {
-				if !t.LaddersPlaced {
-					t.TUI.LogEvent("[%s] ⚠️ No WS updates for %.0fs", t.ID, time.Since(lastPriceUpdate).Seconds())
+			// Handle stale WebSocket data
+			timeSinceUpdate := time.Since(lastPriceUpdate)
+			if timeSinceUpdate > wsForceReconnect && !wsChannelClosed {
+				// Force reconnection if data is stale (rate-limited to once per 15s)
+				if time.Since(lastForceReconnect) > wsForceReconnect {
+					lastForceReconnect = time.Now()
+					wsMgr.ForceReconnect()
+				}
+				// Rate-limited warning (once per interval)
+				if time.Since(lastWsWarnTime) > wsWarnInterval {
+					t.TUI.LogEvent("[%s] ⚠️ WS stale %.0fs - forcing reconnect", t.ID, timeSinceUpdate.Seconds())
+					lastWsWarnTime = time.Now()
 				}
 			}
 
-			// If WebSocket channel closed, log once
-			if wsChannelClosed && !t.LaddersPlaced {
-				t.TUI.LogEvent("[%s] ⚠️ WebSocket closed - no price feed", t.ID)
-				t.LaddersPlaced = true // Prevent repeated logging
+			// If WebSocket channel closed, log once and try reconnect
+			if wsChannelClosed && time.Since(lastWsWarnTime) > wsWarnInterval {
+				t.TUI.LogEvent("[%s] ⚠️ WebSocket closed - attempting reconnect", t.ID)
+				lastWsWarnTime = time.Now()
+				wsMgr.ForceReconnect()
 			}
 
 			// Also update order book depth for live display
