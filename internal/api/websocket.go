@@ -111,26 +111,23 @@ func (m *WSManager) heartbeatLoop() {
 				continue
 			}
 
-			// Check if we've received any message recently
-			lastMsg := time.Unix(m.lastMessage.Load(), 0)
-			if time.Since(lastMsg) > readTimeout {
-				// Connection seems dead, trigger reconnect
-				go m.tryReconnect()
-				continue
-			}
-
-			// Send ping
+			// Send ping to verify connection is alive
 			m.mu.Lock()
 			if m.conn != nil {
 				ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 				err := m.conn.Ping(ctx)
 				cancel()
 				if err != nil {
+					// Ping failed - connection is dead, trigger reconnect
 					m.mu.Unlock()
 					go m.tryReconnect()
 					continue
 				}
+				// Ping succeeded - connection is alive
 				m.lastHeartbeat.Store(time.Now().Unix())
+				// Also update lastMessage so inactive markets don't show as stale
+				// (connection is alive, just no trading activity)
+				m.lastMessage.Store(time.Now().Unix())
 			}
 			m.mu.Unlock()
 		}
