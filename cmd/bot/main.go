@@ -967,7 +967,7 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		for _, b := range book.Bids {
 			p, err := strconv.ParseFloat(b.Price, 64)
 			if err != nil {
-				log.Printf("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
+t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
 				continue
 			}
 			if p > bid {
