@@ -977,7 +977,7 @@ t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price
 		for _, a := range book.Asks {
 			p, err := strconv.ParseFloat(a.Price, 64)
 			if err != nil {
-				log.Printf("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
+t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
 				continue
 			}
 			if p > 0 && (ask == 0 || p < ask) {
