@@ -454,12 +454,13 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 			m.messageCount.Add(1)
 
 			// Send to channel - prioritize newest message
-			// For single-producer, we drain one old message if full, then send
+			// Uses labeled loop for clarity (avoids goto)
+		sendLoop:
 			for {
 				select {
 				case msgChan <- p:
 					// Successfully sent
-					goto messageSent
+					break sendLoop
 				default:
 					// Channel full - drain oldest message to make room
 					select {
@@ -470,7 +471,6 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 					}
 				}
 			}
-		messageSent:
 		}
 	}()
 

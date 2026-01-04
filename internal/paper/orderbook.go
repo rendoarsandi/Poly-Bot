@@ -16,6 +16,9 @@ const (
 	OrderStatusFilled    OrderStatus = "filled"
 	OrderStatusCancelled OrderStatus = "cancelled"
 	OrderStatusPartial   OrderStatus = "partial"
+
+	// cleanupRateLimit is the minimum interval between order cleanups
+	cleanupRateLimit = time.Minute
 )
 
 // LimitOrder represents a limit order waiting to be filled
@@ -358,7 +361,7 @@ func (ob *OrderBook) CleanupOldOrders(maxAge time.Duration) int {
 	defer ob.mu.Unlock()
 
 	// Don't cleanup too frequently
-	if time.Since(ob.lastCleanup) < time.Minute {
+	if time.Since(ob.lastCleanup) < cleanupRateLimit {
 		return 0
 	}
 	ob.lastCleanup = time.Now()

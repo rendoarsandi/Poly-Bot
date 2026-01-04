@@ -757,89 +757,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			needsRestFallback := (!wsConnected || wsLastMsg > 15*time.Second) && staleTime > 3*time.Second
 
 			if needsRestFallback && time.Since(t.LastRestPoll) > restPollInterval {
-				t.LastRestPoll = time.Now()
-				staleSeconds := int(staleTime.Seconds())
-
-				// Poll REST synchronously for reliability
-				restSuccess := 0
-				restErrors := 0
-				restEmpty := 0
-				var lastErr error
-				for tokenID, outcome := range t.TokenMap {
-					// Use short timeout
-					restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
-					book, err := t.RestClient.GetOrderBook(restCtx, tokenID)
-					restCancel()
-
-					if err != nil {
-						restErrors++
-						lastErr = err
-						continue
-					}
-
-					// Check if book is empty
-					if len(book.Bids) == 0 && len(book.Asks) == 0 {
-						restEmpty++
-						continue
-					}
-
-					bid, ask := 0.0, 0.0
-					for _, b := range book.Bids {
-						p, _ := strconv.ParseFloat(b.Price, 64)
-						if p > bid {
-							bid = p
-						}
-					}
-					for _, a := range book.Asks {
-						p, _ := strconv.ParseFloat(a.Price, 64)
-						if p > 0 && (ask == 0 || p < ask) {
-							ask = p
-						}
-					}
-
-					// Always update with whatever data we got (even partial)
-					t.mu.Lock()
-					if bid > 0 {
-						t.TokenBids[outcome] = bid
-					}
-					if ask > 0 && ask < 1.0 {
-						t.TokenAsks[outcome] = ask
-					}
-					if bid > 0 && ask > 0 && ask < 1.0 {
-						mid := (bid + ask) / 2
-						t.FloatPrices[outcome] = mid
-						tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-						t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
-					}
-					t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
-					t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
-					t.mu.Unlock()
-
-					// Count as success if we got any valid data
-					if bid > 0 || (ask > 0 && ask < 1.0) || len(book.Bids) > 0 || len(book.Asks) > 0 {
-						restSuccess++
-					}
-				}
-
-				// Log result - minimal spam, maximum info
-				if restSuccess > 0 {
-					t.LastUpdate = time.Now()
-					t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
-					// Only log recovery after significant staleness
-					if staleSeconds >= 5 {
-						t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)
-					}
-				} else if restErrors > 0 {
-					// Log errors every 10 seconds to avoid spam
-					if staleSeconds%10 == 0 || staleSeconds == 5 {
-						t.TUI.LogEvent("[%s] ❌ REST fail %ds: %v", t.ID, staleSeconds, lastErr)
-					}
-				} else if restEmpty == len(t.TokenMap) {
-					// All books empty - likely market ended
-					if staleSeconds%10 == 0 {
-						t.TUI.LogEvent("[%s] 📭 All books empty (%ds)", t.ID, staleSeconds)
-					}
-				}
+				t.handleRestFallback(ctx, tokenPrices, staleTime)
 			}
 
 			// FORCE RECONNECT: If stale for 15s (reduced from 30s for faster recovery)
@@ -1001,9 +919,115 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
 	result := make([]paper.MarketLevel, len(levels))
 	for i, l := range levels {
-		p, _ := strconv.ParseFloat(l.Price, 64)
-		s, _ := strconv.ParseFloat(l.Size, 64)
+		p, err := strconv.ParseFloat(l.Price, 64)
+		if err != nil {
+			log.Printf("Warning: failed to parse price '%s': %v", l.Price, err)
+			continue
+		}
+		s, err := strconv.ParseFloat(l.Size, 64)
+		if err != nil {
+			log.Printf("Warning: failed to parse size '%s': %v", l.Size, err)
+			continue
+		}
 		result[i] = paper.MarketLevel{Price: p, Size: s}
 	}
 	return result
+}
+
+// handleRestFallback polls REST API when WebSocket data is stale
+// Returns true if any data was successfully retrieved
+func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration) bool {
+	t.LastRestPoll = time.Now()
+	staleSeconds := int(staleTime.Seconds())
+
+	// Poll REST synchronously for reliability
+	restSuccess := 0
+	restErrors := 0
+	restEmpty := 0
+	var lastErr error
+	for tokenID, outcome := range t.TokenMap {
+		// Use short timeout
+		restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
+		book, err := t.RestClient.GetOrderBook(restCtx, tokenID)
+		restCancel()
+
+		if err != nil {
+			restErrors++
+			lastErr = err
+			continue
+		}
+
+		// Check if book is empty
+		if len(book.Bids) == 0 && len(book.Asks) == 0 {
+			restEmpty++
+			continue
+		}
+
+		bid, ask := 0.0, 0.0
+		for _, b := range book.Bids {
+			p, err := strconv.ParseFloat(b.Price, 64)
+			if err != nil {
+				log.Printf("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
+				continue
+			}
+			if p > bid {
+				bid = p
+			}
+		}
+		for _, a := range book.Asks {
+			p, err := strconv.ParseFloat(a.Price, 64)
+			if err != nil {
+				log.Printf("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
+				continue
+			}
+			if p > 0 && (ask == 0 || p < ask) {
+				ask = p
+			}
+		}
+
+		// Always update with whatever data we got (even partial)
+		t.mu.Lock()
+		if bid > 0 {
+			t.TokenBids[outcome] = bid
+		}
+		if ask > 0 && ask < 1.0 {
+			t.TokenAsks[outcome] = ask
+		}
+		if bid > 0 && ask > 0 && ask < 1.0 {
+			mid := (bid + ask) / 2
+			t.FloatPrices[outcome] = mid
+			tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+		}
+		t.TokenFullBids[outcome] = toMarketLevels(book.Bids)
+		t.TokenFullAsks[outcome] = toMarketLevels(book.Asks)
+		t.mu.Unlock()
+
+		// Count as success if we got any valid data
+		if bid > 0 || (ask > 0 && ask < 1.0) || len(book.Bids) > 0 || len(book.Asks) > 0 {
+			restSuccess++
+		}
+	}
+
+	// Log result - minimal spam, maximum info
+	if restSuccess > 0 {
+		t.LastUpdate = time.Now()
+		t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+		// Only log recovery after significant staleness
+		if staleSeconds >= 5 {
+			t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)
+		}
+		return true
+	} else if restErrors > 0 {
+		// Log errors every 10 seconds to avoid spam
+		if staleSeconds%10 == 0 || staleSeconds == 5 {
+			t.TUI.LogEvent("[%s] ❌ REST fail %ds: %v", t.ID, staleSeconds, lastErr)
+		}
+	} else if restEmpty == len(t.TokenMap) {
+		// All books empty - likely market ended
+		if staleSeconds%10 == 0 {
+			t.TUI.LogEvent("[%s] 📭 All books empty (%ds)", t.ID, staleSeconds)
+		}
+	}
+	return false
 }
