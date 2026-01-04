@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,6 +63,7 @@ type TUI struct {
 	eventLog     []string
 	maxEvents    int
 	running      bool
+	stopped      atomic.Bool // Atomic flag for fast shutdown detection without lock
 	killReason   string
 	isKilled     bool
 
@@ -79,7 +81,8 @@ type TUI struct {
 	width int
 
 	// Stop channel for clean shutdown
-	stopCh chan struct{}
+	stopCh   chan struct{}
+	stopOnce sync.Once // Ensure Stop() only runs once
 }
 
 // PendingOrder represents an order the bot intends to place
@@ -247,28 +250,39 @@ func (t *TUI) SetKillSwitch(reason string) {
 	t.killReason = reason
 }
 
-// Stop stops the UI
+// Stop stops the UI - safe to call multiple times
 func (t *TUI) Stop() {
-	t.mu.Lock()
-	wasRunning := t.running
-	t.running = false
-	t.mu.Unlock()
+	// Use sync.Once to ensure we only stop once
+	t.stopOnce.Do(func() {
+		// Set atomic flag first for instant detection by render loop
+		t.stopped.Store(true)
 
-	// Signal stop channel only once
-	if wasRunning {
+		// Then update the mutex-protected state
+		t.mu.Lock()
+		t.running = false
+		t.mu.Unlock()
+
+		// Close the stop channel to signal the render loop
 		close(t.stopCh)
-		// Restore cursor
+
+		// Restore cursor - this is safe to do outside the lock
 		fmt.Print(ShowCursor)
 		fmt.Println() // Move to new line for clean exit
-	}
+	})
 }
 
 // Render draws the entire UI
 func (t *TUI) Render() {
+	// Fast path: check atomic flag without lock
+	if t.stopped.Load() {
+		return
+	}
+
+	// Build the frame while holding the lock
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	if !t.running {
+		t.mu.Unlock()
 		return
 	}
 
@@ -320,7 +334,15 @@ func (t *TUI) Render() {
 	// Clear from cursor to end of screen
 	sb.WriteString("\033[J")
 
-	fmt.Print(sb.String())
+	// Get the complete frame as a string
+	frame := sb.String()
+
+	// Release the lock BEFORE doing I/O to prevent deadlock
+	// If terminal output blocks (alt-tab, buffer full), other goroutines can still work
+	t.mu.Unlock()
+
+	// Write to terminal without holding the lock
+	fmt.Print(frame)
 }
 
 func (t *TUI) renderHeader() string {
