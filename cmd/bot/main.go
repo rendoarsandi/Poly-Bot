@@ -48,6 +48,9 @@ type MarketTrader struct {
 	TokenFullAsks map[string][]paper.MarketLevel
 	FloatPrices   map[string]float64
 
+	// Last time ANY price update was received for this trader
+	LastUpdate time.Time
+
 	// State
 	LaddersPlaced bool
 	MarketEnded   bool
@@ -434,6 +437,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 		TokenFullBids: make(map[string][]paper.MarketLevel),
 		TokenFullAsks: make(map[string][]paper.MarketLevel),
 		FloatPrices:   make(map[string]float64),
+		LastUpdate:    time.Now(),
 	}
 }
 
@@ -637,6 +641,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					// Parse and process WebSocket message immediately
 					if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
+						foundForThisTrader := false
 						for _, b := range books {
 							bid, ask := 0.0, 1.0
 							for _, order := range b.Bids {
@@ -656,6 +661,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 							outcome := t.TokenMap[b.AssetID]
 							if outcome != "" {
+								foundForThisTrader = true
 								t.TokenBids[outcome] = bid
 								t.TokenAsks[outcome] = ask
 								if bid > 0 && ask > 0 && ask < 1.0 {
@@ -668,6 +674,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								t.TokenFullBids[outcome] = toMarketLevels(b.Bids)
 								t.TokenFullAsks[outcome] = toMarketLevels(b.Asks)
 							}
+						}
+						if foundForThisTrader {
+							t.LastUpdate = time.Now()
 						}
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						bid, ask := 0.0, 1.0
@@ -688,6 +697,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 						outcome := t.TokenMap[book.AssetID]
 						if outcome != "" {
+							t.LastUpdate = time.Now()
 							t.TokenBids[outcome] = bid
 							t.TokenAsks[outcome] = ask
 							if bid > 0 && ask > 0 && ask < 1.0 {
@@ -711,6 +721,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Update TUI after processing WS messages
 			if messagesProcessed > 0 {
 				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
+			}
+
+			// Individual trader staleness watchdog (e.g. for XRP getting stuck)
+			// If we haven't seen an update for 30s but market is active and others are updating
+			if time.Since(t.LastUpdate) > 30*time.Second && marketState == paper.MarketStateActive {
+				if time.Since(lastForceReconnect) > wsForceReconnect {
+					t.TUI.LogEvent("[%s] ⚠️ STALE DATA (30s) - forcing WS reset", t.ID)
+					lastForceReconnect = time.Now()
+					wsMgr.ForceReconnect()
+				}
 			}
 
 			// Handle WebSocket issues - only reconnect if actually disconnected

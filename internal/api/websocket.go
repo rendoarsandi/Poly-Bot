@@ -334,7 +334,15 @@ func (m *WSManager) IsConnected() bool {
 
 // ForceReconnect triggers a reconnection attempt from external code
 func (m *WSManager) ForceReconnect() {
-	// Mark as disconnected to trigger reconnection
+	// Close existing connection to force a fresh dial
+	m.mu.Lock()
+	if m.conn != nil {
+		m.conn.Close(websocket.StatusGoingAway, "force reconnect")
+		m.conn = nil
+	}
+	m.mu.Unlock()
+
+	// Mark as disconnected to trigger tryReconnect's logic
 	m.connected.Store(false)
 	// Trigger reconnection in background
 	go m.tryReconnect()
