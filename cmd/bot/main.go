@@ -745,25 +745,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
 			}
 
-			// Check if WS connection is healthy (even if no data for this specific asset)
-			// Polymarket only sends data when there's trading activity
-			// If WS is connected and healthy, don't show stale - just means no trades
+			// Check WebSocket connection health for REST fallback decision
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
-			// If WS is healthy (connected and got any message recently), touch the market
-			// This prevents false "STALE" warnings for inactive but connected markets
-			if wsConnected && wsLastMsg < 30*time.Second {
-				// WS is alive - if we have existing prices, keep them fresh
-				if len(t.TokenBids) > 0 || len(t.TokenAsks) > 0 {
-					t.TUI.TouchMarket(t.ID)
-				}
-			}
-
 			// Individual trader staleness watchdog
-			// Only poll REST if WS is unhealthy OR we have no price data at all
+			// Only poll REST if WS is unhealthy (disconnected or no messages for 15s)
+			// Note: t.LastUpdate tracks actual PRICE updates, not just connection health
 			staleTime := time.Since(t.LastUpdate)
-			restPollInterval := 2 * time.Second // How often to poll REST when stale
+			restPollInterval := 2 * time.Second
 			needsRestFallback := (!wsConnected || wsLastMsg > 15*time.Second) && staleTime > 3*time.Second
 
 			if needsRestFallback && time.Since(t.LastRestPoll) > restPollInterval {
