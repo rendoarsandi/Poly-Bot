@@ -83,6 +83,9 @@ type TUI struct {
 	// Stop channel for clean shutdown
 	stopCh   chan struct{}
 	stopOnce sync.Once // Ensure Stop() only runs once
+
+	// Non-blocking output channel
+	frameCh chan string
 }
 
 // PendingOrder represents an order the bot intends to place
@@ -111,6 +114,7 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		width:          80,
 		running:        true,
 		stopCh:         make(chan struct{}),
+		frameCh:        make(chan string, 3), // Buffer 3 frames to prevent blocking
 	}
 }
 
@@ -338,11 +342,16 @@ func (t *TUI) Render() {
 	frame := sb.String()
 
 	// Release the lock BEFORE doing I/O to prevent deadlock
-	// If terminal output blocks (alt-tab, buffer full), other goroutines can still work
 	t.mu.Unlock()
 
-	// Write to terminal without holding the lock
-	fmt.Print(frame)
+	// Non-blocking send to frame channel - drop frame if channel full
+	// This prevents blocking when terminal output is slow (alt-tab)
+	select {
+	case t.frameCh <- frame:
+		// Frame queued for output
+	default:
+		// Channel full, skip this frame (terminal is slow/blocked)
+	}
 }
 
 func (t *TUI) renderHeader() string {
@@ -961,6 +970,11 @@ func (t *TUI) renderKillBanner() string {
 
 // StartRenderLoop starts a goroutine that renders the UI periodically
 func (t *TUI) StartRenderLoop(interval time.Duration) {
+	// Start the dedicated frame writer goroutine
+	// This handles terminal output in a separate goroutine so blocking I/O
+	// doesn't affect the main application
+	go t.frameWriter()
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -990,4 +1004,33 @@ func (t *TUI) StartRenderLoop(interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// frameWriter is a dedicated goroutine that writes frames to the terminal
+// This isolates blocking terminal I/O from the rest of the application
+func (t *TUI) frameWriter() {
+	for {
+		select {
+		case <-t.stopCh:
+			// Drain any remaining frames quickly
+			for {
+				select {
+				case <-t.frameCh:
+				default:
+					return
+				}
+			}
+		case frame, ok := <-t.frameCh:
+			if !ok {
+				return
+			}
+			// Check if we should stop before writing
+			if t.stopped.Load() {
+				return
+			}
+			// Write frame to terminal - this may block if terminal is slow
+			// but only this goroutine is affected
+			fmt.Print(frame)
+		}
+	}
 }

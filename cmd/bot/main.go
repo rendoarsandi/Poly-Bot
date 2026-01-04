@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,6 +88,17 @@ func run() error {
 		}
 	}()
 
+	// Watchdog: Force exit after signal if graceful shutdown takes too long
+	// This ensures we never get stuck even if goroutines are blocked
+	go func() {
+		<-ctx.Done()
+		// Give graceful shutdown 5 seconds, then force exit
+		time.Sleep(5 * time.Second)
+		restoreTerminal()
+		fmt.Println("\n⚠️ Force exit: graceful shutdown timed out")
+		os.Exit(1)
+	}()
+
 	// Disable terminal echo to prevent arrow keys from appearing
 	// This is done via stty which works on most Unix systems including Termux
 	disableEcho := exec.Command("stty", "-echo", "-icanon")
@@ -120,6 +132,27 @@ func run() error {
 		tui.StartRenderLoop(250 * time.Millisecond) // Fast refresh for live updates
 		defer tui.Stop()
 	}
+
+	// Goroutine monitor - detect leaks
+	go func() {
+		lastCount := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+				count := runtime.NumGoroutine()
+				if count > lastCount+10 {
+					tui.LogEvent("⚠️ Goroutine count: %d (+%d)", count, count-lastCount)
+				}
+				lastCount = count
+				// Force GC if goroutine count is high
+				if count > 100 {
+					runtime.GC()
+				}
+			}
+		}
+	}()
 
 	// Main loop - continuously trade markets and rotate to next when expired
 	for {
@@ -258,15 +291,8 @@ func run() error {
 		default:
 		}
 
-		// Brief pause before finding next markets (context-aware)
+		// Clear old market data immediately and start searching
 		tui.LogEvent("🔄 Market round complete, searching for new markets...")
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(1 * time.Second):
-		}
-
-		// Clear old market data from TUI for fresh display
 		tui.ClearMarkets()
 		orderBook.CancelAllOrders()
 	}
@@ -277,11 +303,13 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 	found := make(map[string]*api.Market)
 	assets := []string{"btc", "eth", "sol", "xrp"}
 
-	// Keep trying for up to 3 minutes (markets might take time to appear after previous expires)
-	maxAttempts := 90
+	// Fast polling for new markets - check every 500ms for first 30 seconds
+	// Then slow down to every 2 seconds
+	maxFastAttempts := 60  // 30 seconds of fast polling
+	maxSlowAttempts := 60  // 2 more minutes of slow polling
 	lastLogTime := time.Now()
 
-	for attempts := 0; attempts < maxAttempts; attempts++ {
+	for attempts := 0; attempts < maxFastAttempts+maxSlowAttempts; attempts++ {
 		select {
 		case <-ctx.Done():
 			return found
@@ -293,10 +321,11 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			if attempts == 0 {
 				tui.LogEvent("⚠️ Market fetch error: %v, retrying...", err)
 			}
+			// Short sleep on error
 			select {
 			case <-ctx.Done():
 				return found
-			case <-time.After(2 * time.Second):
+			case <-time.After(500 * time.Millisecond):
 			}
 			continue
 		}
@@ -306,6 +335,11 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			endTime, err := paper.ParseEndTimeFromSlug(m.Slug)
 			if err == nil && time.Now().After(endTime) {
 				// Market already expired, skip it
+				continue
+			}
+
+			// Also skip markets that are about to expire (less than 30 seconds)
+			if err == nil && time.Until(endTime) < 30*time.Second {
 				continue
 			}
 
@@ -326,20 +360,26 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			return found
 		}
 
-		// Log progress every 10 seconds
-		if time.Since(lastLogTime) >= 10*time.Second {
-			tui.LogEvent("🔍 Waiting for new markets... (%ds)", attempts*2)
+		// Log progress every 5 seconds
+		if time.Since(lastLogTime) >= 5*time.Second {
+			tui.LogEvent("🔍 Waiting for new markets... (%ds)", attempts/2)
 			lastLogTime = time.Now()
+		}
+
+		// Fast polling for first 30 seconds, then slow down
+		sleepDuration := 500 * time.Millisecond
+		if attempts >= maxFastAttempts {
+			sleepDuration = 2 * time.Second
 		}
 
 		select {
 		case <-ctx.Done():
 			return found
-		case <-time.After(2 * time.Second):
+		case <-time.After(sleepDuration):
 		}
 	}
 
-	tui.LogEvent("⚠️ No 15m markets found after %d attempts", maxAttempts)
+	tui.LogEvent("⚠️ No 15m markets found after polling")
 	return found
 }
 
@@ -448,7 +488,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	tradesAtStart := t.Engine.GetStats().TotalTrades
 
 	tokenPrices := make(map[string]string)
-	lastLadderUpdate := time.Now()
 	lastGoodLiquidity := time.Now()
 	lastRESTFetch := time.Time{}
 	lastGammaFetch := time.Time{}
@@ -458,12 +497,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	const restFetchInterval = 50 * time.Millisecond  // Ultra-fast REST polling (50ms = 20/sec)
 	const gammaFetchInterval = 50 * time.Millisecond // Ultra-fast CLOB polling (50ms)
 
-	ladderConfig := paper.LadderConfig{
-		Levels:         3,
-		SharesPerLevel: 25,
-		PriceStep:      0.01,
-		BasePrice:      0.0,
-	}
+	// Track WebSocket channel closure state (outside loop to persist across ticks)
+	wsChannelClosed := false
 
 	for {
 		select {
@@ -517,15 +552,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			if isExpired && !t.MarketEnded {
 				t.MarketEnded = true
-				t.TUI.LogEvent("[%s] ⏳ MARKET EXPIRED - AWAITING RESOLUTION", t.ID)
+				t.TUI.LogEvent("[%s] ⏳ MARKET EXPIRED - resolving immediately", t.ID)
 
-				// Context-aware sleep
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(2 * time.Second):
-				}
-
+				// No waiting - resolve immediately based on last known prices
 				winner := simulateResolution(t.Outcomes, tokenPrices)
 				t.TUI.LogEvent("[%s] 🏆 WINNER: %s", t.ID, winner)
 
@@ -577,26 +606,31 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				type bookResult struct {
 					outcome string
 					book    *api.OrderBookResponse
+					err     error
 				}
-				results := make(chan bookResult, len(t.Market.Tokens))
+				numTokens := len(t.Market.Tokens)
+				results := make(chan bookResult, numTokens) // Buffered to prevent goroutine leaks
 
 				for _, token := range t.Market.Tokens {
 					go func(tokenID, outcome string) {
 						book, err := t.RestClient.GetOrderBook(ctx, tokenID)
-						if err != nil {
-							results <- bookResult{outcome: outcome, book: nil}
-							return
+						// Non-blocking send - if channel is full, skip (shouldn't happen with proper buffer)
+						select {
+						case results <- bookResult{outcome: outcome, book: book, err: err}:
+						default:
 						}
-						results <- bookResult{outcome: outcome, book: book}
 					}(token.TokenID, token.Outcome)
 				}
 
-				// Collect results (with timeout)
-				timeout := time.After(100 * time.Millisecond)
-				for i := 0; i < len(t.Market.Tokens); i++ {
+				// Collect results (with timeout and context check)
+				timeout := time.After(500 * time.Millisecond)
+			collectLoop:
+				for i := 0; i < numTokens; i++ {
 					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
 					case res := <-results:
-						if res.book == nil {
+						if res.err != nil || res.book == nil {
 							continue
 						}
 						outcome := res.outcome
@@ -637,8 +671,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.Engine.UpdateMarketBidAsk(t.ID, outcome, bestBid, bestAsk)
 						}
 					case <-timeout:
-						// Timeout, continue with what we have
-						break
+						// Timeout - break out of the for loop (not just select)
+						break collectLoop
 					}
 				}
 				// Update TUI after REST fetch
@@ -682,7 +716,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Process ALL available WebSocket messages (real-time, non-blocking)
 			// This drains the channel to get the latest data
-			wsChannelClosed := false
 			for {
 				select {
 				case msg, ok := <-wsMsgChan:
@@ -866,18 +899,33 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					margin := (1.0 - sum) * 100
 
 					const minMarginPercent = 1.5
+					const baseSharesPerTrade = 25.0 // Base shares per trade
 
-					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(ladderConfig.SharesPerLevel*(ask1+ask2)) {
-						baseShares := ladderConfig.SharesPerLevel
+					// Evaluate portfolio risk before trading
+					riskAction, riskReason := t.RiskMgr.Evaluate()
+					if riskAction == paper.RiskActionKillSwitch {
+						t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s", t.ID, riskReason)
+						continue
+					}
+					if riskAction == paper.RiskActionReduceSize {
+						t.TUI.LogEvent("[%s] ⚠️ RISK: Reducing size - %s", t.ID, riskReason)
+						// Will use baseShares only (no scaling)
+					}
+
+					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
+						baseShares := baseSharesPerTrade
 						shares := baseShares
 
-						// Scale shares based on margin
-						if margin >= 5.0 {
-							shares = baseShares * 4
-						} else if margin >= 4.0 {
-							shares = baseShares * 3
-						} else if margin >= 3.0 {
-							shares = baseShares * 2
+						// Only scale if risk allows
+						if riskAction != paper.RiskActionReduceSize {
+							// Scale shares based on margin
+							if margin >= 5.0 {
+								shares = baseShares * 4
+							} else if margin >= 4.0 {
+								shares = baseShares * 3
+							} else if margin >= 3.0 {
+								shares = baseShares * 2
+							}
 						}
 
 						// Apply compounding multiplier from profitable rounds
@@ -902,18 +950,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						t.Engine.BuyForMarket(t.ID, t.Outcomes[0], ask1, shares)
 						t.Engine.BuyForMarket(t.ID, t.Outcomes[1], ask2, shares)
 
-						lastLadderUpdate = time.Now()
 						t.LaddersPlaced = true
 					}
 				}
 			}
 
-			// Suppress unused variable warnings
-			_ = lastLadderUpdate
-
-			// Minimal sleep for ultra-low latency trading
+			// Minimal sleep for ultra-low latency trading - context-aware
 			// 10ms = 100 ticks/sec - balance between responsiveness and CPU
-			time.Sleep(10 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
 	}
 }
