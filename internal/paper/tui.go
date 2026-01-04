@@ -12,8 +12,11 @@ const (
 	ClearScreen    = "\033[2J"
 	MoveCursor     = "\033[%d;%dH" // row, col
 	ClearLine      = "\033[2K"
+	ClearToEOL     = "\033[K"
 	HideCursor     = "\033[?25l"
 	ShowCursor     = "\033[?25h"
+	AltScreenOn    = "\033[?1049h"
+	AltScreenOff   = "\033[?1049l"
 	Bold           = "\033[1m"
 	Reset          = "\033[0m"
 	ColorRed       = "\033[31m"
@@ -37,6 +40,7 @@ type MarketData struct {
 	Asks       map[string]float64
 	RealBids   map[string]float64
 	RealAsks   map[string]float64
+	LastUpdate time.Time // When prices were last updated
 }
 
 // TUI provides a live terminal user interface
@@ -145,6 +149,7 @@ func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64)
 			m.Asks[k] = v
 			m.RealAsks[k] = v
 		}
+		m.LastUpdate = time.Now()
 	}
 }
 
@@ -252,7 +257,7 @@ func (t *TUI) Stop() {
 	// Signal stop channel only once
 	if wasRunning {
 		close(t.stopCh)
-		// Restore cursor and clear screen position
+		// Restore cursor
 		fmt.Print(ShowCursor)
 		fmt.Println() // Move to new line for clean exit
 	}
@@ -269,37 +274,51 @@ func (t *TUI) Render() {
 
 	var sb strings.Builder
 
-	// Clear screen and move to top
-	sb.WriteString(ClearScreen)
+	// Move cursor to top-left (alternate buffer handles the rest)
 	sb.WriteString(fmt.Sprintf(MoveCursor, 1, 1))
 
+	// Helper to write lines with clear-to-end-of-line
+	writeLine := func(s string) {
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			sb.WriteString(line)
+			sb.WriteString(ClearToEOL)
+			if i < len(lines)-1 {
+				sb.WriteString("\n")
+			}
+		}
+	}
+
 	// Header
-	sb.WriteString(t.renderHeader())
+	writeLine(t.renderHeader())
 	sb.WriteString("\n")
 
 	// Market Info
-	sb.WriteString(t.renderMarketInfo())
+	writeLine(t.renderMarketInfo())
 	sb.WriteString("\n")
 
 	// Account Status
-	sb.WriteString(t.renderAccountStatus())
+	writeLine(t.renderAccountStatus())
 	sb.WriteString("\n")
 
 	// Positions
-	sb.WriteString(t.renderPositions())
+	writeLine(t.renderPositions())
 	sb.WriteString("\n")
 
 	// Open Orders
-	sb.WriteString(t.renderOrders())
+	writeLine(t.renderOrders())
 	sb.WriteString("\n")
 
 	// Event Log
-	sb.WriteString(t.renderEventLog())
+	writeLine(t.renderEventLog())
 
 	// Kill switch banner if triggered
 	if t.isKilled {
-		sb.WriteString(t.renderKillBanner())
+		writeLine(t.renderKillBanner())
 	}
+
+	// Clear from cursor to end of screen
+	sb.WriteString("\033[J")
 
 	fmt.Print(sb.String())
 }
@@ -404,7 +423,23 @@ func (t *TUI) renderMultiMarketInfo() string {
 
 		sb.WriteString(fmt.Sprintf("%s%s═══ %s %s ══════════════════════════════════════════════%s\n", Bold, headerColor, emoji, id, Reset))
 		sb.WriteString(fmt.Sprintf("   📊 %s\n", m.Slug))
-		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s remaining\n", timeColor, remaining.Round(time.Second), Reset))
+
+		// Show time remaining and last price update
+		updateAge := time.Since(m.LastUpdate)
+		updateColor := ColorGreen
+		updateWarning := ""
+		if updateAge > 30*time.Second {
+			updateColor = ColorRed
+			updateWarning = " ⚠️ STALE!"
+		} else if updateAge > 10*time.Second {
+			updateColor = ColorYellow
+			updateWarning = " (slow)"
+		} else if updateAge > 2*time.Second {
+			updateColor = ColorYellow
+		}
+		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s | %s%.1fs ago%s%s\n",
+			timeColor, remaining.Round(time.Second), Reset,
+			updateColor, updateAge.Seconds(), Reset, updateWarning))
 
 		if len(m.Outcomes) == 2 {
 			bid1 := m.Bids[m.Outcomes[0]]
@@ -646,13 +681,48 @@ func (t *TUI) renderAccountStatus() string {
 		multColor = ColorYellow
 	}
 
+	// Calculate guaranteed arbitrage profit across all markets
+	positions := t.engine.GetPositions()
+
+	// Group positions by market
+	byMarket := make(map[string][]Position)
+	for _, pos := range positions {
+		marketID := pos.MarketID
+		if marketID == "" {
+			marketID = "UNKNOWN"
+		}
+		byMarket[marketID] = append(byMarket[marketID], pos)
+	}
+
+	guaranteedProfit := 0.0
+	for _, marketPositions := range byMarket {
+		if len(marketPositions) == 2 {
+			pos1 := marketPositions[0]
+			pos2 := marketPositions[1]
+			matchedQty := pos1.Quantity
+			if pos2.Quantity < matchedQty {
+				matchedQty = pos2.Quantity
+			}
+			matchedCost := (pos1.AvgPrice + pos2.AvgPrice) * matchedQty
+			guaranteedProfit += (matchedQty * 1.0) - matchedCost
+		}
+	}
+
+	// Format guaranteed profit
+	arbColor := ColorGreen
+	arbSign := "+"
+	if guaranteedProfit < 0 {
+		arbColor = ColorRed
+		arbSign = ""
+	}
+
 	sb.WriteString(fmt.Sprintf("%s💼 ACCOUNT%s\n", Bold, Reset))
 	sb.WriteString(fmt.Sprintf("   💵 Cash:     $%.2f\n", stats.CurrentBalance))
 	sb.WriteString(fmt.Sprintf("   📦 Exposure: $%.2f\n", totalExposure))
 	sb.WriteString(fmt.Sprintf("   💰 Equity:   $%.2f (%s%s$%.2f%s)\n",
 		equity, changeColor, changeSign, netChange, Reset))
-	sb.WriteString(fmt.Sprintf("   📊 PnL:      Realized: $%.2f | Unrealized: $%.2f\n",
-		stats.RealizedPnL, stats.UnrealizedPnL))
+	sb.WriteString(fmt.Sprintf("   📊 Realized: $%.2f | 🎯 Arb Profit: %s%s$%.2f%s\n",
+		stats.RealizedPnL, arbColor, arbSign, guaranteedProfit, Reset))
 	sb.WriteString(fmt.Sprintf("   📈 Compound: %s%.2fx%s | Rounds: %d (%d profitable)\n",
 		multColor, multiplier, Reset, rounds, profitable))
 
@@ -662,64 +732,142 @@ func (t *TUI) renderAccountStatus() string {
 func (t *TUI) renderPositions() string {
 	var sb strings.Builder
 
-	positions := t.engine.GetPositions()
+	positionsWithPnL := t.engine.GetPositionsWithPnL()
 
 	sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s", Bold, Reset))
 
-	if len(positions) == 0 {
+	if len(positionsWithPnL) == 0 {
 		sb.WriteString(" (none)\n")
 		return sb.String()
 	}
-	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf(" (%d)\n", len(positionsWithPnL)))
 
-	// Calculate matched pairs for arbitrage display
-	var matchedQty float64
-	var matchedCost float64
-	var outcomes []string
-	for outcome := range positions {
-		outcomes = append(outcomes, outcome)
-	}
-
-	// Find matched quantity (minimum of all positions)
-	if len(positions) == 2 && len(outcomes) == 2 {
-		pos1 := positions[outcomes[0]]
-		pos2 := positions[outcomes[1]]
-		matchedQty = pos1.Quantity
-		if pos2.Quantity < matchedQty {
-			matchedQty = pos2.Quantity
+	// Group positions by market
+	byMarket := make(map[string][]PositionPnL)
+	for _, pos := range positionsWithPnL {
+		marketID := pos.MarketID
+		if marketID == "" {
+			marketID = "UNKNOWN"
 		}
-		// Cost of matched pairs
-		matchedCost = (pos1.AvgPrice + pos2.AvgPrice) * matchedQty
+		byMarket[marketID] = append(byMarket[marketID], pos)
 	}
 
-	for outcome, pos := range positions {
-		sb.WriteString(fmt.Sprintf("   • %s: %.0f @ $%.2f avg (cost $%.2f)\n",
-			outcome, pos.Quantity, pos.AvgPrice, pos.TotalCost))
+	// Define asset order and colors
+	assetOrder := []string{"BTC", "ETH", "SOL", "XRP", "UNKNOWN"}
+	assetColors := map[string]string{
+		"BTC":     ColorYellow,
+		"ETH":     ColorCyan,
+		"SOL":     ColorMagenta,
+		"XRP":     ColorGreen,
+		"UNKNOWN": ColorWhite,
 	}
 
-	// Show arbitrage profit for matched pairs
-	if matchedQty > 0 {
-		// Matched pairs pay $1 per share at resolution
-		guaranteedPayout := matchedQty * 1.0
-		guaranteedProfit := guaranteedPayout - matchedCost
+	totalMarketPnL := 0.0
+	totalLockedPnL := 0.0
+	hasMarketPrices := false
 
-		profitColor := ColorGreen
-		profitSign := "+"
-		if guaranteedProfit < 0 {
-			profitColor = ColorRed
-			profitSign = ""
+	for _, marketID := range assetOrder {
+		marketPositions, ok := byMarket[marketID]
+		if !ok || len(marketPositions) == 0 {
+			continue
 		}
 
-		sb.WriteString(fmt.Sprintf("   🎯 Matched: %.0f pairs | Payout: $%.2f | %sProfit: %s$%.2f%s\n",
-			matchedQty, guaranteedPayout, profitColor, profitSign, guaranteedProfit, Reset))
+		// Get color for this market
+		color := assetColors[marketID]
+		if color == "" {
+			color = ColorWhite
+		}
 
-		// Show unmatched shares (risky exposure)
-		for outcome, pos := range positions {
-			unmatched := pos.Quantity - matchedQty
-			if unmatched > 0 {
-				sb.WriteString(fmt.Sprintf("   ⚠️  Unmatched %s: %.0f shares (risky)\n", outcome, unmatched))
+		sb.WriteString(fmt.Sprintf("   %s[%s]%s ", color, marketID, Reset))
+
+		// Display each position for this market
+		positionStrs := make([]string, 0, len(marketPositions))
+		for _, pos := range marketPositions {
+			posStr := fmt.Sprintf("%s: %.0f@$%.2f", pos.Outcome, pos.Quantity, pos.AvgPrice)
+			// Show current bid if available
+			if pos.CurrentBid > 0 {
+				bidColor := ColorGreen
+				if pos.CurrentBid < pos.AvgPrice {
+					bidColor = ColorRed
+				}
+				posStr += fmt.Sprintf(" (%snow:$%.2f%s)", bidColor, pos.CurrentBid, Reset)
+			}
+			positionStrs = append(positionStrs, posStr)
+		}
+		sb.WriteString(strings.Join(positionStrs, " | "))
+
+		// Calculate P&L for this market's matched pairs
+		if len(marketPositions) == 2 {
+			pos1 := marketPositions[0]
+			pos2 := marketPositions[1]
+			matchedQty := pos1.Quantity
+			if pos2.Quantity < matchedQty {
+				matchedQty = pos2.Quantity
+			}
+			if matchedQty > 0 {
+				// Locked P&L: guaranteed $1 payout at resolution
+				matchedCost := (pos1.AvgPrice + pos2.AvgPrice) * matchedQty
+				lockedProfit := (matchedQty * 1.0) - matchedCost
+				totalLockedPnL += lockedProfit
+
+				// Market P&L: what we'd get if we sold NOW at current bids
+				marketProfit := 0.0
+				if pos1.CurrentBid > 0 && pos2.CurrentBid > 0 {
+					marketValue := (pos1.CurrentBid + pos2.CurrentBid) * matchedQty
+					marketProfit = marketValue - matchedCost
+					totalMarketPnL += marketProfit
+					hasMarketPrices = true
+
+					// Show market P&L (real-time)
+					mktColor := ColorGreen
+					mktSign := "+"
+					if marketProfit < 0 {
+						mktColor = ColorRed
+						mktSign = ""
+					}
+					sb.WriteString(fmt.Sprintf(" → %s%s$%.2f%s", mktColor, mktSign, marketProfit, Reset))
+				} else {
+					// Fallback to locked P&L
+					lckColor := ColorGreen
+					lckSign := "+"
+					if lockedProfit < 0 {
+						lckColor = ColorRed
+						lckSign = ""
+					}
+					sb.WriteString(fmt.Sprintf(" → 🔒%s%s$%.2f%s", lckColor, lckSign, lockedProfit, Reset))
+				}
 			}
 		}
+		sb.WriteString("\n")
+	}
+
+	// Show total P&L
+	if hasMarketPrices {
+		// Show both market and locked P&L
+		mktColor := ColorGreen
+		mktSign := "+"
+		if totalMarketPnL < 0 {
+			mktColor = ColorRed
+			mktSign = ""
+		}
+		lckColor := ColorGreen
+		lckSign := "+"
+		if totalLockedPnL < 0 {
+			lckColor = ColorRed
+			lckSign = ""
+		}
+		sb.WriteString(fmt.Sprintf("   %s📊 Now: %s%s$%.2f%s | 🔒 Locked: %s%s$%.2f%s%s\n",
+			Bold, mktColor, mktSign, totalMarketPnL, Reset,
+			lckColor, lckSign, totalLockedPnL, Reset, Reset))
+	} else if totalLockedPnL != 0 {
+		lckColor := ColorGreen
+		lckSign := "+"
+		if totalLockedPnL < 0 {
+			lckColor = ColorRed
+			lckSign = ""
+		}
+		sb.WriteString(fmt.Sprintf("   %s🔒 Locked Profit: %s%s$%.2f%s%s\n",
+			Bold, lckColor, lckSign, totalLockedPnL, Reset, Reset))
 	}
 
 	return sb.String()
@@ -795,13 +943,17 @@ func (t *TUI) StartRenderLoop(interval time.Duration) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		// Hide cursor
+		// Hide cursor and clear screen once at start
 		fmt.Print(HideCursor)
+		fmt.Print(ClearScreen)
+		fmt.Print(fmt.Sprintf(MoveCursor, 1, 1))
 
 		for {
 			select {
 			case <-t.stopCh:
 				fmt.Print(ShowCursor)
+				fmt.Print(ClearScreen)
+				fmt.Print(fmt.Sprintf(MoveCursor, 1, 1))
 				return
 			case <-ticker.C:
 				t.mu.Lock()

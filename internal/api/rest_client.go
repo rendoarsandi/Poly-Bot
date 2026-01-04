@@ -4,9 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 )
+
+// Optimized HTTP client with connection pooling and timeouts for low latency
+var httpClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   3 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	},
+}
 
 type Token struct {
 	TokenID string `json:"token_id"`
@@ -66,25 +83,19 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 	// Calculate the current 15m window START
 	currentWindowStart := (currentTs / 900) * 900
 
-	// Time remaining in current window
-	currentWindowEnd := currentWindowStart + 900
-	timeRemaining := currentWindowEnd - currentTs
-
 	var markets []Market
 
 	for _, asset := range assets {
-		// Strategy: Check both current and next window
-		// Prefer the one with more time remaining
-		var windowsToCheck []int64
-
-		if timeRemaining > 120 { // More than 2 minutes left in current
-			windowsToCheck = []int64{currentWindowStart}
-		} else if timeRemaining > 0 { // Current window still active but ending soon
-			// Prefer next window, but also check current
-			windowsToCheck = []int64{currentWindowStart + 900, currentWindowStart}
-		} else {
-			// Current window expired, check next window
-			windowsToCheck = []int64{currentWindowStart + 900}
+		// Check multiple windows to handle edge cases:
+		// - Current window (most likely)
+		// - Next window (might be pre-created near end of current window)
+		// - Previous window (might still be resolving)
+		// - Window after next (for early creation)
+		windowsToCheck := []int64{
+			currentWindowStart,         // Current window
+			currentWindowStart + 900,   // Next window (might be pre-created)
+			currentWindowStart + 1800,  // Window after next (early creation)
+			currentWindowStart - 900,   // Previous window (might still be active)
 		}
 
 		for _, windowStart := range windowsToCheck {
@@ -96,7 +107,7 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 				continue
 			}
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := httpClient.Do(req)
 			if err != nil || resp.StatusCode != http.StatusOK {
 				if resp != nil {
 					resp.Body.Close()
@@ -119,8 +130,17 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 			gm := event.Markets[0]
 
 			// Skip if market is closed
-			if gm.Closed || !gm.Active {
+			if gm.Closed {
 				continue
+			}
+
+			// For markets that aren't active yet, only accept if they're in the future
+			// This handles pre-created markets
+			if !gm.Active {
+				// Only accept inactive markets if they're for future windows
+				if windowStart <= currentWindowStart {
+					continue
+				}
 			}
 
 			// Parse clobTokenIds (it's a JSON-encoded string array)
@@ -163,7 +183,7 @@ func (c *RestClient) ListMarkets(ctx context.Context) ([]Market, error) {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list markets: %w", err)
 	}
@@ -188,7 +208,7 @@ func (c *RestClient) GetMarket(ctx context.Context, slug string) (*Market, error
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch market: %w", err)
 	}
@@ -223,7 +243,7 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch order book: %w", err)
 	}
@@ -269,7 +289,7 @@ func (c *RestClient) GetGammaBidAskBySlug(ctx context.Context, slug string) (map
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch gamma price: %w", err)
 	}

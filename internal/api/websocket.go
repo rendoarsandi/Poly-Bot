@@ -313,3 +313,94 @@ func (m *WSManager) GetStats() (connected bool, lastMsg time.Time, reconnects in
 func (m *WSManager) TimeSinceLastMessage() time.Duration {
 	return time.Since(time.Unix(m.lastMessage.Load(), 0))
 }
+
+// StartStreaming starts a goroutine that continuously reads messages and sends to channel
+// Returns a channel that receives messages in real-time
+func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
+	msgChan := make(chan []byte, 100) // Buffer for bursts
+
+	go func() {
+		defer close(msgChan)
+
+		// Panic recovery for streaming goroutine
+		defer func() {
+			if r := recover(); r != nil {
+				// Log but don't crash - just close channel
+			}
+		}()
+
+		consecutiveErrors := 0
+		const maxConsecutiveErrors = 10
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			if !m.connected.Load() {
+				// Wait a bit and retry
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+				continue
+			}
+
+			m.mu.Lock()
+			conn := m.conn
+			m.mu.Unlock()
+
+			if conn == nil {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+				continue
+			}
+
+			// Read with a reasonable timeout
+			readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, p, err := conn.Read(readCtx)
+			cancel()
+
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				consecutiveErrors++
+				if consecutiveErrors >= maxConsecutiveErrors {
+					// Too many errors, force reconnection
+					m.connected.Store(false)
+					consecutiveErrors = 0
+				}
+
+				// Trigger reconnection on error
+				if !m.reconnecting.Load() {
+					go m.tryReconnect()
+				}
+				continue
+			}
+
+			// Reset error counter on success
+			consecutiveErrors = 0
+			m.lastMessage.Store(time.Now().Unix())
+			m.messageCount.Add(1)
+
+			// Send to channel (non-blocking)
+			select {
+			case msgChan <- p:
+			default:
+				// Channel full, skip (shouldn't happen with buffer)
+			}
+		}
+	}()
+
+	return msgChan
+}

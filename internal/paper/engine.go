@@ -21,6 +21,7 @@ type Trade struct {
 // Position represents current holdings for an outcome
 type Position struct {
 	Outcome   string
+	MarketID  string  // Which market this position belongs to (e.g., "BTC", "ETH")
 	Quantity  float64
 	AvgPrice  float64
 	TotalCost float64
@@ -52,7 +53,7 @@ type Engine struct {
 	roundsCompleted    int
 	profitableRounds   int
 
-	// Positions: outcome -> position
+	// Positions: "marketID:outcome" -> position
 	positions map[string]*Position
 
 	// Trade history
@@ -66,11 +67,15 @@ type Engine struct {
 	winningTrades int
 	losingTrades  int
 
-	// Current market prices for unrealized PnL
+	// Current market prices for unrealized PnL (legacy - outcome only)
 	currentPrices map[string]float64
-	// Bid/Ask prices for realistic taker simulation
+	// Bid/Ask prices for realistic taker simulation (legacy - outcome only)
 	currentBids map[string]float64 // Price you get when SELLING (taker)
 	currentAsks map[string]float64 // Price you pay when BUYING (taker)
+
+	// Per-market bid/ask prices: "marketID:outcome" -> price
+	marketBids map[string]float64
+	marketAsks map[string]float64
 }
 
 // NewEngine creates a new paper trading engine
@@ -85,6 +90,8 @@ func NewEngine(startingBalance float64) *Engine {
 		currentPrices:      make(map[string]float64),
 		currentBids:        make(map[string]float64),
 		currentAsks:        make(map[string]float64),
+		marketBids:         make(map[string]float64),
+		marketAsks:         make(map[string]float64),
 	}
 }
 
@@ -108,8 +115,34 @@ func (e *Engine) UpdateBidAsk(outcome string, bid, ask float64) {
 	}
 }
 
+// UpdateMarketBidAsk updates bid/ask prices for a specific market
+func (e *Engine) UpdateMarketBidAsk(marketID, outcome string, bid, ask float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	key := marketID + ":" + outcome
+	if bid > 0 {
+		e.marketBids[key] = bid
+	}
+	if ask > 0 {
+		e.marketAsks[key] = ask
+	}
+}
+
+// GetMarketBidAsk returns current bid/ask for a market position
+func (e *Engine) GetMarketBidAsk(marketID, outcome string) (bid, ask float64) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	key := marketID + ":" + outcome
+	return e.marketBids[key], e.marketAsks[key]
+}
+
 // Buy executes a simulated buy order
 func (e *Engine) Buy(outcome string, price, quantity float64) (*Trade, error) {
+	return e.BuyForMarket("", outcome, price, quantity)
+}
+
+// BuyForMarket executes a simulated buy order for a specific market
+func (e *Engine) BuyForMarket(marketID, outcome string, price, quantity float64) (*Trade, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -121,11 +154,17 @@ func (e *Engine) Buy(outcome string, price, quantity float64) (*Trade, error) {
 	// Deduct from balance
 	e.currentBalance -= cost
 
+	// Create position key that includes market ID
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+
 	// Update position
-	pos, exists := e.positions[outcome]
+	pos, exists := e.positions[posKey]
 	if !exists {
-		pos = &Position{Outcome: outcome}
-		e.positions[outcome] = pos
+		pos = &Position{Outcome: outcome, MarketID: marketID}
+		e.positions[posKey] = pos
 	}
 
 	// Calculate new average price
@@ -478,6 +517,56 @@ func (e *Engine) GetPositions() map[string]Position {
 	result := make(map[string]Position)
 	for k, v := range e.positions {
 		result[k] = *v
+	}
+	return result
+}
+
+// PositionPnL contains real-time P&L info for a position
+type PositionPnL struct {
+	Position
+	CurrentBid    float64 // Current bid price (what we can sell for)
+	CurrentAsk    float64 // Current ask price
+	MarketValue   float64 // Current value if sold at bid
+	UnrealizedPnL float64 // Current P&L if sold now
+	LockedPnL     float64 // Guaranteed P&L if held to resolution ($1 payout)
+}
+
+// GetPositionsWithPnL returns positions with real-time P&L calculations
+func (e *Engine) GetPositionsWithPnL() map[string]PositionPnL {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	result := make(map[string]PositionPnL)
+	for k, pos := range e.positions {
+		pnl := PositionPnL{
+			Position: *pos,
+		}
+
+		// Get current bid/ask for this position
+		key := k // Already includes marketID:outcome
+		if bid, ok := e.marketBids[key]; ok && bid > 0 {
+			pnl.CurrentBid = bid
+		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
+			pnl.CurrentBid = bid
+		}
+
+		if ask, ok := e.marketAsks[key]; ok && ask > 0 {
+			pnl.CurrentAsk = ask
+		} else if ask, ok := e.currentAsks[pos.Outcome]; ok && ask > 0 {
+			pnl.CurrentAsk = ask
+		}
+
+		// Calculate market value (what we could sell for now)
+		if pnl.CurrentBid > 0 {
+			pnl.MarketValue = pos.Quantity * pnl.CurrentBid
+			pnl.UnrealizedPnL = pnl.MarketValue - pos.TotalCost
+		}
+
+		// Locked P&L assumes $1 payout at resolution
+		// This is only meaningful for matched pairs
+		pnl.LockedPnL = (pos.Quantity * 1.0) - pos.TotalCost
+
+		result[k] = pnl
 	}
 	return result
 }
