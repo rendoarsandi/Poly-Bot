@@ -237,6 +237,22 @@ func run() error {
 		default:
 		}
 
+		// Get fresh balance at start of each round for compounding
+		balCtx, balFn := context.WithTimeout(ctx, 10*time.Second)
+		currentBalance, err := realTrader.GetBalance(balCtx)
+		balFn()
+		if err != nil {
+			tui.LogEvent("⚠️ Could not refresh balance: %v", err)
+			currentBalance = balance // Use last known balance
+		} else {
+			balance = currentBalance // Update stored balance
+		}
+
+		// Track starting equity for compounding calculation
+		startingEquity := engine.GetEquity()
+		compoundMultiplier := engine.GetCompoundMultiplier()
+		tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
+
 		// Find markets
 		tui.LogEvent("🔍 Searching for active 15m markets...")
 		markets := findMarkets(ctx, restClient, tui)
@@ -259,10 +275,10 @@ func run() error {
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
 
 			wg.Add(1)
-			go func(id string, m *api.Market, end time.Time, bal float64) {
+			go func(id string, m *api.Market, end time.Time, bal float64, mult float64) {
 				defer wg.Done()
-				tradeMarket(ctx, id, m, end, realTrader, engine, tui, restClient, cfg, bal)
-			}(assetID, market, endTime, balance)
+				tradeMarket(ctx, id, m, end, realTrader, engine, tui, restClient, cfg, bal, mult)
+			}(assetID, market, endTime, currentBalance, compoundMultiplier)
 		}
 
 		// Wait for markets to complete
@@ -274,7 +290,18 @@ func run() error {
 
 		select {
 		case <-done:
-			tui.LogEvent("✅ Round complete, rotating...")
+			// Calculate round PnL and update compounding multiplier
+			roundPnL := engine.GetEquity() - startingEquity
+			engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
+			newMultiplier := engine.GetCompoundMultiplier()
+
+			if roundPnL > 0 {
+				tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f | Multiplier: %.2fx → %.2fx", roundPnL, compoundMultiplier, newMultiplier)
+			} else if roundPnL < 0 {
+				tui.LogEvent("📉 Loss. Round PnL: $%.2f | Multiplier: %.2fx → %.2fx", roundPnL, compoundMultiplier, newMultiplier)
+			} else {
+				tui.LogEvent("✅ Round complete, no change | Multiplier: %.2fx", newMultiplier)
+			}
 		case <-ctx.Done():
 		}
 
@@ -394,7 +421,7 @@ func getOutcomes(market *api.Market) []string {
 	return outcomes
 }
 
-func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64) {
+func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, compoundMultiplier float64) {
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
 	for _, token := range market.Tokens {
@@ -404,10 +431,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 	outcomes := getOutcomes(market)
 
-	// Calculate trade size based on current balance
+	// Calculate base trade size from balance
 	// Default: $1000 balance → $100 per trade (10% of balance)
-	tradeSize := cfg.CalculateTradeSize(currentBalance)
-	tui.LogEvent("[%s] 💰 Balance: $%.2f → Trade size: $%.2f", id, currentBalance, tradeSize)
+	baseTradeSize := cfg.CalculateTradeSize(currentBalance)
+
+	// Apply compounding multiplier for autocompounding
+	tradeSize := baseTradeSize * compoundMultiplier
+	if compoundMultiplier > 1.0 {
+		tui.LogEvent("[%s] 💰 Balance: $%.2f × %.2fx = Trade: $%.2f", id, currentBalance, compoundMultiplier, tradeSize)
+	} else {
+		tui.LogEvent("[%s] 💰 Balance: $%.2f → Trade size: $%.2f", id, currentBalance, tradeSize)
+	}
 
 	// Setup WebSocket
 	wsMgr := api.NewWSManager("")
@@ -513,7 +547,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 				if margin >= cfg.MinMarginPercent { // Default 2% margin
 					// Calculate shares using dynamic position sizing
-					// tradeSize is already calculated based on balance
+					// tradeSize already includes compounding multiplier
 					shares := tradeSize / sum
 
 					cost := shares * sum
@@ -521,8 +555,13 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin)",
 						id, outcomes[0], ask1, outcomes[1], ask2, sum, margin)
-					tui.LogEvent("[%s] 📦 Placing: %.0f shares, cost $%.2f, profit $%.2f",
-						id, shares, cost, profit)
+					if compoundMultiplier > 1.0 {
+						tui.LogEvent("[%s] 📦 Placing: %.0f shares (%.1fx), cost $%.2f, profit $%.2f",
+							id, shares, compoundMultiplier, cost, profit)
+					} else {
+						tui.LogEvent("[%s] 📦 Placing: %.0f shares, cost $%.2f, profit $%.2f",
+							id, shares, cost, profit)
+					}
 
 					// Place orders
 					token0 := ""
