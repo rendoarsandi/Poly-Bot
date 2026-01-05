@@ -645,16 +645,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}, nil
 			}
 
-			// Check kill switch
-			if t.RiskMgr.IsKillSwitchTriggered() {
-				t.TUI.SetKillSwitch("Risk limits exceeded")
-				t.LadderMgr.CancelAllLadders()
-				positions := t.Engine.GetPositions()
-				if len(positions) > 0 {
-					t.Engine.LiquidateAll()
-				}
-				t.RiskMgr.ExecuteKillSwitch()
-				return nil, fmt.Errorf("kill switch triggered")
+			// Check kill switch - DON'T EXIT, just pause trading
+			// Exiting would leave positions unmatched; better to hold until expiration
+			killSwitchActive := t.RiskMgr.IsKillSwitchTriggered()
+			if killSwitchActive {
+				// Log once per state change, then just skip trading
+				t.TUI.SetKillSwitch("Risk limits exceeded - pausing trades")
 			}
 
 			// Check market state
@@ -905,6 +901,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
+					// Skip trading if kill switch is active (but don't exit - wait for expiration)
+					if killSwitchActive {
+						continue
+					}
+
 					// Use config for minimum margin (default 2%)
 					minMarginPercent := t.Config.MinMarginPercent
 
@@ -918,7 +919,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Evaluate portfolio risk before trading
 				riskAction, riskReason := t.RiskMgr.Evaluate()
 				if riskAction == paper.RiskActionKillSwitch {
-					t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s", t.ID, riskReason)
+					t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s (pausing, not exiting)", t.ID, riskReason)
 					continue
 				}
 				if riskAction == paper.RiskActionReduceSize {
@@ -928,20 +929,32 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 				if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
 					baseShares := baseSharesPerTrade
-					
-					// LIQUIDITY CHECK: Ensure we don't exceed top-of-book size
-					// This prevents partial fills that break the arbitrage
-					maxLiquidity := 1e9
-					for _, outcome := range t.Outcomes {
+
+					// STRICT LIQUIDITY CHECK: Get minimum available across BOTH sides
+					getLiquidity := func(outcome string) float64 {
 						asks := t.TokenFullAsks[outcome]
-						if len(asks) > 0 && asks[0].Size < maxLiquidity {
-							maxLiquidity = asks[0].Size
+						if len(asks) > 0 {
+							return asks[0].Size
 						}
+						return 0
 					}
-					
-					// Cap shares at 90% of available top-of-book liquidity for safety
-					if baseShares > maxLiquidity*0.9 {
-						baseShares = maxLiquidity * 0.9
+
+					liq1 := getLiquidity(t.Outcomes[0])
+					liq2 := getLiquidity(t.Outcomes[1])
+					minLiquidity := liq1
+					if liq2 < minLiquidity {
+						minLiquidity = liq2
+					}
+
+					// Skip if either side has no liquidity
+					if minLiquidity < 1.0 {
+						continue
+					}
+
+					// Cap at 70% of minimum liquidity for safety margin
+					maxSafeShares := minLiquidity * 0.70
+					if baseShares > maxSafeShares {
+						baseShares = maxSafeShares
 					}
 
 					// Only scale if risk allows
@@ -977,11 +990,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					profit := shares * (1.0 - sum)
 					if compoundMult > 1.0 {
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%)",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin)
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin, liq1, liq2)
 					} else {
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%)",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, profit, margin)
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, profit, margin, liq1, liq2)
 					}
 
 					if t.CSVLogger != nil {

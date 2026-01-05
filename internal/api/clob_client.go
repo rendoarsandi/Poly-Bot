@@ -380,6 +380,87 @@ func (c *CLOBClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
 	return orders, nil
 }
 
+// GetOrder retrieves a single order by ID
+func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, error) {
+	path := "/order/" + orderID
+	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		// Order not found usually means it was filled and removed
+		return &OpenOrder{OrderID: orderID, Status: "FILLED"}, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get order failed with status %d", resp.StatusCode)
+	}
+
+	var order OpenOrder
+	if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
+		return nil, fmt.Errorf("failed to decode order: %w", err)
+	}
+
+	return &order, nil
+}
+
+// WaitForFill waits for an order to be filled or times out
+// Returns true if filled, false if timed out or cancelled
+func (c *CLOBClient) WaitForFill(ctx context.Context, orderID string, timeout time.Duration) (bool, error) {
+	if c.dryRun {
+		return true, nil // Dry run always "fills"
+	}
+
+	deadline := time.Now().Add(timeout)
+	checkInterval := 100 * time.Millisecond
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		default:
+		}
+
+		order, err := c.GetOrder(ctx, orderID)
+		if err != nil {
+			// On error, wait and retry
+			time.Sleep(checkInterval)
+			continue
+		}
+
+		// Check status
+		switch order.Status {
+		case "FILLED", "MATCHED":
+			return true, nil
+		case "CANCELLED", "EXPIRED":
+			return false, nil
+		case "OPEN", "LIVE":
+			// Check if fully filled (remainingSize == 0)
+			if order.RemainingSize == 0 && order.OriginalSize > 0 {
+				return true, nil
+			}
+		}
+
+		time.Sleep(checkInterval)
+	}
+
+	return false, nil // Timed out
+}
+
 // Position represents a position in a market
 type Position struct {
 	TokenID  string  `json:"asset"`

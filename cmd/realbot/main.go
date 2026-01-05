@@ -499,11 +499,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			return
 		}
 
-		// Check kill switch
-		if riskMgr.IsKillSwitchTriggered() {
-			tui.LogEvent("[%s] 🛑 RISK: Kill switch active", id)
-			return
-		}
+		// Check kill switch - DON'T EXIT, just pause trading
+		// Exiting would leave positions unmatched; better to hold until expiration
+		killSwitchActive := riskMgr.IsKillSwitchTriggered()
 
 		// ============ FAST WEBSOCKET PROCESSING ============
 		messagesProcessed := 0
@@ -583,6 +581,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		}
 
 		// ============ TRADING LOGIC ============
+		// Skip new trades if kill switch active, but keep monitoring (don't exit)
+		if killSwitchActive {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
 		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
@@ -595,7 +599,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Evaluate risk
 					riskAction, riskReason := riskMgr.Evaluate()
 					if riskAction == paper.RiskActionKillSwitch {
-						tui.LogEvent("[%s] 🛑 RISK: Kill switch - %s", id, riskReason)
+						tui.LogEvent("[%s] 🛑 RISK: Kill switch - %s (pausing, not exiting)", id, riskReason)
 						continue
 					}
 
@@ -610,7 +614,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Scale shares based on margin
 					shares := tradeSize / sum
-					
+
 					// Apply aggression scaling based on margin
 					if riskAction != paper.RiskActionReduceSize {
 						if margin >= 4.0 {
@@ -625,25 +629,52 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Apply compounding multiplier from profitable rounds
 					shares = float64(int(shares * compoundMultiplier))
 
-					// LIQUIDITY CHECK: Cap size based on available volume
-					maxLiquidity := 1e9
-					for _, out := range outcomes {
-						asks := tokenFullAsks[out]
-						if len(asks) > 0 && asks[0].Size < maxLiquidity {
-							maxLiquidity = asks[0].Size
+					// STRICT LIQUIDITY CHECK: Get minimum available across BOTH sides
+					// This ensures we only try to buy what's actually available
+					getLiquidity := func(outcome string) float64 {
+						asks := tokenFullAsks[outcome]
+						if len(asks) > 0 {
+							return asks[0].Size
 						}
+						return 0
 					}
-					
-					// Use 80% of top-of-book for real trading to avoid slippage
-					if shares > maxLiquidity*0.8 {
-						shares = maxLiquidity * 0.8
+
+					liq1 := getLiquidity(outcomes[0])
+					liq2 := getLiquidity(outcomes[1])
+					minLiquidity := liq1
+					if liq2 < minLiquidity {
+						minLiquidity = liq2
+					}
+
+					// Skip if either side has no liquidity
+					if minLiquidity < 1.0 {
+						continue
+					}
+
+					// Cap at 70% of minimum liquidity for safety margin
+					maxSafeShares := minLiquidity * 0.70
+					if shares > maxSafeShares {
+						shares = maxSafeShares
 					}
 
 					// Ensure we don't spam and risk allows
 					cost := shares * sum
 					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance {
-						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin)",
-							id, outcomes[0], ask1, outcomes[1], ask2, sum, margin)
+						// Add slippage buffer: willing to pay up to 1 tick more for guaranteed fill
+						const slippageBuffer = 0.01
+						price1 := ask1 + slippageBuffer
+						price2 := ask2 + slippageBuffer
+
+						// Recalculate with buffered prices
+						bufferedSum := price1 + price2
+						bufferedMargin := (1.0 - bufferedSum) * 100
+						if bufferedMargin < 1.0 {
+							// Skip if buffer makes arb unprofitable
+							continue
+						}
+
+						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin) [liq: %.0f/%.0f]",
+							id, outcomes[0], price1, outcomes[1], price2, bufferedSum, bufferedMargin, liq1, liq2)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -655,42 +686,75 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// ATOMIC EXECUTION: Fire both orders in parallel to minimize legging risk
+						// TAKER EXECUTION: Use FOK (Fill or Kill) - fills entirely or fails immediately
+						// No lingering orders, no need for timeout/cancel logic
 						var wg sync.WaitGroup
 						wg.Add(2)
-						
+
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
-						
+
 						go func() {
 							defer wg.Done()
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], ask1, shares, api.TIFGoodTilCancelled)
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], price1, shares, api.TIFFillOrKill)
 						}()
-						
+
 						go func() {
 							defer wg.Done()
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], ask2, shares, api.TIFGoodTilCancelled)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], price2, shares, api.TIFFillOrKill)
 						}()
-						
+
 						wg.Wait()
 
+						// FOK: Success means fully filled, no partial fills possible
+						side1Filled := err1 == nil && res1 != nil && res1.Success
+						side2Filled := err2 == nil && res2 != nil && res2.Success
+
 						// Process results
-						if err1 == nil && res1.Success {
-							tui.LogEvent("[%s] ✅ Side 1 Fill: %s @ $%.3f", id, outcomes[0], ask1)
-							engine.BuyForMarket(id, outcomes[0], ask1, shares)
+						if side1Filled {
+							tui.LogEvent("[%s] ✅ Side 1 FILLED: %s @ $%.3f", id, outcomes[0], price1)
+							engine.BuyForMarket(id, outcomes[0], price1, shares)
 						} else {
 							tui.LogEvent("[%s] ❌ Side 1 Fail: %v", id, err1)
 						}
 
-						if err2 == nil && res2.Success {
-							tui.LogEvent("[%s] ✅ Side 2 Fill: %s @ $%.3f", id, outcomes[1], ask2)
-							engine.BuyForMarket(id, outcomes[1], ask2, shares)
+						if side2Filled {
+							tui.LogEvent("[%s] ✅ Side 2 FILLED: %s @ $%.3f", id, outcomes[1], price2)
+							engine.BuyForMarket(id, outcomes[1], price2, shares)
 						} else {
 							tui.LogEvent("[%s] ❌ Side 2 Fail: %v", id, err2)
 						}
-						
-						if (res1 != nil && !res1.Success) || (res2 != nil && !res2.Success) {
-							tui.LogEvent("[%s] ⚠️ PARTIAL FILL DETECTED - Position skewed!", id)
+
+						// IMMEDIATE RETRY on partial fill - match position ASAP
+						if side1Filled != side2Filled {
+							tui.LogEvent("[%s] ⚠️ PARTIAL FILL - Attempting immediate retry!", id)
+
+							// Determine which side failed
+							var failedToken, failedOutcome string
+							var failedPrice float64
+							if !side1Filled {
+								failedToken, failedOutcome, failedPrice = token0, outcomes[0], price1
+							} else {
+								failedToken, failedOutcome, failedPrice = token1, outcomes[1], price2
+							}
+
+							// Immediate retry with same price (FOK - taker)
+							retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, failedPrice, shares, api.TIFFillOrKill)
+							if retryErr == nil && retryRes != nil && retryRes.Success {
+								tui.LogEvent("[%s] ✅ RETRY FILLED: %s @ $%.3f", id, failedOutcome, failedPrice)
+								engine.BuyForMarket(id, failedOutcome, failedPrice, shares)
+							} else {
+								// Second retry with higher price (+2 ticks total from original ask)
+								aggressivePrice := failedPrice + 0.01
+								tui.LogEvent("[%s] 🔄 Aggressive retry: %s @ $%.3f", id, failedOutcome, aggressivePrice)
+								retryRes2, retryErr2 := trader.Buy(ctx, failedToken, failedOutcome, aggressivePrice, shares, api.TIFFillOrKill)
+								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
+									tui.LogEvent("[%s] ✅ AGGRESSIVE RETRY FILLED: %s @ $%.3f", id, failedOutcome, aggressivePrice)
+									engine.BuyForMarket(id, failedOutcome, aggressivePrice, shares)
+								} else {
+									tui.LogEvent("[%s] ❌ RETRY FAILED - Position skewed! Will attempt recovery next tick", id)
+								}
+							}
 						}
 
 						lastTrade = time.Now()
@@ -805,33 +869,50 @@ func handleRestFallback(ctx context.Context, id string, tokenMap map[string]stri
 }
 
 func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
-	// Wait a bit for resolution
-	time.Sleep(5 * time.Second)
+	// Retry resolution check with exponential backoff
+	// 15-min markets may take a few seconds to resolve
+	retryDelays := []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second}
 
-	info, err := trader.GetMarketInfo(ctx, conditionID)
-	if err != nil {
-		tui.LogEvent("[%s] ⚠️ Could not fetch resolution: %v", id, err)
-		return
-	}
+	for attempt, delay := range retryDelays {
+		time.Sleep(delay)
 
-	winner := ""
-	for _, token := range info.Tokens {
-		if token.Winner {
-			winner = token.Outcome
-			break
+		info, err := trader.GetMarketInfo(ctx, conditionID)
+		if err != nil {
+			tui.LogEvent("[%s] ⚠️ Resolution check %d failed: %v", id, attempt+1, err)
+			continue
 		}
-	}
 
-	if winner != "" {
-		result := engine.RedeemWithDetails(winner)
-		if result.TotalPnL != 0 {
-			tui.LogEvent("[%s] 💰 RESOLVED: %s | PnL: $%.2f", id, winner, result.TotalPnL)
-			// If result is a loss, record it in the real trader for safety limits
-			if result.TotalPnL < 0 && trader != nil {
-				trader.RecordLoss(-result.TotalPnL)
+		winner := ""
+		for _, token := range info.Tokens {
+			if token.Winner {
+				winner = token.Outcome
+				break
 			}
 		}
-	} else {
-		tui.LogEvent("[%s] ⏳ Market pending resolution...", id)
+
+		if winner != "" {
+			result := engine.RedeemWithDetails(winner)
+			if result.TotalPnL != 0 {
+				pnlSign := "+"
+				pnlEmoji := "💰"
+				if result.TotalPnL < 0 {
+					pnlSign = ""
+					pnlEmoji = "💸"
+				}
+				tui.LogEvent("[%s] %s RESOLVED: %s won | PnL: %s$%.2f", id, pnlEmoji, winner, pnlSign, result.TotalPnL)
+
+				// Record loss for safety limits
+				if result.TotalPnL < 0 && trader != nil {
+					trader.RecordLoss(-result.TotalPnL)
+				}
+			} else {
+				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
+			}
+			return
+		}
+
+		tui.LogEvent("[%s] ⏳ Resolution pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
 	}
+
+	tui.LogEvent("[%s] ⚠️ Could not get resolution after %d attempts", id, len(retryDelays))
 }

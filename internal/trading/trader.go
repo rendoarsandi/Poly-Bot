@@ -398,6 +398,50 @@ func (t *RealTrader) Address() string {
 	return t.clob.Address()
 }
 
+// WaitForFill waits for an order to be filled
+func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout time.Duration) (bool, error) {
+	return t.clob.WaitForFill(ctx, orderID, timeout)
+}
+
+// GetOpenOrders returns all open orders
+func (t *RealTrader) GetOpenOrders(ctx context.Context) ([]api.OpenOrder, error) {
+	return t.clob.GetOpenOrders(ctx)
+}
+
+// CancelOrder cancels a specific order
+func (t *RealTrader) CancelOrderByID(ctx context.Context, orderID string) error {
+	return t.clob.CancelOrder(ctx, orderID)
+}
+
+// BuyWithConfirmation places a buy order and waits for fill confirmation
+// Returns the result and whether the order was confirmed filled
+func (t *RealTrader) BuyWithConfirmation(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce, fillTimeout time.Duration) (*TradeResult, bool, error) {
+	result, err := t.Buy(ctx, tokenID, outcome, price, size, tif)
+	if err != nil {
+		return result, false, err
+	}
+
+	if !result.Success {
+		return result, false, nil
+	}
+
+	// Wait for fill confirmation
+	filled, err := t.WaitForFill(ctx, result.OrderID, fillTimeout)
+	if err != nil {
+		return result, false, err
+	}
+
+	if !filled {
+		// Order didn't fill in time - cancel it
+		_ = t.CancelOrderByID(ctx, result.OrderID)
+		result.Success = false
+		result.Status = "TIMEOUT"
+		result.Message = "Order did not fill within timeout, cancelled"
+	}
+
+	return result, filled, nil
+}
+
 // NewTrader creates the appropriate trader based on config
 func NewTrader(cfg *core.Config, engine *paper.Engine, orderBook *paper.OrderBook) (Trader, error) {
 	if cfg.IsPaperMode() {
