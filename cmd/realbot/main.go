@@ -826,6 +826,10 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 		result := engine.RedeemWithDetails(winner)
 		if result.TotalPnL != 0 {
 			tui.LogEvent("[%s] 💰 RESOLVED: %s | PnL: $%.2f", id, winner, result.TotalPnL)
+			// If result is a loss, record it in the real trader for safety limits
+			if result.TotalPnL < 0 && trader != nil {
+				trader.RecordLoss(-result.TotalPnL)
+			}
 		}
 	} else {
 		tui.LogEvent("[%s] ⏳ Market pending resolution...", id)

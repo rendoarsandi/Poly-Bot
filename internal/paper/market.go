@@ -195,7 +195,15 @@ func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 	// The slug format ends with the window START timestamp
 	// e.g., btc-updown-15m-1767358800 -> starts at 1767358800, ends at 1767358800 + 900
 	var timestamp int64
-	_, err := fmt.Sscanf(slug[len(slug)-10:], "%d", &timestamp)
+	var err error
+
+	// Safe check before slicing
+	if len(slug) >= 10 {
+		_, err = fmt.Sscanf(slug[len(slug)-10:], "%d", &timestamp)
+	} else {
+		err = fmt.Errorf("slug too short")
+	}
+
 	if err != nil {
 		// Try to find timestamp in slug
 		for i := len(slug) - 1; i >= 0; i-- {

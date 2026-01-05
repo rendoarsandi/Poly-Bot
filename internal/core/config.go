@@ -155,7 +155,7 @@ func (c *Config) CalculateShares(currentBalance, priceSum float64) float64 {
 func (c *Config) String() string {
 	return "Config{TradingMode: " + string(c.TradingMode) +
 		", MarketSlug: " + c.MarketSlug +
-		", PK: [REDACTED], APIKey: [REDACTED]}"
+		", PK: [REDACTED], APIKey: [REDACTED], APISecret: [REDACTED], APIPassphrase: [REDACTED]}"
 }
 
 func parseEnvFloat(key string, defaultVal float64) float64 {

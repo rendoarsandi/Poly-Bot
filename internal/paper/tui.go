@@ -485,7 +485,7 @@ func (t *TUI) renderMultiMarketInfo() string {
 		}
 
 		sb.WriteString(fmt.Sprintf("%s%s═══ %s %s ══════════════════════════════════════════════%s\n", Bold, headerColor, emoji, id, Reset))
-		sb.WriteString(fmt.Sprintf("   📊 %s\n", m.Slug))
+		sb.WriteString(fmt.Sprintf("   📊 %s\n", core.SanitizeString(m.Slug)))
 
 		// Show time remaining and last price update
 		updateAge := time.Since(m.LastUpdate)
@@ -584,7 +584,7 @@ func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAs
 	}
 
 	// Format outcome name (truncate if too long)
-	displayOutcome := outcome
+	displayOutcome := core.SanitizeString(outcome)
 	if len(displayOutcome) > 6 {
 		displayOutcome = displayOutcome[:6]
 	}
@@ -634,8 +634,8 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	realAsk2 := realAsks[outcomes[1]]
 
 	if realAsk1 > 0 || realAsk2 > 0 {
-		sb.WriteString(fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f\n", outcomes[0], realBid1, realAsk1))
-		sb.WriteString(fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f\n", outcomes[1], realBid2, realAsk2))
+		sb.WriteString(fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f\n", core.SanitizeString(outcomes[0]), realBid1, realAsk1))
+		sb.WriteString(fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f\n", core.SanitizeString(outcomes[1]), realBid2, realAsk2))
 	} else {
 		sb.WriteString("│  (waiting for real market data...)\n")
 	}
@@ -669,13 +669,13 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 		color2 = ColorRed
 	}
 
-	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color1, outcomes[0], bid1, ask1, Reset))
+	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color1, core.SanitizeString(outcomes[0]), bid1, ask1, Reset))
 	if mismatch1 {
 		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color2, outcomes[1], bid2, ask2, Reset))
+	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color2, core.SanitizeString(outcomes[1]), bid2, ask2, Reset))
 	if mismatch2 {
 		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
 	}
@@ -702,7 +702,7 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	if len(t.pendingOrders) > 0 {
 		for outcome, orders := range t.pendingOrders {
 			for _, o := range orders {
-				sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.2f\n", o.Side, outcome, o.Qty, o.Price))
+				sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.2f\n", o.Side, core.SanitizeString(outcome), o.Qty, o.Price))
 			}
 		}
 	} else {
@@ -839,7 +839,7 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 		// Display each position for this market
 		positionStrs := make([]string, 0, len(marketPositions))
 		for _, pos := range marketPositions {
-			posStr := fmt.Sprintf("%s: %.0f@$%.2f", pos.Outcome, pos.Quantity, pos.AvgPrice)
+			posStr := fmt.Sprintf("%s: %.0f@$%.2f", core.SanitizeString(pos.Outcome), pos.Quantity, pos.AvgPrice)
 			// Show current bid if available
 			if pos.CurrentBid > 0 {
 				bidColor := ColorGreen
@@ -954,7 +954,7 @@ func (t *TUI) renderOrders(orders []*LimitOrder) string {
 			totalVal += o.RemainingQty() * o.Price
 		}
 		sb.WriteString(fmt.Sprintf("   • %s: %d orders, %.0f shares, $%.2f value\n",
-			outcome, len(ords), totalQty, totalVal))
+			core.SanitizeString(outcome), len(ords), totalQty, totalVal))
 	}
 
 	return sb.String()
