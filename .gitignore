@@ -12,3 +12,4 @@ coverage.out
 # Binaries
 /bot
 /market-bot
+bot_activity.csv
