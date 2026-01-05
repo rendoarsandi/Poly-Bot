@@ -151,6 +151,13 @@ func (c *Config) CalculateShares(currentBalance, priceSum float64) float64 {
 	return shares
 }
 
+// String returns a redacted string representation of the config
+func (c *Config) String() string {
+	return "Config{TradingMode: " + string(c.TradingMode) +
+		", MarketSlug: " + c.MarketSlug +
+		", PK: [REDACTED], APIKey: [REDACTED]}"
+}
+
 func parseEnvFloat(key string, defaultVal float64) float64 {
 	val := os.Getenv(key)
 	if val == "" {

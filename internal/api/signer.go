@@ -252,7 +252,8 @@ func signECDSA(priv *ecdsa.PrivateKey, hash []byte) ([]byte, error) {
 	k := generateK(priv.D, hash)
 
 	curve := secp256k1()
-	r, _ := curve.ScalarBaseMult(k.Bytes())
+	Rx, Ry := curve.ScalarBaseMult(k.Bytes())
+	r := new(big.Int).Set(Rx)
 	r.Mod(r, curve.Params().N)
 
 	if r.Sign() == 0 {
@@ -278,10 +279,7 @@ func signECDSA(priv *ecdsa.PrivateKey, hash []byte) ([]byte, error) {
 	}
 
 	// Compute recovery ID
-	recoveryID := byte(0)
-	if priv.PublicKey.Y.Bit(0) == 1 {
-		recoveryID = 1
-	}
+	recoveryID := byte(Ry.Bit(0))
 
 	// Encode as r || s || v (65 bytes)
 	sig := make([]byte, 65)
@@ -292,10 +290,62 @@ func signECDSA(priv *ecdsa.PrivateKey, hash []byte) ([]byte, error) {
 	return sig, nil
 }
 
-// generateK generates a deterministic k value using RFC 6979
+// generateK generates a deterministic k value using a more robust HMAC-DRBG style approach
 func generateK(d *big.Int, hash []byte) *big.Int {
-	// Simplified RFC 6979 implementation
-	h := hmac.New(sha256.New, d.Bytes())
-	h.Write(hash)
-	return new(big.Int).SetBytes(h.Sum(nil))
+	curve := secp256k1()
+	n := curve.Params().N
+
+	// Initial values for HMAC-DRBG
+	v := make([]byte, 32)
+	for i := range v {
+		v[i] = 0x01
+	}
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = 0x00
+	}
+
+	dBytes := padLeft(d.Bytes(), 32)
+	hBytes := padLeft(hash, 32)
+
+	// Update K and V
+	update := func(data []byte) {
+		h := hmac.New(sha256.New, k)
+		h.Write(v)
+		h.Write([]byte{0x00})
+		if data != nil {
+			h.Write(data)
+		}
+		k = h.Sum(nil)
+
+		h = hmac.New(sha256.New, k)
+		h.Write(v)
+		v = h.Sum(nil)
+
+		if data != nil {
+			h.Write([]byte{0x01})
+			h.Write(data)
+			k = h.Sum(nil)
+
+			h = hmac.New(sha256.New, k)
+			h.Write(v)
+			v = h.Sum(nil)
+		}
+	}
+
+	update(append(dBytes, hBytes...))
+
+	for {
+		h := hmac.New(sha256.New, k)
+		h.Write(v)
+		v = h.Sum(nil)
+
+		T := v
+		tInt := new(big.Int).SetBytes(T)
+
+		if tInt.Cmp(big.NewInt(0)) > 0 && tInt.Cmp(n) < 0 {
+			return tInt
+		}
+		update(nil)
+	}
 }

@@ -134,14 +134,18 @@ func (curve *secp256k1Curve) Double(x1, y1 *big.Int) (*big.Int, *big.Int) {
 
 // ScalarMult returns k*(Bx, By)
 func (curve *secp256k1Curve) ScalarMult(Bx, By *big.Int, k []byte) (*big.Int, *big.Int) {
-	// Double-and-add algorithm
+	// Double-and-add algorithm (bit-level consistent)
 	Rx, Ry := new(big.Int), new(big.Int)
 	Px, Py := Bx, By
 
-	for i := len(k) - 1; i >= 0; i-- {
+	for i := 0; i < len(k); i++ {
+		b := k[len(k)-1-i]
 		for j := 0; j < 8; j++ {
-			if (k[i]>>j)&1 == 1 {
+			if (b>>j)&1 == 1 {
 				Rx, Ry = curve.Add(Rx, Ry, Px, Py)
+			} else {
+				// Dummy addition to balance timing (not perfectly constant-time with big.Int)
+				_, _ = curve.Add(Rx, Ry, Px, Py)
 			}
 			Px, Py = curve.Double(Px, Py)
 		}
