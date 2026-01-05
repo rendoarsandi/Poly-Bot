@@ -34,16 +34,16 @@ type Config struct {
 
 	// Position sizing settings
 	// Default: $1000 balance → $100 per trade at 2% margin (10% of balance)
-	BaseBalance       float64 // Reference balance for position sizing ($1000 default)
-	BaseTradeSize     float64 // Trade size at base balance for 2% margin ($100 default)
-	MinMarginPercent  float64 // Minimum arbitrage margin to trade (2% default)
-	TradeScaleFactor  float64 // Fraction of balance to use per trade (0.10 = 10% default)
+	BaseBalance      float64 // Reference balance for position sizing ($1000 default)
+	BaseTradeSize    float64 // Trade size at base balance for 2% margin ($100 default)
+	MinMarginPercent float64 // Minimum arbitrage margin to trade (2% default)
+	TradeScaleFactor float64 // Fraction of balance to use per trade (0.10 = 10% default)
 
 	// Safety settings for real trading
-	MaxTradeSize     float64 // Maximum USDC per single trade (overrides scaling)
-	MaxDailyLoss     float64 // Maximum daily loss before stopping
-	RequireConfirm   bool    // Require confirmation before each trade
-	DryRunFirst      bool    // Run in dry-run mode first (simulate real API calls)
+	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
+	MaxDailyLoss   float64 // Maximum daily loss before stopping
+	RequireConfirm bool    // Require confirmation before each trade
+	DryRunFirst    bool    // Run in dry-run mode first (simulate real API calls)
 }
 
 func LoadConfig() (*Config, error) {
@@ -56,23 +56,23 @@ func LoadConfig() (*Config, error) {
 	}
 
 	cfg := &Config{
-		TradingMode:      mode,
-		PK:               os.Getenv("PK"),
-		APIKey:           os.Getenv("API_KEY"),
-		APISecret:        os.Getenv("API_SECRET"),
-		APIPassphrase:    os.Getenv("API_PASSPHRASE"),
-		PolygonRPCURL:    os.Getenv("POLYGON_RPC_URL"),
-		MarketSlug:       os.Getenv("MARKET_SLUG"),
+		TradingMode:   mode,
+		PK:            os.Getenv("PK"),
+		APIKey:        os.Getenv("API_KEY"),
+		APISecret:     os.Getenv("API_SECRET"),
+		APIPassphrase: os.Getenv("API_PASSPHRASE"),
+		PolygonRPCURL: os.Getenv("POLYGON_RPC_URL"),
+		MarketSlug:    os.Getenv("MARKET_SLUG"),
 		// Position sizing defaults: $1000 balance → $100 per trade at 2% margin
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 100.0),
 		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 2.0),
 		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.10), // 10% of balance
 		// Safety settings
-		MaxTradeSize:     parseEnvFloat("MAX_TRADE_SIZE", 0),        // 0 = no hard cap, use scaling
-		MaxDailyLoss:     parseEnvFloat("MAX_DAILY_LOSS", 50.0),     // Default $50 max daily loss
-		RequireConfirm:   os.Getenv("REQUIRE_CONFIRM") == "true",
-		DryRunFirst:      os.Getenv("DRY_RUN_FIRST") != "false",     // Default true for safety
+		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
+		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 50.0), // Default $50 max daily loss
+		RequireConfirm: os.Getenv("REQUIRE_CONFIRM") == "true",
+		DryRunFirst:    os.Getenv("DRY_RUN_FIRST") != "false", // Default true for safety
 	}
 
 	return cfg, nil
@@ -168,4 +168,14 @@ func parseEnvFloat(key string, defaultVal float64) float64 {
 		return defaultVal
 	}
 	return f
+}
+
+// SanitizeString removes control characters from a string to prevent terminal manipulation.
+func SanitizeString(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, s)
 }

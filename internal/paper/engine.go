@@ -11,8 +11,8 @@ import (
 type Trade struct {
 	ID        int
 	Timestamp time.Time
-	Side      string  // "buy" or "sell"
-	Outcome   string  // "Yes", "No", "Up", "Down"
+	Side      string // "buy" or "sell"
+	Outcome   string // "Yes", "No", "Up", "Down"
 	Price     float64
 	Quantity  float64
 	Value     float64 // Price * Quantity
@@ -21,7 +21,7 @@ type Trade struct {
 // Position represents current holdings for an outcome
 type Position struct {
 	Outcome   string
-	MarketID  string  // Which market this position belongs to (e.g., "BTC", "ETH")
+	MarketID  string // Which market this position belongs to (e.g., "BTC", "ETH")
 	Quantity  float64
 	AvgPrice  float64
 	TotalCost float64
@@ -29,14 +29,14 @@ type Position struct {
 
 // Stats holds all trading statistics
 type Stats struct {
-	TotalTrades    int
-	WinningTrades  int
-	LosingTrades   int
-	RealizedPnL    float64
-	UnrealizedPnL  float64
-	MaxDrawdown    float64
-	PeakBalance    float64
-	CurrentBalance float64
+	TotalTrades     int
+	WinningTrades   int
+	LosingTrades    int
+	RealizedPnL     float64
+	UnrealizedPnL   float64
+	MaxDrawdown     float64
+	PeakBalance     float64
+	CurrentBalance  float64
 	StartingBalance float64
 }
 
@@ -85,7 +85,7 @@ func NewEngine(startingBalance float64) *Engine {
 		startingBalance:    startingBalance,
 		currentBalance:     startingBalance,
 		peakBalance:        startingBalance,
-		compoundMultiplier: 1.0, // Start at 1x
+		compoundMultiplier: 1.0,  // Start at 1x
 		maxTrades:          1000, // Cap trade history to prevent memory growth
 		positions:          make(map[string]*Position),
 		trades:             make([]Trade, 0),
@@ -399,21 +399,21 @@ func (e *Engine) LiquidateAll() float64 {
 		if bid, ok := e.currentBids[outcome]; ok && bid >= minSanePrice && bid <= maxSanePrice {
 			price = bid // Use BID for taker sells
 			/*
-			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ BID $%.3f (chasing liquidity)\n",
-				outcome, pos.Quantity, bid)
+				fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ BID $%.3f (chasing liquidity)\n",
+					outcome, pos.Quantity, bid)
 			*/
 		} else if p, ok := e.currentPrices[outcome]; ok && p >= minSanePrice && p <= maxSanePrice {
 			// Fallback to mid-price with simulated slippage (2% worse)
 			price = p * 0.98
 			/*
-			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (mid-2%% slippage)\n",
-				outcome, pos.Quantity, price)
+				fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (mid-2%% slippage)\n",
+					outcome, pos.Quantity, price)
 			*/
 		} else {
 			// Use cost basis as last resort
 			/*
-			fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (cost basis - no valid price)\n",
-				outcome, pos.Quantity, price)
+				fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (cost basis - no valid price)\n",
+					outcome, pos.Quantity, price)
 			*/
 		}
 

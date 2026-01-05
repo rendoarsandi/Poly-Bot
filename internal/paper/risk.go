@@ -9,21 +9,21 @@ import (
 
 // RiskConfig configures risk management parameters
 type RiskConfig struct {
-	MaxExposure          float64 // Maximum total exposure in dollars
-	MaxUnmatchedRatio    float64 // Maximum unmatched inventory ratio (e.g., 0.20 = 20%)
-	MaxUnmatchedShares   float64 // Maximum unmatched shares on one side
-	SkewThreshold        float64 // Threshold to trigger rebalancing (e.g., 0.10 = 10%)
-	KillSwitchDrawdown   float64 // Max drawdown to trigger kill switch (e.g., 0.10 = 10%)
+	MaxExposure        float64 // Maximum total exposure in dollars
+	MaxUnmatchedRatio  float64 // Maximum unmatched inventory ratio (e.g., 0.20 = 20%)
+	MaxUnmatchedShares float64 // Maximum unmatched shares on one side
+	SkewThreshold      float64 // Threshold to trigger rebalancing (e.g., 0.10 = 10%)
+	KillSwitchDrawdown float64 // Max drawdown to trigger kill switch (e.g., 0.10 = 10%)
 }
 
 // DefaultRiskConfig returns default risk configuration
 func DefaultRiskConfig() RiskConfig {
 	return RiskConfig{
-		MaxExposure:          500.0,  // $500 max exposure
-		MaxUnmatchedRatio:    0.20,   // 20% max unmatched
-		MaxUnmatchedShares:   500.0,  // 500 shares max on one side
-		SkewThreshold:        0.10,   // 10% skew triggers rebalance
-		KillSwitchDrawdown:   0.10,   // 10% drawdown triggers kill
+		MaxExposure:        500.0, // $500 max exposure
+		MaxUnmatchedRatio:  0.20,  // 20% max unmatched
+		MaxUnmatchedShares: 500.0, // 500 shares max on one side
+		SkewThreshold:      0.10,  // 10% skew triggers rebalance
+		KillSwitchDrawdown: 0.10,  // 10% drawdown triggers kill
 	}
 }
 
@@ -47,11 +47,11 @@ type RiskAlert struct {
 
 // RiskManager manages trading risk
 type RiskManager struct {
-	mu           sync.RWMutex
-	config       RiskConfig
-	engine       *Engine
-	orderBook    *OrderBook
-	outcomes     []string
+	mu        sync.RWMutex
+	config    RiskConfig
+	engine    *Engine
+	orderBook *OrderBook
+	outcomes  []string
 
 	// State
 	killSwitchTriggered bool
@@ -220,29 +220,29 @@ func (rm *RiskManager) ExecuteKillSwitch() {
 	defer rm.mu.Unlock()
 
 	/*
-	fmt.Println()
-	fmt.Println("🚨🚨🚨 KILL SWITCH ACTIVATED 🚨🚨🚨")
-	fmt.Println("Reason:", rm.alerts[len(rm.alerts)-1].Reason)
+		fmt.Println()
+		fmt.Println("🚨🚨🚨 KILL SWITCH ACTIVATED 🚨🚨🚨")
+		fmt.Println("Reason:", rm.alerts[len(rm.alerts)-1].Reason)
 	*/
 
 	// Cancel all open orders
 	cancelled := rm.orderBook.CancelAllOrders()
 	/*
-	fmt.Printf("Cancelled %d open orders\n", cancelled)
+		fmt.Printf("Cancelled %d open orders\n", cancelled)
 	*/
 	_ = cancelled
 
 	// Print final positions
 	positions := rm.engine.GetPositions()
 	/*
-	if len(positions) > 0 {
-		fmt.Println("Remaining positions (manual intervention required):")
-		for outcome, pos := range positions {
-			fmt.Printf("  %s: %.0f shares @ $%.3f avg\n", outcome, pos.Quantity, pos.AvgPrice)
+		if len(positions) > 0 {
+			fmt.Println("Remaining positions (manual intervention required):")
+			for outcome, pos := range positions {
+				fmt.Printf("  %s: %.0f shares @ $%.3f avg\n", outcome, pos.Quantity, pos.AvgPrice)
+			}
 		}
-	}
 
-	fmt.Println("🛑 Bot halted. Please review positions manually.")
+		fmt.Println("🛑 Bot halted. Please review positions manually.")
 	*/
 	_ = positions
 }
@@ -279,30 +279,30 @@ func (rm *RiskManager) CanPlaceOrder(orderValue float64) bool {
 // PrintStatus prints current risk status
 func (rm *RiskManager) PrintStatus() {
 	/*
-	positions := rm.engine.GetPositions()
-	totalExposure, _ := rm.engine.GetExposure()
-	openOrderValue := rm.orderBook.GetOpenOrderValue()
-	skew, heavySide := rm.calculateInventorySkew()
-	stats := rm.engine.GetStats()
+		positions := rm.engine.GetPositions()
+		totalExposure, _ := rm.engine.GetExposure()
+		openOrderValue := rm.orderBook.GetOpenOrderValue()
+		skew, heavySide := rm.calculateInventorySkew()
+		stats := rm.engine.GetStats()
 
-	fmt.Println("⚠️  Risk Status:")
-	fmt.Printf("  Exposure: $%.2f / $%.2f (%.1f%%)\n",
-		totalExposure+openOrderValue, rm.config.MaxExposure,
-		(totalExposure+openOrderValue)/rm.config.MaxExposure*100)
-	fmt.Printf("  Max Drawdown: %.2f%% / %.2f%%\n",
-		stats.MaxDrawdown, rm.config.KillSwitchDrawdown*100)
+		fmt.Println("⚠️  Risk Status:")
+		fmt.Printf("  Exposure: $%.2f / $%.2f (%.1f%%)\n",
+			totalExposure+openOrderValue, rm.config.MaxExposure,
+			(totalExposure+openOrderValue)/rm.config.MaxExposure*100)
+		fmt.Printf("  Max Drawdown: %.2f%% / %.2f%%\n",
+			stats.MaxDrawdown, rm.config.KillSwitchDrawdown*100)
 
-	if len(positions) == 2 && len(rm.outcomes) == 2 {
-		pos1 := positions[rm.outcomes[0]]
-		pos2 := positions[rm.outcomes[1]]
-		unmatched := math.Abs(pos1.Quantity - pos2.Quantity)
-		fmt.Printf("  Inventory: %s=%.0f, %s=%.0f (unmatched: %.0f)\n",
-			rm.outcomes[0], pos1.Quantity, rm.outcomes[1], pos2.Quantity, unmatched)
-		fmt.Printf("  Skew: %.1f%% (%s heavy)\n", skew*100, heavySide)
-	}
+		if len(positions) == 2 && len(rm.outcomes) == 2 {
+			pos1 := positions[rm.outcomes[0]]
+			pos2 := positions[rm.outcomes[1]]
+			unmatched := math.Abs(pos1.Quantity - pos2.Quantity)
+			fmt.Printf("  Inventory: %s=%.0f, %s=%.0f (unmatched: %.0f)\n",
+				rm.outcomes[0], pos1.Quantity, rm.outcomes[1], pos2.Quantity, unmatched)
+			fmt.Printf("  Skew: %.1f%% (%s heavy)\n", skew*100, heavySide)
+		}
 
-	if rm.killSwitchTriggered {
-		fmt.Println("  🚨 KILL SWITCH: ACTIVE")
-	}
+		if rm.killSwitchTriggered {
+			fmt.Println("  🚨 KILL SWITCH: ACTIVE")
+		}
 	*/
 }

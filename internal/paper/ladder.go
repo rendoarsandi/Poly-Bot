@@ -2,10 +2,10 @@ package paper
 
 // LadderConfig configures ladder quoting parameters
 type LadderConfig struct {
-	Levels        int     // Number of price levels (e.g., 3)
+	Levels         int     // Number of price levels (e.g., 3)
 	SharesPerLevel float64 // Shares at each level (e.g., 500)
-	PriceStep     float64 // Price decrement per level (e.g., 0.01 = 1 cent)
-	BasePrice     float64 // Starting price for ladder (e.g., 0.48)
+	PriceStep      float64 // Price decrement per level (e.g., 0.01 = 1 cent)
+	BasePrice      float64 // Starting price for ladder (e.g., 0.48)
 }
 
 // DefaultLadderConfig returns default ladder configuration
@@ -42,8 +42,8 @@ func (l *Ladder) PlaceLadder() []*LimitOrder {
 	// Don't place orders if BasePrice hasn't been set from real market data
 	if l.Config.BasePrice <= 0.05 || l.Config.BasePrice >= 0.95 {
 		/*
-		fmt.Printf("⚠️ Skipping %s ladder: invalid BasePrice $%.3f (waiting for real market data)\n",
-			l.Outcome, l.Config.BasePrice)
+			fmt.Printf("⚠️ Skipping %s ladder: invalid BasePrice $%.3f (waiting for real market data)\n",
+				l.Outcome, l.Config.BasePrice)
 		*/
 		return nil
 	}
@@ -66,8 +66,8 @@ func (l *Ladder) PlaceLadder() []*LimitOrder {
 		)
 		l.Orders = append(l.Orders, order)
 		/*
-		fmt.Printf("📝 Placed: %s L%d: %.0f shares @ $%.3f\n",
-			l.Outcome, i, l.Config.SharesPerLevel, price)
+			fmt.Printf("📝 Placed: %s L%d: %.0f shares @ $%.3f\n",
+				l.Outcome, i, l.Config.SharesPerLevel, price)
 		*/
 	}
 
@@ -80,8 +80,8 @@ func (l *Ladder) UpdateLadder(fairPrice float64) []*LimitOrder {
 	// Validate fair price is within reasonable bounds
 	if fairPrice <= 0.05 || fairPrice >= 0.95 {
 		/*
-		fmt.Printf("⚠️ Skipping %s ladder update: fairPrice $%.3f out of range\n",
-			l.Outcome, fairPrice)
+			fmt.Printf("⚠️ Skipping %s ladder update: fairPrice $%.3f out of range\n",
+				l.Outcome, fairPrice)
 		*/
 		return nil
 	}
@@ -170,7 +170,7 @@ func (lm *LadderManager) PlaceAllLaddersWithPrices(outcomes []string, prices map
 		price := prices[outcome]
 		if price <= 0.05 || price >= 0.95 {
 			/*
-			fmt.Printf("⚠️ Skipping %s: price $%.3f out of tradeable range\n", outcome, price)
+				fmt.Printf("⚠️ Skipping %s: price $%.3f out of tradeable range\n", outcome, price)
 			*/
 			continue
 		}
@@ -200,13 +200,13 @@ func (lm *LadderManager) GetAllOpenOrders() []*LimitOrder {
 // PrintLadders prints current ladder status
 func (lm *LadderManager) PrintLadders() {
 	/*
-	fmt.Println("📊 Current Ladders:")
-	for outcome, ladder := range lm.Ladders {
-		active := ladder.GetActiveOrders()
-		fmt.Printf("  %s: %d active orders ($%.2f value)\n", outcome, len(active), ladder.GetTotalOpenValue())
-		for _, order := range active {
-			fmt.Printf("    L%d: %.0f shares @ $%.3f\n", order.LadderLevel, order.RemainingQty(), order.Price)
+		fmt.Println("📊 Current Ladders:")
+		for outcome, ladder := range lm.Ladders {
+			active := ladder.GetActiveOrders()
+			fmt.Printf("  %s: %d active orders ($%.2f value)\n", outcome, len(active), ladder.GetTotalOpenValue())
+			for _, order := range active {
+				fmt.Printf("    L%d: %.0f shares @ $%.3f\n", order.LadderLevel, order.RemainingQty(), order.Price)
+			}
 		}
-	}
 	*/
 }

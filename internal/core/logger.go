@@ -34,7 +34,7 @@ func NewCSVLogger(filename string) (*CSVLogger, error) {
 	}
 
 	writer := csv.NewWriter(file)
-	
+
 	// Write header if file is new
 	info, err := file.Stat()
 	if err == nil && info.Size() == 0 {

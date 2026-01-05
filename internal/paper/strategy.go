@@ -27,9 +27,9 @@ func NewStrategy(engine *Engine, display *Display, outcomes []string) *Strategy 
 	return &Strategy{
 		engine:         engine,
 		display:        display,
-		targetMargin:   0.02,  // 2% minimum margin
-		orderSize:      100,   // 100 shares per side
-		maxExposure:    500,   // $500 max exposure
+		targetMargin:   0.02, // 2% minimum margin
+		orderSize:      100,  // 100 shares per side
+		maxExposure:    500,  // $500 max exposure
 		cooldownPeriod: 5 * time.Second,
 		outcomes:       outcomes,
 	}
@@ -111,9 +111,9 @@ func (s *Strategy) Evaluate(prices map[string]string) (traded bool, err error) {
 	s.display.PrintTrade(trade2)
 
 	/*
-	// Log the arbitrage
-	fmt.Printf("✅ ARBITRAGE EXECUTED: Bought %.0f of each side @ sum=%.4f (%.2f%% margin)\n",
-		s.orderSize, sum, margin*100)
+		// Log the arbitrage
+		fmt.Printf("✅ ARBITRAGE EXECUTED: Bought %.0f of each side @ sum=%.4f (%.2f%% margin)\n",
+			s.orderSize, sum, margin*100)
 	*/
 
 	s.lastTradeTime = time.Now()
@@ -124,6 +124,6 @@ func (s *Strategy) Evaluate(prices map[string]string) (traded bool, err error) {
 func (s *Strategy) SimulateResolution(winningOutcome string) {
 	s.engine.Redeem(winningOutcome)
 	/*
-	fmt.Printf("🏆 MARKET RESOLVED: %s won! Payout: $%.2f\n", winningOutcome, payout)
+		fmt.Printf("🏆 MARKET RESOLVED: %s won! Payout: $%.2f\n", winningOutcome, payout)
 	*/
 }

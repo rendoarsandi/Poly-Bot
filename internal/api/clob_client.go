@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"Market-bot/internal/core"
 )
 
 // CLOBClient handles authenticated trading operations on Polymarket CLOB
@@ -74,8 +76,8 @@ const (
 type TimeInForce string
 
 const (
-	TIFGoodTilCancelled TimeInForce = "GTC"
-	TIFFillOrKill       TimeInForce = "FOK"
+	TIFGoodTilCancelled  TimeInForce = "GTC"
+	TIFFillOrKill        TimeInForce = "FOK"
 	TIFImmediateOrCancel TimeInForce = "IOC"
 )
 
@@ -100,26 +102,26 @@ type SignedOrder struct {
 
 // OrderPayload is the order data to be signed
 type OrderPayload struct {
-	Salt        string `json:"salt"`
-	Maker       string `json:"maker"`
-	Signer      string `json:"signer"`
-	Taker       string `json:"taker"`
-	TokenID     string `json:"tokenId"`
-	MakerAmount string `json:"makerAmount"`
-	TakerAmount string `json:"takerAmount"`
-	Expiration  string `json:"expiration"`
-	Nonce       string `json:"nonce"`
-	FeeRateBps  string `json:"feeRateBps"`
-	Side        string `json:"side"`
-	SignatureType int  `json:"signatureType"`
+	Salt          string `json:"salt"`
+	Maker         string `json:"maker"`
+	Signer        string `json:"signer"`
+	Taker         string `json:"taker"`
+	TokenID       string `json:"tokenId"`
+	MakerAmount   string `json:"makerAmount"`
+	TakerAmount   string `json:"takerAmount"`
+	Expiration    string `json:"expiration"`
+	Nonce         string `json:"nonce"`
+	FeeRateBps    string `json:"feeRateBps"`
+	Side          string `json:"side"`
+	SignatureType int    `json:"signatureType"`
 }
 
 // OrderResponse represents the API response for order placement
 type OrderResponse struct {
-	OrderID   string `json:"orderID"`
-	Status    string `json:"status"`
-	ErrorMsg  string `json:"errorMsg,omitempty"`
-	Success   bool   `json:"success"`
+	OrderID  string `json:"orderID"`
+	Status   string `json:"status"`
+	ErrorMsg string `json:"errorMsg,omitempty"`
+	Success  bool   `json:"success"`
 }
 
 // PlaceOrder places a new limit order
@@ -172,17 +174,17 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	// Build signed order
 	signedOrder := &SignedOrder{
 		Order: OrderPayload{
-			Salt:        orderData.Salt,
-			Maker:       orderData.Maker,
-			Signer:      orderData.Signer,
-			Taker:       orderData.Taker,
-			TokenID:     orderData.TokenID,
-			MakerAmount: orderData.MakerAmount,
-			TakerAmount: orderData.TakerAmount,
-			Expiration:  orderData.Expiration,
-			Nonce:       orderData.Nonce,
-			FeeRateBps:  orderData.FeeRateBps,
-			Side:        orderData.Side,
+			Salt:          orderData.Salt,
+			Maker:         orderData.Maker,
+			Signer:        orderData.Signer,
+			Taker:         orderData.Taker,
+			TokenID:       orderData.TokenID,
+			MakerAmount:   orderData.MakerAmount,
+			TakerAmount:   orderData.TakerAmount,
+			Expiration:    orderData.Expiration,
+			Nonce:         orderData.Nonce,
+			FeeRateBps:    orderData.FeeRateBps,
+			Side:          orderData.Side,
 			SignatureType: orderData.SignatureType,
 		},
 		Signature: signature,
@@ -520,6 +522,10 @@ func (c *CLOBClient) GetMarketInfo(ctx context.Context, conditionID string) (*Ma
 	var info MarketInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil, fmt.Errorf("failed to decode market info: %w", err)
+	}
+
+	for i := range info.Tokens {
+		info.Tokens[i].Outcome = core.SanitizeString(info.Tokens[i].Outcome)
 	}
 
 	return &info, nil

@@ -8,17 +8,19 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"Market-bot/internal/core"
 )
 
 // Optimized HTTP client with connection pooling and timeouts for ultra-low latency
 var httpClient = &http.Client{
 	Timeout: 3 * time.Second, // Reduced timeout for faster failure detection
 	Transport: &http.Transport{
-		MaxIdleConns:        200,              // More idle connections
-		MaxIdleConnsPerHost: 50,               // More per-host connections
-		MaxConnsPerHost:     100,              // Allow more concurrent connections
+		MaxIdleConns:        200, // More idle connections
+		MaxIdleConnsPerHost: 50,  // More per-host connections
+		MaxConnsPerHost:     100, // Allow more concurrent connections
 		IdleConnTimeout:     120 * time.Second,
-		DisableCompression:  true,             // Skip compression for speed
+		DisableCompression:  true, // Skip compression for speed
 		DialContext: (&net.Dialer{
 			Timeout:   2 * time.Second,
 			KeepAlive: 60 * time.Second,
@@ -97,10 +99,10 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 		// - Previous window (might still be resolving)
 		// - Window after next (for early creation)
 		windowsToCheck := []int64{
-			currentWindowStart,         // Current window
-			currentWindowStart + 900,   // Next window (might be pre-created)
-			currentWindowStart + 1800,  // Window after next (early creation)
-			currentWindowStart - 900,   // Previous window (might still be active)
+			currentWindowStart,        // Current window
+			currentWindowStart + 900,  // Next window (might be pre-created)
+			currentWindowStart + 1800, // Window after next (early creation)
+			currentWindowStart - 900,  // Previous window (might still be active)
 		}
 
 		for _, windowStart := range windowsToCheck {
@@ -164,12 +166,12 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 			// Build Market from Gamma data with correct outcome mapping
 			market := &Market{
 				ConditionID: gm.ConditionID,
-				Slug:        slug,
+				Slug:        core.SanitizeString(slug),
 				Active:      gm.Active,
 				Closed:      gm.Closed,
 				Tokens: []Token{
-					{TokenID: tokenIds[0], Outcome: outcomes[0]},
-					{TokenID: tokenIds[1], Outcome: outcomes[1]},
+					{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
+					{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
 				},
 			}
 
@@ -203,6 +205,14 @@ func (c *RestClient) ListMarkets(ctx context.Context) ([]Market, error) {
 		return nil, fmt.Errorf("failed to decode markets list: %w", err)
 	}
 
+	for i := range result.Data {
+		result.Data[i].Slug = core.SanitizeString(result.Data[i].Slug)
+		result.Data[i].MarketSlug = core.SanitizeString(result.Data[i].MarketSlug)
+		for j := range result.Data[i].Tokens {
+			result.Data[i].Tokens[j].Outcome = core.SanitizeString(result.Data[i].Tokens[j].Outcome)
+		}
+	}
+
 	return result.Data, nil
 }
 
@@ -226,6 +236,12 @@ func (c *RestClient) GetMarket(ctx context.Context, slug string) (*Market, error
 	var market Market
 	if err := json.NewDecoder(resp.Body).Decode(&market); err != nil {
 		return nil, fmt.Errorf("failed to decode market response: %w", err)
+	}
+
+	market.Slug = core.SanitizeString(market.Slug)
+	market.MarketSlug = core.SanitizeString(market.MarketSlug)
+	for i := range market.Tokens {
+		market.Tokens[i].Outcome = core.SanitizeString(market.Tokens[i].Outcome)
 	}
 
 	return &market, nil

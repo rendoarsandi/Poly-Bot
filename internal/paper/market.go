@@ -9,28 +9,28 @@ import (
 type MarketState string
 
 const (
-	MarketStateActive    MarketState = "active"
-	MarketStateEnding    MarketState = "ending"    // Last few minutes
-	MarketStateResolved  MarketState = "resolved"
-	MarketStatePaused    MarketState = "paused"
+	MarketStateActive   MarketState = "active"
+	MarketStateEnding   MarketState = "ending" // Last few minutes
+	MarketStateResolved MarketState = "resolved"
+	MarketStatePaused   MarketState = "paused"
 )
 
 // MarketInfo holds information about the current market
 type MarketInfo struct {
-	Slug          string
-	ConditionID   string
-	Outcomes      []string
-	EndTime       time.Time
-	State         MarketState
+	Slug           string
+	ConditionID    string
+	Outcomes       []string
+	EndTime        time.Time
+	State          MarketState
 	WinningOutcome string // Set when resolved
 }
 
 // MarketMonitor monitors market state and handles resolution
 type MarketMonitor struct {
-	engine       *Engine
-	orderBook    *OrderBook
-	ladderMgr    *LadderManager
-	riskMgr      *RiskManager
+	engine    *Engine
+	orderBook *OrderBook
+	ladderMgr *LadderManager
+	riskMgr   *RiskManager
 
 	currentMarket *MarketInfo
 
@@ -38,8 +38,8 @@ type MarketMonitor struct {
 	endMessagePrinted bool
 
 	// Callbacks
-	onResolution  func(winningOutcome string, payout float64)
-	onMarketEnd   func()
+	onResolution func(winningOutcome string, payout float64)
+	onMarketEnd  func()
 }
 
 // NewMarketMonitor creates a new market monitor
@@ -166,26 +166,26 @@ func (mm *MarketMonitor) GetMarketInfo() *MarketInfo {
 // PrintStatus prints current market status
 func (mm *MarketMonitor) PrintStatus() {
 	/*
-	if mm.currentMarket == nil {
-		fmt.Println("📊 No market loaded")
-		return
-	}
+		if mm.currentMarket == nil {
+			fmt.Println("📊 No market loaded")
+			return
+		}
 
-	remaining := mm.GetTimeToEnd()
-	state := mm.CheckState()
+		remaining := mm.GetTimeToEnd()
+		state := mm.CheckState()
 
-	stateEmoji := "🟢"
-	switch state {
-	case MarketStateEnding:
-		stateEmoji = "🟡"
-	case MarketStateResolved:
-		stateEmoji = "✅"
-	case MarketStatePaused:
-		stateEmoji = "⏸️"
-	}
+		stateEmoji := "🟢"
+		switch state {
+		case MarketStateEnding:
+			stateEmoji = "🟡"
+		case MarketStateResolved:
+			stateEmoji = "✅"
+		case MarketStatePaused:
+			stateEmoji = "⏸️"
+		}
 
-	fmt.Printf("%s Market: %s | Time remaining: %v | State: %s\n",
-		stateEmoji, mm.currentMarket.Slug, remaining.Round(time.Second), state)
+		fmt.Printf("%s Market: %s | Time remaining: %v | State: %s\n",
+			stateEmoji, mm.currentMarket.Slug, remaining.Round(time.Second), state)
 	*/
 }
 

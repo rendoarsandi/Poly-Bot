@@ -36,6 +36,9 @@ type Trader interface {
 
 	// IsDryRun returns true if in dry-run mode (simulating real API calls)
 	IsDryRun() bool
+
+	// GetMarketInfo retrieves market info including resolution status
+	GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error)
 }
 
 // TradeResult represents the result of a trade attempt
@@ -156,14 +159,21 @@ func (t *PaperTrader) IsDryRun() bool {
 	return false
 }
 
+func (t *PaperTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
+	// Paper trader doesn't have real market info access
+	return nil, fmt.Errorf("not implemented for paper trader")
+}
+
 // RealTrader implements Trader for real Polymarket trading
 type RealTrader struct {
-	clob       *api.CLOBClient
-	polygon    *api.PolygonClient
-	config     *core.Config
-	mu         sync.Mutex
-	dailyLoss  float64
-	startOfDay time.Time
+	clob              *api.CLOBClient
+	polygon           *api.PolygonClient
+	config            *core.Config
+	mu                sync.Mutex
+	dailyLoss         float64
+	startOfDay        time.Time
+	cachedBalance     float64
+	lastBalanceUpdate time.Time
 }
 
 // NewRealTrader creates a new real trader
@@ -199,7 +209,8 @@ func (t *RealTrader) SetDryRun(enabled bool) {
 
 func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error) {
 	// Check safety limits
-	if err := t.checkSafetyLimits(price * size); err != nil {
+	cost := price * size
+	if err := t.checkSafetyLimits(cost); err != nil {
 		return &TradeResult{
 			Success: false,
 			Message: err.Error(),
@@ -218,6 +229,14 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 			Success: false,
 			Message: err.Error(),
 		}, nil
+	}
+
+	if resp.Success {
+		t.mu.Lock()
+		if t.cachedBalance > 0 {
+			t.cachedBalance -= cost
+		}
+		t.mu.Unlock()
 	}
 
 	status := "PENDING"
@@ -254,6 +273,14 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
+	if resp.Success {
+		t.mu.Lock()
+		if t.cachedBalance > 0 {
+			t.cachedBalance += (price * size)
+		}
+		t.mu.Unlock()
+	}
+
 	status := "PENDING"
 	if t.clob.IsDryRun() {
 		status = "DRY_RUN"
@@ -282,7 +309,26 @@ func (t *RealTrader) CancelAll(ctx context.Context) error {
 }
 
 func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
-	return t.polygon.GetUSDCBalance(ctx, t.clob.Address())
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Only poll every 30 seconds to avoid rate limits, or if never polled
+	if time.Since(t.lastBalanceUpdate) < 30*time.Second && t.lastBalanceUpdate.IsZero() == false {
+		return t.cachedBalance, nil
+	}
+
+	bal, err := t.polygon.GetUSDCBalance(ctx, t.clob.Address())
+	if err != nil {
+		// Return cached balance on error if available
+		if !t.lastBalanceUpdate.IsZero() {
+			return t.cachedBalance, nil
+		}
+		return 0, err
+	}
+
+	t.cachedBalance = bal
+	t.lastBalanceUpdate = time.Now()
+	return bal, nil
 }
 
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
@@ -308,6 +354,10 @@ func (t *RealTrader) IsPaperMode() bool {
 
 func (t *RealTrader) IsDryRun() bool {
 	return t.clob.IsDryRun()
+}
+
+func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
+	return t.clob.GetMarketInfo(ctx, conditionID)
 }
 
 // checkSafetyLimits verifies the trade doesn't exceed safety limits

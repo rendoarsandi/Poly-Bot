@@ -10,26 +10,26 @@ import (
 
 // ANSI escape codes for terminal control
 const (
-	ClearScreen    = "\033[2J"
-	MoveCursor     = "\033[%d;%dH" // row, col
-	ClearLine      = "\033[2K"
-	ClearToEOL     = "\033[K"
-	HideCursor     = "\033[?25l"
-	ShowCursor     = "\033[?25h"
-	AltScreenOn    = "\033[?1049h"
-	AltScreenOff   = "\033[?1049l"
-	Bold           = "\033[1m"
-	Reset          = "\033[0m"
-	ColorRed       = "\033[31m"
-	ColorGreen     = "\033[32m"
-	ColorYellow    = "\033[33m"
-	ColorBlue      = "\033[34m"
-	ColorMagenta   = "\033[35m"
-	ColorCyan      = "\033[36m"
-	ColorWhite     = "\033[37m"
-	BgRed          = "\033[41m"
-	BgGreen        = "\033[42m"
-	BgYellow       = "\033[43m"
+	ClearScreen  = "\033[2J"
+	MoveCursor   = "\033[%d;%dH" // row, col
+	ClearLine    = "\033[2K"
+	ClearToEOL   = "\033[K"
+	HideCursor   = "\033[?25l"
+	ShowCursor   = "\033[?25h"
+	AltScreenOn  = "\033[?1049h"
+	AltScreenOff = "\033[?1049l"
+	Bold         = "\033[1m"
+	Reset        = "\033[0m"
+	ColorRed     = "\033[31m"
+	ColorGreen   = "\033[32m"
+	ColorYellow  = "\033[33m"
+	ColorBlue    = "\033[34m"
+	ColorMagenta = "\033[35m"
+	ColorCyan    = "\033[36m"
+	ColorWhite   = "\033[37m"
+	BgRed        = "\033[41m"
+	BgGreen      = "\033[42m"
+	BgYellow     = "\033[43m"
 )
 
 // MarketData holds data for a single market in the TUI
@@ -53,19 +53,19 @@ type TUI struct {
 	orderBook *OrderBook
 
 	// State - now supports multiple markets
-	markets      map[string]*MarketData // key = market identifier (e.g., "ETH", "SOL")
-	marketSlug   string                 // Legacy - primary market
-	outcomes     []string               // Legacy - primary market outcomes
-	endTime      time.Time              // Legacy - primary market end time
-	lastPrices   map[string]float64
-	lastBids     map[string]float64
-	lastAsks     map[string]float64
-	eventLog     []string
-	maxEvents    int
-	running      bool
-	stopped      atomic.Bool // Atomic flag for fast shutdown detection without lock
-	killReason   string
-	isKilled     bool
+	markets    map[string]*MarketData // key = market identifier (e.g., "ETH", "SOL")
+	marketSlug string                 // Legacy - primary market
+	outcomes   []string               // Legacy - primary market outcomes
+	endTime    time.Time              // Legacy - primary market end time
+	lastPrices map[string]float64
+	lastBids   map[string]float64
+	lastAsks   map[string]float64
+	eventLog   []string
+	maxEvents  int
+	running    bool
+	stopped    atomic.Bool // Atomic flag for fast shutdown detection without lock
+	killReason string
+	isKilled   bool
 
 	// Real market data (for comparison)
 	realBids map[string]float64

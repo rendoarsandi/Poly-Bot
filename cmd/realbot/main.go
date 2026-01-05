@@ -109,7 +109,11 @@ func run() error {
 		fmt.Println()
 		fmt.Println("📊 Current Positions:")
 		for _, pos := range positions {
-			fmt.Printf("   • %s: %.2f shares @ $%.4f avg\n", pos.Outcome, pos.Size, pos.AvgPrice)
+			outcomeDisplay := pos.Outcome
+			if outcomeDisplay == "" {
+				outcomeDisplay = pos.TokenID
+			}
+			fmt.Printf("   • %s: %.2f shares @ $%.4f avg\n", outcomeDisplay, pos.Size, pos.AvgPrice)
 		}
 	} else {
 		fmt.Println("📊 No open positions")
@@ -200,6 +204,7 @@ func run() error {
 	// Create paper engine for TUI display (tracks simulated P&L alongside real trades)
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
+
 	tui := paper.NewTUI(engine, orderBook)
 
 	// Start TUI
@@ -274,11 +279,21 @@ func run() error {
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
 
+			// Create per-market Risk Manager
+			riskConfig := paper.RiskConfig{
+				MaxExposure:        500.0, // $500 max exposure
+				MaxUnmatchedRatio:  0.20,  // 20% max unmatched
+				MaxUnmatchedShares: 500.0, // 500 shares max on one side
+				SkewThreshold:      0.10,  // 10% skew triggers rebalance
+				KillSwitchDrawdown: 999.0, // High limit as we're using real money
+			}
+			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
+
 			wg.Add(1)
-			go func(id string, m *api.Market, end time.Time, bal float64, mult float64) {
+			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64, mult float64) {
 				defer wg.Done()
-				tradeMarket(ctx, id, m, end, realTrader, engine, tui, restClient, cfg, bal, mult)
-			}(assetID, market, endTime, currentBalance, compoundMultiplier)
+				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, mult)
+			}(assetID, market, endTime, marketRiskMgr, currentBalance, compoundMultiplier)
 		}
 
 		// Wait for markets to complete
@@ -421,7 +436,7 @@ func getOutcomes(market *api.Market) []string {
 	return outcomes
 }
 
-func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, compoundMultiplier float64) {
+func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, compoundMultiplier float64) {
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
 	for _, token := range market.Tokens {
@@ -430,18 +445,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	}
 
 	outcomes := getOutcomes(market)
-
-	// Calculate base trade size from balance
-	// Default: $1000 balance → $100 per trade (10% of balance)
-	baseTradeSize := cfg.CalculateTradeSize(currentBalance)
-
-	// Apply compounding multiplier for autocompounding
-	tradeSize := baseTradeSize * compoundMultiplier
-	if compoundMultiplier > 1.0 {
-		tui.LogEvent("[%s] 💰 Balance: $%.2f × %.2fx = Trade: $%.2f", id, currentBalance, compoundMultiplier, tradeSize)
-	} else {
-		tui.LogEvent("[%s] 💰 Balance: $%.2f → Trade size: $%.2f", id, currentBalance, tradeSize)
-	}
 
 	// Setup WebSocket
 	wsMgr := api.NewWSManager("")
@@ -470,9 +473,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 	tokenBids := make(map[string]float64)
 	tokenAsks := make(map[string]float64)
+	lastUpdate := time.Now()
+	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
-
-	const minTradeInterval = 5 * time.Second // Don't spam trades
 
 	for {
 		select {
@@ -484,60 +487,90 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		// Check if market ended
 		if time.Now().After(endTime.Add(30 * time.Second)) {
 			tui.LogEvent("[%s] ⏰ Market ended", id)
-			// Check for redemption
-			checkRedemption(ctx, id, market.ConditionID, tui)
+			checkRedemption(ctx, id, market.ConditionID, trader, engine, tui)
 			return
 		}
 
-		// Process WebSocket messages
-		select {
-		case msg, ok := <-wsMsgChan:
-			if !ok {
-				tui.LogEvent("[%s] ⚠️ WS closed", id)
-				return
-			}
-
-			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 {
-				for _, b := range books {
-					outcome := tokenToOutcome[b.AssetID]
-					if outcome == "" {
-						continue
-					}
-
-					bid, ask := 0.0, 1.0
-					for _, order := range b.Bids {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > bid {
-							bid = p
-						}
-					}
-					for _, order := range b.Asks {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p < ask && p > 0 {
-							ask = p
-						}
-					}
-					if ask >= 1.0 {
-						ask = 0
-					}
-
-					tokenBids[outcome] = bid
-					tokenAsks[outcome] = ask
-
-					// Update TUI
-					if bid > 0 && ask > 0 && ask < 1.0 {
-						mid := (bid + ask) / 2
-						engine.UpdateMarketData(id, outcome, mid, bid, ask)
-					}
-				}
-				tui.UpdateMarketPrices(id, tokenBids, tokenAsks)
-			}
-
-		case <-time.After(10 * time.Millisecond):
+		// Check kill switch
+		if riskMgr.IsKillSwitchTriggered() {
+			tui.LogEvent("[%s] 🛑 RISK: Kill switch active", id)
+			return
 		}
 
-		// Check for arbitrage opportunity
-		if len(tokenAsks) >= 2 && len(outcomes) == 2 && time.Since(lastTrade) > minTradeInterval {
+		// ============ FAST WEBSOCKET PROCESSING ============
+		messagesProcessed := 0
+		for {
+			select {
+			case msg, ok := <-wsMsgChan:
+				if !ok {
+					tui.LogEvent("[%s] ⚠️ WS closed", id)
+					return
+				}
+				messagesProcessed++
+
+				if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 {
+					for _, b := range books {
+						outcome := tokenToOutcome[b.AssetID]
+						if outcome == "" {
+							continue
+						}
+
+						bid, ask := 0.0, 1.0
+						for _, order := range b.Bids {
+							p, err := strconv.ParseFloat(order.Price, 64)
+							if err != nil {
+								continue
+							}
+							if p > bid {
+								bid = p
+							}
+						}
+						for _, order := range b.Asks {
+							p, err := strconv.ParseFloat(order.Price, 64)
+							if err != nil {
+								continue
+							}
+							if p < ask && p > 0 {
+								ask = p
+							}
+						}
+						if ask >= 1.0 {
+							ask = 0
+						}
+
+						tokenBids[outcome] = bid
+						tokenAsks[outcome] = ask
+
+						if bid > 0 && ask > 0 && ask < 1.0 {
+							mid := (bid + ask) / 2
+							engine.UpdateMarketData(id, outcome, mid, bid, ask)
+						}
+					}
+					lastUpdate = time.Now()
+				}
+			default:
+				goto doneWS
+			}
+		}
+	doneWS:
+
+		if messagesProcessed > 0 {
+			tui.UpdateMarketPrices(id, tokenBids, tokenAsks)
+		}
+
+		// ============ REST FALLBACK ============
+		staleTime := time.Since(lastUpdate)
+		if (!wsMgr.IsConnected() || wsMgr.TimeSinceLastMessage() > 15*time.Second) && staleTime > 3*time.Second {
+			if time.Since(lastRestPoll) > 2*time.Second {
+				lastRestPoll = time.Now()
+				if handleRestFallback(ctx, id, tokenMap, tokenBids, tokenAsks, engine, restClient, tui) {
+					lastUpdate = time.Now()
+				}
+			}
+		}
+
+		// ============ TRADING LOGIC ============
+		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
 
@@ -545,75 +578,150 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				sum := ask1 + ask2
 				margin := (1.0 - sum) * 100
 
-				if margin >= cfg.MinMarginPercent { // Default 2% margin
-					// Calculate shares using dynamic position sizing
-					// tradeSize already includes compounding multiplier
-					shares := tradeSize / sum
-
-					cost := shares * sum
-					profit := shares * (1.0 - sum)
-
-					tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin)",
-						id, outcomes[0], ask1, outcomes[1], ask2, sum, margin)
-					if compoundMultiplier > 1.0 {
-						tui.LogEvent("[%s] 📦 Placing: %.0f shares (%.1fx), cost $%.2f, profit $%.2f",
-							id, shares, compoundMultiplier, cost, profit)
-					} else {
-						tui.LogEvent("[%s] 📦 Placing: %.0f shares, cost $%.2f, profit $%.2f",
-							id, shares, cost, profit)
+				if margin >= cfg.MinMarginPercent {
+					// Evaluate risk
+					riskAction, riskReason := riskMgr.Evaluate()
+					if riskAction == paper.RiskActionKillSwitch {
+						tui.LogEvent("[%s] 🛑 RISK: Kill switch - %s", id, riskReason)
+						continue
 					}
 
-					// Place orders
-					token0 := ""
-					token1 := ""
-					for tokenID, outcome := range tokenToOutcome {
-						if outcome == outcomes[0] {
-							token0 = tokenID
-						} else if outcome == outcomes[1] {
-							token1 = tokenID
+					// Dynamic trade size with compounding and margin scaling
+					latestBalance, _ := trader.GetBalance(ctx)
+					if latestBalance > 0 {
+						currentBalance = latestBalance
+					}
+
+					baseTradeSize := cfg.CalculateTradeSize(currentBalance)
+					tradeSize := baseTradeSize * compoundMultiplier
+
+					// Scale shares based on margin
+					shares := tradeSize / sum
+					if riskAction != paper.RiskActionReduceSize {
+						if margin >= 5.0 {
+							shares *= 4
+						} else if margin >= 4.0 {
+							shares *= 3
+						} else if margin >= 3.0 {
+							shares *= 2
 						}
 					}
 
-					// Buy both sides
-					result1, err := trader.Buy(ctx, token0, outcomes[0], ask1, shares)
-					if err != nil {
-						tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[0], err)
-					} else if result1.Success {
-						tui.LogEvent("[%s] ✅ Bought %s: %s", id, outcomes[0], result1.Status)
-						engine.BuyForMarket(id, outcomes[0], ask1, shares)
-					} else {
-						tui.LogEvent("[%s] ❌ Buy %s rejected: %s", id, outcomes[0], result1.Message)
-					}
+					// Ensure we don't spam and risk allows
+					cost := shares * sum
+					if time.Since(lastTrade) > 2*time.Second && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance {
+						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin)",
+							id, outcomes[0], ask1, outcomes[1], ask2, sum, margin)
 
-					result2, err := trader.Buy(ctx, token1, outcomes[1], ask2, shares)
-					if err != nil {
-						tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[1], err)
-					} else if result2.Success {
-						tui.LogEvent("[%s] ✅ Bought %s: %s", id, outcomes[1], result2.Status)
-						engine.BuyForMarket(id, outcomes[1], ask2, shares)
-					} else {
-						tui.LogEvent("[%s] ❌ Buy %s rejected: %s", id, outcomes[1], result2.Message)
-					}
+						// Place orders
+						token0, token1 := "", ""
+						for tid, out := range tokenToOutcome {
+							if out == outcomes[0] {
+								token0 = tid
+							} else if out == outcomes[1] {
+								token1 = tid
+							}
+						}
 
-					lastTrade = time.Now()
+						// Execute trades
+						res1, err1 := trader.Buy(ctx, token0, outcomes[0], ask1, shares)
+						if err1 == nil && res1.Success {
+							tui.LogEvent("[%s] ✅ Bought %s @ $%.3f", id, outcomes[0], ask1)
+							engine.BuyForMarket(id, outcomes[0], ask1, shares)
+
+							// Only attempt second side if first succeeded
+							res2, err2 := trader.Buy(ctx, token1, outcomes[1], ask2, shares)
+							if err2 == nil && res2.Success {
+								tui.LogEvent("[%s] ✅ Bought %s @ $%.3f", id, outcomes[1], ask2)
+								engine.BuyForMarket(id, outcomes[1], ask2, shares)
+							} else {
+								tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[1], err2)
+								// Note: We now have an unmatched position!
+								// The risk manager will detect this skew and potentially trigger rebalancing or kill switch
+							}
+						} else {
+							tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[0], err1)
+						}
+
+						lastTrade = time.Now()
+					}
 				}
 			}
 		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func checkRedemption(ctx context.Context, id, conditionID string, tui *paper.TUI) {
-	// Polymarket auto-redeems winning positions, but we can check status
-	restClient := api.NewRestClient("")
+func handleRestFallback(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+	success := false
+	for tokenID, outcome := range tokenMap {
+		book, err := restClient.GetOrderBook(ctx, tokenID)
+		if err != nil {
+			continue
+		}
 
-	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+		bid, ask := 0.0, 1.0
+		for _, b := range book.Bids {
+			p, err := strconv.ParseFloat(b.Price, 64)
+			if err != nil {
+				continue
+			}
+			if p > bid {
+				bid = p
+			}
+		}
+		for _, a := range book.Asks {
+			p, err := strconv.ParseFloat(a.Price, 64)
+			if err != nil {
+				continue
+			}
+			if p < ask && p > 0 {
+				ask = p
+			}
+		}
+		if ask >= 1.0 {
+			ask = 0
+		}
 
-	// Try to get market resolution info via Gamma API
-	url := fmt.Sprintf("https://gamma-api.polymarket.com/markets?condition_id=%s", conditionID)
-	_ = url // Would fetch resolution status
+		if bid > 0 && ask > 0 {
+			bids[outcome] = bid
+			asks[outcome] = ask
+			mid := (bid + ask) / 2
+			engine.UpdateMarketData(id, outcome, mid, bid, ask)
+			success = true
+		}
+	}
+	if success {
+		tui.UpdateMarketPrices(id, bids, asks)
+	}
+	return success
+}
 
-	tui.LogEvent("[%s] 💰 Market resolved - positions will be auto-redeemed", id)
-	_ = restClient
-	_ = checkCtx
+func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
+	// Wait a bit for resolution
+	time.Sleep(5 * time.Second)
+
+	info, err := trader.GetMarketInfo(ctx, conditionID)
+	if err != nil {
+		tui.LogEvent("[%s] ⚠️ Could not fetch resolution: %v", id, err)
+		return
+	}
+
+	winner := ""
+	for _, token := range info.Tokens {
+		if token.Winner {
+			winner = token.Outcome
+			break
+		}
+	}
+
+	if winner != "" {
+		result := engine.RedeemWithDetails(winner)
+		if result.TotalPnL != 0 {
+			tui.LogEvent("[%s] 💰 RESOLVED: %s | PnL: $%.2f", id, winner, result.TotalPnL)
+		}
+	} else {
+		tui.LogEvent("[%s] ⏳ Market pending resolution...", id)
+	}
 }

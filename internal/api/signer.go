@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -24,17 +25,12 @@ type Signer struct {
 // NewSigner creates a new signer from a hex-encoded private key
 func NewSigner(privateKeyHex string) (*Signer, error) {
 	pk := strings.TrimPrefix(privateKeyHex, "0x")
-	pkBytes, err := hex.DecodeString(pk)
+	privateKey, err := crypto.HexToECDSA(pk)
 	if err != nil {
-		return nil, fmt.Errorf("invalid private key hex: %w", err)
+		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 
-	privateKey, err := toECDSA(pkBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
-	}
-
-	address := pubkeyToAddress(&privateKey.PublicKey)
+	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
 
 	return &Signer{
 		privateKey: privateKey,
@@ -153,13 +149,19 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	return keccak256(encoded)
 }
 
-// signHash signs a 32-byte hash with the private key
+// signHash signs a 32-byte hash with the private key using go-ethereum/crypto
 func (s *Signer) signHash(hash [32]byte) ([]byte, error) {
-	// Sign using secp256k1
-	sig, err := signECDSA(s.privateKey, hash[:])
+	// Use go-ethereum's secure signing implementation
+	// This handles RFC 6979 deterministic nonces correctly
+	sig, err := crypto.Sign(hash[:], s.privateKey)
 	if err != nil {
 		return nil, err
 	}
+
+	// Adjust recovery ID (v) for Ethereum: add 27
+	// go-ethereum returns v as 0 or 1, Ethereum expects 27 or 28
+	sig[64] += 27
+
 	return sig, nil
 }
 
@@ -218,134 +220,4 @@ func padLeft(data []byte, size int) []byte {
 	padded := make([]byte, size)
 	copy(padded[size-len(data):], data)
 	return padded
-}
-
-// toECDSA creates an ECDSA private key from bytes
-func toECDSA(d []byte) (*ecdsa.PrivateKey, error) {
-	priv := new(ecdsa.PrivateKey)
-	priv.D = new(big.Int).SetBytes(d)
-
-	// Use secp256k1 curve parameters
-	priv.PublicKey.Curve = secp256k1()
-	priv.PublicKey.X, priv.PublicKey.Y = priv.PublicKey.Curve.ScalarBaseMult(d)
-
-	if priv.PublicKey.X == nil {
-		return nil, fmt.Errorf("invalid private key")
-	}
-
-	return priv, nil
-}
-
-// pubkeyToAddress derives the Ethereum address from a public key
-func pubkeyToAddress(pub *ecdsa.PublicKey) string {
-	pubBytes := make([]byte, 64)
-	copy(pubBytes[:32], padLeft(pub.X.Bytes(), 32))
-	copy(pubBytes[32:], padLeft(pub.Y.Bytes(), 32))
-
-	hash := keccak256(pubBytes)
-	return "0x" + hex.EncodeToString(hash[12:])
-}
-
-// signECDSA signs a hash using secp256k1
-func signECDSA(priv *ecdsa.PrivateKey, hash []byte) ([]byte, error) {
-	// Use RFC 6979 deterministic k
-	k := generateK(priv.D, hash)
-
-	curve := secp256k1()
-	Rx, Ry := curve.ScalarBaseMult(k.Bytes())
-	r := new(big.Int).Set(Rx)
-	r.Mod(r, curve.Params().N)
-
-	if r.Sign() == 0 {
-		return nil, fmt.Errorf("invalid signature: r is zero")
-	}
-
-	// s = k^-1 * (hash + r * privkey) mod n
-	e := new(big.Int).SetBytes(hash)
-	s := new(big.Int).Mul(r, priv.D)
-	s.Add(s, e)
-	kInv := new(big.Int).ModInverse(k, curve.Params().N)
-	s.Mul(s, kInv)
-	s.Mod(s, curve.Params().N)
-
-	if s.Sign() == 0 {
-		return nil, fmt.Errorf("invalid signature: s is zero")
-	}
-
-	// Ensure low S value (EIP-2)
-	halfN := new(big.Int).Div(curve.Params().N, big.NewInt(2))
-	if s.Cmp(halfN) > 0 {
-		s.Sub(curve.Params().N, s)
-	}
-
-	// Compute recovery ID
-	recoveryID := byte(Ry.Bit(0))
-
-	// Encode as r || s || v (65 bytes)
-	sig := make([]byte, 65)
-	copy(sig[:32], padLeft(r.Bytes(), 32))
-	copy(sig[32:64], padLeft(s.Bytes(), 32))
-	sig[64] = recoveryID + 27
-
-	return sig, nil
-}
-
-// generateK generates a deterministic k value using a more robust HMAC-DRBG style approach
-func generateK(d *big.Int, hash []byte) *big.Int {
-	curve := secp256k1()
-	n := curve.Params().N
-
-	// Initial values for HMAC-DRBG
-	v := make([]byte, 32)
-	for i := range v {
-		v[i] = 0x01
-	}
-	k := make([]byte, 32)
-	for i := range k {
-		k[i] = 0x00
-	}
-
-	dBytes := padLeft(d.Bytes(), 32)
-	hBytes := padLeft(hash, 32)
-
-	// Update K and V
-	update := func(data []byte) {
-		h := hmac.New(sha256.New, k)
-		h.Write(v)
-		h.Write([]byte{0x00})
-		if data != nil {
-			h.Write(data)
-		}
-		k = h.Sum(nil)
-
-		h = hmac.New(sha256.New, k)
-		h.Write(v)
-		v = h.Sum(nil)
-
-		if data != nil {
-			h.Write([]byte{0x01})
-			h.Write(data)
-			k = h.Sum(nil)
-
-			h = hmac.New(sha256.New, k)
-			h.Write(v)
-			v = h.Sum(nil)
-		}
-	}
-
-	update(append(dBytes, hBytes...))
-
-	for {
-		h := hmac.New(sha256.New, k)
-		h.Write(v)
-		v = h.Sum(nil)
-
-		T := v
-		tInt := new(big.Int).SetBytes(T)
-
-		if tInt.Cmp(big.NewInt(0)) > 0 && tInt.Cmp(n) < 0 {
-			return tInt
-		}
-		update(nil)
-	}
 }

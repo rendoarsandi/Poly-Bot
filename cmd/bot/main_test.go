@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// This is a placeholder integration test. 
+// This is a placeholder integration test.
 // A full integration test would require mocking the entire WS server.
 func TestMainIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

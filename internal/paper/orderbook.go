@@ -23,16 +23,16 @@ const (
 
 // LimitOrder represents a limit order waiting to be filled
 type LimitOrder struct {
-	ID           int
-	CreatedAt    time.Time
-	Outcome      string      // "Up", "Down", "Yes", "No"
-	Side         string      // "buy" or "sell"
-	Price        float64     // Target price (limit)
-	Quantity     float64     // Total quantity
-	FilledQty    float64     // Amount filled
-	FillPrice    float64     // Actual fill price (may be better than limit)
-	Status       OrderStatus
-	LadderLevel  int         // Which ladder level (0 = best price, 1 = next, etc.)
+	ID          int
+	CreatedAt   time.Time
+	Outcome     string  // "Up", "Down", "Yes", "No"
+	Side        string  // "buy" or "sell"
+	Price       float64 // Target price (limit)
+	Quantity    float64 // Total quantity
+	FilledQty   float64 // Amount filled
+	FillPrice   float64 // Actual fill price (may be better than limit)
+	Status      OrderStatus
+	LadderLevel int // Which ladder level (0 = best price, 1 = next, etc.)
 }
 
 // RemainingQty returns unfilled quantity
@@ -53,8 +53,8 @@ type OrderBook struct {
 	nextOrderID int
 
 	// Realism settings
-	queueBuffer    float64       // Price buffer to simulate queue priority (e.g., 0.001 = must be 0.1 cent better)
-	orderDelay     time.Duration // Delay when placing orders (simulates API latency)
+	queueBuffer float64       // Price buffer to simulate queue priority (e.g., 0.001 = must be 0.1 cent better)
+	orderDelay  time.Duration // Delay when placing orders (simulates API latency)
 
 	// Memory management
 	lastCleanup time.Time
@@ -68,7 +68,7 @@ func NewOrderBook() *OrderBook {
 	return &OrderBook{
 		orders:      make(map[int]*LimitOrder),
 		nextOrderID: 1,
-		queueBuffer: 0.001, // Default: need price 0.1 cent better to fill
+		queueBuffer: 0.001,                  // Default: need price 0.1 cent better to fill
 		orderDelay:  200 * time.Millisecond, // Default: 200ms API latency
 		lastCleanup: time.Now(),
 	}
@@ -179,7 +179,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 	ob.mu.Lock()
 
 	var filledOrders []*LimitOrder
-	
+
 	type fillRecord struct {
 		order     *LimitOrder
 		fillQty   float64
@@ -215,7 +215,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 		if order.Side == "buy" {
 			// BUY order matches against market ASKS
 			fillThreshold := order.Price - ob.queueBuffer
-			
+
 			for i := range asks {
 				ask := &asks[i]
 				if ask.Size <= 0 || ask.Price > fillThreshold {
@@ -256,7 +256,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 		} else if order.Side == "sell" {
 			// SELL order matches against market BIDS
 			fillThreshold := order.Price + ob.queueBuffer
-			
+
 			for i := range bids {
 				bid := &bids[i]
 				if bid.Size <= 0 || bid.Price < fillThreshold {
@@ -296,7 +296,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 			}
 		}
 	}
-	
+
 	// Release lock BEFORE calling external callbacks
 	onFill := ob.onFill
 	ob.mu.Unlock()

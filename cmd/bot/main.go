@@ -27,21 +27,21 @@ const (
 
 // MarketTrader holds state for trading a single market
 type MarketTrader struct {
-	ID          string // "ETH" or "SOL"
-	Market      *api.Market
-	Engine      *paper.Engine
-	OrderBook   *paper.OrderBook
-	LadderMgr   *paper.LadderManager
-	RiskMgr     *paper.RiskManager
-	Monitor     *paper.MarketMonitor
-	TokenMap    map[string]string // tokenID -> outcome
-	Outcomes    []string
-	EndTime     time.Time
-	RestClient  *api.RestClient
-	WSMgr       *api.WSManager
-	TUI         *paper.TUI       // Shared TUI
-	CSVLogger   *core.CSVLogger // Optional CSV diagnostic logger
-	Config      *core.Config    // Config for position sizing
+	ID         string // "ETH" or "SOL"
+	Market     *api.Market
+	Engine     *paper.Engine
+	OrderBook  *paper.OrderBook
+	LadderMgr  *paper.LadderManager
+	RiskMgr    *paper.RiskManager
+	Monitor    *paper.MarketMonitor
+	TokenMap   map[string]string // tokenID -> outcome
+	Outcomes   []string
+	EndTime    time.Time
+	RestClient *api.RestClient
+	WSMgr      *api.WSManager
+	TUI        *paper.TUI      // Shared TUI
+	CSVLogger  *core.CSVLogger // Optional CSV diagnostic logger
+	Config     *core.Config    // Config for position sizing
 
 	// Price tracking
 	TokenBids     map[string]float64
@@ -78,7 +78,7 @@ func restoreTerminal() {
 	restoreEcho := exec.Command("stty", "sane") // sane resets to safe defaults
 	restoreEcho.Stdin = os.Stdin
 	_ = restoreEcho.Run()
-	fmt.Print("\033[?25h") // Show cursor
+	fmt.Print("\033[?25h")   // Show cursor
 	fmt.Print("\033[?1049l") // Exit alternate screen buffer if active
 	fmt.Println()
 }
@@ -385,8 +385,8 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
-	maxFastAttempts := 60  // 30 seconds of fast polling
-	maxSlowAttempts := 60  // 2 more minutes of slow polling
+	maxFastAttempts := 60 // 30 seconds of fast polling
+	maxSlowAttempts := 60 // 2 more minutes of slow polling
 	lastLogTime := time.Now()
 
 	for attempts := 0; attempts < maxFastAttempts+maxSlowAttempts; attempts++ {
@@ -942,9 +942,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						shares = float64(int(float64(shares) * compoundMult))
 
 						cost := shares * (ask1 + ask2)
-						if !t.RiskMgr.CanPlaceOrder(cost) {
-							// Scale back if over risk limit
+						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
+							// Scale back to base if over risk limit or balance
 							shares = baseShares
+							cost = shares * (ask1 + ask2)
+
+							// If even base is too much, don't trade
+							if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
+								continue
+							}
 						}
 
 						profit := shares * (1.0 - sum)
@@ -1076,7 +1082,7 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		for _, b := range book.Bids {
 			p, err := strconv.ParseFloat(b.Price, 64)
 			if err != nil {
-t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
+				t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
 				continue
 			}
 			if p > bid {
@@ -1086,7 +1092,7 @@ t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price
 		for _, a := range book.Asks {
 			p, err := strconv.ParseFloat(a.Price, 64)
 			if err != nil {
-t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
+				t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
 				continue
 			}
 			if p > 0 && (ask == 0 || p < ask) {

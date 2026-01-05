@@ -73,7 +73,7 @@ func (m *WSManager) Connect(ctx context.Context) error {
 
 	// Store context for reconnection
 	m.ctx, m.cancel = context.WithCancel(ctx)
-	
+
 	if err := m.connectInternal(m.ctx); err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func (m *WSManager) connectInternal(ctx context.Context) error {
 	c.SetReadLimit(1024 * 1024) // 1MB
 
 	m.conn = c
-	
+
 	m.connected.Store(true)
 	m.lastMessage.Store(time.Now().Unix())
 	m.lastHeartbeat.Store(time.Now().Unix())
@@ -188,7 +188,7 @@ func (m *WSManager) tryReconnect() {
 	m.mu.Lock()
 	ctx := m.ctx
 	m.mu.Unlock()
-	
+
 	if ctx == nil {
 		return
 	}
