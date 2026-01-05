@@ -947,7 +947,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Only scale if risk allows
 					shares := baseShares
 					if riskAction != paper.RiskActionReduceSize {
-						// Scale shares based on margin - adjusted for 1% baseline
+						// Scale shares based on margin - incremental scaling from 2% baseline
 						if margin >= 5.0 {
 							shares = baseShares * 5
 						} else if margin >= 4.0 {
