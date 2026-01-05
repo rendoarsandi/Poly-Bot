@@ -99,13 +99,26 @@ func (l *CSVLogger) writeEntry(e LogEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.writer.Write([]string{
-		e.Timestamp,
-		e.Level,
-		e.Asset,
-		e.Event,
-		e.Details,
-		e.Equity,
+		sanitizeForCSV(e.Timestamp),
+		sanitizeForCSV(e.Level),
+		sanitizeForCSV(e.Asset),
+		sanitizeForCSV(e.Event),
+		sanitizeForCSV(e.Details),
+		sanitizeForCSV(e.Equity),
 	})
+}
+
+// sanitizeForCSV prevents CSV injection by escaping characters that trigger formulas (=, +, -, @)
+func sanitizeForCSV(s string) string {
+	if s == "" {
+		return ""
+	}
+	// If it starts with a sensitive character, prepend a single quote
+	first := s[0]
+	if first == '=' || first == '+' || first == '-' || first == '@' {
+		return "'" + s
+	}
+	return s
 }
 
 func (l *CSVLogger) Log(level, asset, event, details string, equity float64) {

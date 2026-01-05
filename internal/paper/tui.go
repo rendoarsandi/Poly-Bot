@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"Market-bot/internal/core"
 )
 
 // ANSI escape codes for terminal control
@@ -249,6 +251,9 @@ func (t *TUI) LogEvent(format string, args ...interface{}) {
 
 	timestamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf("[%s] %s", timestamp, fmt.Sprintf(format, args...))
+
+	// Sanitize to prevent terminal injection
+	msg = core.SanitizeString(msg)
 
 	t.eventLog = append(t.eventLog, msg)
 	if len(t.eventLog) > t.maxEvents {

@@ -189,7 +189,13 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		},
 		Signature: signature,
 		Owner:     c.signer.Address(),
-		OrderType: "LIMIT",
+		OrderType: string(req.OrderType),
+	}
+
+	// Add TimeInForce if provided
+	if req.TimeInForce != "" {
+		// Polymarket CLOB expects timeInForce as a top-level field in the signed order submission for FOK/IOC
+		// We'll handle this by adding it to a map for the JSON submission
 	}
 
 	// Check dry run mode
@@ -202,12 +208,28 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Submit order to API
-	return c.submitOrder(ctx, signedOrder)
+	return c.submitOrder(ctx, signedOrder, req.TimeInForce)
 }
 
 // submitOrder sends the signed order to the CLOB API
-func (c *CLOBClient) submitOrder(ctx context.Context, order *SignedOrder) (*OrderResponse, error) {
-	body, err := json.Marshal(order)
+func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce) (*OrderResponse, error) {
+	// Use a map for the final JSON to include dynamic fields like timeInForce
+	payload := make(map[string]interface{})
+	
+	orderJSON, _ := json.Marshal(signedOrder.Order)
+	var orderMap map[string]interface{}
+	json.Unmarshal(orderJSON, &orderMap)
+	
+	payload["order"] = orderMap
+	payload["signature"] = signedOrder.Signature
+	payload["owner"] = signedOrder.Owner
+	payload["orderType"] = signedOrder.OrderType
+	
+	if tif != "" {
+		payload["timeInForce"] = string(tif)
+	}
+
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal order: %w", err)
 	}

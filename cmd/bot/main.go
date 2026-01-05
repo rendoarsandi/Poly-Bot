@@ -923,17 +923,32 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
 						baseShares := baseSharesPerTrade
-						shares := baseShares
+						
+						// LIQUIDITY CHECK: Ensure we don't exceed top-of-book size
+						// This prevents partial fills that break the arbitrage
+						maxLiquidity := 1e9
+						for _, outcome := range t.Outcomes {
+							asks := t.TokenFullAsks[outcome]
+							if len(asks) > 0 && asks[0].Size < maxLiquidity {
+								maxLiquidity = asks[0].Size
+							}
+						}
+						
+						// Cap shares at 90% of available top-of-book liquidity for safety
+						if baseShares > maxLiquidity*0.9 {
+							baseShares = maxLiquidity * 0.9
+						}
 
 						// Only scale if risk allows
+						shares := baseShares
 						if riskAction != paper.RiskActionReduceSize {
-							// Scale shares based on margin - more aggressive since opportunities are rare
-							if margin >= 5.0 {
-								shares = baseShares * 4 // 4x base
-							} else if margin >= 4.0 {
-								shares = baseShares * 3 // 3x base
+							// Scale shares based on margin - adjusted for 1% baseline
+							if margin >= 4.0 {
+								shares = baseShares * 4
 							} else if margin >= 3.0 {
-								shares = baseShares * 2 // 2x base
+								shares = baseShares * 3
+							} else if margin >= 2.0 {
+								shares = baseShares * 2
 							}
 						}
 

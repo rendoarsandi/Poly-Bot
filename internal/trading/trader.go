@@ -14,10 +14,10 @@ import (
 // Trader defines the interface for placing trades (paper or real)
 type Trader interface {
 	// Buy places a buy order
-	Buy(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error)
+	Buy(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error)
 
 	// Sell places a sell order
-	Sell(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error)
+	Sell(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error)
 
 	// CancelOrder cancels an existing order
 	CancelOrder(ctx context.Context, orderID string) error
@@ -77,7 +77,7 @@ func NewPaperTrader(engine *paper.Engine, orderBook *paper.OrderBook) *PaperTrad
 	}
 }
 
-func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error) {
+func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
 	cost := price * size
 	_, err := t.engine.Buy(outcome, price, size)
 	if err != nil {
@@ -101,7 +101,7 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 	}, nil
 }
 
-func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error) {
+func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
 	_, err := t.engine.Sell(outcome, price, size)
 	if err != nil {
 		return &TradeResult{
@@ -207,7 +207,7 @@ func (t *RealTrader) SetDryRun(enabled bool) {
 	t.clob.SetDryRun(enabled)
 }
 
-func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error) {
+func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
 	// Check safety limits
 	cost := price * size
 	if err := t.checkSafetyLimits(cost); err != nil {
@@ -218,11 +218,12 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}
 
 	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
-		TokenID:   tokenID,
-		Price:     price,
-		Size:      size,
-		Side:      api.SideBuy,
-		OrderType: api.OrderTypeLimit,
+		TokenID:     tokenID,
+		Price:       price,
+		Size:        size,
+		Side:        api.SideBuy,
+		OrderType:   api.OrderTypeLimit,
+		TimeInForce: tif,
 	})
 	if err != nil {
 		return &TradeResult{
@@ -258,13 +259,14 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}, nil
 }
 
-func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64) (*TradeResult, error) {
+func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
 	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
-		TokenID:   tokenID,
-		Price:     price,
-		Size:      size,
-		Side:      api.SideSell,
-		OrderType: api.OrderTypeLimit,
+		TokenID:     tokenID,
+		Price:       price,
+		Size:        size,
+		Side:        api.SideSell,
+		OrderType:   api.OrderTypeLimit,
+		TimeInForce: tif,
 	})
 	if err != nil {
 		return &TradeResult{

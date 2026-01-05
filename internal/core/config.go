@@ -65,9 +65,9 @@ func LoadConfig() (*Config, error) {
 		MarketSlug:    os.Getenv("MARKET_SLUG"),
 		// Position sizing defaults: $1000 balance → $100 per trade at 2% margin
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
-		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 100.0),
-		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 2.0),
-		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.10), // 10% of balance
+		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 10.0),
+		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 1.0),
+		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.01), // 1% of balance
 		// Safety settings
 		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
 		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 50.0), // Default $50 max daily loss

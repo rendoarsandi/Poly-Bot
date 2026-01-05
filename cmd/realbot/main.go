@@ -113,6 +113,7 @@ func run() error {
 			if outcomeDisplay == "" {
 				outcomeDisplay = pos.TokenID
 			}
+			outcomeDisplay = core.SanitizeString(outcomeDisplay)
 			fmt.Printf("   • %s: %.2f shares @ $%.4f avg\n", outcomeDisplay, pos.Size, pos.AvgPrice)
 		}
 	} else {
@@ -473,6 +474,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 	tokenBids := make(map[string]float64)
 	tokenAsks := make(map[string]float64)
+	tokenFullBids := make(map[string][]paper.MarketLevel)
+	tokenFullAsks := make(map[string][]paper.MarketLevel)
 	lastUpdate := time.Now()
 	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
@@ -540,6 +543,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						tokenBids[outcome] = bid
 						tokenAsks[outcome] = ask
+						
+						// Track full depth for liquidity checks
+						tokenFullBids[outcome] = toMarketLevels(tui, id, b.Bids)
+						tokenFullAsks[outcome] = toMarketLevels(tui, id, b.Asks)
 
 						if bid > 0 && ask > 0 && ask < 1.0 {
 							mid := (bid + ask) / 2
@@ -563,7 +570,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		if (!wsMgr.IsConnected() || wsMgr.TimeSinceLastMessage() > 15*time.Second) && staleTime > 3*time.Second {
 			if time.Since(lastRestPoll) > 2*time.Second {
 				lastRestPoll = time.Now()
-				if handleRestFallback(ctx, id, tokenMap, tokenBids, tokenAsks, engine, restClient, tui) {
+				// Note: REST fallback updated to also capture full depth
+				if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, engine, restClient, tui) {
 					lastUpdate = time.Now()
 				}
 			}
@@ -597,23 +605,42 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Scale shares based on margin
 					shares := tradeSize / sum
+					
+					// Apply aggression scaling based on margin
 					if riskAction != paper.RiskActionReduceSize {
-						if margin >= 5.0 {
+						if margin >= 4.0 {
 							shares *= 4
-						} else if margin >= 4.0 {
-							shares *= 3
 						} else if margin >= 3.0 {
+							shares *= 3
+						} else if margin >= 2.0 {
 							shares *= 2
 						}
 					}
 
+					// Apply compounding multiplier from profitable rounds
+					shares = float64(int(shares * compoundMultiplier))
+
+					// LIQUIDITY CHECK: Cap size based on available volume
+					maxLiquidity := 1e9
+					for _, out := range outcomes {
+						asks := tokenFullAsks[out]
+						if len(asks) > 0 && asks[0].Size < maxLiquidity {
+							maxLiquidity = asks[0].Size
+						}
+					}
+					
+					// Use 80% of top-of-book for real trading to avoid slippage
+					if shares > maxLiquidity*0.8 {
+						shares = maxLiquidity * 0.8
+					}
+
 					// Ensure we don't spam and risk allows
 					cost := shares * sum
-					if time.Since(lastTrade) > 2*time.Second && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance {
+					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance {
 						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin)",
 							id, outcomes[0], ask1, outcomes[1], ask2, sum, margin)
 
-						// Place orders
+						// Map tokens
 						token0, token1 := "", ""
 						for tid, out := range tokenToOutcome {
 							if out == outcomes[0] {
@@ -623,24 +650,42 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// Execute trades
-						res1, err1 := trader.Buy(ctx, token0, outcomes[0], ask1, shares)
-						if err1 == nil && res1.Success {
-							tui.LogEvent("[%s] ✅ Bought %s @ $%.3f", id, outcomes[0], ask1)
-							engine.BuyForMarket(id, outcomes[0], ask1, shares)
+						// ATOMIC EXECUTION: Fire both orders in parallel to minimize legging risk
+						var wg sync.WaitGroup
+						wg.Add(2)
+						
+						var res1, res2 *trading.TradeResult
+						var err1, err2 error
+						
+						go func() {
+							defer wg.Done()
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], ask1, shares, api.TIFGoodTilCancelled)
+						}()
+						
+						go func() {
+							defer wg.Done()
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], ask2, shares, api.TIFGoodTilCancelled)
+						}()
+						
+						wg.Wait()
 
-							// Only attempt second side if first succeeded
-							res2, err2 := trader.Buy(ctx, token1, outcomes[1], ask2, shares)
-							if err2 == nil && res2.Success {
-								tui.LogEvent("[%s] ✅ Bought %s @ $%.3f", id, outcomes[1], ask2)
-								engine.BuyForMarket(id, outcomes[1], ask2, shares)
-							} else {
-								tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[1], err2)
-								// Note: We now have an unmatched position!
-								// The risk manager will detect this skew and potentially trigger rebalancing or kill switch
-							}
+						// Process results
+						if err1 == nil && res1.Success {
+							tui.LogEvent("[%s] ✅ Side 1 Fill: %s @ $%.3f", id, outcomes[0], ask1)
+							engine.BuyForMarket(id, outcomes[0], ask1, shares)
 						} else {
-							tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[0], err1)
+							tui.LogEvent("[%s] ❌ Side 1 Fail: %v", id, err1)
+						}
+
+						if err2 == nil && res2.Success {
+							tui.LogEvent("[%s] ✅ Side 2 Fill: %s @ $%.3f", id, outcomes[1], ask2)
+							engine.BuyForMarket(id, outcomes[1], ask2, shares)
+						} else {
+							tui.LogEvent("[%s] ❌ Side 2 Fail: %v", id, err2)
+						}
+						
+						if (res1 != nil && !res1.Success) || (res2 != nil && !res2.Success) {
+							tui.LogEvent("[%s] ⚠️ PARTIAL FILL DETECTED - Position skewed!", id)
 						}
 
 						lastTrade = time.Now()
@@ -652,6 +697,62 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Helper to match bot's toMarketLevels
+func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.MarketLevel {
+	result := make([]paper.MarketLevel, len(levels))
+	for i, l := range levels {
+		p, _ := strconv.ParseFloat(l.Price, 64)
+		s, _ := strconv.ParseFloat(l.Size, 64)
+		result[i] = paper.MarketLevel{Price: p, Size: s}
+	}
+	return result
+}
+
+func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+	success := false
+	for tokenID, outcome := range tokenMap {
+		book, err := restClient.GetOrderBook(ctx, tokenID)
+		if err != nil {
+			continue
+		}
+
+		bid, ask := 0.0, 1.0
+		for _, b := range book.Bids {
+			p, _ := strconv.ParseFloat(b.Price, 64)
+			if p > bid {
+				bid = p
+			}
+		}
+		for _, a := range book.Asks {
+			p, _ := strconv.ParseFloat(a.Price, 64)
+			if p < ask && p > 0 {
+				ask = p
+			}
+		}
+		if ask >= 1.0 {
+			ask = 0
+		}
+
+		if bid > 0 || (ask > 0 && ask < 1.0) {
+			bids[outcome] = bid
+			asks[outcome] = ask
+			fullBids[outcome] = toMarketLevels(tui, id, book.Bids)
+			fullAsks[outcome] = toMarketLevels(tui, id, book.Asks)
+			
+			if bid > 0 && ask > 0 && ask < 1.0 {
+				mid := (bid + ask) / 2
+				engine.UpdateMarketData(id, outcome, mid, bid, ask)
+			}
+			success = true
+		}
+	}
+	if success {
+		tui.UpdateMarketPrices(id, bids, asks)
+	}
+	return success
+}
+
 
 func handleRestFallback(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
 	success := false
