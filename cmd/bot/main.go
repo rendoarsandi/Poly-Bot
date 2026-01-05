@@ -41,6 +41,7 @@ type MarketTrader struct {
 	WSMgr       *api.WSManager
 	TUI         *paper.TUI       // Shared TUI
 	CSVLogger   *core.CSVLogger // Optional CSV diagnostic logger
+	Config      *core.Config    // Config for position sizing
 
 	// Price tracking
 	TokenBids     map[string]float64
@@ -86,7 +87,7 @@ func restoreTerminal() {
 func logEvent(tui *paper.TUI, csv *core.CSVLogger, engine *paper.Engine, level, asset, event, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if tui != nil {
-		tui.LogEvent(msg)
+		tui.LogEvent("%s", msg)
 	}
 	if csv != nil {
 		equity := 0.0
@@ -170,7 +171,7 @@ func run() error {
 	} else {
 		defer csvLogger.Close()
 	}
-	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support", 0)
+	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support")
 
 	// Start TUI render loop
 	if UseLiveUI {
@@ -286,7 +287,7 @@ func run() error {
 			// Reduced logging: Only TUI for startup info
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
 
-			trader := createTrader(assetID, market, engine, orderBook, restClient, tui, outcomes, endTime, csvLogger)
+			trader := createTrader(assetID, market, engine, orderBook, restClient, tui, outcomes, endTime, csvLogger, cfg)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
@@ -470,7 +471,7 @@ func getOutcomes(market *api.Market) []string {
 	return outcomes
 }
 
-func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook *paper.OrderBook, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger) *MarketTrader {
+func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook *paper.OrderBook, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config) *MarketTrader {
 	tokenMap := make(map[string]string)
 	for _, token := range market.Tokens {
 		tokenMap[token.TokenID] = token.Outcome
@@ -510,6 +511,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 		RestClient:    restClient,
 		TUI:           tui,
 		CSVLogger:     csvLogger,
+		Config:        cfg,
 		TokenBids:     make(map[string]float64),
 		TokenAsks:     make(map[string]float64),
 		TokenFullBids: make(map[string][]paper.MarketLevel),
@@ -898,8 +900,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					sum := ask1 + ask2
 					margin := (1.0 - sum) * 100
 
-					const minMarginPercent = 2.0     // Minimum margin % to trigger arbitrage trade
-					const baseSharesPerTrade = 100.0 // Base shares per trade ($100 min)
+					// Use config for minimum margin (default 2%)
+					minMarginPercent := t.Config.MinMarginPercent
+
+					// Calculate dynamic trade size based on current balance
+					// $1000 balance * 10% = $100 trade size
+					// $100 balance * 10% = $10 trade size
+					currentBalance := t.Engine.GetBalance()
+					tradeSize := t.Config.CalculateTradeSize(currentBalance)
+					baseSharesPerTrade := tradeSize / sum // Shares = $ / price per share pair
 
 					// Evaluate portfolio risk before trading
 					riskAction, riskReason := t.RiskMgr.Evaluate()
@@ -920,11 +929,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if riskAction != paper.RiskActionReduceSize {
 							// Scale shares based on margin - more aggressive since opportunities are rare
 							if margin >= 5.0 {
-								shares = baseShares * 4 // 400 shares
+								shares = baseShares * 4 // 4x base
 							} else if margin >= 4.0 {
-								shares = baseShares * 3 // 300 shares
+								shares = baseShares * 3 // 3x base
 							} else if margin >= 3.0 {
-								shares = baseShares * 2 // 200 shares
+								shares = baseShares * 2 // 2x base
 							}
 						}
 
@@ -943,8 +952,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%)",
 								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin)
 						} else {
-							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares, profit $%.2f (%.1f%%)",
-								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, profit, margin)
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%)",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, profit, margin)
 						}
 
 						if t.CSVLogger != nil {

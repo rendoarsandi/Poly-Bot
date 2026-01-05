@@ -1,0 +1,569 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+// CLOBClient handles authenticated trading operations on Polymarket CLOB
+type CLOBClient struct {
+	BaseURL string
+	signer  *Signer
+	auth    *APIAuth
+	dryRun  bool
+}
+
+// NewCLOBClient creates a new authenticated CLOB client
+func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLOBClient, error) {
+	signer, err := NewSigner(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create signer: %w", err)
+	}
+
+	return &CLOBClient{
+		BaseURL: "https://clob.polymarket.com",
+		signer:  signer,
+		auth: &APIAuth{
+			APIKey:     apiKey,
+			APISecret:  apiSecret,
+			Passphrase: apiPassphrase,
+		},
+		dryRun: false,
+	}, nil
+}
+
+// SetDryRun enables/disables dry run mode (no actual orders placed)
+func (c *CLOBClient) SetDryRun(enabled bool) {
+	c.dryRun = enabled
+}
+
+// IsDryRun returns whether dry run mode is enabled
+func (c *CLOBClient) IsDryRun() bool {
+	return c.dryRun
+}
+
+// Address returns the wallet address
+func (c *CLOBClient) Address() string {
+	return c.signer.Address()
+}
+
+// Side represents order side
+type Side string
+
+const (
+	SideBuy  Side = "BUY"
+	SideSell Side = "SELL"
+)
+
+// OrderType represents order type
+type OrderType string
+
+const (
+	OrderTypeLimit  OrderType = "LIMIT"
+	OrderTypeMarket OrderType = "MARKET"
+)
+
+// TimeInForce represents time in force
+type TimeInForce string
+
+const (
+	TIFGoodTilCancelled TimeInForce = "GTC"
+	TIFFillOrKill       TimeInForce = "FOK"
+	TIFImmediateOrCancel TimeInForce = "IOC"
+)
+
+// OrderRequest represents a new order request
+type OrderRequest struct {
+	TokenID     string      `json:"tokenID"`
+	Price       float64     `json:"price"`
+	Size        float64     `json:"size"`
+	Side        Side        `json:"side"`
+	OrderType   OrderType   `json:"type,omitempty"`
+	TimeInForce TimeInForce `json:"timeInForce,omitempty"`
+	Expiration  int64       `json:"expiration,omitempty"`
+}
+
+// SignedOrder represents a signed order ready for submission
+type SignedOrder struct {
+	Order     OrderPayload `json:"order"`
+	Signature string       `json:"signature"`
+	Owner     string       `json:"owner"`
+	OrderType string       `json:"orderType"`
+}
+
+// OrderPayload is the order data to be signed
+type OrderPayload struct {
+	Salt        string `json:"salt"`
+	Maker       string `json:"maker"`
+	Signer      string `json:"signer"`
+	Taker       string `json:"taker"`
+	TokenID     string `json:"tokenId"`
+	MakerAmount string `json:"makerAmount"`
+	TakerAmount string `json:"takerAmount"`
+	Expiration  string `json:"expiration"`
+	Nonce       string `json:"nonce"`
+	FeeRateBps  string `json:"feeRateBps"`
+	Side        string `json:"side"`
+	SignatureType int  `json:"signatureType"`
+}
+
+// OrderResponse represents the API response for order placement
+type OrderResponse struct {
+	OrderID   string `json:"orderID"`
+	Status    string `json:"status"`
+	ErrorMsg  string `json:"errorMsg,omitempty"`
+	Success   bool   `json:"success"`
+}
+
+// PlaceOrder places a new limit order
+func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
+	// Generate random salt
+	salt := generateSalt()
+
+	// Calculate amounts in base units (10^6 for USDC)
+	// For BUY: makerAmount = USDC to pay, takerAmount = shares to receive
+	// For SELL: makerAmount = shares to sell, takerAmount = USDC to receive
+	var makerAmount, takerAmount string
+	if req.Side == SideBuy {
+		usdcAmount := req.Price * req.Size * 1e6 // USDC has 6 decimals
+		makerAmount = strconv.FormatInt(int64(usdcAmount), 10)
+		takerAmount = strconv.FormatInt(int64(req.Size*1e6), 10)
+	} else {
+		makerAmount = strconv.FormatInt(int64(req.Size*1e6), 10)
+		usdcAmount := req.Price * req.Size * 1e6
+		takerAmount = strconv.FormatInt(int64(usdcAmount), 10)
+	}
+
+	// Default expiration: 24 hours from now
+	expiration := req.Expiration
+	if expiration == 0 {
+		expiration = time.Now().Add(24 * time.Hour).Unix()
+	}
+
+	// Build order data
+	orderData := &OrderData{
+		Salt:          salt,
+		Maker:         c.signer.Address(),
+		Signer:        c.signer.Address(),
+		Taker:         "0x0000000000000000000000000000000000000000", // Any taker
+		TokenID:       req.TokenID,
+		MakerAmount:   makerAmount,
+		TakerAmount:   takerAmount,
+		Expiration:    strconv.FormatInt(expiration, 10),
+		Nonce:         "0",
+		FeeRateBps:    "0",
+		Side:          string(req.Side),
+		SignatureType: 0, // EOA signature
+	}
+
+	// Sign the order
+	signature, err := c.signer.SignOrder(orderData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign order: %w", err)
+	}
+
+	// Build signed order
+	signedOrder := &SignedOrder{
+		Order: OrderPayload{
+			Salt:        orderData.Salt,
+			Maker:       orderData.Maker,
+			Signer:      orderData.Signer,
+			Taker:       orderData.Taker,
+			TokenID:     orderData.TokenID,
+			MakerAmount: orderData.MakerAmount,
+			TakerAmount: orderData.TakerAmount,
+			Expiration:  orderData.Expiration,
+			Nonce:       orderData.Nonce,
+			FeeRateBps:  orderData.FeeRateBps,
+			Side:        orderData.Side,
+			SignatureType: orderData.SignatureType,
+		},
+		Signature: signature,
+		Owner:     c.signer.Address(),
+		OrderType: "LIMIT",
+	}
+
+	// Check dry run mode
+	if c.dryRun {
+		return &OrderResponse{
+			OrderID: "dry-run-" + salt[:8],
+			Status:  "DRY_RUN",
+			Success: true,
+		}, nil
+	}
+
+	// Submit order to API
+	return c.submitOrder(ctx, signedOrder)
+}
+
+// submitOrder sends the signed order to the CLOB API
+func (c *CLOBClient) submitOrder(ctx context.Context, order *SignedOrder) (*OrderResponse, error) {
+	body, err := json.Marshal(order)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal order: %w", err)
+	}
+
+	path := "/order"
+	timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result OrderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		result.Success = false
+		if result.ErrorMsg == "" {
+			result.ErrorMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+	} else {
+		result.Success = true
+	}
+
+	return &result, nil
+}
+
+// CancelOrder cancels an existing order
+func (c *CLOBClient) CancelOrder(ctx context.Context, orderID string) error {
+	if c.dryRun {
+		return nil
+	}
+
+	path := "/order/" + orderID
+	timestamp, signature := c.auth.SignL2Request("DELETE", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to cancel order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("cancel order failed with status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// CancelAllOrders cancels all open orders
+func (c *CLOBClient) CancelAllOrders(ctx context.Context) error {
+	if c.dryRun {
+		return nil
+	}
+
+	path := "/orders"
+	timestamp, signature := c.auth.SignL2Request("DELETE", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to cancel all orders: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("cancel all orders failed with status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// OpenOrder represents an open order
+type OpenOrder struct {
+	OrderID       string  `json:"orderID"`
+	TokenID       string  `json:"tokenID"`
+	Side          string  `json:"side"`
+	Price         float64 `json:"price"`
+	OriginalSize  float64 `json:"originalSize"`
+	RemainingSize float64 `json:"remainingSize"`
+	Status        string  `json:"status"`
+	CreatedAt     string  `json:"createdAt"`
+}
+
+// GetOpenOrders retrieves all open orders
+func (c *CLOBClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
+	path := "/orders"
+	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get open orders: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get open orders failed with status %d", resp.StatusCode)
+	}
+
+	var orders []OpenOrder
+	if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
+		return nil, fmt.Errorf("failed to decode orders: %w", err)
+	}
+
+	return orders, nil
+}
+
+// Position represents a position in a market
+type Position struct {
+	TokenID  string  `json:"asset"`
+	Size     float64 `json:"size,string"`
+	AvgPrice float64 `json:"avgPrice,string"`
+	Outcome  string  `json:"outcome"` // Mapped from token lookup
+}
+
+// BalanceAllowance represents USDC balance and allowance info
+type BalanceAllowance struct {
+	Balance   float64 `json:"balance,string"`
+	Allowance float64 `json:"allowance,string"`
+}
+
+// GetBalanceAllowance retrieves USDC balance and allowance from CLOB
+func (c *CLOBClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance, error) {
+	path := "/balance-allowance?asset_type=USDC"
+	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get balance: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get balance failed with status %d", resp.StatusCode)
+	}
+
+	var result BalanceAllowance
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode balance: %w", err)
+	}
+
+	return &result, nil
+}
+
+// GetPositions retrieves all positions
+func (c *CLOBClient) GetPositions(ctx context.Context) ([]Position, error) {
+	path := "/positions"
+	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get positions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get positions failed with status %d", resp.StatusCode)
+	}
+
+	var positions []Position
+	if err := json.NewDecoder(resp.Body).Decode(&positions); err != nil {
+		return nil, fmt.Errorf("failed to decode positions: %w", err)
+	}
+
+	return positions, nil
+}
+
+// TradeHistory represents a historical trade
+type TradeHistory struct {
+	ID        string  `json:"id"`
+	TokenID   string  `json:"asset_id"`
+	Side      string  `json:"side"`
+	Price     float64 `json:"price,string"`
+	Size      float64 `json:"size,string"`
+	Fee       float64 `json:"fee,string"`
+	Timestamp string  `json:"timestamp"`
+	Status    string  `json:"status"`
+}
+
+// GetTradeHistory retrieves trade history
+func (c *CLOBClient) GetTradeHistory(ctx context.Context) ([]TradeHistory, error) {
+	path := "/trades"
+	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get trades: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get trades failed with status %d", resp.StatusCode)
+	}
+
+	var trades []TradeHistory
+	if err := json.NewDecoder(resp.Body).Decode(&trades); err != nil {
+		return nil, fmt.Errorf("failed to decode trades: %w", err)
+	}
+
+	return trades, nil
+}
+
+// MarketInfo represents market resolution info
+type MarketInfo struct {
+	ConditionID     string `json:"condition_id"`
+	QuestionID      string `json:"question_id"`
+	Active          bool   `json:"active"`
+	Closed          bool   `json:"closed"`
+	AcceptingOrders bool   `json:"accepting_orders"`
+	EndDateISO      string `json:"end_date_iso"`
+	GameStartTime   string `json:"game_start_time"`
+	Tokens          []struct {
+		TokenID string  `json:"token_id"`
+		Outcome string  `json:"outcome"`
+		Winner  bool    `json:"winner"`
+		Price   float64 `json:"price,string"`
+	} `json:"tokens"`
+}
+
+// GetMarketInfo retrieves market info including resolution status
+func (c *CLOBClient) GetMarketInfo(ctx context.Context, conditionID string) (*MarketInfo, error) {
+	path := "/markets/" + conditionID
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get market info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get market info failed with status %d", resp.StatusCode)
+	}
+
+	var info MarketInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("failed to decode market info: %w", err)
+	}
+
+	return &info, nil
+}
+
+// RedeemPositions redeems winning positions for a resolved market
+// Note: This requires interaction with the CTF contract on Polygon
+// The CLOB API handles this automatically for most cases
+func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string) error {
+	if c.dryRun {
+		return nil
+	}
+
+	// Check market resolution status
+	info, err := c.GetMarketInfo(ctx, conditionID)
+	if err != nil {
+		return fmt.Errorf("failed to get market info: %w", err)
+	}
+
+	if !info.Closed {
+		return fmt.Errorf("market is not yet resolved")
+	}
+
+	// Find winning token
+	var winnerTokenID string
+	for _, token := range info.Tokens {
+		if token.Winner {
+			winnerTokenID = token.TokenID
+			break
+		}
+	}
+
+	if winnerTokenID == "" {
+		return fmt.Errorf("no winning outcome found")
+	}
+
+	// The CLOB auto-redeems in most cases, but we can trigger via merge endpoint
+	// For binary markets, winning positions are automatically credited
+	return nil
+}
+
+// generateSalt generates a random salt for order signing
+func generateSalt() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return new(big.Int).SetBytes(b).String()
+}

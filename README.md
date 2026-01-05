@@ -58,16 +58,88 @@ go build -o market-bot ./cmd/bot
 
 ## Usage
 
-### Run Paper Trading Bot
+### Paper Trading (Simulated - No Real Money)
+
+Paper trading uses simulated balance to test strategies without risk:
 
 ```bash
+# Run the paper trading bot
 go run cmd/bot/main.go
+
+# Or build and run
+go build -o market-bot ./cmd/bot
+./market-bot
 ```
 
-Or use the compiled binary:
+### Real Trading (Uses Real Money!)
+
+Real trading connects to your Polymarket account and places actual orders:
 
 ```bash
-./market-bot
+# 1. Configure your credentials in .env
+cp .env.example .env
+# Edit .env with your credentials
+
+# 2. Build the real trading bot
+go build -o realbot ./cmd/realbot
+
+# 3. Run the real trading bot
+./realbot
+# Or: go run cmd/realbot/main.go
+```
+
+#### Real Trading Setup
+
+1. **Get API credentials** from [Polymarket Settings](https://polymarket.com/settings/api-keys)
+
+2. **Configure `.env` file**:
+```bash
+# Enable real trading mode
+TRADING_MODE=real
+
+# Your credentials
+PK=your_private_key_hex_without_0x
+API_KEY=your_api_key
+API_SECRET=your_api_secret_base64
+API_PASSPHRASE=your_passphrase
+
+# Polygon RPC (optional - uses public RPC by default)
+POLYGON_RPC_URL=https://polygon-rpc.com
+
+# Safety settings
+MAX_TRADE_SIZE=10.0       # Max $10 per trade
+MAX_DAILY_LOSS=50.0       # Stop after $50 daily loss
+REQUIRE_CONFIRM=true      # Require typing YES to start
+DRY_RUN_FIRST=true        # Simulate orders first (recommended)
+```
+
+3. **Start with DRY_RUN_FIRST=true** to verify everything works
+
+4. **When ready for real trades**, set `DRY_RUN_FIRST=false`
+
+#### Real Trading Features
+
+| Feature | Description |
+|---------|-------------|
+| **Balance Display** | Shows your real USDC balance from Polymarket |
+| **Position Tracking** | Displays your open positions and P&L |
+| **Live Order Book** | Real-time bid/ask from WebSocket |
+| **Order Placement** | Places actual limit orders on CLOB |
+| **Auto-Cancellation** | Cancels all orders on shutdown |
+| **Market Redemption** | Positions auto-redeemed when markets resolve |
+| **Safety Limits** | Max trade size and daily loss limits |
+| **Dry-Run Mode** | Test order flow without placing real orders |
+
+#### Real Trading Commands
+
+```bash
+# View markets and prices without trading
+./realbot
+> view
+
+# Start trading (requires confirmation)
+./realbot
+> YES
 ```
 
 ### Example Output
@@ -214,13 +286,19 @@ BIDS (our orders)
 ```
 Market-bot/
 ├── cmd/
-│   └── bot/
-│       └── main.go           # Entry point & main loop
+│   ├── bot/
+│   │   └── main.go           # Paper trading bot (default)
+│   └── realbot/
+│       └── main.go           # Real trading bot
 ├── internal/
 │   ├── api/
 │   │   ├── rest_client.go    # Polymarket REST API
 │   │   ├── websocket.go      # WebSocket connection
-│   │   └── parser.go         # Order book parsing
+│   │   ├── parser.go         # Order book parsing
+│   │   ├── clob_client.go    # CLOB order placement (real trading)
+│   │   ├── signer.go         # EIP-712 order signing
+│   │   ├── secp256k1.go      # Ethereum curve implementation
+│   │   └── polygon.go        # Polygon RPC (balance queries)
 │   ├── core/
 │   │   └── config.go         # Configuration loader
 │   ├── paper/
@@ -229,14 +307,12 @@ Market-bot/
 │   │   ├── ladder.go         # Ladder quoting system
 │   │   ├── risk.go           # Risk manager & kill switch
 │   │   ├── market.go         # Market resolution handling
-│   │   └── display.go        # Console stats display
+│   │   └── tui.go            # Terminal UI display
+│   ├── trading/
+│   │   └── trader.go         # Unified trading interface (paper/real)
 │   └── strategy/
 │       └── math.go           # Discount sum calculations
-├── conductor/                 # Project documentation
-│   ├── PRD.md                # Product requirements
-│   ├── product.md            # Product guide
-│   └── product-guidelines.md # Code guidelines
-├── .env.example
+├── .env.example              # Example configuration
 ├── go.mod
 └── README.md
 ```
@@ -258,17 +334,22 @@ Market-bot/
 
 | Aspect | Paper Trading | Real Trading |
 |--------|---------------|--------------|
-| Money | Simulated $1000 | Real USDC |
-| Orders | Simulated fills | Actual CLOB orders |
-| Resolution | Based on final prices | From Polymarket API |
+| Command | `go run cmd/bot/main.go` | `go run cmd/realbot/main.go` |
+| Money | Simulated $1000 | Real USDC from wallet |
+| Orders | Simulated fills | Actual CLOB limit orders |
+| Balance | Tracked in memory | From Polymarket API |
+| Positions | Simulated | Real positions on Polymarket |
+| Resolution | Based on final prices | Auto-redeemed by Polymarket |
 | Risk | None | Real financial risk |
-| Implementation | ✅ Complete | 🚧 Not implemented |
+| Configuration | None required | Requires .env credentials |
+| Mode | Default | Set `TRADING_MODE=real` |
 
 ## Future Improvements
 
-- [ ] Real trading with Polymarket CLOB API
-- [ ] Wallet integration (Polygon/USDC)
-- [ ] Order signing with private key
+- [x] Real trading with Polymarket CLOB API
+- [x] Wallet integration (Polygon/USDC balance)
+- [x] Order signing with private key (EIP-712)
+- [x] Position and balance tracking
 - [ ] Actual market resolution polling
 - [ ] Rate limit handling
 - [ ] Persistent state/database

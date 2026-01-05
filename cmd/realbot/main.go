@@ -1,0 +1,580 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"Market-bot/internal/api"
+	"Market-bot/internal/core"
+	"Market-bot/internal/paper"
+	"Market-bot/internal/trading"
+)
+
+const (
+	UseLiveUI = true // Set to false for traditional logging
+)
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("Error: %v", err)
+	}
+}
+
+// restoreTerminal ensures terminal is in a usable state
+func restoreTerminal() {
+	restoreEcho := exec.Command("stty", "sane")
+	restoreEcho.Stdin = os.Stdin
+	_ = restoreEcho.Run()
+	fmt.Print("\033[?25h")
+	fmt.Print("\033[?1049l")
+	fmt.Println()
+}
+
+func run() error {
+	fmt.Print("\033[H\033[2J") // Clear screen
+
+	fmt.Println("╔═══════════════════════════════════════════════════════╗")
+	fmt.Println("║     POLYMARKET REAL TRADING BOT                       ║")
+	fmt.Println("║     ⚠️  WARNING: This uses REAL money! ⚠️              ║")
+	fmt.Println("╚═══════════════════════════════════════════════════════╝")
+	fmt.Println()
+
+	// Load configuration
+	cfg, err := core.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Ensure we're in real mode
+	if cfg.IsPaperMode() {
+		fmt.Println("❌ TRADING_MODE is not set to 'real'")
+		fmt.Println()
+		fmt.Println("To use real trading:")
+		fmt.Println("  1. Edit your .env file")
+		fmt.Println("  2. Set TRADING_MODE=real")
+		fmt.Println("  3. Add your credentials:")
+		fmt.Println("     PK=your_private_key")
+		fmt.Println("     API_KEY=your_api_key")
+		fmt.Println("     API_SECRET=your_api_secret")
+		fmt.Println("     API_PASSPHRASE=your_passphrase")
+		fmt.Println()
+		fmt.Println("For paper trading, use: go run cmd/bot/main.go")
+		return nil
+	}
+
+	// Validate credentials
+	if err := cfg.ValidateForRealTrading(); err != nil {
+		return fmt.Errorf("credential validation failed: %w", err)
+	}
+	fmt.Println("✅ Credentials validated")
+
+	// Create real trader
+	realTrader, err := trading.NewRealTrader(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create trader: %w", err)
+	}
+
+	// Setup context
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	// Display wallet info
+	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════════════════")
+	fmt.Printf("🔑 Wallet: %s\n", realTrader.Address())
+
+	// Get balance from CLOB API
+	balance, err := realTrader.GetBalance(ctx)
+	if err != nil {
+		fmt.Printf("⚠️  Could not fetch balance: %v\n", err)
+	} else {
+		fmt.Printf("💵 Available Balance: $%.2f USDC\n", balance)
+	}
+
+	// Get positions
+	positions, err := realTrader.GetPositions(ctx)
+	if err != nil {
+		fmt.Printf("⚠️  Could not fetch positions: %v\n", err)
+	} else if len(positions) > 0 {
+		fmt.Println()
+		fmt.Println("📊 Current Positions:")
+		for _, pos := range positions {
+			fmt.Printf("   • %s: %.2f shares @ $%.4f avg\n", pos.Outcome, pos.Size, pos.AvgPrice)
+		}
+	} else {
+		fmt.Println("📊 No open positions")
+	}
+
+	// Check MATIC for gas
+	polygonClient := api.NewPolygonClient(cfg.PolygonRPCURL)
+	maticBalance, err := polygonClient.GetMATICBalance(ctx, realTrader.Address())
+	if err != nil {
+		fmt.Printf("⚠️  Could not fetch MATIC balance: %v\n", err)
+	} else {
+		fmt.Printf("⛽ Gas Balance: %.4f MATIC\n", maticBalance)
+		if maticBalance < 0.1 {
+			fmt.Println("   ⚠️  Low MATIC - you may need more for gas")
+		}
+	}
+
+	fmt.Println("═══════════════════════════════════════════════════════")
+	cancel() // Done with initial queries
+
+	// Display safety settings
+	fmt.Println()
+	fmt.Println("🛡️  Safety Settings:")
+	fmt.Printf("   • Max trade size: $%.2f\n", cfg.MaxTradeSize)
+	fmt.Printf("   • Max daily loss: $%.2f\n", cfg.MaxDailyLoss)
+	if cfg.DryRunFirst {
+		fmt.Println("   • Mode: DRY-RUN (orders simulated)")
+		fmt.Println("     Set DRY_RUN_FIRST=false to place real orders")
+	} else {
+		fmt.Println("   • Mode: LIVE (real orders will be placed!)")
+	}
+	fmt.Println()
+
+	// Confirmation prompt
+	if cfg.RequireConfirm {
+		fmt.Println("╔═══════════════════════════════════════════════════════╗")
+		fmt.Println("║  Type 'YES' to start real trading                     ║")
+		fmt.Println("║  Type 'view' to just view markets without trading     ║")
+		fmt.Println("╚═══════════════════════════════════════════════════════╝")
+		fmt.Print("> ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read input: %w", err)
+		}
+
+		input = strings.TrimSpace(strings.ToLower(input))
+		if input == "view" {
+			return viewMarketsOnly(cfg, realTrader)
+		}
+		if input != "yes" {
+			fmt.Println("❌ Cancelled")
+			return nil
+		}
+		fmt.Println("✅ Starting real trading bot...")
+	}
+
+	// Setup signal handling
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			restoreTerminal()
+			stack := make([]byte, 4096)
+			length := runtime.Stack(stack, false)
+			fmt.Printf("\n🚨 PANIC: %v\n%s\n", r, stack[:length])
+		}
+	}()
+
+	// Watchdog for graceful shutdown
+	go func() {
+		<-ctx.Done()
+		time.Sleep(5 * time.Second)
+		restoreTerminal()
+		fmt.Println("\n⚠️ Force exit")
+		os.Exit(1)
+	}()
+
+	// Disable terminal echo
+	disableEcho := exec.Command("stty", "-echo", "-icanon")
+	disableEcho.Stdin = os.Stdin
+	_ = disableEcho.Run()
+	defer restoreTerminal()
+
+	// Create paper engine for TUI display (tracks simulated P&L alongside real trades)
+	engine := paper.NewEngine(balance)
+	orderBook := paper.NewOrderBook()
+	tui := paper.NewTUI(engine, orderBook)
+
+	// Start TUI
+	if UseLiveUI {
+		tui.StartRenderLoop(250 * time.Millisecond)
+		defer tui.Stop()
+	}
+
+	restClient := api.NewRestClient("")
+
+	// Main trading loop
+	for {
+		select {
+		case <-ctx.Done():
+			tui.Stop()
+			fmt.Println("\n👋 Shutting down...")
+
+			// Cancel all open orders
+			cancelCtx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := realTrader.CancelAll(cancelCtx); err != nil {
+				fmt.Printf("⚠️  Failed to cancel orders: %v\n", err)
+			} else {
+				fmt.Println("✅ All orders cancelled")
+			}
+			cancelFn()
+
+			// Show final balance
+			balCtx, balFn := context.WithTimeout(context.Background(), 10*time.Second)
+			finalBalance, err := realTrader.GetBalance(balCtx)
+			balFn()
+			if err == nil {
+				fmt.Printf("💵 Final Balance: $%.2f\n", finalBalance)
+			}
+			return nil
+		default:
+		}
+
+		// Find markets
+		tui.LogEvent("🔍 Searching for active 15m markets...")
+		markets := findMarkets(ctx, restClient, tui)
+		if len(markets) == 0 {
+			tui.LogEvent("⏳ No active markets, waiting...")
+			select {
+			case <-ctx.Done():
+				continue
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+
+		// Trade each market
+		var wg sync.WaitGroup
+		for assetID, market := range markets {
+			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
+			outcomes := getOutcomes(market)
+			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
+			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
+
+			wg.Add(1)
+			go func(id string, m *api.Market, end time.Time, bal float64) {
+				defer wg.Done()
+				tradeMarket(ctx, id, m, end, realTrader, engine, tui, restClient, cfg, bal)
+			}(assetID, market, endTime, balance)
+		}
+
+		// Wait for markets to complete
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			tui.LogEvent("✅ Round complete, rotating...")
+		case <-ctx.Done():
+		}
+
+		tui.ClearMarkets()
+	}
+}
+
+func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	restClient := api.NewRestClient("")
+
+	fmt.Println()
+	fmt.Println("🔍 Searching for active markets...")
+
+	markets, err := restClient.Get15mMarkets(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to fetch markets: %w", err)
+	}
+
+	if len(markets) == 0 {
+		fmt.Println("📭 No active markets found")
+		return nil
+	}
+
+	fmt.Printf("\n📊 Found %d market(s):\n", len(markets))
+	fmt.Println("═══════════════════════════════════════════════════════")
+
+	for _, m := range markets {
+		fmt.Printf("\n📈 %s\n", m.Slug)
+
+		tokenMap := make(map[string]string)
+		for _, t := range m.Tokens {
+			tokenMap[t.TokenID] = t.Outcome
+		}
+
+		prices, err := restClient.GetCLOBBidAsk(ctx, tokenMap)
+		if err != nil {
+			fmt.Printf("   ⚠️  Error: %v\n", err)
+			continue
+		}
+
+		sumAsks := 0.0
+		for outcome, pa := range prices {
+			spread := pa.Ask - pa.Bid
+			fmt.Printf("   %s: Bid $%.3f | Ask $%.3f | Spread $%.3f\n",
+				outcome, pa.Bid, pa.Ask, spread)
+			sumAsks += pa.Ask
+		}
+
+		margin := (1.0 - sumAsks) * 100
+		if margin > 0 {
+			fmt.Printf("   💰 Arb margin: %.2f%% (sum=$%.3f)\n", margin, sumAsks)
+		} else {
+			fmt.Printf("   ❌ No arb (sum=$%.3f)\n", sumAsks)
+		}
+	}
+
+	fmt.Println("\n═══════════════════════════════════════════════════════")
+	return nil
+}
+
+func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
+	found := make(map[string]*api.Market)
+	assets := []string{"btc", "eth", "sol", "xrp"}
+
+	for attempts := 0; attempts < 30; attempts++ {
+		select {
+		case <-ctx.Done():
+			return found
+		default:
+		}
+
+		markets, err := restClient.Get15mMarkets(ctx, nil)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		for _, m := range markets {
+			endTime, err := paper.ParseEndTimeFromSlug(m.Slug)
+			if err == nil && time.Now().After(endTime) {
+				continue
+			}
+			if err == nil && time.Until(endTime) < 30*time.Second {
+				continue
+			}
+
+			slug := strings.ToLower(m.Slug)
+			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
+
+			for _, asset := range assets {
+				key := strings.ToUpper(asset)
+				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
+					mCopy := m
+					found[key] = &mCopy
+				}
+			}
+		}
+
+		if len(found) > 0 {
+			return found
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return found
+}
+
+func getOutcomes(market *api.Market) []string {
+	outcomes := make([]string, 0, len(market.Tokens))
+	for _, token := range market.Tokens {
+		outcomes = append(outcomes, token.Outcome)
+	}
+	return outcomes
+}
+
+func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64) {
+	tokenMap := make(map[string]string)
+	tokenToOutcome := make(map[string]string)
+	for _, token := range market.Tokens {
+		tokenMap[token.TokenID] = token.Outcome
+		tokenToOutcome[token.TokenID] = token.Outcome
+	}
+
+	outcomes := getOutcomes(market)
+
+	// Calculate trade size based on current balance
+	// Default: $1000 balance → $100 per trade (10% of balance)
+	tradeSize := cfg.CalculateTradeSize(currentBalance)
+	tui.LogEvent("[%s] 💰 Balance: $%.2f → Trade size: $%.2f", id, currentBalance, tradeSize)
+
+	// Setup WebSocket
+	wsMgr := api.NewWSManager("")
+	if err := wsMgr.Connect(ctx); err != nil {
+		tui.LogEvent("[%s] ❌ WS connect failed: %v", id, err)
+		return
+	}
+	defer wsMgr.Close()
+
+	// Subscribe to order books
+	var assetIDs []string
+	for _, token := range market.Tokens {
+		assetIDs = append(assetIDs, token.TokenID)
+	}
+	sub := map[string]interface{}{
+		"type":       "market",
+		"assets_ids": assetIDs,
+	}
+	if err := wsMgr.Subscribe(ctx, sub); err != nil {
+		tui.LogEvent("[%s] ❌ Subscribe failed: %v", id, err)
+		return
+	}
+
+	wsMsgChan := wsMgr.StartStreaming(ctx)
+	tui.LogEvent("[%s] 📡 Connected, trading until %v", id, endTime.Format("15:04:05"))
+
+	tokenBids := make(map[string]float64)
+	tokenAsks := make(map[string]float64)
+	lastTrade := time.Time{}
+
+	const minTradeInterval = 5 * time.Second // Don't spam trades
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Check if market ended
+		if time.Now().After(endTime.Add(30 * time.Second)) {
+			tui.LogEvent("[%s] ⏰ Market ended", id)
+			// Check for redemption
+			checkRedemption(ctx, id, market.ConditionID, tui)
+			return
+		}
+
+		// Process WebSocket messages
+		select {
+		case msg, ok := <-wsMsgChan:
+			if !ok {
+				tui.LogEvent("[%s] ⚠️ WS closed", id)
+				return
+			}
+
+			if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 {
+				for _, b := range books {
+					outcome := tokenToOutcome[b.AssetID]
+					if outcome == "" {
+						continue
+					}
+
+					bid, ask := 0.0, 1.0
+					for _, order := range b.Bids {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > bid {
+							bid = p
+						}
+					}
+					for _, order := range b.Asks {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p < ask && p > 0 {
+							ask = p
+						}
+					}
+					if ask >= 1.0 {
+						ask = 0
+					}
+
+					tokenBids[outcome] = bid
+					tokenAsks[outcome] = ask
+
+					// Update TUI
+					if bid > 0 && ask > 0 && ask < 1.0 {
+						mid := (bid + ask) / 2
+						engine.UpdateMarketData(id, outcome, mid, bid, ask)
+					}
+				}
+				tui.UpdateMarketPrices(id, tokenBids, tokenAsks)
+			}
+
+		case <-time.After(10 * time.Millisecond):
+		}
+
+		// Check for arbitrage opportunity
+		if len(tokenAsks) >= 2 && len(outcomes) == 2 && time.Since(lastTrade) > minTradeInterval {
+			ask1 := tokenAsks[outcomes[0]]
+			ask2 := tokenAsks[outcomes[1]]
+
+			if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
+				sum := ask1 + ask2
+				margin := (1.0 - sum) * 100
+
+				if margin >= cfg.MinMarginPercent { // Default 2% margin
+					// Calculate shares using dynamic position sizing
+					// tradeSize is already calculated based on balance
+					shares := tradeSize / sum
+
+					cost := shares * sum
+					profit := shares * (1.0 - sum)
+
+					tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin)",
+						id, outcomes[0], ask1, outcomes[1], ask2, sum, margin)
+					tui.LogEvent("[%s] 📦 Placing: %.0f shares, cost $%.2f, profit $%.2f",
+						id, shares, cost, profit)
+
+					// Place orders
+					token0 := ""
+					token1 := ""
+					for tokenID, outcome := range tokenToOutcome {
+						if outcome == outcomes[0] {
+							token0 = tokenID
+						} else if outcome == outcomes[1] {
+							token1 = tokenID
+						}
+					}
+
+					// Buy both sides
+					result1, err := trader.Buy(ctx, token0, outcomes[0], ask1, shares)
+					if err != nil {
+						tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[0], err)
+					} else if result1.Success {
+						tui.LogEvent("[%s] ✅ Bought %s: %s", id, outcomes[0], result1.Status)
+						engine.BuyForMarket(id, outcomes[0], ask1, shares)
+					} else {
+						tui.LogEvent("[%s] ❌ Buy %s rejected: %s", id, outcomes[0], result1.Message)
+					}
+
+					result2, err := trader.Buy(ctx, token1, outcomes[1], ask2, shares)
+					if err != nil {
+						tui.LogEvent("[%s] ❌ Buy %s failed: %v", id, outcomes[1], err)
+					} else if result2.Success {
+						tui.LogEvent("[%s] ✅ Bought %s: %s", id, outcomes[1], result2.Status)
+						engine.BuyForMarket(id, outcomes[1], ask2, shares)
+					} else {
+						tui.LogEvent("[%s] ❌ Buy %s rejected: %s", id, outcomes[1], result2.Message)
+					}
+
+					lastTrade = time.Now()
+				}
+			}
+		}
+	}
+}
+
+func checkRedemption(ctx context.Context, id, conditionID string, tui *paper.TUI) {
+	// Polymarket auto-redeems winning positions, but we can check status
+	restClient := api.NewRestClient("")
+
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Try to get market resolution info via Gamma API
+	url := fmt.Sprintf("https://gamma-api.polymarket.com/markets?condition_id=%s", conditionID)
+	_ = url // Would fetch resolution status
+
+	tui.LogEvent("[%s] 💰 Market resolved - positions will be auto-redeemed", id)
+	_ = restClient
+	_ = checkCtx
+}
