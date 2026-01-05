@@ -107,7 +107,7 @@ API_PASSPHRASE=your_passphrase
 POLYGON_RPC_URL=https://polygon-rpc.com
 
 # Safety settings
-MAX_TRADE_SIZE=10.0       # Max $10 per trade
+MAX_TRADE_SIZE=50.0       # Max $50 per trade
 MAX_DAILY_LOSS=50.0       # Stop after $50 daily loss
 REQUIRE_CONFIRM=true      # Require typing YES to start
 DRY_RUN_FIRST=true        # Simulate orders first (recommended)

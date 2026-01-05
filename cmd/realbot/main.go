@@ -42,12 +42,14 @@ func restoreTerminal() {
 }
 
 func run() error {
+	startTime := time.Now()
 	fmt.Print("\033[H\033[2J") // Clear screen
 
 	fmt.Println("╔═══════════════════════════════════════════════════════╗")
 	fmt.Println("║     POLYMARKET REAL TRADING BOT                       ║")
 	fmt.Println("║     ⚠️  WARNING: This uses REAL money! ⚠️              ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════╝")
+	fmt.Printf("⏰ Started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 	fmt.Println()
 
 	// Load configuration
@@ -236,8 +238,11 @@ func run() error {
 			balCtx, balFn := context.WithTimeout(context.Background(), 10*time.Second)
 			finalBalance, err := realTrader.GetBalance(balCtx)
 			balFn()
+			duration := time.Since(startTime).Round(time.Second)
 			if err == nil {
-				fmt.Printf("💵 Final Balance: $%.2f\n", finalBalance)
+				fmt.Printf("💵 Final Balance: $%.2f | Duration: %v\n", finalBalance, duration)
+			} else {
+				fmt.Printf("⏱️  Total Duration: %v\n", duration)
 			}
 			return nil
 		default:

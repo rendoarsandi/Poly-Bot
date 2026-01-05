@@ -33,11 +33,11 @@ type Config struct {
 	MarketSlug string
 
 	// Position sizing settings
-	// Default: $1000 balance → $100 per trade at 2% margin (10% of balance)
+	// Default: $1000 balance → $50 per trade (5% of balance)
 	BaseBalance      float64 // Reference balance for position sizing ($1000 default)
-	BaseTradeSize    float64 // Trade size at base balance for 2% margin ($100 default)
-	MinMarginPercent float64 // Minimum arbitrage margin to trade (2% default)
-	TradeScaleFactor float64 // Fraction of balance to use per trade (0.10 = 10% default)
+	BaseTradeSize    float64 // Trade size at base balance ($50 default)
+	MinMarginPercent float64 // Minimum arbitrage margin to trade (1% default)
+	TradeScaleFactor float64 // Fraction of balance to use per trade (0.05 = 5% default)
 
 	// Safety settings for real trading
 	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
@@ -63,11 +63,11 @@ func LoadConfig() (*Config, error) {
 		APIPassphrase: os.Getenv("API_PASSPHRASE"),
 		PolygonRPCURL: os.Getenv("POLYGON_RPC_URL"),
 		MarketSlug:    os.Getenv("MARKET_SLUG"),
-		// Position sizing defaults: $1000 balance → $100 per trade at 2% margin
+		// Position sizing defaults: $1000 balance → $50 per trade
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
-		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 10.0),
+		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
 		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 1.0),
-		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.01), // 1% of balance
+		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.05), // 5% of balance
 		// Safety settings
 		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
 		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 50.0), // Default $50 max daily loss

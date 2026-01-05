@@ -1,1 +1,66 @@
-This is a Product Requirements Document (PRD) designed to replicate the exact high-frequency strategy used by traders like "gabagool22" on Polymarket. Product Requirements Document (PRD): Polymarket "Volatility Arbitrage" Bot 1. Executive Summary Project Name: PolyArb-15m Goal: Build a Python-based trading bot that automates volatility arbitrage on Polymarket's 15-minute crypto binary option markets. Core Logic: The bot acts as a Market Maker, placing Limit Orders (Bids) on both "Yes" and "No" sides of a binary market such that the combined entry price is always mathematically guaranteed to be profitable (Total Cost < $1.00 payout). 2. Strategic Logic (The "Gabagool" Algorithm) The bot does not predict price direction. It predicts volatility and liquidity gaps. 2.1 The "Discount Sum" Formula The bot must ensure that for every pair of shares acquired, the cost is below the payout. * Target Entry: Combined cost of roughly $0.95 - $0.98. * Mechanism: The bot does not "Take" (buy at market). It "Makes" (places limit orders). * Example: Bitcoin Price is volatile. The bot places a Buy Limit Order for "Yes" at 48¢ and a Buy Limit Order for "No" at 48¢. * If both fill, total cost is 96¢. * Payout is $1.00. * Profit: 4¢ per share (4.1% ROI instantly). 2.2 Rebalancing (Delta Neutrality) * Risk: One side fills (e.g., you bought "Yes" at 48¢) but price runs away, and you never get filled on "No". You are now "Long Yes" (gambling). * Solution: "Inventory Skew Management." * If Inventory_Yes > Inventory_No, the bot must aggressively bid higher for "No" to close the pair, or sell "Yes" to reduce exposure. 3. User Stories & Functional Requirements | ID | Feature | Description | Priority | |---|---|---|---| | F-01 | Market Scanner | Bot must auto-detect the active "Bitcoin/ETH Up or Down" markets ending in the next 15-30 mins. | P0 | | F-02 | Ladder Quoting | Place multiple buy orders at different price levels (e.g., 500 shares @ 0.48, 500 shares @ 0.47) to capture deep wicks. | P0 | | F-03 | Sum-Check Engine | Before placing any order, calculate Target_Bid_Yes + Target_Bid_No + Fees < 1.00. | P0 | | F-04 | Auto-Redemption | Upon market resolution, automatically redeem winning shares for USDC to recycle capital for the next 15m window. | P1 | | F-05 | Exposure Limit | Hard cap on "Unmatched Inventory." (e.g., Never hold more than 500 un-hedged shares of one side). | P1 | 4. Technical Architecture 4.1 Tech Stack * Language: Python 3.10+ * Blockchain Interaction: web3.py (Polygon Network) * Polymarket API Client: py-clob-client (Official Python SDK) * Async Processing: asyncio (Crucial for handling high-frequency websocket data) 4.2 API Data Flow * Input (Websocket): Subscribe to market_slug (e.g., "btc-price-16-00") to get real-time Order Book data. * Decision Engine: Python script calculates the "Spread Sum". * Output (REST API): Sign transactions using EOA (Externally Owned Account) private key and POST to Polymarket CLOB. 4.3 Architecture Diagram 5. Implementation Roadmap (Step-by-Step) Phase 1: Connection & Authorization * Objective: successfully post a test order. * Action: * Install py-clob-client. * Generate API Credentials (L2 Key) from your Polygon Private Key. * Note: You need MATIC for gas (rarely used, Polymarket uses a relayer) and USDC (on Polygon) for trading. Phase 2: The "Listener" (Data Ingestion) * Objective: View real-time prices for specific markets. * Logic: * Filter markets by "Crypto" + "Intraday" tag. * Pull the "Best Ask" and "Best Bid". Phase 3: The "Maker" (Execution Logic) * Objective: Place the "Trap" (Limit orders). * Code Concept: # Simplified Logic Concept target_profit = 0.03 # 3 cents fair_price_yes = 0.50 # Assuming 50/50 probability fair_price_no = 0.50 # Place bids below fair value to capture volatility bid_price_yes = fair_price_yes - (target_profit / 2) # Bid at 0.485 bid_price_no = fair_price_no - (target_profit / 2) # Bid at 0.485 if (bid_price_yes + bid_price_no) < 0.99: client.create_and_post_order(price=bid_price_yes, side="BUY", token="YES_TOKEN_ID") client.create_and_post_order(price=bid_price_no, side="BUY", token="NO_TOKEN_ID") Phase 4: Risk Management (The "Kill Switch") * Objective: Stop the bot if logic fails. * Requirement: If Open_Positions > $500 AND Unmatched_Sides > 20%, cancel all open orders and market sell inventory. 6. Risks & Constraints * API Rate Limits: Polymarket limits orders per second. If you spam updates, you will be IP banned. * Resolution Delay: Funds are locked until the market resolves. If you trade the 3:00 PM market, you cannot use that cash for the 3:15 PM market until the outcome is finalized (can take 5-30 mins). You need a large working capital stack to rotate. * Outcome Risk: Extremely rare, but if Polymarket resolves "Ambiguous" (50/50 split), you lose the profit margin. 7. Next Step Would you like me to generate the main.py Python boilerplate that connects to the Polymarket API and sets up the basic "Market Monitor" loop?
+# Product Requirements Document (PRD): Polymarket "Volatility Arbitrage" Bot
+
+## 1. Executive Summary
+**Project Name:** Market-bot (Go Implementation)
+**Goal:** Build a Go-based trading bot that automates volatility arbitrage on Polymarket's binary option markets.
+**Core Logic:** The bot acts as a Market Maker, placing Limit Orders (Bids) on both "Yes" and "No" sides of a binary market such that the combined entry price is always mathematically guaranteed to be profitable (Total Cost < $1.00 payout).
+
+## 2. Strategic Logic (The "Gabagool" Algorithm)
+The bot does not predict price direction. It predicts volatility and liquidity gaps.
+**Core Philosophy:** This is "not gambling"—it is pure mechanical trading powered by math and arbitrage. The goal is to remove emotion and exploit human-driven mispricings.
+
+### 2.1 The "Discount Sum" Formula
+The bot must ensure that for every pair of shares acquired, the cost is below the payout.
+* **Target Entry:** Combined cost of roughly $0.95 - $0.98.
+* **Mechanism:** The bot does not "Take" (buy at market). It "Makes" (places limit orders).
+* **Example:** Bitcoin Price is volatile. The bot places a Buy Limit Order for "Yes" at 48¢ and a Buy Limit Order for "No" at 48¢.
+* If both fill, total cost is 96¢. Payout is $1.00.
+* **Profit:** 4¢ per share (4.1% ROI instantly).
+
+### 2.2 Rebalancing (Delta Neutrality)
+* **Risk:** One side fills (e.g., you bought "Yes" at 48¢) but price runs away, and you never get filled on "No". You are now "Long Yes" (gambling).
+* **Solution:** "Inventory Skew Management."
+* If Inventory_Yes > Inventory_No, the bot must aggressively bid higher for "No" to close the pair, or sell "Yes" to reduce exposure.
+
+### 2.3 Insights from "Inside the Mind of a Polymarket Bot"
+* **Asynchronous Buying:** The bot should asynchronously buy undervalued "YES" or "NO" shares to exploit temporary market mispricings.
+* **Pair Cost Monitoring:** Continuously monitor average prices and simulate buys to maintain a "Pair Cost" below a safety margin (e.g., 0.99).
+* **Quantity Balancing:** Actively balance quantities of YES and NO shares to maintain a strong hedge and minimize directional risk.
+* **Profit Locking:** Ensure the combined average cost of the entire position (YES + NO) stays below $1.00.
+
+## 3. User Stories & Functional Requirements
+
+| ID | Feature | Description | Priority |
+|---|---|---|---|
+| F-01 | Market Scanner | Bot must auto-detect active markets (e.g., Bitcoin/ETH price targets) ending soon. | P0 |
+| F-02 | Ladder Quoting | Place multiple buy orders at different price levels to capture deep wicks. | P0 |
+| F-03 | Sum-Check Engine | Before placing any order, calculate Target_Bid_Yes + Target_Bid_No + Fees < 1.00. | P0 |
+| F-04 | Auto-Redemption | Automatically redeem winning shares for USDC upon market resolution. | P1 |
+| F-05 | Exposure Limit | Hard cap on "Unmatched Inventory" to prevent excessive directional exposure. | P1 |
+
+## 4. Technical Architecture
+
+### 4.1 Tech Stack
+* **Language:** Go (Golang)
+* **Blockchain Interaction:** Custom CLOB Client (Polygon Network)
+* **Polymarket API:** Direct interaction with Polymarket CLOB via REST and WebSocket.
+* **Concurrency:** Goroutines for high-frequency data handling and order management.
+
+### 4.2 API Data Flow
+* **Input (WebSocket):** Subscribe to market order books for real-time price updates.
+* **Decision Engine:** Go-based strategy engine calculates spreads and manages inventory.
+* **Output (REST):** Signed transactions/orders sent to Polymarket CLOB.
+
+## 5. Implementation Roadmap
+
+### Phase 1: Connection & Authorization
+* Success fully post a test order using the Go CLOB client.
+* Handle API credentials and L2 signing logic.
+
+### Phase 2: Data Ingestion (The "Listener")
+* Real-time price tracking for target markets.
+* Filter and identify high-volatility opportunities.
+
+### Phase 3: Execution Logic (The "Maker")
+* Implement the "Trap" strategy with limit orders.
+* Integrate inventory management and skew correction.

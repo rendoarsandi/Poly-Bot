@@ -82,6 +82,9 @@ type TUI struct {
 	// Display dimensions
 	width int
 
+	// Startup time
+	startTime time.Time
+
 	// Stop channel for clean shutdown
 	stopCh   chan struct{}
 	stopOnce sync.Once // Ensure Stop() only runs once
@@ -111,11 +114,12 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		realAsks:       make(map[string]float64),
 		pendingOrders:  make(map[string][]PendingOrder),
 		orderBookDepth: make(map[string]map[string][]MarketLevel),
-		eventLog:       make([]string, 0),
-		maxEvents:      10,
-		width:          80,
-		running:        true,
-		stopCh:         make(chan struct{}),
+				eventLog:      make([]string, 0),
+				maxEvents:     10,
+				width:         80,
+				startTime:     time.Now(),
+				running:       true,
+				stopCh:        make(chan struct{}),
 		frameCh:        make(chan string, 3), // Buffer 3 frames to prevent blocking
 	}
 }
@@ -386,9 +390,13 @@ func (t *TUI) renderHeader() string {
 		padding = 0
 	}
 
-	return fmt.Sprintf("%s%s\n%s%s%s\n%s",
+	uptime := time.Since(t.startTime).Round(time.Second)
+	timeLine := fmt.Sprintf("  ⏱️  Running Time: %v", uptime)
+
+	return fmt.Sprintf("%s%s\n%s%s%s\n%s%s\n%s",
 		Bold, line,
 		strings.Repeat(" ", padding), title, Reset,
+		timeLine, strings.Repeat(" ", t.width-len(timeLine)),
 		line)
 }
 
@@ -772,6 +780,9 @@ func (t *TUI) renderAccountStatus(stats Stats, totalExposure, equity, multiplier
 		stats.RealizedPnL, arbColor, arbSign, guaranteedProfit, Reset))
 	sb.WriteString(fmt.Sprintf("   📈 Compound: %s%.2fx%s | Rounds: %d (%d profitable)\n",
 		multColor, multiplier, Reset, rounds, profitable))
+
+	uptime := time.Since(t.startTime).Round(time.Second)
+	sb.WriteString(fmt.Sprintf("   ⏱️  Uptime:   %v\n", uptime))
 
 	return sb.String()
 }

@@ -143,9 +143,12 @@ func run() error {
 	// Ensure terminal is restored on any exit
 	defer restoreTerminal()
 
+	startTime := time.Now()
+
 	// Clear screen at startup
 	fmt.Print("\033[H\033[2J")
 	fmt.Println("🎰 POLYARB-15M Starting (Multi-Asset: BTC, ETH, SOL, XRP)...")
+	fmt.Printf("⏰ Started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 
 	// Initialize persistent components (survive market rotation)
 	engine = paper.NewEngine(StartingBalance)
@@ -241,8 +244,9 @@ func run() error {
 			}
 
 			stats := engine.GetStats()
-			fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d\n",
-				stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades)
+			duration := time.Since(startTime).Round(time.Second)
+			fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d | Duration %v\n",
+				stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades, duration)
 			return nil
 		default:
 		}
@@ -257,8 +261,9 @@ func run() error {
 				tui.Stop()
 				fmt.Println("\n👋 Shutting down...")
 				stats := engine.GetStats()
-				fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d\n",
-					stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades)
+				duration := time.Since(startTime).Round(time.Second)
+				fmt.Printf("📊 Final Stats: Balance $%.2f | Realized PnL $%.2f | Trades %d | Duration %v\n",
+					stats.CurrentBalance, stats.RealizedPnL, stats.TotalTrades, duration)
 				return nil
 			case <-time.After(2 * time.Second):
 			}
@@ -627,17 +632,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.LadderMgr.CancelAllLadders()
 
 				// Use more robust resolution simulation
-				winner := t.determineWinner()
-				if winner != "" {
-					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
-					t.Engine.RedeemWithDetails(winner)
-				}
+			winner := t.determineWinner()
+			if winner != "" {
+				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
+				t.Engine.RedeemWithDetails(winner)
+			}
 
-				finalStats := t.Engine.GetStats()
-				return &marketResult{
-					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
-					trades:      finalStats.TotalTrades - tradesAtStart,
-				}, nil
+			finalStats := t.Engine.GetStats()
+			return &marketResult{
+				realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
+				trades:      finalStats.TotalTrades - tradesAtStart,
+			}, nil
 			}
 
 			// Check kill switch
@@ -664,7 +669,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
 
 				// Use more robust resolution simulation
-				winner := t.determineWinner()
+			winner := t.determineWinner()
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
 
 				// Use detailed redemption
@@ -761,15 +766,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									t.FloatPrices[outcome] = mid
 									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 									// Use batch update for better performance
-									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 								}
 								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, b.Bids)
 								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, b.Asks)
 							}
-						}
-						if foundForThisTrader {
-							t.LastUpdate = time.Now()
-						}
+							}
+							if foundForThisTrader {
+								t.LastUpdate = time.Now()
+							}
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						bid, ask := 0.0, 1.0
 						for _, order := range book.Bids {
@@ -777,32 +782,32 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							if p > bid {
 								bid = p
 							}
-						}
-						for _, order := range book.Asks {
+							}
+							for _, order := range book.Asks {
 							p, _ := strconv.ParseFloat(order.Price, 64)
 							if p < ask && p > 0 {
 								ask = p
 							}
-						}
-						if ask >= 1.0 {
-							ask = 0.0
-						}
-						outcome := t.TokenMap[book.AssetID]
-						if outcome != "" {
-							t.LastUpdate = time.Now()
-							t.TokenBids[outcome] = bid
-							t.TokenAsks[outcome] = ask
-							if bid > 0 && ask > 0 && ask < 1.0 {
-								mid := (bid + ask) / 2
-								t.FloatPrices[outcome] = mid
-								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-								// Use batch update for better performance
-								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
-							t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
-							t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
+							if ask >= 1.0 {
+							ask = 0.0
+							}
+							outcome := t.TokenMap[book.AssetID]
+							if outcome != "" {
+								t.LastUpdate = time.Now()
+								t.TokenBids[outcome] = bid
+								t.TokenAsks[outcome] = ask
+								if bid > 0 && ask > 0 && ask < 1.0 {
+									mid := (bid + ask) / 2
+									t.FloatPrices[outcome] = mid
+									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+									// Use batch update for better performance
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+								}
+								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
+								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
+							}
 						}
-					}
 				default:
 					// No more messages in channel, continue with rest of loop
 					goto doneProcessingWS
@@ -904,88 +909,90 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					minMarginPercent := t.Config.MinMarginPercent
 
 					// Calculate dynamic trade size based on current balance
-					// $1000 balance * 10% = $100 trade size
-					// $100 balance * 10% = $10 trade size
+					// $1000 balance * 5% = $50 trade size
+					// $100 balance * 5% = $5 trade size
 					currentBalance := t.Engine.GetBalance()
 					tradeSize := t.Config.CalculateTradeSize(currentBalance)
 					baseSharesPerTrade := tradeSize / sum // Shares = $ / price per share pair
 
 					// Evaluate portfolio risk before trading
-					riskAction, riskReason := t.RiskMgr.Evaluate()
-					if riskAction == paper.RiskActionKillSwitch {
-						t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s", t.ID, riskReason)
-						continue
+				riskAction, riskReason := t.RiskMgr.Evaluate()
+				if riskAction == paper.RiskActionKillSwitch {
+					t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s", t.ID, riskReason)
+					continue
+				}
+				if riskAction == paper.RiskActionReduceSize {
+					t.TUI.LogEvent("[%s] ⚠️ RISK: Reducing size - %s", t.ID, riskReason)
+					// Will use baseShares only (no scaling)
+				}
+
+				if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
+					baseShares := baseSharesPerTrade
+					
+					// LIQUIDITY CHECK: Ensure we don't exceed top-of-book size
+					// This prevents partial fills that break the arbitrage
+					maxLiquidity := 1e9
+					for _, outcome := range t.Outcomes {
+						asks := t.TokenFullAsks[outcome]
+						if len(asks) > 0 && asks[0].Size < maxLiquidity {
+							maxLiquidity = asks[0].Size
+						}
 					}
-					if riskAction == paper.RiskActionReduceSize {
-						t.TUI.LogEvent("[%s] ⚠️ RISK: Reducing size - %s", t.ID, riskReason)
-						// Will use baseShares only (no scaling)
+					
+					// Cap shares at 90% of available top-of-book liquidity for safety
+					if baseShares > maxLiquidity*0.9 {
+						baseShares = maxLiquidity * 0.9
 					}
 
-					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
-						baseShares := baseSharesPerTrade
-						
-						// LIQUIDITY CHECK: Ensure we don't exceed top-of-book size
-						// This prevents partial fills that break the arbitrage
-						maxLiquidity := 1e9
-						for _, outcome := range t.Outcomes {
-							asks := t.TokenFullAsks[outcome]
-							if len(asks) > 0 && asks[0].Size < maxLiquidity {
-								maxLiquidity = asks[0].Size
-							}
+					// Only scale if risk allows
+					shares := baseShares
+					if riskAction != paper.RiskActionReduceSize {
+						// Scale shares based on margin - adjusted for 1% baseline
+						if margin >= 5.0 {
+							shares = baseShares * 5
+						} else if margin >= 4.0 {
+							shares = baseShares * 4
+						} else if margin >= 3.0 {
+							shares = baseShares * 3
+						} else if margin >= 2.0 {
+							shares = baseShares * 2
 						}
-						
-						// Cap shares at 90% of available top-of-book liquidity for safety
-						if baseShares > maxLiquidity*0.9 {
-							baseShares = maxLiquidity * 0.9
-						}
+					}
 
-						// Only scale if risk allows
-						shares := baseShares
-						if riskAction != paper.RiskActionReduceSize {
-							// Scale shares based on margin - adjusted for 1% baseline
-							if margin >= 4.0 {
-								shares = baseShares * 4
-							} else if margin >= 3.0 {
-								shares = baseShares * 3
-							} else if margin >= 2.0 {
-								shares = baseShares * 2
-							}
-						}
+					// Apply compounding multiplier from profitable rounds
+					compoundMult := t.Engine.GetCompoundMultiplier()
+					shares = float64(int(float64(shares) * compoundMult))
 
-						// Apply compounding multiplier from profitable rounds
-						compoundMult := t.Engine.GetCompoundMultiplier()
-						shares = float64(int(float64(shares) * compoundMult))
+					cost := shares * (ask1 + ask2)
+					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
+						// Scale back to base if over risk limit or balance
+						shares = baseShares
+						cost = shares * (ask1 + ask2)
 
-						cost := shares * (ask1 + ask2)
+						// If even base is too much, don't trade
 						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
-							// Scale back to base if over risk limit or balance
-							shares = baseShares
-							cost = shares * (ask1 + ask2)
-
-							// If even base is too much, don't trade
-							if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
-								continue
-							}
+							continue
 						}
-
-						profit := shares * (1.0 - sum)
-						if compoundMult > 1.0 {
-							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%)",
-								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin)
-						} else {
-							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%)",
-								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, profit, margin)
-						}
-
-						if t.CSVLogger != nil {
-							t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
-						}
-
-						t.Engine.BuyForMarket(t.ID, t.Outcomes[0], ask1, shares)
-						t.Engine.BuyForMarket(t.ID, t.Outcomes[1], ask2, shares)
-
-						t.LaddersPlaced = true
 					}
+
+					profit := shares * (1.0 - sum)
+					if compoundMult > 1.0 {
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%)",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin)
+					} else {
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%)",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, profit, margin)
+					}
+
+					if t.CSVLogger != nil {
+						t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
+					}
+
+					t.Engine.BuyForMarket(t.ID, t.Outcomes[0], ask1, shares)
+					t.Engine.BuyForMarket(t.ID, t.Outcomes[1], ask2, shares)
+
+					t.LaddersPlaced = true
+				}
 				}
 			}
 
