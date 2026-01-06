@@ -384,10 +384,10 @@ func run() error {
 	}
 }
 
-// findMarkets searches for BTC, ETH markets
+// findMarkets searches for BTC, ETH, SOL markets
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth"}
+	assets := []string{"btc", "eth", "sol"}
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
@@ -825,10 +825,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
-			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 15ms to get fresh liquidity data (66 ticks/sec)
+									// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
+			// Poll REST every 25ms for high-frequency liquidity updates
 			// A global rate limiter in RestClient ensures we never exceed 150 RPS.
-			restPollInterval := 15 * time.Millisecond
+			restPollInterval := 25 * time.Millisecond
 
 			// Individual trader staleness watchdog
 			staleTime := time.Since(t.LastUpdate)
