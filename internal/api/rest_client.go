@@ -53,15 +53,20 @@ type ListMarketsResponse struct {
 type RestClient struct {
 	BaseURL  string
 	GammaURL string
+	// Rate limiting: strictly enforce max requests per second
+	limiter <-chan time.Time
 }
 
 func NewRestClient(baseURL string) *RestClient {
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
+	// Rate limit to 145 RPS (slightly under 150 limit for safety)
+	limiter := time.NewTicker(time.Second / 145)
 	return &RestClient{
 		BaseURL:  baseURL,
 		GammaURL: "https://gamma-api.polymarket.com",
+		limiter:  limiter.C,
 	}
 }
 
@@ -92,20 +97,27 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 
 	var markets []Market
 
-	for _, asset := range assets {
-		// Check multiple windows to handle edge cases:
-		// - Current window (most likely)
-		// - Next window (might be pre-created near end of current window)
-		// - Previous window (might still be resolving)
-		// - Window after next (for early creation)
-		windowsToCheck := []int64{
-			currentWindowStart,        // Current window
-			currentWindowStart + 900,  // Next window (might be pre-created)
-			currentWindowStart + 1800, // Window after next (early creation)
-			currentWindowStart - 900,  // Previous window (might still be active)
-		}
+	// Check multiple windows to handle edge cases:
+	// - Current window (most likely)
+	// - Next window (might be pre-created near end of current window)
+	// - Window after next (for early creation)
+	// - Previous window (might still be resolving)
+	windowsToCheck := []int64{
+		currentWindowStart,        // Current window
+		currentWindowStart + 900,  // Next window (might be pre-created)
+		currentWindowStart + 1800, // Window after next (early creation)
+		currentWindowStart - 900,  // Previous window (might still be active)
+	}
 
+	for _, asset := range assets {
 		for _, windowStart := range windowsToCheck {
+			// Rate limit check
+			select {
+			case <-c.limiter:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+
 			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
@@ -258,6 +270,13 @@ type OrderBookResponse struct {
 
 // GetOrderBook fetches the current order book for a token from REST API
 func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBookResponse, error) {
+	// Rate limit check
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	url := fmt.Sprintf("%s/book?token_id=%s", c.BaseURL, tokenID)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

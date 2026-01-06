@@ -826,9 +826,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
 			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 25ms to get fresh liquidity data (40 ticks/sec)
-			// This provides absolute peak performance for 2-asset Sniper mode.
-			restPollInterval := 25 * time.Millisecond
+			// Poll REST every 15ms to get fresh liquidity data (66 ticks/sec)
+			// A global rate limiter in RestClient ensures we never exceed 150 RPS.
+			restPollInterval := 15 * time.Millisecond
 
 			// Individual trader staleness watchdog
 			staleTime := time.Since(t.LastUpdate)
@@ -992,9 +992,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						if remaining1 <= 0 {
 							i++
+						} else {
+							asks1[i].Size = remaining1
 						}
 						if remaining2 <= 0 {
 							j++
+						} else {
+							asks2[j].Size = remaining2
 						}
 						// If both exhausted at same time, both pointers already incremented
 					}
@@ -1011,9 +1015,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					// Cap at 80% of matched liquidity for safety margin
 					maxSafeShares := minLiquidity * 0.80
-					if baseShares > maxSafeShares {
-						baseShares = maxSafeShares
-					}
 
 					// Only scale if risk allows
 					shares := baseShares
@@ -1036,22 +1037,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					compoundMult := t.Engine.GetCompoundMultiplier()
 					shares = float64(int(float64(shares) * compoundMult))
 
-					// FINAL LIQUIDITY CAP: Ensure shares never exceed 70% of available liquidity
-					// This must be checked AFTER all scaling (margin scaling + compounding)
-					if shares > maxSafeShares {
-						shares = maxSafeShares
-					}
-
-					cost := shares * (ask1 + ask2)
-
-					// Order cost overhead: half of 2% = 1% of trade cost
-					orderCostOverhead := cost * 0.01
-
-					// Expected gross profit from the arb
-					grossProfit := shares * (1.0 - sum)
-
-					// Net profit after order cost
-					netProfit := grossProfit - orderCostOverhead
+					                    // FINAL LIQUIDITY CAP: Ensure shares never exceed 80% of available liquidity
+										// This must be checked AFTER all scaling (margin scaling + compounding)
+										if shares > maxSafeShares {
+											shares = maxSafeShares
+										}
+					cost, orderCostOverhead, grossProfit, netProfit := calculateTradeMetrics(shares, sum)
 
 					// Skip if net profit is not positive after order cost
 					if netProfit <= 0 {
@@ -1061,17 +1052,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
 						// Scale back to base if over risk limit or balance
 						shares = baseShares
-						cost = shares * (ask1 + ask2)
-						orderCostOverhead = cost * 0.01
-						grossProfit = shares * (1.0 - sum)
-						netProfit = grossProfit - orderCostOverhead
+						cost, orderCostOverhead, grossProfit, netProfit = calculateTradeMetrics(shares, sum)
 
 						// If even base is too much or not profitable after cost, don't trade
 						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance || netProfit <= 0 {
 							continue
 						}
 					}
-
 					if compoundMult > 1.0 {
 						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
 							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2)
@@ -1153,6 +1140,14 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 		return outcomes[0]
 	}
 	return outcomes[1]
+}
+
+func calculateTradeMetrics(shares, sum float64) (cost, overhead, gross, net float64) {
+	cost = shares * sum
+	overhead = cost * 0.01
+	gross = shares * (1.0 - sum)
+	net = gross - overhead
+	return
 }
 
 func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.MarketLevel {

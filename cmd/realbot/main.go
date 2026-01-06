@@ -569,13 +569,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}
 
-				// ============ REST PRIMARY FOR LIQUIDITY ============ 
-				// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-				// Poll REST every 25ms to get fresh liquidity data (40 ticks/sec)
-				// This provides absolute peak performance for 2-asset Sniper mode.
-				staleTime := time.Since(lastUpdate)
-				restPollInterval := 25 * time.Millisecond
-		// ALWAYS poll REST for liquidity
+						// ============ REST PRIMARY FOR LIQUIDITY ============
+						// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
+						// Poll REST every 15ms to get fresh liquidity data (66 ticks/sec)
+						// A global rate limiter in RestClient ensures we never exceed 150 RPS.
+						staleTime := time.Since(lastUpdate)
+						restPollInterval := 15 * time.Millisecond		// ALWAYS poll REST for liquidity
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
 		// Also force REST if WS is unhealthy
@@ -691,9 +690,13 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						if remaining1 <= 0 {
 							i++
+						} else {
+							asks1[i].Size = remaining1
 						}
 						if remaining2 <= 0 {
 							j++
+						} else {
+							asks2[j].Size = remaining2
 						}
 					}
 
@@ -713,17 +716,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						shares = maxSafeShares
 					}
 
-					// Ensure we don't spam and risk allows
-					cost := shares * sum
-
-					// Order cost overhead: half of 2% = 1% of trade cost
-					orderCostOverhead := cost * 0.01
-
-					// Expected gross profit from the arb
-					grossProfit := shares * (1.0 - sum)
-
-					// Net profit after order cost
-					netProfit := grossProfit - orderCostOverhead
+					cost, orderCostOverhead, grossProfit, netProfit := calculateTradeMetrics(shares, sum)
 
 					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance && netProfit > 0 {
 						// Add slippage buffer: willing to pay up to 1 tick more for guaranteed fill
@@ -733,9 +726,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// Recalculate with buffered prices including order cost overhead
 						bufferedSum := price1 + price2
-						bufferedCost := shares * bufferedSum
-						bufferedGrossProfit := shares * (1.0 - bufferedSum)
-						bufferedNetProfit := bufferedGrossProfit - (bufferedCost * 0.01)
+						bufferedCost, _, bufferedGrossProfit, bufferedNetProfit := calculateTradeMetrics(shares, bufferedSum)
 						bufferedMargin := (1.0 - bufferedSum) * 100
 						if bufferedNetProfit <= 0 || bufferedMargin < 1.0 {
 							// Skip if buffer makes arb unprofitable after order cost
@@ -850,6 +841,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 }
 
 // Helper to match bot's toMarketLevels
+func calculateTradeMetrics(shares, sum float64) (cost, overhead, gross, net float64) {
+	cost = shares * sum
+	overhead = cost * 0.01
+	gross = shares * (1.0 - sum)
+	net = gross - overhead
+	return
+}
+
 func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.MarketLevel {
 	result := make([]paper.MarketLevel, len(levels))
 	for i, l := range levels {
