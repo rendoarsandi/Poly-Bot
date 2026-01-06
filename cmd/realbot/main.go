@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -629,30 +630,72 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Apply compounding multiplier from profitable rounds
 					shares = float64(int(shares * compoundMultiplier))
 
-					// STRICT LIQUIDITY CHECK: Get minimum available across BOTH sides
-					// This ensures we only try to buy what's actually available
-					getLiquidity := func(outcome string) float64 {
-						asks := tokenFullAsks[outcome]
-						if len(asks) > 0 {
-							return asks[0].Size
+					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
+					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
+					maxSum := 1.0 - (cfg.MinMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
+
+					// Copy and sort asks by price ascending for both outcomes
+					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
+					copy(asks1, tokenFullAsks[outcomes[0]])
+					sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
+
+					asks2 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[1]]))
+					copy(asks2, tokenFullAsks[outcomes[1]])
+					sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
+
+					// Calculate aggregated matched liquidity across valid price levels
+					var totalMatchedLiquidity float64
+					var cumLiq1, cumLiq2 float64
+
+					i, j := 0, 0
+					for i < len(asks1) && j < len(asks2) {
+						p1 := asks1[i].Price
+						p2 := asks2[j].Price
+
+						// Check if this combination maintains minimum margin
+						if p1+p2 > maxSum {
+							break // Can't go deeper, would exceed margin threshold
 						}
-						return 0
+
+						// Get liquidity at current levels
+						levelLiq1 := asks1[i].Size
+						levelLiq2 := asks2[j].Size
+
+						// Matched liquidity = min of both sides (arbitrage requires equal shares)
+						matchedAtLevel := levelLiq1
+						if levelLiq2 < matchedAtLevel {
+							matchedAtLevel = levelLiq2
+						}
+
+						// Track cumulative liquidity
+						cumLiq1 += matchedAtLevel
+						cumLiq2 += matchedAtLevel
+						totalMatchedLiquidity += matchedAtLevel
+
+						// Move pointer on the side with less remaining liquidity
+						remaining1 := levelLiq1 - matchedAtLevel
+						remaining2 := levelLiq2 - matchedAtLevel
+
+						if remaining1 <= 0 {
+							i++
+						}
+						if remaining2 <= 0 {
+							j++
+						}
 					}
 
-					liq1 := getLiquidity(outcomes[0])
-					liq2 := getLiquidity(outcomes[1])
-					minLiquidity := liq1
-					if liq2 < minLiquidity {
-						minLiquidity = liq2
-					}
+					// Use aggregated liquidity for display
+					liq1 := cumLiq1
+					liq2 := cumLiq2
+					minLiquidity := totalMatchedLiquidity
 
-					// Skip if either side has no liquidity
+					// Skip if no matched liquidity available
 					if minLiquidity < 1.0 {
 						continue
 					}
 
-					// Cap at 70% of minimum liquidity for safety margin
-					maxSafeShares := minLiquidity * 0.70
+					// Cap at 80% of matched liquidity for safety margin
+					maxSafeShares := minLiquidity * 0.80
 					if shares > maxSafeShares {
 						shares = maxSafeShares
 					}
