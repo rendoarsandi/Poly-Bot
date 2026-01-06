@@ -389,7 +389,7 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth", "sol", "xrp"}
+	assets := []string{"btc", "eth"}
 
 	for attempts := 0; attempts < 30; attempts++ {
 		select {
@@ -566,18 +566,29 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	doneWS:
 
 		if messagesProcessed > 0 {
-			tui.UpdateMarketPrices(id, tokenBids, tokenAsks)
+			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}
 
-		// ============ REST FALLBACK ============
-		staleTime := time.Since(lastUpdate)
-		if (!wsMgr.IsConnected() || wsMgr.TimeSinceLastMessage() > 15*time.Second) && staleTime > 3*time.Second {
-			if time.Since(lastRestPoll) > 2*time.Second {
-				lastRestPoll = time.Now()
-				// Note: REST fallback updated to also capture full depth
-				if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, engine, restClient, tui) {
-					lastUpdate = time.Now()
-				}
+				// ============ REST PRIMARY FOR LIQUIDITY ============ 
+				// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
+				// Poll REST every 25ms to get fresh liquidity data (40 ticks/sec)
+				// This provides absolute peak performance for 2-asset Sniper mode.
+				staleTime := time.Since(lastUpdate)
+				restPollInterval := 25 * time.Millisecond
+		// ALWAYS poll REST for liquidity
+		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
+
+		// Also force REST if WS is unhealthy
+		wsUnhealthy := !wsMgr.IsConnected() || wsMgr.TimeSinceLastMessage() > 15*time.Second
+		if wsUnhealthy && staleTime > 3*time.Second {
+			needsRestPoll = true
+		}
+
+		if needsRestPoll {
+			lastRestPoll = time.Now()
+			// Note: REST fallback updated to also capture full depth
+			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, engine, restClient, tui) {
+				lastUpdate = time.Now()
 			}
 		}
 
@@ -616,7 +627,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Scale shares based on margin
 					shares := tradeSize / sum
 
-					// Apply aggression scaling based on margin
+					// Apply aggression scaling based on margin (starting from 1%)
 					if riskAction != paper.RiskActionReduceSize {
 						if margin >= 4.0 {
 							shares *= 4
@@ -624,6 +635,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							shares *= 3
 						} else if margin >= 2.0 {
 							shares *= 2
+						} else if margin >= 1.0 {
+							shares *= 1 // Baseline at 1% margin
 						}
 					}
 
@@ -702,17 +715,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Ensure we don't spam and risk allows
 					cost := shares * sum
-					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance {
+
+					// Order cost overhead: half of 2% = 1% of trade cost
+					orderCostOverhead := cost * 0.01
+
+					// Expected gross profit from the arb
+					grossProfit := shares * (1.0 - sum)
+
+					// Net profit after order cost
+					netProfit := grossProfit - orderCostOverhead
+
+					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance && netProfit > 0 {
 						// Add slippage buffer: willing to pay up to 1 tick more for guaranteed fill
 						const slippageBuffer = 0.01
 						price1 := ask1 + slippageBuffer
 						price2 := ask2 + slippageBuffer
 
-						// Recalculate with buffered prices
+						// Recalculate with buffered prices including order cost overhead
 						bufferedSum := price1 + price2
+						bufferedCost := shares * bufferedSum
+						bufferedGrossProfit := shares * (1.0 - bufferedSum)
+						bufferedNetProfit := bufferedGrossProfit - (bufferedCost * 0.01)
 						bufferedMargin := (1.0 - bufferedSum) * 100
-						if bufferedMargin < 1.0 {
-							// Skip if buffer makes arb unprofitable
+						if bufferedNetProfit <= 0 || bufferedMargin < 1.0 {
+							// Skip if buffer makes arb unprofitable after order cost
 							continue
 						}
 
@@ -753,19 +779,27 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						side1Filled := err1 == nil && res1 != nil && res1.Success
 						side2Filled := err2 == nil && res2 != nil && res2.Success
 
+						// Calculate costs for order history
+						cost1 := shares * price1
+						cost2 := shares * price2
+
 						// Process results
 						if side1Filled {
 							tui.LogEvent("[%s] ✅ Side 1 FILLED: %s @ $%.3f", id, outcomes[0], price1)
 							engine.BuyForMarket(id, outcomes[0], price1, shares)
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FILLED")
 						} else {
 							tui.LogEvent("[%s] ❌ Side 1 Fail: %v", id, err1)
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FAILED")
 						}
 
 						if side2Filled {
 							tui.LogEvent("[%s] ✅ Side 2 FILLED: %s @ $%.3f", id, outcomes[1], price2)
 							engine.BuyForMarket(id, outcomes[1], price2, shares)
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FILLED")
 						} else {
 							tui.LogEvent("[%s] ❌ Side 2 Fail: %v", id, err2)
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FAILED")
 						}
 
 						// IMMEDIATE RETRY on partial fill - match position ASAP
@@ -783,19 +817,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 							// Immediate retry with same price (FOK - taker)
 							retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, failedPrice, shares, api.TIFFillOrKill)
+							retryCost := shares * failedPrice
 							if retryErr == nil && retryRes != nil && retryRes.Success {
 								tui.LogEvent("[%s] ✅ RETRY FILLED: %s @ $%.3f", id, failedOutcome, failedPrice)
 								engine.BuyForMarket(id, failedOutcome, failedPrice, shares)
+								tui.RecordOrder(id, failedOutcome, "BUY", shares, failedPrice, retryCost, bufferedMargin, "FILLED")
 							} else {
 								// Second retry with higher price (+2 ticks total from original ask)
 								aggressivePrice := failedPrice + 0.01
+								aggressiveCost := shares * aggressivePrice
 								tui.LogEvent("[%s] 🔄 Aggressive retry: %s @ $%.3f", id, failedOutcome, aggressivePrice)
 								retryRes2, retryErr2 := trader.Buy(ctx, failedToken, failedOutcome, aggressivePrice, shares, api.TIFFillOrKill)
 								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
 									tui.LogEvent("[%s] ✅ AGGRESSIVE RETRY FILLED: %s @ $%.3f", id, failedOutcome, aggressivePrice)
 									engine.BuyForMarket(id, failedOutcome, aggressivePrice, shares)
+									tui.RecordOrder(id, failedOutcome, "BUY", shares, aggressivePrice, aggressiveCost, bufferedMargin, "FILLED")
 								} else {
 									tui.LogEvent("[%s] ❌ RETRY FAILED - Position skewed! Will attempt recovery next tick", id)
+									tui.RecordOrder(id, failedOutcome, "BUY", shares, aggressivePrice, aggressiveCost, bufferedMargin, "FAILED")
 								}
 							}
 						}
@@ -851,7 +890,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			asks[outcome] = ask
 			fullBids[outcome] = toMarketLevels(tui, id, book.Bids)
 			fullAsks[outcome] = toMarketLevels(tui, id, book.Asks)
-			
+
 			if bid > 0 && ask > 0 && ask < 1.0 {
 				mid := (bid + ask) / 2
 				engine.UpdateMarketData(id, outcome, mid, bid, ask)
@@ -860,7 +899,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		}
 	}
 	if success {
-		tui.UpdateMarketPrices(id, bids, asks)
+		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
 	}
 	return success
 }
@@ -906,7 +945,7 @@ func handleRestFallback(ctx context.Context, id string, tokenMap map[string]stri
 		}
 	}
 	if success {
-		tui.UpdateMarketPrices(id, bids, asks)
+		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
 	}
 	return success
 }

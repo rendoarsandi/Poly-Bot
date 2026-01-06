@@ -44,6 +44,7 @@ type MarketData struct {
 	RealBids   map[string]float64
 	RealAsks   map[string]float64
 	LastUpdate time.Time // When prices were last updated
+	DataSource string    // "WS" or "REST" - which source provided latest data
 }
 
 // TUI provides a live terminal user interface
@@ -68,6 +69,10 @@ type TUI struct {
 	stopped    atomic.Bool // Atomic flag for fast shutdown detection without lock
 	killReason string
 	isKilled   bool
+
+	// Order history - persists across market rotations
+	orderHistory    []OrderHistoryEntry
+	maxOrderHistory int // Max entries to keep
 
 	// Real market data (for comparison)
 	realBids map[string]float64
@@ -101,26 +106,41 @@ type PendingOrder struct {
 	Side    string // "BUY" or "SELL"
 }
 
+// OrderHistoryEntry represents a completed trade for the order history
+type OrderHistoryEntry struct {
+	Timestamp time.Time
+	MarketID  string  // e.g., "BTC", "ETH"
+	Outcome   string  // e.g., "Up", "Down"
+	Side      string  // "BUY" or "SELL"
+	Shares    float64
+	Price     float64
+	Cost      float64
+	Margin    float64 // Arb margin at time of trade
+	Status    string  // "FILLED", "PARTIAL", "FAILED"
+}
+
 // NewTUI creates a new terminal UI
 func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 	return &TUI{
-		engine:         engine,
-		orderBook:      orderBook,
-		markets:        make(map[string]*MarketData),
-		lastPrices:     make(map[string]float64),
-		lastBids:       make(map[string]float64),
-		lastAsks:       make(map[string]float64),
-		realBids:       make(map[string]float64),
-		realAsks:       make(map[string]float64),
-		pendingOrders:  make(map[string][]PendingOrder),
-		orderBookDepth: make(map[string]map[string][]MarketLevel),
-				eventLog:      make([]string, 0),
-				maxEvents:     10,
-				width:         80,
-				startTime:     time.Now(),
-				running:       true,
-				stopCh:        make(chan struct{}),
-		frameCh:        make(chan string, 3), // Buffer 3 frames to prevent blocking
+		engine:          engine,
+		orderBook:       orderBook,
+		markets:         make(map[string]*MarketData),
+		lastPrices:      make(map[string]float64),
+		lastBids:        make(map[string]float64),
+		lastAsks:        make(map[string]float64),
+		realBids:        make(map[string]float64),
+		realAsks:        make(map[string]float64),
+		pendingOrders:   make(map[string][]PendingOrder),
+		orderBookDepth:  make(map[string]map[string][]MarketLevel),
+		orderHistory:    make([]OrderHistoryEntry, 0),
+		maxOrderHistory: 20, // Keep last 20 orders
+		eventLog:        make([]string, 0),
+		maxEvents:       10,
+		width:           80,
+		startTime:       time.Now(),
+		running:         true,
+		stopCh:          make(chan struct{}),
+		frameCh:         make(chan string, 3), // Buffer 3 frames to prevent blocking
 	}
 }
 
@@ -151,6 +171,11 @@ func (t *TUI) ClearMarkets() {
 
 // UpdateMarketPrices updates prices for a specific market
 func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {
+	t.UpdateMarketPricesWithSource(marketID, bids, asks, "WS")
+}
+
+// UpdateMarketPricesWithSource updates prices and tracks the data source
+func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[string]float64, source string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
@@ -163,6 +188,7 @@ func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64)
 			m.RealAsks[k] = v
 		}
 		m.LastUpdate = time.Now()
+		m.DataSource = source
 	}
 }
 
@@ -273,6 +299,41 @@ func (t *TUI) SetKillSwitch(reason string) {
 	t.killReason = reason
 }
 
+// RecordOrder adds a trade to the order history
+func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, margin float64, status string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	entry := OrderHistoryEntry{
+		Timestamp: time.Now(),
+		MarketID:  marketID,
+		Outcome:   outcome,
+		Side:      side,
+		Shares:    shares,
+		Price:     price,
+		Cost:      cost,
+		Margin:    margin,
+		Status:    status,
+	}
+
+	t.orderHistory = append(t.orderHistory, entry)
+
+	// Keep only the last maxOrderHistory entries
+	if len(t.orderHistory) > t.maxOrderHistory {
+		t.orderHistory = t.orderHistory[len(t.orderHistory)-t.maxOrderHistory:]
+	}
+}
+
+// GetOrderHistory returns a copy of the order history
+func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	result := make([]OrderHistoryEntry, len(t.orderHistory))
+	copy(result, t.orderHistory)
+	return result
+}
+
 // Stop stops the UI - safe to call multiple times
 func (t *TUI) Stop() {
 	// Use sync.Once to ensure we only stop once
@@ -354,6 +415,10 @@ func (t *TUI) Render() {
 
 	// Open Orders
 	writeLine(t.renderOrders(orders))
+	sb.WriteString("\n")
+
+	// Order History (persists across market rotations)
+	writeLine(t.renderOrderHistory())
 	sb.WriteString("\n")
 
 	// Event Log
@@ -500,9 +565,21 @@ func (t *TUI) renderMultiMarketInfo() string {
 		} else if updateAge > 2*time.Second {
 			updateColor = ColorYellow
 		}
-		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s | %s%.1fs ago%s%s\n",
+
+		// Show data source (WS or REST)
+		sourceColor := ColorGreen
+		sourceStr := m.DataSource
+		if sourceStr == "" {
+			sourceStr = "?"
+			sourceColor = ColorYellow
+		} else if sourceStr == "REST" {
+			sourceColor = ColorCyan
+		}
+
+		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s | %s%.1fs ago%s [%s%s%s]%s\n",
 			timeColor, remaining.Round(time.Second), Reset,
-			updateColor, updateAge.Seconds(), Reset, updateWarning))
+			updateColor, updateAge.Seconds(), Reset,
+			sourceColor, sourceStr, Reset, updateWarning))
 
 		if len(m.Outcomes) == 2 {
 			bid1 := m.Bids[m.Outcomes[0]]
@@ -972,6 +1049,69 @@ func (t *TUI) renderEventLog() string {
 
 	for _, event := range t.eventLog {
 		sb.WriteString(fmt.Sprintf("   %s\n", event))
+	}
+
+	return sb.String()
+}
+
+func (t *TUI) renderOrderHistory() string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("%s📋 ORDER HISTORY%s", Bold, Reset))
+
+	if len(t.orderHistory) == 0 {
+		sb.WriteString(" (no trades yet)\n")
+		return sb.String()
+	}
+
+	sb.WriteString(fmt.Sprintf(" (last %d)\n", len(t.orderHistory)))
+
+	// Show most recent orders first (reversed)
+	displayCount := len(t.orderHistory)
+	if displayCount > 8 {
+		displayCount = 8 // Show max 8 in UI
+	}
+
+	for i := len(t.orderHistory) - 1; i >= len(t.orderHistory)-displayCount && i >= 0; i-- {
+		o := t.orderHistory[i]
+
+		// Color based on status
+		statusColor := ColorGreen
+		statusIcon := "✅"
+		if o.Status == "FAILED" {
+			statusColor = ColorRed
+			statusIcon = "❌"
+		} else if o.Status == "PARTIAL" {
+			statusColor = ColorYellow
+			statusIcon = "⚠️"
+		}
+
+		// Asset color
+		assetColor := ColorWhite
+		switch o.MarketID {
+		case "BTC":
+			assetColor = ColorYellow
+		case "ETH":
+			assetColor = ColorCyan
+		case "SOL":
+			assetColor = ColorMagenta
+		case "XRP":
+			assetColor = ColorGreen
+		}
+
+		// Format timestamp (just time, not date)
+		timeStr := o.Timestamp.Format("15:04:05")
+
+		// Format the entry
+		sb.WriteString(fmt.Sprintf("   %s %s[%s]%s %s %-6s %.0f @ $%.2f ($%.1f) %s%.1f%%%s\n",
+			timeStr,
+			assetColor, o.MarketID, Reset,
+			statusIcon,
+			core.SanitizeString(o.Outcome),
+			o.Shares,
+			o.Price,
+			o.Cost,
+			statusColor, o.Margin, Reset))
 	}
 
 	return sb.String()

@@ -384,10 +384,10 @@ func run() error {
 	}
 }
 
-// findMarkets searches for BTC, ETH, SOL, XRP 15m markets
+// findMarkets searches for BTC, ETH markets
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth", "sol", "xrp"}
+	assets := []string{"btc", "eth"}
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
@@ -814,24 +814,36 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Update TUI after processing WS messages
 			if messagesProcessed > 0 {
-				t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
-			} else if wsMgr.IsConnected() && wsMgr.TimeSinceLastMessage() < 5*time.Second {
-				// If WebSocket is healthy but no message this tick, "touch" to prevent stale warnings
-				t.TUI.TouchMarket(t.ID)
+				t.TUI.UpdateMarketPricesWithSource(t.ID, t.TokenBids, t.TokenAsks, "WS")
 			}
+			// NOTE: Removed TouchMarket call - WS connection being "alive" doesn't mean
+			// data is fresh. WS often doesn't send liquidity updates, so we should only
+			// update LastUpdate when we actually receive new price/liquidity data.
+			// This ensures the UI accurately shows data staleness.
 
 			// Check WebSocket connection health for REST fallback decision
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
-			// Individual trader staleness watchdog
-			// Only poll REST if WS is unhealthy (disconnected or no messages for 15s)
-			// Note: t.LastUpdate tracks actual PRICE updates, not just connection health
-			staleTime := time.Since(t.LastUpdate)
-			restPollInterval := 2 * time.Second
-			needsRestFallback := (!wsConnected || wsLastMsg > 15*time.Second) && staleTime > 3*time.Second
+			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
+			// Poll REST every 25ms to get fresh liquidity data (40 ticks/sec)
+			// This provides absolute peak performance for 2-asset Sniper mode.
+			restPollInterval := 25 * time.Millisecond
 
-			if needsRestFallback && time.Since(t.LastRestPoll) > restPollInterval {
+			// Individual trader staleness watchdog
+			staleTime := time.Since(t.LastUpdate)
+
+			// ALWAYS poll REST for liquidity - WS only gives price changes, not liquidity updates
+			// This ensures we have accurate liquidity data for trade sizing
+			needsRestPoll := time.Since(t.LastRestPoll) > restPollInterval
+
+			// Also force REST if WS is unhealthy
+			wsUnhealthy := !wsConnected || wsLastMsg > 15*time.Second
+			if wsUnhealthy && staleTime > 3*time.Second {
+				needsRestPoll = true
+			}
+
+			if needsRestPoll {
 				t.handleRestFallback(ctx, tokenPrices, staleTime)
 			}
 
@@ -1006,7 +1018,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Only scale if risk allows
 					shares := baseShares
 					if riskAction != paper.RiskActionReduceSize {
-						// Scale shares based on margin - incremental scaling from 2% baseline
+						// Scale shares based on margin - incremental scaling from 1% baseline
 						if margin >= 5.0 {
 							shares = baseShares * 5
 						} else if margin >= 4.0 {
@@ -1015,6 +1027,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							shares = baseShares * 3
 						} else if margin >= 2.0 {
 							shares = baseShares * 2
+						} else if margin >= 1.0 {
+							shares = baseShares * 1 // Baseline at 1% margin
 						}
 					}
 
@@ -1029,24 +1043,41 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 
 					cost := shares * (ask1 + ask2)
+
+					// Order cost overhead: half of 2% = 1% of trade cost
+					orderCostOverhead := cost * 0.01
+
+					// Expected gross profit from the arb
+					grossProfit := shares * (1.0 - sum)
+
+					// Net profit after order cost
+					netProfit := grossProfit - orderCostOverhead
+
+					// Skip if net profit is not positive after order cost
+					if netProfit <= 0 {
+						continue
+					}
+
 					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
 						// Scale back to base if over risk limit or balance
 						shares = baseShares
 						cost = shares * (ask1 + ask2)
+						orderCostOverhead = cost * 0.01
+						grossProfit = shares * (1.0 - sum)
+						netProfit = grossProfit - orderCostOverhead
 
-						// If even base is too much, don't trade
-						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
+						// If even base is too much or not profitable after cost, don't trade
+						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance || netProfit <= 0 {
 							continue
 						}
 					}
 
-					profit := shares * (1.0 - sum)
 					if compoundMult > 1.0 {
 						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, profit, margin, liq1, liq2)
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2)
 					} else {
 						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, profit, margin, liq1, liq2)
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2)
 					}
 
 					if t.CSVLogger != nil {
@@ -1055,6 +1086,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					t.Engine.BuyForMarket(t.ID, t.Outcomes[0], ask1, shares)
 					t.Engine.BuyForMarket(t.ID, t.Outcomes[1], ask2, shares)
+
+					// Record both sides of the arb trade in order history
+					cost1 := shares * ask1
+					cost2 := shares * ask2
+					t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", shares, ask1, cost1, margin, "FILLED")
+					t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", shares, ask2, cost2, margin, "FILLED")
 
 					t.LaddersPlaced = true
 				}
@@ -1136,7 +1173,8 @@ func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.
 	return result
 }
 
-// handleRestFallback polls REST API when WebSocket data is stale
+// handleRestFallback polls REST API for fresh liquidity data
+// REST is now the PRIMARY source for liquidity (WS only sends price changes)
 // Returns true if any data was successfully retrieved
 func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration) bool {
 	t.LastRestPoll = time.Now()
@@ -1214,15 +1252,15 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 	// Log result - minimal spam, maximum info
 	if restSuccess > 0 {
 		t.LastUpdate = time.Now()
-		t.TUI.UpdateMarketPrices(t.ID, t.TokenBids, t.TokenAsks)
-		// Only log recovery after significant staleness
-		if staleSeconds >= 5 {
+		t.TUI.UpdateMarketPricesWithSource(t.ID, t.TokenBids, t.TokenAsks, "REST")
+		// Only log recovery if WS was significantly stale (not normal polling)
+		if staleSeconds >= 10 {
 			t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)
 		}
 		return true
 	} else if restErrors > 0 {
 		// Log errors every 10 seconds to avoid spam
-		if staleSeconds%10 == 0 || staleSeconds == 5 {
+		if staleSeconds%10 == 0 || staleSeconds == 10 {
 			t.TUI.LogEvent("[%s] ❌ REST fail %ds: %v", t.ID, staleSeconds, lastErr)
 		}
 	} else if restEmpty == len(t.TokenMap) {

@@ -168,9 +168,10 @@ func (m *WSManager) heartbeatLoop() {
 				// Ping succeeded - connection is alive
 				consecutivePingFailures = 0
 				m.lastHeartbeat.Store(time.Now().Unix())
-				// Also update lastMessage so inactive markets don't show as stale
-				// (connection is alive, just no trading activity)
-				m.lastMessage.Store(time.Now().Unix())
+				// NOTE: Do NOT update lastMessage here - only actual data messages
+				// should update lastMessage. This allows the bot to detect when
+				// the connection is alive but no market data is flowing, triggering
+				// the REST fallback for fresh prices.
 			}
 		}
 	}
