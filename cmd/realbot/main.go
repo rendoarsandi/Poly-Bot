@@ -716,7 +716,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						shares = maxSafeShares
 					}
 
-					cost, orderCostOverhead, grossProfit, netProfit := calculateTradeMetrics(shares, sum)
+					cost, _, _, netProfit := calculateTradeMetrics(shares, sum)
 
 					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance && netProfit > 0 {
 						// Add slippage buffer: willing to pay up to 1 tick more for guaranteed fill
@@ -726,7 +726,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// Recalculate with buffered prices including order cost overhead
 						bufferedSum := price1 + price2
-						bufferedCost, _, bufferedGrossProfit, bufferedNetProfit := calculateTradeMetrics(shares, bufferedSum)
+						_, _, _, bufferedNetProfit := calculateTradeMetrics(shares, bufferedSum)
 						bufferedMargin := (1.0 - bufferedSum) * 100
 						if bufferedNetProfit <= 0 || bufferedMargin < 1.0 {
 							// Skip if buffer makes arb unprofitable after order cost

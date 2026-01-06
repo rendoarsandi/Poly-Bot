@@ -1042,7 +1042,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 										if shares > maxSafeShares {
 											shares = maxSafeShares
 										}
-					cost, orderCostOverhead, grossProfit, netProfit := calculateTradeMetrics(shares, sum)
+					cost, _, _, netProfit := calculateTradeMetrics(shares, sum)
 
 					// Skip if net profit is not positive after order cost
 					if netProfit <= 0 {
@@ -1052,7 +1052,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
 						// Scale back to base if over risk limit or balance
 						shares = baseShares
-						cost, orderCostOverhead, grossProfit, netProfit = calculateTradeMetrics(shares, sum)
+						cost, _, _, netProfit = calculateTradeMetrics(shares, sum)
 
 						// If even base is too much or not profitable after cost, don't trade
 						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance || netProfit <= 0 {
