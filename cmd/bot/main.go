@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	StartingBalance = 1000.0 // $1000 paper trading balance
-	UseLiveUI       = true   // Set to false for traditional logging
+	StartingBalance = 100.0 // $100 paper trading balance
+	UseLiveUI       = true  // Set to false for traditional logging
 )
 
 // MarketTrader holds state for trading a single market
@@ -1144,7 +1144,7 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 
 func calculateTradeMetrics(shares, sum float64) (cost, overhead, gross, net float64) {
 	cost = shares * sum
-	overhead = cost * 0.01
+	overhead = 0 // Polymarket has no fees
 	gross = shares * (1.0 - sum)
 	net = gross - overhead
 	return

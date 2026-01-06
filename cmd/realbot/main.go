@@ -843,7 +843,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 // Helper to match bot's toMarketLevels
 func calculateTradeMetrics(shares, sum float64) (cost, overhead, gross, net float64) {
 	cost = shares * sum
-	overhead = cost * 0.01
+	overhead = 0 // Polymarket has no fees
 	gross = shares * (1.0 - sum)
 	net = gross - overhead
 	return
