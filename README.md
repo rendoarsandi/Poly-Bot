@@ -37,6 +37,7 @@ The bot acts as a **Market Maker**, placing limit orders on both sides of a bina
 
 ### Prerequisites
 - Go 1.21+
+- Node.js 16+ (for API key derivation script)
 - Internet connection (for Polymarket WebSocket)
 
 ### Setup
@@ -46,8 +47,11 @@ The bot acts as a **Market Maker**, placing limit orders on both sides of a bina
 git clone https://github.com/yourusername/Market-bot.git
 cd Market-bot
 
-# Install dependencies
+# Install Go dependencies
 go mod tidy
+
+# Install Node.js dependencies (for API key derivation)
+npm install
 
 # Create environment file
 cp .env.example .env
@@ -55,6 +59,31 @@ cp .env.example .env
 # Build
 go build -o market-bot ./cmd/bot
 ```
+
+### Deriving Polymarket API Credentials
+
+Polymarket API credentials are **derived from your private key** - they are not created in a dashboard. You only need to run this once:
+
+```bash
+# Option 1: Pass private key as argument
+node scripts/derive-api-key.js 0xYOUR_PRIVATE_KEY_HERE
+
+# Option 2: Use environment variable
+POLY_PK=0xYOUR_PRIVATE_KEY node scripts/derive-api-key.js
+```
+
+This will output your credentials:
+```
+============================================================
+SUCCESS! Add these to your .env file:
+============================================================
+
+POLY_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+POLY_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+POLY_PASSPHRASE=xxxxxxxxxxxxxxxx
+```
+
+Copy these values to your `.env` file along with your private key.
 
 ## Usage
 
@@ -90,18 +119,18 @@ go build -o realbot ./cmd/realbot
 
 #### Real Trading Setup
 
-1. **Get API credentials** from [Polymarket Settings](https://polymarket.com/settings/api-keys)
+1. **Derive API credentials** using the script (see [Deriving Polymarket API Credentials](#deriving-polymarket-api-credentials))
 
 2. **Configure `.env` file**:
 ```bash
 # Enable real trading mode
 TRADING_MODE=real
 
-# Your credentials
-PK=your_private_key_hex_without_0x
-API_KEY=your_api_key
-API_SECRET=your_api_secret_base64
-API_PASSPHRASE=your_passphrase
+# Your credentials (from derive-api-key.js script)
+POLY_PK=0xyour_private_key_hex
+POLY_API_KEY=your_api_key
+POLY_API_SECRET=your_api_secret_base64
+POLY_PASSPHRASE=your_passphrase
 
 # Polygon RPC (optional - uses public RPC by default)
 POLYGON_RPC_URL=https://polygon-rpc.com
