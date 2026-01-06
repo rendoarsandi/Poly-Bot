@@ -176,6 +176,50 @@ func (e *Engine) BuyForMarket(marketID, outcome string, price, quantity float64)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	return e.executeBuy(marketID, outcome, price, quantity)
+}
+
+// MarketBuy executes a market order by consuming liquidity from provided levels
+// This simulates a "taker" order that "chases" liquidity across multiple price levels.
+func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []MarketLevel) (*Trade, float64, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if len(levels) == 0 {
+		return nil, 0, fmt.Errorf("no liquidity available for %s", outcome)
+	}
+
+	remaining := quantity
+	totalCost := 0.0
+	filledQty := 0.0
+
+	// Levels should be sorted by price ascending for asks
+	for _, lv := range levels {
+		if lv.Size <= 0 {
+			continue
+		}
+
+		take := math.Min(remaining, lv.Size)
+		totalCost += take * lv.Price
+		filledQty += take
+		remaining -= take
+
+		if remaining <= 0.0001 {
+			break
+		}
+	}
+
+	if filledQty <= 0 {
+		return nil, 0, fmt.Errorf("insufficient liquidity to fill any amount for %s", outcome)
+	}
+
+	avgPrice := totalCost / filledQty
+	trade, err := e.executeBuy(marketID, outcome, avgPrice, filledQty)
+	return trade, avgPrice, err
+}
+
+// executeBuy is the internal implementation of a buy (must be called with lock)
+func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (*Trade, error) {
 	cost := price * quantity
 	if cost > e.currentBalance {
 		return nil, fmt.Errorf("insufficient balance: need %.4f, have %.4f", cost, e.currentBalance)

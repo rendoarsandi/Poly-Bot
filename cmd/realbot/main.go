@@ -614,13 +614,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						continue
 					}
 
-					// Dynamic trade size with compounding and margin scaling
+					// Dynamic trade size based on EQUITY (not just cash)
+					// This ensures consistent sizing regardless of how much is in positions
+					currentEquity := engine.GetEquity()
+					currentCash := currentBalance
 					latestBalance, _ := trader.GetBalance(ctx)
 					if latestBalance > 0 {
+						currentCash = latestBalance
 						currentBalance = latestBalance
 					}
 
-					baseTradeSize := cfg.CalculateTradeSize(currentBalance)
+					// Use equity for sizing calculation
+					baseTradeSize := cfg.CalculateTradeSize(currentEquity)
 					tradeSize := baseTradeSize * compoundMultiplier
 
 					// Scale shares based on margin
@@ -718,7 +723,34 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					cost, _, _, netProfit := calculateTradeMetrics(shares, sum)
 
-					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 && riskMgr.CanPlaceOrder(cost) && cost <= currentBalance && netProfit > 0 {
+					// Skip if net profit is not positive
+					if netProfit <= 0 {
+						continue
+					}
+
+					// Scale down if cost exceeds cash, but respect 80% liquidity cap
+					if !riskMgr.CanPlaceOrder(cost) || cost > currentCash {
+						// Scale back to what cash allows, but still respect 80% liquidity cap
+						maxAffordableShares := currentCash / sum
+
+						// Apply the stricter of: cash limit OR 80% liquidity limit
+						if maxAffordableShares > maxSafeShares {
+							maxAffordableShares = maxSafeShares
+						}
+
+						if maxAffordableShares < 1 {
+							continue // Not enough cash/liquidity for even 1 share
+						}
+						shares = maxAffordableShares
+						cost, _, _, netProfit = calculateTradeMetrics(shares, sum)
+
+						// If still over risk limit or not profitable, don't trade
+						if !riskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
+							continue
+						}
+					}
+
+					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 {
 						// Add slippage buffer: willing to pay up to 1 tick more for guaranteed fill
 						const slippageBuffer = 0.01
 						price1 := ask1 + slippageBuffer

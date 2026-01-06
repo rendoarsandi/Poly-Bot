@@ -168,13 +168,17 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 
-	// Initialize CSV Logger for long-term diagnostics
-	csvLogger, err = core.NewCSVLogger("bot_activity.csv")
-	if err != nil {
-		fmt.Printf("⚠️ Warning: Could not initialize CSV logger: %v\n", err)
-	} else {
-		defer csvLogger.Close()
-	}
+	// CSV Logger disabled per user request to save RAM/Disk
+	/*
+		csvLogger, err = core.NewCSVLogger("bot_activity.csv")
+		if err != nil {
+			fmt.Printf("⚠️ Warning: Could not initialize CSV logger: %v\n", err)
+		} else {
+			defer csvLogger.Close()
+		}
+	*/
+	csvLogger = nil // Ensure it is nil so logEvent skips it
+	_ = err         // Silence unused error warning
 	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support")
 
 	// Start TUI render loop
@@ -922,11 +926,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Use config for minimum margin (default 2%)
 					minMarginPercent := t.Config.MinMarginPercent
 
-					// Calculate dynamic trade size based on current balance
-					// $1000 balance * 5% = $50 trade size
-					// $100 balance * 5% = $5 trade size
-					currentBalance := t.Engine.GetBalance()
-					tradeSize := t.Config.CalculateTradeSize(currentBalance)
+					// Calculate dynamic trade size based on EQUITY (not just cash)
+					// This ensures consistent sizing regardless of how much is in positions
+					// $100 equity * 5% = $5 trade size (even if only $10 is cash)
+					currentEquity := t.Engine.GetEquity()
+					currentCash := t.Engine.GetBalance()
+					tradeSize := t.Config.CalculateTradeSize(currentEquity)
 					baseSharesPerTrade := tradeSize / sum // Shares = $ / price per share pair
 
 					// Evaluate portfolio risk before trading
@@ -1049,13 +1054,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						continue
 					}
 
-					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance {
-						// Scale back to base if over risk limit or balance
-						shares = baseShares
+					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash {
+						// Scale back to what cash allows, but still respect 80% liquidity cap
+						maxAffordableShares := currentCash / sum
+
+						// Apply the stricter of: cash limit OR 80% liquidity limit
+						if maxAffordableShares > maxSafeShares {
+							maxAffordableShares = maxSafeShares
+						}
+
+						if maxAffordableShares < 1 {
+							continue // Not enough cash/liquidity for even 1 share
+						}
+						shares = maxAffordableShares
 						cost, _, _, netProfit = calculateTradeMetrics(shares, sum)
 
-						// If even base is too much or not profitable after cost, don't trade
-						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentBalance || netProfit <= 0 {
+						// If still over risk limit or not profitable after cost, don't trade
+						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
 							continue
 						}
 					}
@@ -1071,15 +1086,43 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
 					}
 
-					t.Engine.BuyForMarket(t.ID, t.Outcomes[0], ask1, shares)
-					t.Engine.BuyForMarket(t.ID, t.Outcomes[1], ask2, shares)
+					// FORCE FILL: Use MarketBuy to "walk the book" and guarantee fills
+					// This ensures both sides fill completely, avoiding legging risk
+					// Get fresh copies of ask levels (sorted by price ascending)
+					freshAsks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
+					copy(freshAsks1, t.TokenFullAsks[t.Outcomes[0]])
+					sort.Slice(freshAsks1, func(i, j int) bool { return freshAsks1[i].Price < freshAsks1[j].Price })
 
-					// Record both sides of the arb trade in order history
-					cost1 := shares * ask1
-					cost2 := shares * ask2
-					t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", shares, ask1, cost1, margin, "FILLED")
-					t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", shares, ask2, cost2, margin, "FILLED")
+					freshAsks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
+					copy(freshAsks2, t.TokenFullAsks[t.Outcomes[1]])
+					sort.Slice(freshAsks2, func(i, j int) bool { return freshAsks2[i].Price < freshAsks2[j].Price })
 
+					// Execute market orders that consume liquidity across multiple levels
+					// Force fill: walks the book to guarantee execution
+					trade1, avgPrice1, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
+					trade2, avgPrice2, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
+
+					// Get actual fill quantities
+					filled1, filled2 := shares, shares
+					actualCost1, actualCost2 := shares*avgPrice1, shares*avgPrice2
+					if trade1 != nil {
+						filled1 = trade1.Quantity
+						actualCost1 = trade1.Value
+					}
+					if trade2 != nil {
+						filled2 = trade2.Quantity
+						actualCost2 = trade2.Value
+					}
+
+					// Log if we walked deeper into the book
+					if avgPrice1 != ask1 || avgPrice2 != ask2 {
+						t.TUI.LogEvent("[%s] 📊 Walked book: %s@$%.3f, %s@$%.3f",
+							t.ID, t.Outcomes[0], avgPrice1, t.Outcomes[1], avgPrice2)
+					}
+
+					// Record both sides - force market orders always fill
+					t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, "FILLED")
+					t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, "FILLED")
 					t.LaddersPlaced = true
 				}
 				}
