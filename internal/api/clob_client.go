@@ -90,6 +90,7 @@ type OrderRequest struct {
 	OrderType   OrderType   `json:"type,omitempty"`
 	TimeInForce TimeInForce `json:"timeInForce,omitempty"`
 	Expiration  int64       `json:"expiration,omitempty"`
+	FeeRateBps  int         `json:"feeRateBps,omitempty"`
 }
 
 // SignedOrder represents a signed order ready for submission
@@ -160,7 +161,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		TakerAmount:   takerAmount,
 		Expiration:    strconv.FormatInt(expiration, 10),
 		Nonce:         "0",
-		FeeRateBps:    "0",
+		FeeRateBps:    strconv.Itoa(req.FeeRateBps),
 		Side:          string(req.Side),
 		SignatureType: 0, // EOA signature
 	}

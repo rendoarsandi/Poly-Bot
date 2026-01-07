@@ -14,10 +14,10 @@ import (
 // Trader defines the interface for placing trades (paper or real)
 type Trader interface {
 	// Buy places a buy order
-	Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error)
+	Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error)
 
 	// Sell places a sell order
-	Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error)
+	Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error)
 
 	// CancelOrder cancels an existing order
 	CancelOrder(ctx context.Context, orderID string) error
@@ -43,16 +43,18 @@ type Trader interface {
 
 // TradeResult represents the result of a trade attempt
 type TradeResult struct {
-	OrderID   string
-	Status    string
-	Success   bool
-	Message   string
-	Price     float64
-	Size      float64
-	Side      string
-	TokenID   string
-	Outcome   string
-	Timestamp time.Time
+	OrderID    string
+	Status     string
+	Success    bool
+	Message    string
+	Price      float64
+	Size       float64
+	Fee        float64
+	FeeRateBps int
+	Side       string
+	TokenID    string
+	Outcome    string
+	Timestamp  time.Time
 }
 
 // PositionInfo represents a position
@@ -77,8 +79,14 @@ func NewPaperTrader(engine *paper.Engine, orderBook *paper.OrderBook) *PaperTrad
 	}
 }
 
-func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
+func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	cost := price * size
+	// Calculate simulated fee
+	fee := 0.0
+	if feeRateBps > 0 {
+		fee = cost * (float64(feeRateBps) / 10000.0)
+	}
+
 	_, err := t.engine.Buy(outcome, price, size)
 	if err != nil {
 		return &TradeResult{
@@ -88,20 +96,29 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 	}
 
 	return &TradeResult{
-		OrderID:   fmt.Sprintf("paper-%d", time.Now().UnixNano()),
-		Status:    "FILLED",
-		Success:   true,
-		Price:     price,
-		Size:      size,
-		Side:      "BUY",
-		TokenID:   tokenID,
-		Outcome:   outcome,
-		Timestamp: time.Now(),
-		Message:   fmt.Sprintf("Bought %.2f %s @ $%.4f (cost: $%.2f)", size, outcome, price, cost),
+		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
+		Status:     "FILLED",
+		Success:    true,
+		Price:      price,
+		Size:       size,
+		Fee:        fee,
+		FeeRateBps: feeRateBps,
+		Side:       "BUY",
+		TokenID:    tokenID,
+		Outcome:    outcome,
+		Timestamp:  time.Now(),
+		Message:    fmt.Sprintf("Bought %.2f %s @ $%.4f (cost: $%.2f, fee: $%.4f)", size, outcome, price, cost, fee),
 	}, nil
 }
 
-func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
+func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
+	// Calculate simulated fee
+	fee := 0.0
+	if feeRateBps > 0 {
+		proceeds := price * size
+		fee = proceeds * (float64(feeRateBps) / 10000.0)
+	}
+
 	_, err := t.engine.Sell(outcome, price, size)
 	if err != nil {
 		return &TradeResult{
@@ -111,16 +128,18 @@ func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, 
 	}
 
 	return &TradeResult{
-		OrderID:   fmt.Sprintf("paper-%d", time.Now().UnixNano()),
-		Status:    "FILLED",
-		Success:   true,
-		Price:     price,
-		Size:      size,
-		Side:      "SELL",
-		TokenID:   tokenID,
-		Outcome:   outcome,
-		Timestamp: time.Now(),
-		Message:   fmt.Sprintf("Sold %.2f %s @ $%.4f", size, outcome, price),
+		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
+		Status:     "FILLED",
+		Success:    true,
+		Price:      price,
+		Size:       size,
+		Fee:        fee,
+		FeeRateBps: feeRateBps,
+		Side:       "SELL",
+		TokenID:    tokenID,
+		Outcome:    outcome,
+		Timestamp:  time.Now(),
+		Message:    fmt.Sprintf("Sold %.2f %s @ $%.4f (fee: $%.4f)", size, outcome, price, fee),
 	}, nil
 }
 
@@ -207,10 +226,16 @@ func (t *RealTrader) SetDryRun(enabled bool) {
 	t.clob.SetDryRun(enabled)
 }
 
-func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
+func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	// Check safety limits
 	cost := price * size
-	if err := t.checkSafetyLimits(cost); err != nil {
+	// Add estimated fee to cost check
+	fee := 0.0
+	if feeRateBps > 0 {
+		fee = cost * (float64(feeRateBps) / 10000.0)
+	}
+
+	if err := t.checkSafetyLimits(cost + fee); err != nil {
 		return &TradeResult{
 			Success: false,
 			Message: err.Error(),
@@ -224,6 +249,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		Side:        api.SideBuy,
 		OrderType:   orderType,
 		TimeInForce: tif,
+		FeeRateBps:  feeRateBps,
 	})
 	if err != nil {
 		return &TradeResult{
@@ -235,7 +261,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	if resp.Success {
 		t.mu.Lock()
 		if t.cachedBalance > 0 {
-			t.cachedBalance -= cost
+			t.cachedBalance -= (cost + fee)
 		}
 		t.mu.Unlock()
 	}
@@ -246,20 +272,22 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}
 
 	return &TradeResult{
-		OrderID:   resp.OrderID,
-		Status:    status,
-		Success:   resp.Success,
-		Price:     price,
-		Size:      size,
-		Side:      "BUY",
-		TokenID:   tokenID,
-		Outcome:   outcome,
-		Timestamp: time.Now(),
-		Message:   resp.ErrorMsg,
+		OrderID:    resp.OrderID,
+		Status:     status,
+		Success:    resp.Success,
+		Price:      price,
+		Size:       size,
+		Fee:        fee,
+		FeeRateBps: feeRateBps,
+		Side:       "BUY",
+		TokenID:    tokenID,
+		Outcome:    outcome,
+		Timestamp:  time.Now(),
+		Message:    resp.ErrorMsg,
 	}, nil
 }
 
-func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
+func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
 		Price:       price,
@@ -267,6 +295,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		Side:        api.SideSell,
 		OrderType:   orderType,
 		TimeInForce: tif,
+		FeeRateBps:  feeRateBps,
 	})
 	if err != nil {
 		return &TradeResult{
@@ -275,10 +304,16 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
+	fee := 0.0
+	proceeds := price * size
+	if feeRateBps > 0 {
+		fee = proceeds * (float64(feeRateBps) / 10000.0)
+	}
+
 	if resp.Success {
 		t.mu.Lock()
 		if t.cachedBalance > 0 {
-			t.cachedBalance += (price * size)
+			t.cachedBalance += (proceeds - fee)
 		}
 		t.mu.Unlock()
 	}
@@ -289,16 +324,18 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 	}
 
 	return &TradeResult{
-		OrderID:   resp.OrderID,
-		Status:    status,
-		Success:   resp.Success,
-		Price:     price,
-		Size:      size,
-		Side:      "SELL",
-		TokenID:   tokenID,
-		Outcome:   outcome,
-		Timestamp: time.Now(),
-		Message:   resp.ErrorMsg,
+		OrderID:    resp.OrderID,
+		Status:     status,
+		Success:    resp.Success,
+		Price:      price,
+		Size:       size,
+		Fee:        fee,
+		FeeRateBps: feeRateBps,
+		Side:       "SELL",
+		TokenID:    tokenID,
+		Outcome:    outcome,
+		Timestamp:  time.Now(),
+		Message:    resp.ErrorMsg,
 	}, nil
 }
 
@@ -415,8 +452,8 @@ func (t *RealTrader) CancelOrderByID(ctx context.Context, orderID string) error 
 
 // BuyWithConfirmation places a buy order and waits for fill confirmation
 // Returns the result and whether the order was confirmed filled
-func (t *RealTrader) BuyWithConfirmation(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, fillTimeout time.Duration) (*TradeResult, bool, error) {
-	result, err := t.Buy(ctx, tokenID, outcome, price, size, orderType, tif)
+func (t *RealTrader) BuyWithConfirmation(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int, fillTimeout time.Duration) (*TradeResult, bool, error) {
+	result, err := t.Buy(ctx, tokenID, outcome, price, size, orderType, tif, feeRateBps)
 	if err != nil {
 		return result, false, err
 	}

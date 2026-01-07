@@ -301,6 +301,44 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 	return &book, nil
 }
 
+// FeeRateResponse represents the response from the fee-rate endpoint
+type FeeRateResponse struct {
+	FeeRateBps int `json:"fee_rate_bps"`
+}
+
+// GetFeeRate fetches the current fee rate for a token
+func (c *RestClient) GetFeeRate(ctx context.Context, tokenID string) (int, error) {
+	// Rate limit check
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+
+	url := fmt.Sprintf("%s/fee-rate?token_id=%s", c.BaseURL, tokenID)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch fee rate: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to fetch fee rate: status %d", resp.StatusCode)
+	}
+
+	var result FeeRateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("failed to decode fee rate: %w", err)
+	}
+
+	return result.FeeRateBps, nil
+}
+
 // GammaPriceResult contains bid/ask prices for an outcome
 type GammaPriceResult struct {
 	Bid float64

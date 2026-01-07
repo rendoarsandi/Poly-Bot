@@ -478,6 +478,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	wsMsgChan := wsMgr.StartStreaming(ctx)
 	tui.LogEvent("[%s] 📡 Connected, trading until %v", id, endTime.Format("15:04:05"))
 
+	// Fetch fee rates for the tokens
+	tokenFeeRates := make(map[string]int)
+	for tid, outcome := range tokenMap {
+		rate, err := restClient.GetFeeRate(ctx, tid)
+		if err == nil {
+			tokenFeeRates[outcome] = rate
+			if rate > 0 {
+				tui.LogEvent("[%s] ℹ️ Fee enabled for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
+			}
+		}
+	}
+
 	tokenBids := make(map[string]float64)
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
@@ -647,9 +659,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Apply compounding multiplier from profitable rounds
 					shares = float64(int(shares * compoundMultiplier))
 
+					// Get max fee rate for conservative margin calculation
+					maxFeeRateBps := 0
+					if rate1, ok := tokenFeeRates[outcomes[0]]; ok && rate1 > maxFeeRateBps {
+						maxFeeRateBps = rate1
+					}
+					if rate2, ok := tokenFeeRates[outcomes[1]]; ok && rate2 > maxFeeRateBps {
+						maxFeeRateBps = rate2
+					}
+
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
 					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
 					maxSum := 1.0 - (cfg.MinMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
+
+					// Adjust maxSum to account for fees if enabled
+					if maxFeeRateBps > 0 {
+						// Reduce maxSum by the fee percentage to ensure net profit
+						maxSum -= (float64(maxFeeRateBps) / 10000.0)
+					}
 
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
@@ -721,7 +748,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						shares = maxSafeShares
 					}
 
-					cost, _, _, netProfit := calculateTradeMetrics(shares, sum)
+					cost, _, _, netProfit := calculateTradeMetrics(shares, sum, maxFeeRateBps)
 
 					// Skip if net profit is not positive
 					if netProfit <= 0 {
@@ -742,7 +769,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							continue // Not enough cash/liquidity for even 1 share
 						}
 						shares = maxAffordableShares
-						cost, _, _, netProfit = calculateTradeMetrics(shares, sum)
+						cost, _, _, netProfit = calculateTradeMetrics(shares, sum, maxFeeRateBps)
 
 						// If still over risk limit or not profitable, don't trade
 						if !riskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
@@ -758,7 +785,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// Recalculate with buffered prices including order cost overhead
 						bufferedSum := price1 + price2
-						_, _, _, bufferedNetProfit := calculateTradeMetrics(shares, bufferedSum)
+						_, _, _, bufferedNetProfit := calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
 						bufferedMargin := (1.0 - bufferedSum) * 100
 						if bufferedNetProfit <= 0 || bufferedMargin < 1.0 {
 							// Skip if buffer makes arb unprofitable after order cost
@@ -792,12 +819,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						go func() {
 							defer wg.Done()
 							// Using OrderTypeMarket forces the fill even if price slips
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, "")
+							rate := tokenFeeRates[outcomes[0]]
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, "", rate)
 						}()
 
 						go func() {
 							defer wg.Done()
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, "")
+							// Using OrderTypeMarket forces the fill even if price slips
+							rate := tokenFeeRates[outcomes[1]]
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, "", rate)
 						}()
 
 						wg.Wait()
@@ -836,9 +866,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 }
 
 // Helper to match bot's toMarketLevels
-func calculateTradeMetrics(shares, sum float64) (cost, overhead, gross, net float64) {
+func calculateTradeMetrics(shares, sum float64, feeRateBps int) (cost, overhead, gross, net float64) {
 	cost = shares * sum
-	overhead = 0 // Polymarket has no fees
+	
+	// Polymarket 15m markets now have taker fees
+	// feeRateBps is in basis points (1000 = 10%)
+	// Fee is deducted from proceeds (bought tokens or sold USDC)
+	overhead = 0
+	if feeRateBps > 0 {
+		// Effective fee on the total arbitrage cost
+		overhead = cost * (float64(feeRateBps) / 10000.0)
+	}
+
 	gross = shares * (1.0 - sum)
 	net = gross - overhead
 	return
