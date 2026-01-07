@@ -160,7 +160,6 @@ func run() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	fmt.Println("✅ Config loaded successfully")
-	_ = cfg // Reserved for future use
 
 	restClient := api.NewRestClient("")
 
@@ -168,17 +167,16 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 
-	// CSV Logger disabled per user request to save RAM/Disk
-	/*
+	// Initialize CSV Logger if enabled in config
+	if cfg.EnableCSVLogger {
 		csvLogger, err = core.NewCSVLogger("bot_activity.csv")
 		if err != nil {
 			fmt.Printf("⚠️ Warning: Could not initialize CSV logger: %v\n", err)
 		} else {
 			defer csvLogger.Close()
 		}
-	*/
-	csvLogger = nil // Ensure it is nil so logEvent skips it
-	_ = err         // Silence unused error warning
+	}
+
 	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support")
 
 	// Start TUI render loop
