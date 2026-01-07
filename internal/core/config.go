@@ -69,7 +69,7 @@ func LoadConfig() (*Config, error) {
 		// Position sizing defaults: $1000 balance → $50 per trade
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
-		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 1.0),
+		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 2.0),
 		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.05), // 5% of balance
 		// Safety settings
 		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
