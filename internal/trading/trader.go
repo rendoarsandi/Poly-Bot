@@ -14,10 +14,10 @@ import (
 // Trader defines the interface for placing trades (paper or real)
 type Trader interface {
 	// Buy places a buy order
-	Buy(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error)
+	Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error)
 
 	// Sell places a sell order
-	Sell(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error)
+	Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error)
 
 	// CancelOrder cancels an existing order
 	CancelOrder(ctx context.Context, orderID string) error
@@ -77,7 +77,7 @@ func NewPaperTrader(engine *paper.Engine, orderBook *paper.OrderBook) *PaperTrad
 	}
 }
 
-func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
+func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
 	cost := price * size
 	_, err := t.engine.Buy(outcome, price, size)
 	if err != nil {
@@ -101,7 +101,7 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 	}, nil
 }
 
-func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
+func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
 	_, err := t.engine.Sell(outcome, price, size)
 	if err != nil {
 		return &TradeResult{
@@ -207,7 +207,7 @@ func (t *RealTrader) SetDryRun(enabled bool) {
 	t.clob.SetDryRun(enabled)
 }
 
-func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
+func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
 	// Check safety limits
 	cost := price * size
 	if err := t.checkSafetyLimits(cost); err != nil {
@@ -222,7 +222,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		Price:       price,
 		Size:        size,
 		Side:        api.SideBuy,
-		OrderType:   api.OrderTypeLimit,
+		OrderType:   orderType,
 		TimeInForce: tif,
 	})
 	if err != nil {
@@ -259,13 +259,13 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}, nil
 }
 
-func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce) (*TradeResult, error) {
+func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce) (*TradeResult, error) {
 	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
 		Price:       price,
 		Size:        size,
 		Side:        api.SideSell,
-		OrderType:   api.OrderTypeLimit,
+		OrderType:   orderType,
 		TimeInForce: tif,
 	})
 	if err != nil {
@@ -415,8 +415,8 @@ func (t *RealTrader) CancelOrderByID(ctx context.Context, orderID string) error 
 
 // BuyWithConfirmation places a buy order and waits for fill confirmation
 // Returns the result and whether the order was confirmed filled
-func (t *RealTrader) BuyWithConfirmation(ctx context.Context, tokenID, outcome string, price, size float64, tif api.TimeInForce, fillTimeout time.Duration) (*TradeResult, bool, error) {
-	result, err := t.Buy(ctx, tokenID, outcome, price, size, tif)
+func (t *RealTrader) BuyWithConfirmation(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, fillTimeout time.Duration) (*TradeResult, bool, error) {
+	result, err := t.Buy(ctx, tokenID, outcome, price, size, orderType, tif)
 	if err != nil {
 		return result, false, err
 	}

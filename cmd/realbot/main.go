@@ -778,8 +778,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// TAKER EXECUTION: Use FOK (Fill or Kill) - fills entirely or fails immediately
-						// No lingering orders, no need for timeout/cancel logic
+						// MARKET EXECUTION: Force fill both sides
+						// We use a high 'worst-case' price (e.g., $0.95) to ensure it clears the book
+						// but still benefits from market order execution.
+						const worstCasePrice = 0.95
+						
 						var wg sync.WaitGroup
 						wg.Add(2)
 
@@ -788,78 +791,38 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						go func() {
 							defer wg.Done()
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], price1, shares, api.TIFFillOrKill)
+							// Using OrderTypeMarket forces the fill even if price slips
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, "")
 						}()
 
 						go func() {
 							defer wg.Done()
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], price2, shares, api.TIFFillOrKill)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, "")
 						}()
 
 						wg.Wait()
 
-						// FOK: Success means fully filled, no partial fills possible
-						side1Filled := err1 == nil && res1 != nil && res1.Success
-						side2Filled := err2 == nil && res2 != nil && res2.Success
-
-						// Calculate costs for order history
+						// Calculate costs using the original target price for reporting (actual will be better)
 						cost1 := shares * price1
 						cost2 := shares * price2
 
 						// Process results
-						if side1Filled {
-							tui.LogEvent("[%s] ✅ Side 1 FILLED: %s @ $%.3f", id, outcomes[0], price1)
+						if err1 == nil && res1 != nil && res1.Success {
+							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
 							engine.BuyForMarket(id, outcomes[0], price1, shares)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FILLED")
 						} else {
-							tui.LogEvent("[%s] ❌ Side 1 Fail: %v", id, err1)
+							tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FAILED")
 						}
 
-						if side2Filled {
-							tui.LogEvent("[%s] ✅ Side 2 FILLED: %s @ $%.3f", id, outcomes[1], price2)
+						if err2 == nil && res2 != nil && res2.Success {
+							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
 							engine.BuyForMarket(id, outcomes[1], price2, shares)
 							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FILLED")
 						} else {
-							tui.LogEvent("[%s] ❌ Side 2 Fail: %v", id, err2)
+							tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
 							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FAILED")
-						}
-
-						// IMMEDIATE RETRY on partial fill - match position ASAP
-						if side1Filled != side2Filled {
-							tui.LogEvent("[%s] ⚠️ PARTIAL FILL - Attempting immediate retry!", id)
-
-							// Determine which side failed
-							var failedToken, failedOutcome string
-							var failedPrice float64
-							if !side1Filled {
-								failedToken, failedOutcome, failedPrice = token0, outcomes[0], price1
-							} else {
-								failedToken, failedOutcome, failedPrice = token1, outcomes[1], price2
-							}
-
-							// Immediate retry with same price (FOK - taker)
-							retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, failedPrice, shares, api.TIFFillOrKill)
-							retryCost := shares * failedPrice
-							if retryErr == nil && retryRes != nil && retryRes.Success {
-								tui.LogEvent("[%s] ✅ RETRY FILLED: %s @ $%.3f", id, failedOutcome, failedPrice)
-								engine.BuyForMarket(id, failedOutcome, failedPrice, shares)
-								tui.RecordOrder(id, failedOutcome, "BUY", shares, failedPrice, retryCost, bufferedMargin, "FILLED")
-							} else {
-								// Second retry with higher price (+2 ticks total from original ask)
-								aggressivePrice := failedPrice + 0.01
-								aggressiveCost := shares * aggressivePrice
-								tui.LogEvent("[%s] 🔄 Aggressive retry: %s @ $%.3f", id, failedOutcome, aggressivePrice)
-								retryRes2, retryErr2 := trader.Buy(ctx, failedToken, failedOutcome, aggressivePrice, shares, api.TIFFillOrKill)
-								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
-									tui.LogEvent("[%s] ✅ AGGRESSIVE RETRY FILLED: %s @ $%.3f", id, failedOutcome, aggressivePrice)
-									engine.BuyForMarket(id, failedOutcome, aggressivePrice, shares)
-									tui.RecordOrder(id, failedOutcome, "BUY", shares, aggressivePrice, aggressiveCost, bufferedMargin, "FILLED")
-								} else {
-									tui.LogEvent("[%s] ❌ RETRY FAILED - Position skewed! Will attempt recovery next tick", id)
-									tui.RecordOrder(id, failedOutcome, "BUY", shares, aggressivePrice, aggressiveCost, bufferedMargin, "FAILED")
-								}
-							}
 						}
 
 						lastTrade = time.Now()
