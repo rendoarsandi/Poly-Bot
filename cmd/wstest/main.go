@@ -150,15 +150,24 @@ func main() {
 				bestBid := 0.0
 
 				for _, order := range b.Asks {
-					p, _ := strconv.ParseFloat(order.Price, 64)
-					s, _ := strconv.ParseFloat(order.Size, 64)
+					p, err := strconv.ParseFloat(order.Price, 64)
+					if err != nil {
+						continue
+					}
+					s, err := strconv.ParseFloat(order.Size, 64)
+					if err != nil {
+						continue
+					}
 					if p < bestAsk && p > 0 {
 						bestAsk = p
 						askLiq = s // Liquidity at best ask only
 					}
 				}
 				for _, order := range b.Bids {
-					p, _ := strconv.ParseFloat(order.Price, 64)
+					p, err := strconv.ParseFloat(order.Price, 64)
+					if err != nil {
+						continue
+					}
 					if p > bestBid {
 						bestBid = p
 					}
@@ -218,15 +227,24 @@ func main() {
 
 				// Find best ask and its liquidity
 				for _, order := range book.Asks {
-					p, _ := strconv.ParseFloat(order.Price, 64)
-					s, _ := strconv.ParseFloat(order.Size, 64)
+					p, err := strconv.ParseFloat(order.Price, 64)
+					if err != nil {
+						continue
+					}
+					s, err := strconv.ParseFloat(order.Size, 64)
+					if err != nil {
+						continue
+					}
 					if p < bestAsk && p > 0 {
 						bestAsk = p
 						askLiq = s
 					}
 				}
 				for _, order := range book.Bids {
-					p, _ := strconv.ParseFloat(order.Price, 64)
+					p, err := strconv.ParseFloat(order.Price, 64)
+					if err != nil {
+						continue
+					}
 					if p > bestBid {
 						bestBid = p
 					}

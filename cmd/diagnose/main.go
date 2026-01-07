@@ -139,16 +139,28 @@ func run() error {
 					totalBidLiq, totalAskLiq := 0.0, 0.0
 
 					for _, order := range b.Bids {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						s, _ := strconv.ParseFloat(order.Size, 64)
+						p, err := strconv.ParseFloat(order.Price, 64)
+						if err != nil {
+							continue
+						}
+						s, err := strconv.ParseFloat(order.Size, 64)
+						if err != nil {
+							continue
+						}
 						if p > bestBid {
 							bestBid = p
 						}
 						totalBidLiq += s
 					}
 					for _, order := range b.Asks {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						s, _ := strconv.ParseFloat(order.Size, 64)
+						p, err := strconv.ParseFloat(order.Price, 64)
+						if err != nil {
+							continue
+						}
+						s, err := strconv.ParseFloat(order.Size, 64)
+						if err != nil {
+							continue
+						}
 						if p < bestAsk && p > 0 {
 							bestAsk = p
 						}
@@ -185,16 +197,28 @@ func run() error {
 					totalBidLiq, totalAskLiq := 0.0, 0.0
 
 					for _, order := range book.Bids {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						s, _ := strconv.ParseFloat(order.Size, 64)
+						p, err := strconv.ParseFloat(order.Price, 64)
+						if err != nil {
+							continue
+						}
+						s, err := strconv.ParseFloat(order.Size, 64)
+						if err != nil {
+							continue
+						}
 						if p > bestBid {
 							bestBid = p
 						}
 						totalBidLiq += s
 					}
 					for _, order := range book.Asks {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						s, _ := strconv.ParseFloat(order.Size, 64)
+						p, err := strconv.ParseFloat(order.Price, 64)
+						if err != nil {
+							continue
+						}
+						s, err := strconv.ParseFloat(order.Size, 64)
+						if err != nil {
+							continue
+						}
 						if p < bestAsk && p > 0 {
 							bestAsk = p
 						}
@@ -369,8 +393,11 @@ func run() error {
 							asks := make([]api.PriceLevel, len(ws.AskDepth))
 							copy(asks, ws.AskDepth)
 							sort.Slice(asks, func(a, b int) bool {
-								pa, _ := strconv.ParseFloat(asks[a].Price, 64)
-								pb, _ := strconv.ParseFloat(asks[b].Price, 64)
+								pa, errA := strconv.ParseFloat(asks[a].Price, 64)
+								pb, errB := strconv.ParseFloat(asks[b].Price, 64)
+								if errA != nil || errB != nil {
+									return false
+								}
 								return pa < pb
 							})
 
@@ -380,8 +407,11 @@ func run() error {
 								if j >= 5 {
 									break
 								}
-								p, _ := strconv.ParseFloat(lvl.Price, 64)
-								s, _ := strconv.ParseFloat(lvl.Size, 64)
+								p, errP := strconv.ParseFloat(lvl.Price, 64)
+								s, errS := strconv.ParseFloat(lvl.Size, 64)
+								if errP != nil || errS != nil {
+									continue
+								}
 								cumLiq += s
 								fmt.Printf("      $%.3f × %.0f (cum: %.0f)\n", p, s, cumLiq)
 							}
