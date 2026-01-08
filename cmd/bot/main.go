@@ -639,8 +639,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastWsWarnTime := time.Time{}     // Rate-limit WS warnings
 	lastForceReconnect := time.Time{} // Track forced reconnection attempts
 
-	const wsWarnInterval = 15 * time.Second   // Only warn once per 15 seconds
-	const wsForceReconnect = 15 * time.Second // Force reconnection after 15 seconds stale
+	const wsWarnInterval = 10 * time.Second   // Only warn once per 10 seconds
+	const wsForceReconnect = 10 * time.Second // Force reconnection after 10 seconds stale
 
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
@@ -855,10 +855,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
+			// Update WS staleness in TUI
+			t.TUI.UpdateWSLatency(wsLastMsg)
+
 									// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 40ms for high-frequency liquidity updates
-			// A global rate limiter in RestClient ensures we never exceed 150 RPS.
-			restPollInterval := 40 * time.Millisecond
+			// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
+			// Global rate limiter in RestClient caps total at 148 RPS across all traders
+			restPollInterval := 20 * time.Millisecond
 
 			// Individual trader staleness watchdog
 			staleTime := time.Since(t.LastUpdate)
@@ -868,7 +871,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			needsRestPoll := time.Since(t.LastRestPoll) > restPollInterval
 
 			// Also force REST if WS is unhealthy
-			wsUnhealthy := !wsConnected || wsLastMsg > 15*time.Second
+			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
 			if wsUnhealthy && staleTime > 3*time.Second {
 				needsRestPoll = true
 			}
@@ -877,10 +880,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.handleRestFallback(ctx, tokenPrices, staleTime)
 			}
 
-			// FORCE RECONNECT: If stale for 15s (reduced from 30s for faster recovery)
-			if time.Since(t.LastUpdate) > 15*time.Second {
+			// FORCE RECONNECT: If stale for 10s for faster recovery
+			if time.Since(t.LastUpdate) > 10*time.Second {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
-					t.TUI.LogEvent("[%s] ⚠️ STALE (15s) - forcing WS reconnect", t.ID)
+					t.TUI.LogEvent("[%s] ⚠️ STALE (10s) - forcing WS reconnect", t.ID)
 					lastForceReconnect = time.Now()
 					wsMgr.ForceReconnect()
 				}
@@ -1284,8 +1287,13 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 	for tokenID, outcome := range t.TokenMap {
 		// Use short timeout
 		restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
+		start := time.Now()
 		book, err := t.RestClient.GetOrderBook(restCtx, tokenID)
+		latency := time.Since(start)
 		restCancel()
+
+		// Update TUI with real REST latency
+		t.TUI.UpdateRestLatency(latency)
 
 		if err != nil {
 			restErrors++

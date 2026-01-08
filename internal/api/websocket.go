@@ -12,16 +12,17 @@ import (
 )
 
 const (
-	// Heartbeat interval - check connection every 30 seconds
-	// Longer interval to handle Android background throttling
-	heartbeatInterval = 30 * time.Second
+	// Heartbeat interval - ping every 10 seconds for aggressive keepalive
+	// Prevents connection from going stale on mobile/constrained environments
+	heartbeatInterval = 10 * time.Second
 	// If no message received in this time, consider connection dead
-	// (Only used as fallback - ping is primary health check)
-	readTimeout = 60 * time.Second
+	readTimeout = 30 * time.Second
 	// Max reconnection attempts before giving up
 	maxReconnectAttempts = 10
 	// Delay between reconnection attempts (starts at 1s, doubles each attempt)
 	reconnectDelay = 1 * time.Second
+	// Ping failures before triggering reconnect
+	maxPingFailures = 2
 )
 
 type WSManager struct {
@@ -127,7 +128,6 @@ func (m *WSManager) heartbeatLoop() {
 	defer ticker.Stop()
 
 	consecutivePingFailures := 0
-	const maxPingFailures = 3 // Allow a few failures before reconnecting
 
 	for {
 		ctx := m.getContext()

@@ -351,8 +351,9 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Only poll every 30 seconds to avoid rate limits, or if never polled
-	if time.Since(t.lastBalanceUpdate) < 30*time.Second && t.lastBalanceUpdate.IsZero() == false {
+	// Only poll every 5 seconds to avoid rate limits, but fast enough for trading
+	// (Reduced from 30s for more accurate balance tracking during active trading)
+	if time.Since(t.lastBalanceUpdate) < 5*time.Second && t.lastBalanceUpdate.IsZero() == false {
 		return t.cachedBalance, nil
 	}
 
@@ -368,6 +369,15 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.cachedBalance = bal
 	t.lastBalanceUpdate = time.Now()
 	return bal, nil
+}
+
+// ForceRefreshBalance clears the cache and fetches fresh balance
+// Use this after trades to ensure accurate balance
+func (t *RealTrader) ForceRefreshBalance(ctx context.Context) (float64, error) {
+	t.mu.Lock()
+	t.lastBalanceUpdate = time.Time{} // Clear cache
+	t.mu.Unlock()
+	return t.GetBalance(ctx)
 }
 
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {

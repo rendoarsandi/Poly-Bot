@@ -314,7 +314,7 @@ func run() error {
 				MaxUnmatchedRatio:  0.20,  // 20% max unmatched
 				MaxUnmatchedShares: 500.0, // 500 shares max on one side
 				SkewThreshold:      0.10,  // 10% skew triggers rebalance
-				KillSwitchDrawdown: 999.0, // High limit as we're using real money
+				KillSwitchDrawdown: 0.25, // 25% drawdown triggers kill switch (real money protection)
 			}
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
@@ -605,14 +605,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// ============ REST PRIMARY FOR LIQUIDITY ============
 						// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-						// Poll REST every 40ms to get fresh liquidity data (25 ticks/sec)
-						// A global rate limiter in RestClient ensures we never exceed 150 RPS.
+						// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
+						// Global rate limiter in RestClient caps total at 148 RPS across all traders
 						staleTime := time.Since(lastUpdate)
-						restPollInterval := 40 * time.Millisecond		// ALWAYS poll REST for liquidity
+						restPollInterval := 20 * time.Millisecond
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
+		// Update WS staleness in TUI
+		wsTimeSinceMsg := wsMgr.TimeSinceLastMessage()
+		tui.UpdateWSLatency(wsTimeSinceMsg)
+
 		// Also force REST if WS is unhealthy
-		wsUnhealthy := !wsMgr.IsConnected() || wsMgr.TimeSinceLastMessage() > 15*time.Second
+		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		if wsUnhealthy && staleTime > 3*time.Second {
 			needsRestPoll = true
 		}
@@ -863,6 +867,64 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FAILED")
 						}
 
+						// ═══════════════════════════════════════════════════════════════
+						// UNBALANCED FILL RECOVERY: If one side succeeded and other failed,
+						// retry the failed side up to 3 times to prevent unbalanced position
+						// ═══════════════════════════════════════════════════════════════
+						side1Success := err1 == nil && res1 != nil && res1.Success
+						side2Success := err2 == nil && res2 != nil && res2.Success
+
+						if side1Success != side2Success {
+							// One succeeded, one failed - need to recover
+							failedSide := 1
+							failedToken := token0
+							failedOutcome := outcomes[0]
+							failedPrice := price1
+							if side1Success {
+								failedSide = 2
+								failedToken = token1
+								failedOutcome = outcomes[1]
+								failedPrice = price2
+							}
+
+							tui.LogEvent("[%s] ⚠️ UNBALANCED: Side %d failed, attempting recovery...", id, failedSide)
+
+							// Retry failed side up to 3 times with increasing aggression
+							for retry := 1; retry <= 3; retry++ {
+								time.Sleep(100 * time.Millisecond) // Brief pause between retries
+
+								// Increase price aggressiveness each retry
+								retryPrice := failedPrice + (float64(retry) * 0.01) // +1%, +2%, +3%
+								if retryPrice > 0.95 {
+									retryPrice = 0.95 // Cap at 95 cents
+								}
+
+								tui.LogEvent("[%s] 🔄 Recovery attempt %d/3 for %s @ $%.3f", id, retry, failedOutcome, retryPrice)
+
+								rate := tokenFeeRates[failedOutcome]
+								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+
+								if retryErr == nil && retryRes != nil && retryRes.Success {
+									tui.LogEvent("[%s] ✅ Recovery SUCCESS for %s!", id, failedOutcome)
+									engine.BuyForMarket(id, failedOutcome, retryPrice, shares)
+									retryCost := shares * retryPrice
+									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, bufferedMargin, "FILLED")
+									break
+								}
+
+								if retry == 3 {
+									tui.LogEvent("[%s] 🚨 Recovery FAILED after 3 attempts - position unbalanced!", id)
+									// Position is now unbalanced - will be handled by risk manager
+								}
+							}
+						}
+
+						// Force refresh balance after trade to ensure accurate tracking
+						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+							currentBalance = newBal
+							currentCash = newBal
+						}
+
 						lastTrade = time.Now()
 					}
 				}
@@ -904,7 +966,13 @@ func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.
 func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
 	success := false
 	for tokenID, outcome := range tokenMap {
+		start := time.Now()
 		book, err := restClient.GetOrderBook(ctx, tokenID)
+		latency := time.Since(start)
+
+		// Update TUI with real REST latency
+		tui.UpdateRestLatency(latency)
+
 		if err != nil {
 			continue
 		}

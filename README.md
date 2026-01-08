@@ -27,11 +27,12 @@ The bot acts as a **Market Maker**, placing limit orders on both sides of a bina
 | **Autonomous Redemption** | Automatic on-chain redemption of winning tokens (Claim profit) |
 | **Sum-Check Engine** | Only trades when `price_up + price_down < $0.98` |
 | **Inventory Skew Management** | Rebalances if one side fills disproportionately |
-| **Kill Switch** | Emergency stop when exposure AND unmatched exceed limits |
+| **Unbalanced Fill Recovery** | 3 retries with progressive pricing if one side fails |
+| **Kill Switch** | Emergency pause at 25% drawdown (holds positions until expiry) |
 | **Market Rotation** | Automatically moves to next market after resolution |
 | **Paper Trading** | Simulated trading with no real money |
 | **London VPS Optimized** | Ultra-low latency execution via AWS eu-west-2 proximity |
-| **WebSocket + REST Fallback** | Dual data sources for reliable price feeds |
+| **WebSocket + REST Hybrid** | WS for price updates, REST for liquidity (20ms polling, 148 RPS) |
 | **Android Background Support** | Keeps running when terminal is backgrounded |
 | **Memory Management** | Automatic cleanup of old orders and trade history |
 
@@ -157,8 +158,8 @@ DRY_RUN_FIRST=true        # Simulate orders first (recommended)
 | **Live Order Book** | Real-time bid/ask from WebSocket |
 | **Order Placement** | Parallel MARKET+GTC orders for guaranteed fills |
 | **Auto-Cancellation** | Cancels all orders on shutdown |
-| **On-Chain Redemption** | Auto-claims winnings via CTF contract (requires MATIC) |
-| **Balance Guard** | Fresh poll before every trade to prevent unbalanced fills |
+| **On-Chain Redemption** | Auto-claims winnings via CTF contract (requires ~0.01 MATIC gas) |
+| **Balance Guard** | Fresh balance check (5s cache) before every trade |
 | **Safety Limits** | Max trade size and daily loss limits |
 | **Dry-Run Mode** | Test order flow without placing real orders |
 
@@ -173,6 +174,23 @@ DRY_RUN_FIRST=true        # Simulate orders first (recommended)
 ./realbot
 > YES
 ```
+
+### Latency Benchmark Tool
+
+Test your network latency to Polymarket without spending money:
+
+```bash
+# Run the latency benchmark
+go run cmd/latency/main.go
+```
+
+This measures:
+- REST `/book` endpoint latency (P50, P95, P99)
+- WebSocket connection and message intervals
+- EIP-712 signing speed (local CPU)
+- L2 auth header signing
+- Order submission round-trip (dry-run)
+- Maximum throughput (RPS)
 
 ### Example Output
 
@@ -320,8 +338,10 @@ Market-bot/
 ├── cmd/
 │   ├── bot/
 │   │   └── main.go           # Paper trading bot (default)
-│   └── realbot/
-│       └── main.go           # Real trading bot
+│   ├── realbot/
+│   │   └── main.go           # Real trading bot
+│   └── latency/
+│       └── main.go           # Network latency benchmark tool
 ├── internal/
 │   ├── api/
 │   │   ├── rest_client.go    # Polymarket REST API
@@ -382,8 +402,10 @@ Market-bot/
 - [x] Wallet integration (Polygon/USDC balance)
 - [x] Order signing with private key (EIP-712)
 - [x] Position and balance tracking
-- [ ] Actual market resolution polling
-- [ ] Rate limit handling
+- [x] On-chain CTF redemption
+- [x] Rate limit handling (148 RPS)
+- [x] Unbalanced fill recovery
+- [x] Network health monitoring (REST latency + WS staleness)
 - [ ] Persistent state/database
 - [ ] Web dashboard
 - [ ] Telegram/Discord alerts
@@ -404,9 +426,9 @@ The bot includes several stability features for long-running sessions:
 
 | Feature | Description |
 |---------|-------------|
-| **WebSocket Auto-Reconnect** | Automatically reconnects on disconnection with exponential backoff |
-| **REST Fallback** | Polls REST API every 2s when WebSocket is unhealthy |
-| **Force Reconnect** | Forces WebSocket reconnection after 15s of no data |
+| **WebSocket Auto-Reconnect** | 10s heartbeat, auto-reconnects on disconnection |
+| **REST Primary Polling** | Polls REST API every 20ms (148 RPS) for liquidity data |
+| **Force Reconnect** | Forces WebSocket reconnection after 10s of stale data |
 | **Trade History Cap** | Limits stored trades to 1000 to prevent memory growth |
 | **Order Cleanup** | Removes filled/cancelled orders older than 5 minutes |
 | **Android Keepalive** | Background ticker prevents OS from throttling the process |

@@ -84,9 +84,13 @@ type TUI struct {
 	// Order book depth per market
 	orderBookDepth map[string]map[string][]MarketLevel // marketID -> outcome -> levels
 
-	// Network Health
-	latency       time.Duration
-	latencySource string
+	// Network Health - Real-time latency tracking
+	latency        time.Duration
+	latencySource  string
+	restLatency    time.Duration // Latest REST /book latency
+	wsLatency      time.Duration // Time since last WS message
+	restLatencyAvg time.Duration // Rolling average REST latency
+	restSamples    []time.Duration // Recent REST latency samples for averaging
 
 	// Display dimensions
 	width int
@@ -149,11 +153,42 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 	}
 }
 
-// UpdateLatency updates the network health display
+// UpdateLatency updates the network health display (legacy - use UpdateRestLatency for real-time)
 func (t *TUI) UpdateLatency(d time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.latency = d
+}
+
+// UpdateRestLatency updates REST API latency with rolling average
+func (t *TUI) UpdateRestLatency(d time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.restLatency = d
+
+	// Keep last 20 samples for rolling average
+	t.restSamples = append(t.restSamples, d)
+	if len(t.restSamples) > 20 {
+		t.restSamples = t.restSamples[1:]
+	}
+
+	// Calculate rolling average
+	var total time.Duration
+	for _, s := range t.restSamples {
+		total += s
+	}
+	t.restLatencyAvg = total / time.Duration(len(t.restSamples))
+
+	// Also update main latency display
+	t.latency = t.restLatencyAvg
+	t.latencySource = "REST /book"
+}
+
+// UpdateWSLatency updates WebSocket staleness
+func (t *TUI) UpdateWSLatency(timeSinceLastMsg time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.wsLatency = timeSinceLastMsg
 }
 
 // AddMarket adds a market to the multi-market display
@@ -470,22 +505,36 @@ func (t *TUI) renderHeader() string {
 	}
 
 	uptime := time.Since(t.startTime).Round(time.Second)
-	
-	// Network health string
-	healthColor := ColorGreen
-	if t.latency > 500*time.Millisecond {
-		healthColor = ColorRed
-	} else if t.latency > 150*time.Millisecond {
-		healthColor = ColorYellow
+
+	// REST latency health (actual network round-trip)
+	restColor := ColorGreen
+	if t.restLatency > 200*time.Millisecond {
+		restColor = ColorRed
+	} else if t.restLatency > 100*time.Millisecond {
+		restColor = ColorYellow
 	}
-	
-	latencyStr := "Waiting..."
-	if t.latency > 0 {
-		latencyStr = fmt.Sprintf("%v", t.latency.Round(time.Millisecond))
+
+	restStr := "..."
+	if t.restLatency > 0 {
+		restStr = fmt.Sprintf("%v", t.restLatency.Round(time.Millisecond))
 	}
-	
-	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 %s: %s%s%s", 
-		uptime, t.latencySource, healthColor, latencyStr, Reset)
+
+	// WS staleness health (time since last message)
+	wsColor := ColorGreen
+	if t.wsLatency > 10*time.Second {
+		wsColor = ColorRed
+	} else if t.wsLatency > 5*time.Second {
+		wsColor = ColorYellow
+	}
+
+	wsStr := "..."
+	if t.wsLatency > 0 {
+		wsStr = fmt.Sprintf("%v", t.wsLatency.Round(time.Millisecond))
+	}
+
+	// Combined health line showing REST latency and WS data age
+	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s%s%s | 🔌 WS age: %s%s%s",
+		uptime, restColor, restStr, Reset, wsColor, wsStr, Reset)
 
 	return fmt.Sprintf("%s%s\n%s%s%s\n%s%s\n%s",
 		Bold, line,
