@@ -39,6 +39,11 @@ type Config struct {
 	MinMarginPercent float64 // Minimum arbitrage margin to trade (1% default)
 	TradeScaleFactor float64 // Fraction of balance to use per trade (0.05 = 5% default)
 
+	// Fee settings (for paper trading simulation)
+	// Polymarket fees use price-curve: fee_tokens = shares * base_rate * 2 * p * (1-p)
+	// Default: 312 bps base rate calibrated to match ~1.6% effective at p=0.50
+	FeeRateBps int // Base fee rate in basis points (312 = ~1.6% effective at p=0.50)
+
 	// Safety settings for real trading
 	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
 	MaxDailyLoss   float64 // Maximum daily loss before stopping
@@ -71,6 +76,8 @@ func LoadConfig() (*Config, error) {
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
 		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 2.0),
 		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.05), // 5% of balance
+		// Fee settings (paper trading)
+		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 312), // Calibrated: ~1.6% effective at p=0.50
 		// Safety settings
 		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
 		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 50.0), // Default $50 max daily loss
@@ -172,6 +179,18 @@ func parseEnvFloat(key string, defaultVal float64) float64 {
 		return defaultVal
 	}
 	return f
+}
+
+func parseEnvInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	i, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return i
 }
 
 // SanitizeString removes control characters from a string to prevent terminal manipulation.

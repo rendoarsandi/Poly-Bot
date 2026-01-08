@@ -193,21 +193,6 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		OrderType: string(req.OrderType),
 	}
 
-	// Add TimeInForce if provided
-	if req.TimeInForce != "" {
-		// Polymarket CLOB expects timeInForce as a top-level field in the signed order submission for FOK/IOC
-		// We'll handle this by adding it to a map for the JSON submission
-	}
-
-	// Check dry run mode
-	if c.dryRun {
-		return &OrderResponse{
-			OrderID: "dry-run-" + salt[:8],
-			Status:  "DRY_RUN",
-			Success: true,
-		}, nil
-	}
-
 	// Submit order to API
 	return c.submitOrder(ctx, signedOrder, req.TimeInForce)
 }

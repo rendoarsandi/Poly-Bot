@@ -14,5 +14,8 @@ coverage.out
 
 # Binaries
 /bot
+/realbot
+/diagnose
+/wstest
 /market-bot
 bot_activity.csv

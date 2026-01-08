@@ -160,6 +160,13 @@ func run() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	fmt.Println("✅ Config loaded successfully")
+	if cfg.FeeRateBps > 0 {
+		// Show effective fee at p=0.50 (worst case for arb)
+		// Formula: fee_tokens = shares * base_rate * 2 * p * (1-p)
+		// At p=0.50: curve = 0.5, so effective = base_rate * 0.5
+		effectiveAt50 := float64(cfg.FeeRateBps) / 10000.0 * 0.5 * 100.0
+		fmt.Printf("💰 Fee simulation enabled: %d bps base (~%.1f%% effective at p=0.50)\n", cfg.FeeRateBps, effectiveAt50)
+	}
 
 	restClient := api.NewRestClient("")
 
@@ -950,6 +957,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
 					maxSum := 1.0 - (minMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
 
+					// Adjust maxSum to account for fees if enabled
+					// Polymarket fees: fee_tokens = shares * base_rate * 2 * p * (1-p)
+					// For arb near sum=1.0, prices are ~0.50 each, so curve = 0.5
+					// Conservative: assume worst case fee (both sides at p=0.50)
+					feeRateBps := t.Config.FeeRateBps
+					if feeRateBps > 0 {
+						baseRate := float64(feeRateBps) / 10000.0
+						// Worst case: both sides at p=0.50, curve = 2*0.5*0.5 = 0.5
+						worstCaseFeePerSide := baseRate * 0.5
+						// Total fee for both sides (in tokens, which equals $ at settlement)
+						totalFeeFraction := worstCaseFeePerSide * 2
+						maxSum -= totalFeeFraction
+					}
+
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
 					copy(asks1, t.TokenFullAsks[t.Outcomes[0]])
@@ -1011,14 +1032,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					liq2 := cumLiq2
 					minLiquidity := totalMatchedLiquidity
 
-					// Skip if no matched liquidity available
-					if minLiquidity < 1.0 {
-						continue
-					}
-
-					// Cap at 80% of matched liquidity for safety margin
+					// Cap at 80% of matched liquidity for safety margin, but ensure at least 1 share if liquidity exists
 					maxSafeShares := minLiquidity * 0.80
-
+					
 					// Only scale if risk allows
 					shares := baseShares
 					if riskAction != paper.RiskActionReduceSize {
@@ -1040,12 +1056,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					compoundMult := t.Engine.GetCompoundMultiplier()
 					shares = float64(int(float64(shares) * compoundMult))
 
-					                    // FINAL LIQUIDITY CAP: Ensure shares never exceed 80% of available liquidity
-										// This must be checked AFTER all scaling (margin scaling + compounding)
-										if shares > maxSafeShares {
-											shares = maxSafeShares
-										}
-					cost, _, _, netProfit := calculateTradeMetrics(shares, sum)
+					// Force at least 1 share if there's any matched liquidity and we have budget
+					if shares < 1.0 && minLiquidity >= 1.0 {
+						shares = 1.0
+					}
+
+					// FINAL LIQUIDITY CAP: Ensure shares never exceed 80% of available liquidity
+					// This must be checked AFTER all scaling (margin scaling + compounding)
+					if shares > maxSafeShares {
+						shares = maxSafeShares
+					}
+					cost, _, _, netProfit := calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
 
 					// Skip if net profit is not positive after order cost
 					if netProfit <= 0 {
@@ -1065,7 +1086,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							continue // Not enough cash/liquidity for even 1 share
 						}
 						shares = maxAffordableShares
-						cost, _, _, netProfit = calculateTradeMetrics(shares, sum)
+						cost, _, _, netProfit = calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
 
 						// If still over risk limit or not profitable after cost, don't trade
 						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
@@ -1183,10 +1204,28 @@ func simulateResolution(outcomes []string, prices map[string]string) string {
 	return outcomes[1]
 }
 
-func calculateTradeMetrics(shares, sum float64) (cost, overhead, gross, net float64) {
+func calculateTradeMetrics(shares, price1, price2 float64, feeRateBps int) (cost, overhead, gross, net float64) {
+	sum := price1 + price2
 	cost = shares * sum
-	overhead = 0 // Polymarket has no fees
 	gross = shares * (1.0 - sum)
+
+	// Polymarket fees are price-curve based, NOT flat rate
+	// Formula: fee = shares * (fee_rate_bps/10000) * 2 * p * (1-p) for each side
+	// Fee is deducted from proceeds (shares received when buying)
+	// At p=0.50: curve = 2*0.5*0.5 = 0.5, so 1000bps base → ~1.6% effective on cost
+	// At p=0.10: curve = 2*0.1*0.9 = 0.18, so much lower fee
+	overhead = 0
+	if feeRateBps > 0 {
+		baseRate := float64(feeRateBps) / 10000.0
+		// Fee for side 1 (buying at price1)
+		curve1 := 2.0 * price1 * (1.0 - price1)
+		fee1 := shares * baseRate * curve1
+		// Fee for side 2 (buying at price2)
+		curve2 := 2.0 * price2 * (1.0 - price2)
+		fee2 := shares * baseRate * curve2
+		overhead = fee1 + fee2
+	}
+
 	net = gross - overhead
 	return
 }

@@ -672,12 +672,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
 					maxSum := 1.0 - (cfg.MinMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
 
-					// Adjust maxSum to account for fees if enabled
-					if maxFeeRateBps > 0 {
-						// Reduce maxSum by the fee percentage to ensure net profit
-						maxSum -= (float64(maxFeeRateBps) / 10000.0)
-					}
-
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
 					copy(asks1, tokenFullAsks[outcomes[0]])
@@ -737,44 +731,28 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					liq2 := cumLiq2
 					minLiquidity := totalMatchedLiquidity
 
-					// Skip if no matched liquidity available
-					if minLiquidity < 1.0 {
-						continue
-					}
-
-					// Cap at 80% of matched liquidity for safety margin
+					// Cap at 80% of matched liquidity for safety margin, but ensure at least 1 share if liquidity exists
 					maxSafeShares := minLiquidity * 0.80
 					if shares > maxSafeShares {
 						shares = maxSafeShares
 					}
-
-					cost, _, _, netProfit := calculateTradeMetrics(shares, sum, maxFeeRateBps)
-
-					// Skip if net profit is not positive
-					if netProfit <= 0 {
-						continue
+					
+					// Force at least 1 share if there's any matched liquidity and we have budget
+					if shares < 1.0 && minLiquidity >= 1.0 {
+						shares = 1.0
 					}
 
-					// Scale down if cost exceeds cash, but respect 80% liquidity cap
+					// Calculate metrics for reporting
+					cost, _, _, _ := calculateTradeMetrics(shares, sum, maxFeeRateBps)
+
+					// Scale down if cost exceeds cash
 					if !riskMgr.CanPlaceOrder(cost) || cost > currentCash {
-						// Scale back to what cash allows, but still respect 80% liquidity cap
 						maxAffordableShares := currentCash / sum
-
-						// Apply the stricter of: cash limit OR 80% liquidity limit
-						if maxAffordableShares > maxSafeShares {
-							maxAffordableShares = maxSafeShares
-						}
-
-						if maxAffordableShares < 1 {
-							continue // Not enough cash/liquidity for even 1 share
+						if maxAffordableShares < 1.0 {
+							continue // Truly not enough cash for 1 share
 						}
 						shares = maxAffordableShares
-						cost, _, _, netProfit = calculateTradeMetrics(shares, sum, maxFeeRateBps)
-
-						// If still over risk limit or not profitable, don't trade
-						if !riskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
-							continue
-						}
+						cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
 					}
 
 					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 {
@@ -785,12 +763,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// Recalculate with buffered prices including order cost overhead
 						bufferedSum := price1 + price2
-						_, _, _, bufferedNetProfit := calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
+						_, _, _, _ = calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
 						bufferedMargin := (1.0 - bufferedSum) * 100
-						if bufferedNetProfit <= 0 || bufferedMargin < 1.0 {
-							// Skip if buffer makes arb unprofitable after order cost
-							continue
-						}
 
 						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin) [liq: %.0f/%.0f]",
 							id, outcomes[0], price1, outcomes[1], price2, bufferedSum, bufferedMargin, liq1, liq2)
@@ -805,9 +779,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// MARKET EXECUTION: Force fill both sides
-						// We use a high 'worst-case' price (e.g., $0.95) to ensure it clears the book
-						// but still benefits from market order execution.
+						// MARKET EXECUTION: Force fill both sides with GTC to avoid FOK cancels
 						const worstCasePrice = 0.95
 						
 						var wg sync.WaitGroup
@@ -818,16 +790,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						go func() {
 							defer wg.Done()
-							// Using OrderTypeMarket forces the fill even if price slips
 							rate := tokenFeeRates[outcomes[0]]
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, "", rate)
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 						}()
 
 						go func() {
 							defer wg.Done()
-							// Using OrderTypeMarket forces the fill even if price slips
 							rate := tokenFeeRates[outcomes[1]]
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, "", rate)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 						}()
 
 						wg.Wait()
