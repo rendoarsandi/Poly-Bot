@@ -36,8 +36,9 @@ func main() {
 	fmt.Printf("📊 Market: %s\n\n", market.Slug)
 
 	// Build token map
-	tokenMap := make(map[string]string)
-	tokenIDs := make([]string, 0)
+
+tokenMap := make(map[string]string)
+tokenIDs := make([]string, 0)
 	for _, t := range market.Tokens {
 		tokenMap[t.TokenID] = t.Outcome
 		tokenIDs = append(tokenIDs, t.TokenID)
@@ -80,19 +81,20 @@ func main() {
 	restPolls := 0
 	wsLagEvents := 0 // Times when REST changed but no WS message
 
-	// Track timing
+	// Track health/latency
+	var lastRestLatency time.Duration
 	lastWSMessage := time.Now()
 	lastRESTChange := time.Now()
 
-	// Poll REST every 500ms
-	restTicker := time.NewTicker(500 * time.Millisecond)
+	// Poll REST every 15ms (Maximum Aggression)
+	restTicker := time.NewTicker(15 * time.Millisecond)
 	defer restTicker.Stop()
 
 	// Print summary every 5 seconds
 	summaryTicker := time.NewTicker(5 * time.Second)
 	defer summaryTicker.Stop()
 
-	fmt.Println("Time       | Event      | Up Ask   | Up Liq | Down Ask | Down Liq | Notes")
+	fmt.Println("Time       | Event      | Up Ask   | Up Liq | Down Ask | Down Liq | Latency (R/W)")
 	fmt.Println("-----------|------------|----------|--------|----------|----------|------------------")
 
 	startTime := time.Now()
@@ -191,22 +193,23 @@ func main() {
 
 				if changed {
 					elapsed := time.Since(startTime)
-					note := ""
+					latencyStr := fmt.Sprintf("WS:%.1fs", timeSinceLastWS.Seconds())
 					if timeSinceLastWS > 5*time.Second {
-						note = fmt.Sprintf("(gap: %.1fs)", timeSinceLastWS.Seconds())
+						latencyStr = fmt.Sprintf("\033[31mWS:%.1fs\033[0m", timeSinceLastWS.Seconds())
 					}
+
 					fmt.Printf("%10s | \033[32mWS\033[0m         | $%.3f   | %6.0f | ",
 						elapsed.Round(time.Millisecond), bestAsk, askLiq)
 
 					// Print other outcome if we have it
 					for otherOutcome, otherState := range lastWSState {
 						if otherOutcome != outcome {
-							fmt.Printf("$%.3f   | %6.0f | %s\n", otherState.BestAsk, otherState.AskLiq, note)
+							fmt.Printf("$%.3f   | %6.0f | %s\n", otherState.BestAsk, otherState.AskLiq, latencyStr)
 							break
 						}
 					}
 					if len(lastWSState) == 1 {
-						fmt.Printf("   -     |    -   | %s\n", note)
+						fmt.Printf("   -     |    -   | %s\n", latencyStr)
 					}
 				}
 			}
@@ -216,7 +219,10 @@ func main() {
 			changed := false
 
 			for tokenID, outcome := range tokenMap {
+				startPoll := time.Now()
 				book, err := restClient.GetOrderBook(ctx, tokenID)
+				lastRestLatency = time.Since(startPoll)
+
 				if err != nil {
 					continue
 				}
@@ -292,11 +298,6 @@ func main() {
 					downState = &PriceState{}
 				}
 
-				note := ""
-				if timeSinceLastChange < 1*time.Second {
-					note = "FAST"
-				}
-
 				// Check if WS is behind
 				wsBehind := false
 				if ws, ok := lastWSState["Up"]; ok && upState.BestAsk > 0 {
@@ -304,26 +305,34 @@ func main() {
 						wsBehind = true
 					}
 				}
-				if ws, ok := lastWSState["Down"]; ok && downState.BestAsk > 0 {
-					if ws.BestAsk != downState.BestAsk {
-						wsBehind = true
-					}
-				}
 				if wsBehind {
-					note += " \033[31mWS BEHIND!\033[0m"
+					// We'll highlight this in the notes
 				}
 
-				fmt.Printf("%10s | \033[33mREST\033[0m       | $%.3f   | %6.0f | $%.3f   | %6.0f | %s\n",
+				latencyStr := fmt.Sprintf("REST:%dms", lastRestLatency.Milliseconds())
+				if lastRestLatency > 800*time.Millisecond {
+					latencyStr = fmt.Sprintf("\033[31mREST:%dms\033[0m", lastRestLatency.Milliseconds())
+				}
+
+				note := ""
+				if timeSinceLastChange < 1*time.Second {
+					note = "FAST "
+				}
+				if wsBehind {
+					note += "\033[31mWS LAG!\033[0m"
+				}
+
+				fmt.Printf("%10s | \033[33mREST\033[0m       | $%.3f   | %6.0f | $%.3f   | %6.0f | %s %s\n",
 					elapsed.Round(time.Millisecond),
 					upState.BestAsk, upState.AskLiq,
 					downState.BestAsk, downState.AskLiq,
-					note)
+					latencyStr, note)
 			}
 
 		case <-summaryTicker.C:
 			elapsed := time.Since(startTime)
-			fmt.Printf("\n--- %.0fs SUMMARY: REST changes=%d, WS msgs=%d, WS lag=%d ---\n\n",
-				elapsed.Seconds(), restChanges, wsMessages, wsLagEvents)
+			fmt.Printf("\n--- %.0fs SUMMARY: REST changes=%d, WS msgs=%d, WS lag=%d, REST Latency=%v ---\n\n",
+				elapsed.Seconds(), restChanges, wsMessages, wsLagEvents, lastRestLatency)
 		}
 	}
 }
