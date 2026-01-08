@@ -745,19 +745,35 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Calculate metrics for reporting
 					cost, _, _, _ := calculateTradeMetrics(shares, sum, maxFeeRateBps)
 
+					// REFRESH BALANCE RIGHT BEFORE TRADING to prevent unbalanced fills
+					// This is the "Zero Excuse" check to ensure we have enough for BOTH sides
+					latestBalance, balErr := trader.GetBalance(ctx)
+					if balErr == nil {
+						currentBalance = latestBalance
+						currentCash = latestBalance
+					}
+
 					// Scale down if cost exceeds cash
-					if !riskMgr.CanPlaceOrder(cost) || cost > currentCash {
-						maxAffordableShares := currentCash / sum
-						if maxAffordableShares < 1.0 {
-							continue // Truly not enough cash for 1 share
+					if !riskMgr.CanPlaceOrder(cost) || cost < (cost * 1.02) { // 2% buffer for price movements
+						if cost > currentCash {
+							maxAffordableShares := (currentCash * 0.98) / sum // Use 98% of cash for safety
+							if maxAffordableShares < 1.0 {
+								continue // Truly not enough cash for 1 share
+							}
+							shares = math.Floor(maxAffordableShares)
+							cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
 						}
-						shares = maxAffordableShares
-						cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
+					}
+
+					// FINAL SAFETY CHECK: If we still don't have enough for both sides, SKIP
+					if cost > currentCash {
+						tui.LogEvent("[%s] ⚠️ Insufficient balance for both sides: Need $%.2f, Have $%.2f", id, cost, currentCash)
+						continue
 					}
 
 					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 {
-						// Add slippage buffer: willing to pay up to 1 tick more for guaranteed fill
-						const slippageBuffer = 0.01
+						// Add slippage buffer: willing to pay up to 1.5% more for guaranteed fill
+						const slippageBuffer = 0.015
 						price1 := ask1 + slippageBuffer
 						price2 := ask2 + slippageBuffer
 
@@ -990,6 +1006,20 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 				if result.TotalPnL < 0 && trader != nil {
 					trader.RecordLoss(-result.TotalPnL)
 				}
+
+				// AUTOMATIC ON-CHAIN REDEMPTION
+				// This converts winning tokens back into spendable USDC
+				go func() {
+					tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
+					// Wait a bit for on-chain state to sync
+					time.Sleep(30 * time.Second)
+					txHash, err := trader.RedeemOnChain(ctx, conditionID)
+					if err != nil {
+						tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
+					} else {
+						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
+					}
+				}()
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}

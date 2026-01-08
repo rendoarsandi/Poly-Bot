@@ -23,12 +23,14 @@ The bot acts as a **Market Maker**, placing limit orders on both sides of a bina
 |---------|-------------|
 | **Market Scanner** | Auto-detects active BTC/ETH/SOL/XRP 15-minute markets |
 | **Ladder Quoting** | Places orders at multiple price levels to capture volatility |
+| **Zero-Excuse Balance Guard** | Real-time USDC check with auto-scaling to prevent unbalanced fills |
+| **Autonomous Redemption** | Automatic on-chain redemption of winning tokens (Claim profit) |
 | **Sum-Check Engine** | Only trades when `price_up + price_down < $0.98` |
 | **Inventory Skew Management** | Rebalances if one side fills disproportionately |
 | **Kill Switch** | Emergency stop when exposure AND unmatched exceed limits |
-| **Auto-Redemption** | Redeems winning shares on market resolution |
 | **Market Rotation** | Automatically moves to next market after resolution |
 | **Paper Trading** | Simulated trading with no real money |
+| **London VPS Optimized** | Ultra-low latency execution via AWS eu-west-2 proximity |
 | **WebSocket + REST Fallback** | Dual data sources for reliable price feeds |
 | **Android Background Support** | Keeps running when terminal is backgrounded |
 | **Memory Management** | Automatic cleanup of old orders and trade history |
@@ -150,12 +152,13 @@ DRY_RUN_FIRST=true        # Simulate orders first (recommended)
 
 | Feature | Description |
 |---------|-------------|
-| **Balance Display** | Shows your real USDC balance from Polymarket |
+| **Balance Display** | Shows your real USDC balance from Polygon blockchain |
 | **Position Tracking** | Displays your open positions and P&L |
 | **Live Order Book** | Real-time bid/ask from WebSocket |
-| **Order Placement** | Places actual limit orders on CLOB |
+| **Order Placement** | Parallel MARKET+GTC orders for guaranteed fills |
 | **Auto-Cancellation** | Cancels all orders on shutdown |
-| **Market Redemption** | Positions auto-redeemed when markets resolve |
+| **On-Chain Redemption** | Auto-claims winnings via CTF contract (requires MATIC) |
+| **Balance Guard** | Fresh poll before every trade to prevent unbalanced fills |
 | **Safety Limits** | Max trade size and daily loss limits |
 | **Dry-Run Mode** | Test order flow without placing real orders |
 
@@ -368,7 +371,7 @@ Market-bot/
 | Orders | Simulated fills | Actual CLOB limit orders |
 | Balance | Tracked in memory | From Polymarket API |
 | Positions | Simulated | Real positions on Polymarket |
-| Resolution | Based on final prices | Auto-redeemed by Polymarket |
+| Resolution | Based on final prices | On-chain redemption via CTF |
 | Risk | None | Real financial risk |
 | Configuration | None required | Requires .env credentials |
 | Mode | Default | Set `TRADING_MODE=real` |

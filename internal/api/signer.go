@@ -12,9 +12,36 @@ import (
 	"strings"
 	"time"
 
+	"Market-bot/internal/core"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"golang.org/x/crypto/sha3"
 )
+
+// SignTransaction signs a legacy Ethereum transaction for the Polygon network
+func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLimit uint64, gasPrice *big.Int, data string) (string, error) {
+	toAddr := common.HexToAddress(to)
+	dataBytes, err := hex.DecodeString(strings.TrimPrefix(data, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("invalid data hex: %w", err)
+	}
+
+	// Create legacy transaction (Polygon supports EIP-155)
+	tx := types.NewTransaction(nonce, toAddr, value, gasLimit, gasPrice, dataBytes)
+
+	// Sign with ChainID 137 (Polygon)
+	chainID := big.NewInt(137)
+	signer := types.NewEIP155Signer(chainID)
+	
+signedTx, err := types.SignTx(tx, signer, s.privateKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	ts := types.Transactions{signedTx}
+	return "0x" + hex.EncodeToString(ts.GetRlp(0)), nil
+}
 
 // Signer handles EIP-712 signing for Polymarket CLOB API
 type Signer struct {

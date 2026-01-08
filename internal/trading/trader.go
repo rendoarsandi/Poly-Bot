@@ -399,6 +399,22 @@ func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*ap
 	return t.clob.GetMarketInfo(ctx, conditionID)
 }
 
+// RedeemOnChain performs the on-chain redemption of winning tokens
+func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (string, error) {
+	// First check if resolved on-chain (FREE READ)
+	resolved, err := t.polygon.IsMarketResolved(ctx, conditionID)
+	if err != nil {
+		return "", fmt.Errorf("on-chain resolution check failed: %w", err)
+	}
+
+	if !resolved {
+		return "", fmt.Errorf("market not yet resolved on-chain")
+	}
+
+	// Get signer from clob (we need to export it or add a helper)
+	return t.polygon.RedeemPositions(ctx, t.clob.GetSigner(), conditionID)
+}
+
 // checkSafetyLimits verifies the trade doesn't exceed safety limits
 func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
 	t.mu.Lock()

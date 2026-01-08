@@ -14,18 +14,120 @@ import (
 // Polygon USDC contract address
 const USDCContract = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
+// Polygon CTF (Conditional Tokens Framework) contract address
+const CTFContract = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
 // PolygonClient handles Polygon RPC calls
 type PolygonClient struct {
 	RPCURL string
 }
 
-// NewPolygonClient creates a new Polygon RPC client
-func NewPolygonClient(rpcURL string) *PolygonClient {
-	if rpcURL == "" {
-		rpcURL = "https://polygon-rpc.com"
+// ... (existing code)
+
+// IsMarketResolved checks if a market is resolved on-chain (FREE READ)
+func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string) (bool, error) {
+	// Function selector for payoutDenominator(bytes32): 0x1479831c
+	id := strings.TrimPrefix(conditionID, "0x")
+	data := "0x1479831c" + id
+
+	callParams := map[string]string{
+		"to":   CTFContract,
+		"data": data,
 	}
-	return &PolygonClient{RPCURL: rpcURL}
+
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return false, err
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return false, err
+	}
+
+	denominator, err := parseHexBigInt(hexResult)
+	if err != nil {
+		return false, err
+	}
+
+	// If denominator > 0, the market has been resolved and payouts are reported
+	return denominator.Cmp(big.NewInt(0)) > 0, nil
 }
+
+// RedeemPositions sends the on-chain transaction to redeem winning tokens (PAID WRITE)
+func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string) (string, error) {
+	// Function selector for redeemPositions(address,bytes32,bytes32,uint256[]): 0x6968749c
+	// Parameters:
+	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+	// 2. parentCollectionId: 0x0000000000000000000000000000000000000000000000000000000000000000
+	// 3. conditionId: (provided)
+	// 4. indexSets: [1, 2] for binary markets (Up/Down)
+
+	collateral := "000000000000000000000000" + strings.TrimPrefix(USDCContract, "0x")
+	parent := "0000000000000000000000000000000000000000000000000000000000000000"
+	cond := strings.TrimPrefix(conditionID, "0x")
+	
+	// ABI encoding for indexSets [1, 2] (Dynamic array)
+	// Offset to array (128 bytes = 4 * 32)
+	offset := "0000000000000000000000000000000000000000000000000000000000000080"
+	arrayLen := "0000000000000000000000000000000000000000000000000000000000000002"
+	idx1 := "0000000000000000000000000000000000000000000000000000000000000001"
+	idx2 := "0000000000000000000000000000000000000000000000000000000000000002"
+
+	data := "0x6968749c" + collateral + parent + cond + offset + arrayLen + idx1 + idx2
+
+	// Get nonce and gas price
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	gasPrice, err := c.GetGasPrice(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Sign transaction
+	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 200000, gasPrice, data)
+	if err != nil {
+		return "", err
+	}
+
+	// Send raw transaction
+	return c.SendRawTransaction(ctx, signedTx)
+}
+
+func (c *PolygonClient) GetNonce(ctx context.Context, address string) (uint64, error) {
+	result, err := c.call(ctx, "eth_getTransactionCount", []interface{}{address, "latest"})
+	if err != nil {
+		return 0, err
+	}
+	var hexResult string
+	json.Unmarshal(result, &hexResult)
+	n, _ := parseHexBigInt(hexResult)
+	return n.Uint64(), nil
+}
+
+func (c *PolygonClient) GetGasPrice(ctx context.Context) (*big.Int, error) {
+	result, err := c.call(ctx, "eth_gasPrice", []interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	var hexResult string
+	json.Unmarshal(result, &hexResult)
+	return parseHexBigInt(hexResult)
+}
+
+func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string) (string, error) {
+	result, err := c.call(ctx, "eth_sendRawTransaction", []interface{}{signedTx})
+	if err != nil {
+		return "", err
+	}
+	var txHash string
+	json.Unmarshal(result, &txHash)
+	return txHash, nil
+}
+
 
 // RPCRequest represents a JSON-RPC request
 type RPCRequest struct {

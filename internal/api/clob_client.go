@@ -56,6 +56,11 @@ func (c *CLOBClient) Address() string {
 	return c.signer.Address()
 }
 
+// GetSigner returns the internal signer
+func (c *CLOBClient) GetSigner() *Signer {
+	return c.signer
+}
+
 // Side represents order side
 type Side string
 
