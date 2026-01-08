@@ -12,9 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"Market-bot/internal/core"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"golang.org/x/crypto/sha3"
 )
@@ -39,8 +38,11 @@ signedTx, err := types.SignTx(tx, signer, s.privateKey)
 		return "", fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	ts := types.Transactions{signedTx}
-	return "0x" + hex.EncodeToString(ts.GetRlp(0)), nil
+	rawTxBytes, err := signedTx.MarshalBinary()
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal signed transaction: %w", err)
+	}
+	return "0x" + hex.EncodeToString(rawTxBytes), nil
 }
 
 // Signer handles EIP-712 signing for Polymarket CLOB API

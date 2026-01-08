@@ -84,6 +84,10 @@ type TUI struct {
 	// Order book depth per market
 	orderBookDepth map[string]map[string][]MarketLevel // marketID -> outcome -> levels
 
+	// Network Health
+	latency       time.Duration
+	latencySource string
+
 	// Display dimensions
 	width int
 
@@ -132,6 +136,7 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		realAsks:        make(map[string]float64),
 		pendingOrders:   make(map[string][]PendingOrder),
 		orderBookDepth:  make(map[string]map[string][]MarketLevel),
+		latencySource:   "London API",
 		orderHistory:    make([]OrderHistoryEntry, 0),
 		maxOrderHistory: 20, // Keep last 20 orders
 		eventLog:        make([]string, 0),
@@ -142,6 +147,13 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		stopCh:          make(chan struct{}),
 		frameCh:         make(chan string, 3), // Buffer 3 frames to prevent blocking
 	}
+}
+
+// UpdateLatency updates the network health display
+func (t *TUI) UpdateLatency(d time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.latency = d
 }
 
 // AddMarket adds a market to the multi-market display
@@ -451,19 +463,34 @@ func (t *TUI) Render() {
 
 func (t *TUI) renderHeader() string {
 	line := strings.Repeat("═", t.width)
-	title := " 🎰 POLYARB-15M MULTI-ASSET PAPER TRADING "
+	title := " 🎰 POLYARB-15M MULTI-ASSET TRADING "
 	padding := (t.width - len(title)) / 2
 	if padding < 0 {
 		padding = 0
 	}
 
 	uptime := time.Since(t.startTime).Round(time.Second)
-	timeLine := fmt.Sprintf("  ⏱️  Running Time: %v", uptime)
+	
+	// Network health string
+	healthColor := ColorGreen
+	if t.latency > 500*time.Millisecond {
+		healthColor = ColorRed
+	} else if t.latency > 150*time.Millisecond {
+		healthColor = ColorYellow
+	}
+	
+	latencyStr := "Waiting..."
+	if t.latency > 0 {
+		latencyStr = fmt.Sprintf("%v", t.latency.Round(time.Millisecond))
+	}
+	
+	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 %s: %s%s%s", 
+		uptime, t.latencySource, healthColor, latencyStr, Reset)
 
 	return fmt.Sprintf("%s%s\n%s%s%s\n%s%s\n%s",
 		Bold, line,
 		strings.Repeat(" ", padding), title, Reset,
-		timeLine, strings.Repeat(" ", t.width-len(timeLine)),
+		healthLine, strings.Repeat(" ", t.width-len(healthLine)),
 		line)
 }
 

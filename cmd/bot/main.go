@@ -184,13 +184,34 @@ func run() error {
 		}
 	}
 
-	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support")
-
 	// Start TUI render loop
 	if UseLiveUI {
 		tui.StartRenderLoop(250 * time.Millisecond) // Fast refresh for live updates
 		defer tui.Stop()
 	}
+
+	// Network health monitor
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				start := time.Now()
+				// Use a lightweight check for latency
+				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				_, err := restClient.Get15mMarkets(pingCtx, []string{"btc"})
+				cancel()
+				if err == nil {
+					tui.UpdateLatency(time.Since(start))
+				}
+			}
+		}
+	}()
+
+	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support")
 
 	// Goroutine monitor and memory cleanup
 	go func() {
@@ -835,9 +856,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
 									// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 25ms for high-frequency liquidity updates
+			// Poll REST every 40ms for high-frequency liquidity updates
 			// A global rate limiter in RestClient ensures we never exceed 150 RPS.
-			restPollInterval := 25 * time.Millisecond
+			restPollInterval := 40 * time.Millisecond
 
 			// Individual trader staleness watchdog
 			staleTime := time.Since(t.LastUpdate)

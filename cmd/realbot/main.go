@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -67,10 +68,10 @@ func run() error {
 		fmt.Println("  1. Edit your .env file")
 		fmt.Println("  2. Set TRADING_MODE=real")
 		fmt.Println("  3. Add your credentials:")
-		fmt.Println("     PK=your_private_key")
-		fmt.Println("     API_KEY=your_api_key")
-		fmt.Println("     API_SECRET=your_api_secret")
-		fmt.Println("     API_PASSPHRASE=your_passphrase")
+		fmt.Println("     POLY_PK=your_private_key")
+		fmt.Println("     POLY_API_KEY=your_api_key")
+		fmt.Println("     POLY_API_SECRET=your_api_secret")
+		fmt.Println("     POLY_PASSPHRASE=your_passphrase")
 		fmt.Println()
 		fmt.Println("For paper trading, use: go run cmd/bot/main.go")
 		return nil
@@ -218,6 +219,27 @@ func run() error {
 	}
 
 	restClient := api.NewRestClient("")
+
+	// Network health monitor
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				start := time.Now()
+				// Use a lightweight check for latency
+				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				_, err := restClient.Get15mMarkets(pingCtx, []string{"btc"})
+				cancel()
+				if err == nil {
+					tui.UpdateLatency(time.Since(start))
+				}
+			}
+		}
+	}()
 
 	// Main trading loop
 	for {
@@ -389,7 +411,7 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth"}
+	assets := []string{"btc", "eth", "sol"}
 
 	for attempts := 0; attempts < 30; attempts++ {
 		select {
@@ -583,10 +605,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// ============ REST PRIMARY FOR LIQUIDITY ============
 						// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-						// Poll REST every 15ms to get fresh liquidity data (66 ticks/sec)
+						// Poll REST every 40ms to get fresh liquidity data (25 ticks/sec)
 						// A global rate limiter in RestClient ensures we never exceed 150 RPS.
 						staleTime := time.Since(lastUpdate)
-						restPollInterval := 15 * time.Millisecond		// ALWAYS poll REST for liquidity
+						restPollInterval := 40 * time.Millisecond		// ALWAYS poll REST for liquidity
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
 		// Also force REST if WS is unhealthy

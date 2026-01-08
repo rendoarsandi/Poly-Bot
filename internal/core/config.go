@@ -65,10 +65,10 @@ func LoadConfig() (*Config, error) {
 
 	cfg := &Config{
 		TradingMode:   mode,
-		PK:            os.Getenv("PK"),
-		APIKey:        os.Getenv("API_KEY"),
-		APISecret:     os.Getenv("API_SECRET"),
-		APIPassphrase: os.Getenv("API_PASSPHRASE"),
+		PK:            getEnvWithFallback("POLY_PK", "PK"),
+		APIKey:        getEnvWithFallback("POLY_API_KEY", "API_KEY"),
+		APISecret:     getEnvWithFallback("POLY_API_SECRET", "API_SECRET"),
+		APIPassphrase: getEnvWithFallback("POLY_PASSPHRASE", "API_PASSPHRASE"),
 		PolygonRPCURL: os.Getenv("POLYGON_RPC_URL"),
 		MarketSlug:    os.Getenv("MARKET_SLUG"),
 		// Position sizing defaults: $1000 balance → $50 per trade
@@ -98,16 +98,16 @@ func (c *Config) ValidateForRealTrading() error {
 	var missing []string
 
 	if c.PK == "" {
-		missing = append(missing, "PK (private key)")
+		missing = append(missing, "POLY_PK")
 	}
 	if c.APIKey == "" {
-		missing = append(missing, "API_KEY")
+		missing = append(missing, "POLY_API_KEY")
 	}
 	if c.APISecret == "" {
-		missing = append(missing, "API_SECRET")
+		missing = append(missing, "POLY_API_SECRET")
 	}
 	if c.APIPassphrase == "" {
-		missing = append(missing, "API_PASSPHRASE")
+		missing = append(missing, "POLY_PASSPHRASE")
 	}
 
 	if len(missing) > 0 {
@@ -117,7 +117,7 @@ func (c *Config) ValidateForRealTrading() error {
 	// Validate private key format
 	pk := strings.TrimPrefix(c.PK, "0x")
 	if len(pk) != 64 {
-		return errors.New("PK must be a 64-character hex string (with or without 0x prefix)")
+		return errors.New("POLY_PK must be a 64-character hex string (with or without 0x prefix)")
 	}
 
 	return nil
@@ -167,6 +167,13 @@ func (c *Config) String() string {
 	return "Config{TradingMode: " + string(c.TradingMode) +
 		", MarketSlug: " + c.MarketSlug +
 		", PK: [REDACTED], APIKey: [REDACTED], APISecret: [REDACTED], APIPassphrase: [REDACTED]}"
+}
+
+func getEnvWithFallback(primary, fallback string) string {
+	if val := os.Getenv(primary); val != "" {
+		return val
+	}
+	return os.Getenv(fallback)
 }
 
 func parseEnvFloat(key string, defaultVal float64) float64 {

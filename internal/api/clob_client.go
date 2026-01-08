@@ -520,6 +520,10 @@ func (c *CLOBClient) GetPositions(ctx context.Context) ([]Position, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return []Position{}, nil // 404 means no positions found for this account
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("get positions failed with status %d", resp.StatusCode)
 	}

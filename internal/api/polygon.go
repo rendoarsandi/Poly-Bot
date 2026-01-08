@@ -22,6 +22,13 @@ type PolygonClient struct {
 	RPCURL string
 }
 
+// NewPolygonClient creates a new Polygon client
+func NewPolygonClient(rpcURL string) *PolygonClient {
+	return &PolygonClient{
+		RPCURL: rpcURL,
+	}
+}
+
 // ... (existing code)
 
 // IsMarketResolved checks if a market is resolved on-chain (FREE READ)
