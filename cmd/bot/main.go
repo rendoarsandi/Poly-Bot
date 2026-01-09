@@ -1006,7 +1006,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					// Calculate aggregated matched liquidity across valid price levels
 					var totalMatchedLiquidity float64
-					var cumLiq1, cumLiq2 float64
+					var rawLiq1, rawLiq2 float64 // Track actual liquidity on each side for display
+					var maxValidI, maxValidJ int   // Track deepest valid level on each side price level combinations were valid
 
 					i, j := 0, 0
 					for i < len(asks1) && j < len(asks2) {
@@ -1019,24 +1020,34 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							break // Can't go deeper, would exceed margin threshold
 						}
 
-						// Get liquidity at current levels
-						liq1 := asks1[i].Size
-						liq2 := asks2[j].Size
 
-						// Matched liquidity = min of both sides (arbitrage requires equal shares)
-						matchedAtLevel := liq1
-						if liq2 < matchedAtLevel {
-							matchedAtLevel = liq2
+						// Get liquidity at current levels
+						levelLiq1 := asks1[i].Size
+						levelLiq2 := asks2[j].Size
+
+						// Track deepest valid level on each side (only count once per level)
+						if i+1 > maxValidI {
+							maxValidI = i + 1
+							rawLiq1 += asks1[i].Size
+						}
+						if j+1 > maxValidJ {
+							maxValidJ = j + 1
+							rawLiq2 += asks2[j].Size
 						}
 
-						// Track cumulative liquidity
-						cumLiq1 += matchedAtLevel
-						cumLiq2 += matchedAtLevel
+						// Get liquidity at current levels (may be partial after matching)
+
+						// Matched liquidity = min of both sides (arbitrage requires equal shares)
+						matchedAtLevel := levelLiq1
+						if levelLiq2 < matchedAtLevel {
+							matchedAtLevel = levelLiq2
+						}
+
 						totalMatchedLiquidity += matchedAtLevel
 
 						// Move pointer on the side with less remaining liquidity
-						remaining1 := liq1 - matchedAtLevel
-						remaining2 := liq2 - matchedAtLevel
+						remaining1 := levelLiq1 - matchedAtLevel
+						remaining2 := levelLiq2 - matchedAtLevel
 
 						if remaining1 <= 0 {
 							i++
@@ -1051,10 +1062,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						// If both exhausted at same time, both pointers already incremented
 					}
 
-					// Use aggregated liquidity for display
-					liq1 := cumLiq1
-					liq2 := cumLiq2
+					// Use RAW liquidity for display (shows actual available on each side)
+					liq1 := rawLiq1
+					liq2 := rawLiq2
 					minLiquidity := totalMatchedLiquidity
+					bookDepth1 := len(t.TokenFullAsks[t.Outcomes[0]])
+					bookDepth2 := len(t.TokenFullAsks[t.Outcomes[1]])
 
 					// Cap at 80% of matched liquidity for safety margin, but ensure at least 1 share if liquidity exists
 					maxSafeShares := minLiquidity * 0.80
@@ -1118,11 +1131,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 					}
 					if compoundMult > 1.0 {
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2)
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
 					} else {
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f]",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2)
+						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
 					}
 
 					if t.CSVLogger != nil {

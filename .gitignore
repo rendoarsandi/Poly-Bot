@@ -18,4 +18,9 @@ coverage.out
 /diagnose
 /wstest
 /market-bot
+/latency-bench
+/latency-test
+/real-bot
+/main
+/fetchbook
 bot_activity.csv

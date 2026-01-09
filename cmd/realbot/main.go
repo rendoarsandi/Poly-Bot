@@ -709,7 +709,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Calculate aggregated matched liquidity across valid price levels
 					var totalMatchedLiquidity float64
-					var cumLiq1, cumLiq2 float64
+					var rawLiq1, rawLiq2 float64
+					var maxValidI, maxValidJ int
 
 					i, j := 0, 0
 					for i < len(asks1) && j < len(asks2) {
@@ -721,6 +722,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							break // Can't go deeper, would exceed margin threshold
 						}
 
+
 						// Get liquidity at current levels
 						levelLiq1 := asks1[i].Size
 						levelLiq2 := asks2[j].Size
@@ -731,9 +733,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							matchedAtLevel = levelLiq2
 						}
 
-						// Track cumulative liquidity
-						cumLiq1 += matchedAtLevel
-						cumLiq2 += matchedAtLevel
+						
+						if i+1 > maxValidI { maxValidI = i+1; rawLiq1 += asks1[i].Size }
+						if j+1 > maxValidJ { maxValidJ = j+1; rawLiq2 += asks2[j].Size }
 						totalMatchedLiquidity += matchedAtLevel
 
 						// Move pointer on the side with less remaining liquidity
@@ -753,9 +755,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					}
 
 					// Use aggregated liquidity for display
-					liq1 := cumLiq1
-					liq2 := cumLiq2
+					liq1 := rawLiq1
+					liq2 := rawLiq2
 					minLiquidity := totalMatchedLiquidity
+				bookDepth1 := len(tokenFullAsks[outcomes[0]])
+					bookDepth2 := len(tokenFullAsks[outcomes[1]])
 
 					// Cap at 80% of matched liquidity for safety margin, but ensure at least 1 share if liquidity exists
 					maxSafeShares := minLiquidity * 0.80
@@ -808,8 +812,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						_, _, _, _ = calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
 						bufferedMargin := (1.0 - bufferedSum) * 100
 
-						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin) [liq: %.0f/%.0f]",
-							id, outcomes[0], price1, outcomes[1], price2, bufferedSum, bufferedMargin, liq1, liq2)
+						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+							id, outcomes[0], price1, outcomes[1], price2, bufferedSum, bufferedMargin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
 
 						// Map tokens
 						token0, token1 := "", ""

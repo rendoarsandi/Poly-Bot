@@ -519,27 +519,21 @@ func (t *TUI) renderHeader() string {
 		restStr = fmt.Sprintf("%v", t.restLatency.Round(time.Millisecond))
 	}
 
-	// WS staleness health (time since last message)
-	wsColor := ColorGreen
-	if t.wsLatency > 10*time.Second {
-		wsColor = ColorRed
-	} else if t.wsLatency > 5*time.Second {
-		wsColor = ColorYellow
-	}
+	// Health line showing uptime and REST latency
+	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s%s%s",
+		uptime, restColor, restStr, Reset)
 
-	wsStr := "..."
-	if t.wsLatency > 0 {
-		wsStr = fmt.Sprintf("%v", t.wsLatency.Round(time.Millisecond))
+	// Calculate display width (excluding ANSI codes and accounting for emoji width)
+	healthDisplayWidth := len(uptime.String()) + len(restStr) + 30 // fixed text + 2 emojis
+	healthPadding := t.width - healthDisplayWidth
+	if healthPadding < 0 {
+		healthPadding = 0
 	}
-
-	// Combined health line showing REST latency and WS data age
-	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s%s%s | 🔌 WS age: %s%s%s",
-		uptime, restColor, restStr, Reset, wsColor, wsStr, Reset)
 
 	return fmt.Sprintf("%s%s\n%s%s%s\n%s%s\n%s",
 		Bold, line,
 		strings.Repeat(" ", padding), title, Reset,
-		healthLine, strings.Repeat(" ", t.width-len(healthLine)),
+		healthLine, strings.Repeat(" ", healthPadding),
 		line)
 }
 
@@ -1198,12 +1192,23 @@ func (t *TUI) renderOrderHistory() string {
 func (t *TUI) renderKillBanner() string {
 	var sb strings.Builder
 
+	// Helper to clamp padding to non-negative
+	pad := func(n int) string {
+		if n < 0 {
+			n = 0
+		}
+		return strings.Repeat(" ", n)
+	}
+
 	sb.WriteString("\n")
 	sb.WriteString(fmt.Sprintf("%s%s", BgRed, Bold))
-	sb.WriteString(strings.Repeat(" ", t.width) + "\n")
-	sb.WriteString("   🚨 KILL SWITCH ACTIVATED 🚨" + strings.Repeat(" ", t.width-31) + "\n")
-	sb.WriteString(fmt.Sprintf("   Reason: %s%s\n", t.killReason, strings.Repeat(" ", t.width-12-len(t.killReason))))
-	sb.WriteString(strings.Repeat(" ", t.width) + "\n")
+	sb.WriteString(pad(t.width) + "\n")
+	// "   🚨 KILL SWITCH ACTIVATED 🚨" displays as ~31 chars (emojis = 2 each)
+	sb.WriteString("   🚨 KILL SWITCH ACTIVATED 🚨" + pad(t.width-31) + "\n")
+	// "   Reason: " = 12 chars display width
+	reasonPad := t.width - 12 - len(t.killReason)
+	sb.WriteString(fmt.Sprintf("   Reason: %s%s\n", t.killReason, pad(reasonPad)))
+	sb.WriteString(pad(t.width) + "\n")
 	sb.WriteString(Reset)
 
 	return sb.String()
