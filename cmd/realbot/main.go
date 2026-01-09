@@ -761,8 +761,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				bookDepth1 := len(tokenFullAsks[outcomes[0]])
 					bookDepth2 := len(tokenFullAsks[outcomes[1]])
 
-					// Cap at 80% of matched liquidity for safety margin, but ensure at least 1 share if liquidity exists
-					maxSafeShares := minLiquidity * 0.80
+					// Use 100% of matched liquidity - MarketBuy walks the book atomically for guaranteed fills
+					// No legging risk since we execute both sides simultaneously, not single-level limit orders
+					maxSafeShares := minLiquidity * 1.00
 					if shares > maxSafeShares {
 						shares = maxSafeShares
 					}

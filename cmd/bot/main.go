@@ -1069,8 +1069,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					bookDepth1 := len(t.TokenFullAsks[t.Outcomes[0]])
 					bookDepth2 := len(t.TokenFullAsks[t.Outcomes[1]])
 
-					// Cap at 80% of matched liquidity for safety margin, but ensure at least 1 share if liquidity exists
-					maxSafeShares := minLiquidity * 0.80
+					// Use 100% of matched liquidity - force MarketBuy guarantees atomic fills on both sides
+					// No legging risk since we walk the book simultaneously, not single-level limit orders
+					maxSafeShares := minLiquidity * 1.00
 					
 					// Only scale if risk allows
 					shares := baseShares
@@ -1098,7 +1099,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						shares = 1.0
 					}
 
-					// FINAL LIQUIDITY CAP: Ensure shares never exceed 80% of available liquidity
+					// FINAL LIQUIDITY CAP: Ensure shares never exceed available matched liquidity
 					// This must be checked AFTER all scaling (margin scaling + compounding)
 					if shares > maxSafeShares {
 						shares = maxSafeShares
@@ -1111,10 +1112,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 
 					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash {
-						// Scale back to what cash allows, but still respect 80% liquidity cap
+						// Scale back to what cash allows, but still respect liquidity cap
 						maxAffordableShares := currentCash / sum
 
-						// Apply the stricter of: cash limit OR 80% liquidity limit
+						// Apply the stricter of: cash limit OR liquidity limit
 						if maxAffordableShares > maxSafeShares {
 							maxAffordableShares = maxSafeShares
 						}
