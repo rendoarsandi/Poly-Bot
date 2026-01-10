@@ -48,7 +48,7 @@ type Config struct {
 	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
 	MaxDailyLoss   float64 // Maximum daily loss before stopping
 	RequireConfirm bool    // Require confirmation before each trade
-	DryRunFirst    bool    // Run in dry-run mode first (simulate real API calls)
+	TestMode       bool    // Test mode: validate orders (sign, check balance) but don't submit
 
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
@@ -82,7 +82,7 @@ func LoadConfig() (*Config, error) {
 		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
 		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 50.0), // Default $50 max daily loss
 		RequireConfirm: os.Getenv("REQUIRE_CONFIRM") == "true",
-		DryRunFirst:    os.Getenv("DRY_RUN_FIRST") != "false", // Default true for safety
+		TestMode:       os.Getenv("TEST_MODE") != "false", // Default true for safety
 		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",
 	}
 

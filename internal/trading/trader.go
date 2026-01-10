@@ -34,8 +34,8 @@ type Trader interface {
 	// IsPaperMode returns true if this is paper trading
 	IsPaperMode() bool
 
-	// IsDryRun returns true if in dry-run mode (simulating real API calls)
-	IsDryRun() bool
+	// IsTestMode returns true if in test mode (validating but not submitting orders)
+	IsTestMode() bool
 
 	// GetMarketInfo retrieves market info including resolution status
 	GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error)
@@ -174,7 +174,7 @@ func (t *PaperTrader) IsPaperMode() bool {
 	return true
 }
 
-func (t *PaperTrader) IsDryRun() bool {
+func (t *PaperTrader) IsTestMode() bool {
 	return false
 }
 
@@ -206,9 +206,9 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		return nil, fmt.Errorf("failed to create CLOB client: %w", err)
 	}
 
-	// Enable dry-run mode if configured
-	if cfg.DryRunFirst {
-		clob.SetDryRun(true)
+	// Enable test mode if configured
+	if cfg.TestMode {
+		clob.SetTestMode(true)
 	}
 
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
@@ -221,9 +221,9 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	}, nil
 }
 
-// SetDryRun enables/disables dry run mode
-func (t *RealTrader) SetDryRun(enabled bool) {
-	t.clob.SetDryRun(enabled)
+// SetTestMode enables/disables test mode
+func (t *RealTrader) SetTestMode(enabled bool) {
+	t.clob.SetTestMode(enabled)
 }
 
 func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
@@ -267,8 +267,8 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}
 
 	status := "PENDING"
-	if t.clob.IsDryRun() {
-		status = "DRY_RUN"
+	if t.clob.IsTestMode() {
+		status = "TEST"
 	}
 
 	return &TradeResult{
@@ -319,8 +319,8 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 	}
 
 	status := "PENDING"
-	if t.clob.IsDryRun() {
-		status = "DRY_RUN"
+	if t.clob.IsTestMode() {
+		status = "TEST"
 	}
 
 	return &TradeResult{
@@ -401,8 +401,8 @@ func (t *RealTrader) IsPaperMode() bool {
 	return false
 }
 
-func (t *RealTrader) IsDryRun() bool {
-	return t.clob.IsDryRun()
+func (t *RealTrader) IsTestMode() bool {
+	return t.clob.IsTestMode()
 }
 
 func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {

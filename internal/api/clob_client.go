@@ -16,10 +16,10 @@ import (
 
 // CLOBClient handles authenticated trading operations on Polymarket CLOB
 type CLOBClient struct {
-	BaseURL string
-	signer  *Signer
-	auth    *APIAuth
-	dryRun  bool
+	BaseURL  string
+	signer   *Signer
+	auth     *APIAuth
+	testMode bool
 }
 
 // NewCLOBClient creates a new authenticated CLOB client
@@ -37,18 +37,18 @@ func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLO
 			APISecret:  apiSecret,
 			Passphrase: apiPassphrase,
 		},
-		dryRun: false,
+		testMode: false,
 	}, nil
 }
 
-// SetDryRun enables/disables dry run mode (no actual orders placed)
-func (c *CLOBClient) SetDryRun(enabled bool) {
-	c.dryRun = enabled
+// SetTestMode enables/disables test mode (validate orders but don't submit)
+func (c *CLOBClient) SetTestMode(enabled bool) {
+	c.testMode = enabled
 }
 
-// IsDryRun returns whether dry run mode is enabled
-func (c *CLOBClient) IsDryRun() bool {
-	return c.dryRun
+// IsTestMode returns whether test mode is enabled
+func (c *CLOBClient) IsTestMode() bool {
+	return c.testMode
 }
 
 // Address returns the wallet address
@@ -204,18 +204,18 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 
 // submitOrder sends the signed order to the CLOB API
 func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce) (*OrderResponse, error) {
-	// Use a map for the final JSON to include dynamic fields like timeInForce
+	// Build the payload (needed for both test mode validation and real submission)
 	payload := make(map[string]interface{})
-	
+
 	orderJSON, _ := json.Marshal(signedOrder.Order)
 	var orderMap map[string]interface{}
 	json.Unmarshal(orderJSON, &orderMap)
-	
+
 	payload["order"] = orderMap
 	payload["signature"] = signedOrder.Signature
 	payload["owner"] = signedOrder.Owner
 	payload["orderType"] = signedOrder.OrderType
-	
+
 	if tif != "" {
 		payload["timeInForce"] = string(tif)
 	}
@@ -225,9 +225,54 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		return nil, fmt.Errorf("failed to marshal order: %w", err)
 	}
 
+	// Generate auth headers (validates credentials are working)
 	path := "/order"
 	timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
 
+	// In test mode: validate everything but don't actually submit
+	if c.testMode {
+		// Verify we can build the request (validates auth setup)
+		req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("test mode: failed to build request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+		req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+		req.Header.Set("POLY_TIMESTAMP", timestamp)
+		req.Header.Set("POLY_SIGNATURE", signature)
+
+		// Validate balance is sufficient by checking allowance
+		allowance, err := c.GetBalanceAllowance(ctx)
+		if err != nil {
+			return &OrderResponse{
+				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
+				Success:  false,
+				ErrorMsg: fmt.Sprintf("test mode: balance check failed: %v", err),
+			}, nil
+		}
+
+		// Parse maker amount to check against balance
+		makerAmount, _ := strconv.ParseFloat(signedOrder.Order.MakerAmount, 64)
+		makerAmountUSDC := makerAmount / 1e6 // Convert from base units
+
+		if signedOrder.Order.Side == string(SideBuy) && allowance.Balance < makerAmountUSDC {
+			return &OrderResponse{
+				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
+				Success:  false,
+				ErrorMsg: fmt.Sprintf("test mode: insufficient balance ($%.2f < $%.2f needed)", allowance.Balance, makerAmountUSDC),
+			}, nil
+		}
+
+		// All validations passed
+		return &OrderResponse{
+			OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
+			Success:  true,
+			ErrorMsg: fmt.Sprintf("test mode: order validated (signed, balance OK: $%.2f)", allowance.Balance),
+		}, nil
+	}
+
+	// Real submission
 	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -264,7 +309,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 // CancelOrder cancels an existing order
 func (c *CLOBClient) CancelOrder(ctx context.Context, orderID string) error {
-	if c.dryRun {
+	if c.testMode {
 		return nil
 	}
 
@@ -296,7 +341,7 @@ func (c *CLOBClient) CancelOrder(ctx context.Context, orderID string) error {
 
 // CancelAllOrders cancels all open orders
 func (c *CLOBClient) CancelAllOrders(ctx context.Context) error {
-	if c.dryRun {
+	if c.testMode {
 		return nil
 	}
 
@@ -412,7 +457,7 @@ func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, 
 // WaitForFill waits for an order to be filled or times out
 // Returns true if filled, false if timed out or cancelled
 func (c *CLOBClient) WaitForFill(ctx context.Context, orderID string, timeout time.Duration) (bool, error) {
-	if c.dryRun {
+	if c.testMode {
 		return true, nil // Dry run always "fills"
 	}
 
@@ -633,7 +678,7 @@ func (c *CLOBClient) GetMarketInfo(ctx context.Context, conditionID string) (*Ma
 // Note: This requires interaction with the CTF contract on Polygon
 // The CLOB API handles this automatically for most cases
 func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string) error {
-	if c.dryRun {
+	if c.testMode {
 		return nil
 	}
 

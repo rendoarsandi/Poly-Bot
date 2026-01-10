@@ -144,12 +144,6 @@ func run() error {
 	fmt.Println("🛡️  Safety Settings:")
 	fmt.Printf("   • Max trade size: $%.2f\n", cfg.MaxTradeSize)
 	fmt.Printf("   • Max daily loss: $%.2f\n", cfg.MaxDailyLoss)
-	if cfg.DryRunFirst {
-		fmt.Println("   • Mode: DRY-RUN (orders simulated)")
-		fmt.Println("     Set DRY_RUN_FIRST=false to place real orders")
-	} else {
-		fmt.Println("   • Mode: LIVE (real orders will be placed!)")
-	}
 	fmt.Println()
 
 	// Confirmation prompt
@@ -319,10 +313,10 @@ func run() error {
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
 			wg.Add(1)
-			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64, mult float64) {
+			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64) {
 				defer wg.Done()
-				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, mult)
-			}(assetID, market, endTime, marketRiskMgr, currentBalance, compoundMultiplier)
+				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal)
+			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
 		// Wait for markets to complete
@@ -465,7 +459,7 @@ func getOutcomes(market *api.Market) []string {
 	return outcomes
 }
 
-func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, compoundMultiplier float64) {
+func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64) {
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
 	for _, token := range market.Tokens {
@@ -663,13 +657,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					}
 
 					// Use equity for sizing calculation
-					baseTradeSize := cfg.CalculateTradeSize(currentEquity)
-					tradeSize := baseTradeSize * compoundMultiplier
+					// Equity naturally grows with profits, providing automatic compounding
+					tradeSize := cfg.CalculateTradeSize(currentEquity)
 
 					// Scale shares based on margin
 					shares := tradeSize / sum
 
-					// Apply aggression scaling based on margin (starting from 1%)
+					// Apply aggression scaling based on margin (2%, 3%, 4%+)
+					// Higher margin = better opportunity = more aggressive sizing
 					if riskAction != paper.RiskActionReduceSize {
 						if margin >= 4.0 {
 							shares *= 4
@@ -677,13 +672,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							shares *= 3
 						} else if margin >= 2.0 {
 							shares *= 2
-						} else if margin >= 1.0 {
-							shares *= 1 // Baseline at 1% margin
 						}
+						// 1% margin = 1x (no scaling, baseline)
 					}
 
-					// Apply compounding multiplier from profitable rounds
-					shares = float64(int(shares * compoundMultiplier))
+					// Round to whole shares
+					shares = float64(int(shares))
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -943,7 +937,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 // Helper to match bot's toMarketLevels
 func calculateTradeMetrics(shares, sum float64, feeRateBps int) (cost, overhead, gross, net float64) {
 	cost = shares * sum
-	
+
 	// Polymarket 15m markets now have taker fees
 	// feeRateBps is in basis points (1000 = 10%)
 	// Fee is deducted from proceeds (bought tokens or sold USDC)

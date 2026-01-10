@@ -83,8 +83,8 @@ func TestPaperTrader_IsPaperMode(t *testing.T) {
 	if !trader.IsPaperMode() {
 		t.Error("PaperTrader should report IsPaperMode=true")
 	}
-	if trader.IsDryRun() {
-		t.Error("PaperTrader should report IsDryRun=false")
+	if trader.IsTestMode() {
+		t.Error("PaperTrader should report IsTestMode=false")
 	}
 }
 

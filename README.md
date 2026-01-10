@@ -192,6 +192,35 @@ This measures:
 - Order submission round-trip (dry-run)
 - Maximum throughput (RPS)
 
+### Liquidity Test Tool
+
+Analyze real-time order book depth and matched liquidity:
+
+```bash
+# Run the liquidity analyzer
+go run cmd/testliq/main.go
+```
+
+This displays:
+- Best ask prices for both outcomes
+- Top 10 price levels with cumulative liquidity
+- Matched liquidity at different margin thresholds (-2% to +6%)
+- Real-time WebSocket streaming updates every 3 seconds
+
+Example output:
+```
+📈 BEST ASKS: Up=$0.48 + Down=$0.50 = $0.98 (margin: 2.00%)
+
+📊 Up ASK LEVELS (25 total):
+   L1: $0.480 x    500 shares (cumulative:    500)
+   L2: $0.490 x    300 shares (cumulative:    800)
+   ...
+
+📈 MATCHED LIQUIDITY BY MARGIN THRESHOLD:
+   → +2%: matched=   500 | Up(L1)=   500 | Down(L1)=   600
+     +3%: matched=   800 | Up(L2)=   800 | Down(L2)=   900
+```
+
 ### Example Output
 
 ```
@@ -339,9 +368,11 @@ Market-bot/
 │   ├── bot/
 │   │   └── main.go           # Paper trading bot (default)
 │   ├── realbot/
-│   │   └── main.go           # Real trading bot
-│   └── latency/
-│       └── main.go           # Network latency benchmark tool
+│   │   └── main.go           # Real trading bot (production)
+│   ├── latency/
+│   │   └── main.go           # Network latency benchmark tool
+│   └── testliq/
+│       └── main.go           # Real-time liquidity analyzer
 ├── internal/
 │   ├── api/
 │   │   ├── rest_client.go    # Polymarket REST API
@@ -426,6 +457,28 @@ go test -bench=. ./...
 | `internal/trading` | `trader_test.go` | Trader interface, paper/real mode detection |
 | `internal/api` | `signer_test.go` | EIP-712 signing, API authentication |
 
+## Production Readiness
+
+The realbot is **production-ready** with the following robust features:
+
+| Category | Feature | Status |
+|----------|---------|--------|
+| **Trading** | Real CLOB order placement | ✅ Ready |
+| **Trading** | MARKET+GTC orders for guaranteed fills | ✅ Ready |
+| **Trading** | Parallel order execution (both sides) | ✅ Ready |
+| **Trading** | Unbalanced fill recovery (3 retries) | ✅ Ready |
+| **Liquidity** | Aggregated multi-level depth tracking | ✅ Ready |
+| **Liquidity** | 100% matched liquidity utilization | ✅ Ready |
+| **Liquidity** | Real-time REST polling (20ms / 50 RPS per market) | ✅ Ready |
+| **Safety** | Pre-trade balance verification | ✅ Ready |
+| **Safety** | Kill switch (25% drawdown) | ✅ Ready |
+| **Safety** | Exposure + unmatched ratio limits | ✅ Ready |
+| **Safety** | Daily loss limits | ✅ Ready |
+| **Recovery** | Auto on-chain redemption via CTF | ✅ Ready |
+| **Recovery** | Graceful shutdown with order cancellation | ✅ Ready |
+| **Monitoring** | TUI with live P&L, positions, latency | ✅ Ready |
+| **Monitoring** | WS staleness detection + REST fallback | ✅ Ready |
+
 ## Future Improvements
 
 - [x] Real trading with Polymarket CLOB API
@@ -436,7 +489,8 @@ go test -bench=. ./...
 - [x] Rate limit handling (148 RPS)
 - [x] Unbalanced fill recovery
 - [x] Network health monitoring (REST latency + WS staleness)
-- [x] Comprehensive test suite (131 tests)
+- [x] Comprehensive test suite
+- [x] Aggregated liquidity calculation
 - [ ] Persistent state/database
 - [ ] Web dashboard
 - [ ] Telegram/Discord alerts
