@@ -358,10 +358,13 @@ Market-bot/
 │   │   ├── orderbook.go      # Limit order simulation
 │   │   ├── ladder.go         # Ladder quoting system
 │   │   ├── risk.go           # Risk manager & kill switch
+│   │   ├── liquidity.go      # Aggregated liquidity calculation
 │   │   ├── market.go         # Market resolution handling
-│   │   └── tui.go            # Terminal UI display
+│   │   ├── tui.go            # Terminal UI display
+│   │   └── *_test.go         # Comprehensive test suite
 │   ├── trading/
-│   │   └── trader.go         # Unified trading interface (paper/real)
+│   │   ├── trader.go         # Unified trading interface (paper/real)
+│   │   └── trader_test.go    # Trader interface tests
 │   └── strategy/
 │       └── math.go           # Discount sum calculations
 ├── .env.example              # Example configuration
@@ -396,6 +399,33 @@ Market-bot/
 | Configuration | None required | Requires .env credentials |
 | Mode | Default | Set `TRADING_MODE=real` |
 
+## Testing
+
+The project includes comprehensive test coverage for core trading logic:
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests with coverage
+go test -coverprofile=coverage.out ./... && go tool cover -html=coverage.out
+
+# Run benchmarks
+go test -bench=. ./...
+```
+
+### Test Files
+
+| Package | Test File | Coverage |
+|---------|-----------|----------|
+| `internal/paper` | `engine_test.go` | Engine balance, positions, PnL |
+| `internal/paper` | `orderbook_test.go` | Order matching, fills, cancellation |
+| `internal/paper` | `risk_test.go` | Kill switch, exposure limits, skew detection |
+| `internal/paper` | `liquidity_test.go` | Aggregated liquidity, safety margin (80%) |
+| `internal/paper` | `depth_test.go` | Multi-level depth aggregation |
+| `internal/trading` | `trader_test.go` | Trader interface, paper/real mode detection |
+| `internal/api` | `signer_test.go` | EIP-712 signing, API authentication |
+
 ## Future Improvements
 
 - [x] Real trading with Polymarket CLOB API
@@ -406,6 +436,7 @@ Market-bot/
 - [x] Rate limit handling (148 RPS)
 - [x] Unbalanced fill recovery
 - [x] Network health monitoring (REST latency + WS staleness)
+- [x] Comprehensive test suite (131 tests)
 - [ ] Persistent state/database
 - [ ] Web dashboard
 - [ ] Telegram/Discord alerts

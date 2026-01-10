@@ -1,3 +1,9 @@
+//go:build !debug
+// +build !debug
+
+// depth_test.go - Core depth aggregation tests
+// Run debug tests with: go test -tags=debug ./internal/paper/
+
 package paper
 
 import (
@@ -172,101 +178,6 @@ func TestDepthAggregation(t *testing.T) {
 	}
 }
 
-// TestDepthAggregationDebug runs with verbose output to see exactly what happens
-func TestDepthAggregationDebug(t *testing.T) {
-	// Simulate: 6% margin at top, should capture 6%, 5%, 4%, 3%, 2% levels
-	asks1 := []MarketLevel{
-		{Price: 0.47, Size: 100}, // Level 0
-		{Price: 0.48, Size: 80},  // Level 1
-		{Price: 0.49, Size: 60},  // Level 2
-		{Price: 0.50, Size: 50},  // Level 3 - invalid
-	}
-	asks2 := []MarketLevel{
-		{Price: 0.47, Size: 100},
-		{Price: 0.48, Size: 80},
-		{Price: 0.49, Size: 60},
-		{Price: 0.50, Size: 50},
-	}
-	maxSum := 0.98
-
-	t.Logf("Order book setup:")
-	t.Logf("  asks1: %+v", asks1)
-	t.Logf("  asks2: %+v", asks2)
-	t.Logf("  maxSum: %.2f (min margin: %.0f%%)", maxSum, (1-maxSum)*100)
-
-	var totalMatchedLiquidity float64
-	var rawLiq1, rawLiq2 float64
-	var maxValidI, maxValidJ int
-	iteration := 0
-
-	i, j := 0, 0
-	for i < len(asks1) && j < len(asks2) {
-		p1 := asks1[i].Price
-		p2 := asks2[j].Price
-		sum := p1 + p2
-
-		t.Logf("\nIteration %d: i=%d, j=%d", iteration, i, j)
-		t.Logf("  p1=%.2f (size=%.0f), p2=%.2f (size=%.0f)", p1, asks1[i].Size, p2, asks2[j].Size)
-		t.Logf("  sum=%.2f, margin=%.1f%%", sum, (1-sum)*100)
-
-		if sum > maxSum {
-			t.Logf("  BREAK: sum %.2f > maxSum %.2f", sum, maxSum)
-			break
-		}
-
-		if i+1 > maxValidI {
-			maxValidI = i + 1
-			rawLiq1 += asks1[i].Size
-			t.Logf("  New level on side1: maxValidI=%d, rawLiq1=%.0f", maxValidI, rawLiq1)
-		}
-		if j+1 > maxValidJ {
-			maxValidJ = j + 1
-			rawLiq2 += asks2[j].Size
-			t.Logf("  New level on side2: maxValidJ=%d, rawLiq2=%.0f", maxValidJ, rawLiq2)
-		}
-
-		levelLiq1 := asks1[i].Size
-		levelLiq2 := asks2[j].Size
-
-		matchedAtLevel := levelLiq1
-		if levelLiq2 < matchedAtLevel {
-			matchedAtLevel = levelLiq2
-		}
-
-		totalMatchedLiquidity += matchedAtLevel
-		t.Logf("  Matched at level: %.0f, total matched: %.0f", matchedAtLevel, totalMatchedLiquidity)
-
-		remaining1 := levelLiq1 - matchedAtLevel
-		remaining2 := levelLiq2 - matchedAtLevel
-
-		if remaining1 <= 0 {
-			i++
-		} else {
-			asks1[i].Size = remaining1
-		}
-		if remaining2 <= 0 {
-			j++
-		} else {
-			asks2[j].Size = remaining2
-		}
-		iteration++
-	}
-
-	t.Logf("\n=== FINAL RESULTS ===")
-	t.Logf("rawLiq1: %.0f", rawLiq1)
-	t.Logf("rawLiq2: %.0f", rawLiq2)
-	t.Logf("totalMatchedLiquidity: %.0f", totalMatchedLiquidity)
-	t.Logf("validLevels: %d/%d", maxValidI, maxValidJ)
-
-	// Expected: 3 levels on each side (0.47+0.47=0.94, 0.48+0.48=0.96, 0.49+0.49=0.98)
-	if maxValidI != 3 || maxValidJ != 3 {
-		t.Errorf("Expected 3/3 valid levels, got %d/%d", maxValidI, maxValidJ)
-	}
-	if rawLiq1 != 240 || rawLiq2 != 240 {
-		t.Errorf("Expected rawLiq 240/240, got %.0f/%.0f", rawLiq1, rawLiq2)
-	}
-}
-
 // TestDepthAggregationRealistic tests with fine-grained prices like real order book
 func TestDepthAggregationRealistic(t *testing.T) {
 	// Realistic order book with $0.01 price increments
@@ -291,13 +202,9 @@ func TestDepthAggregationRealistic(t *testing.T) {
 	}
 	maxSum := 0.98
 
-	t.Logf("=== REALISTIC ORDER BOOK TEST ===")
-	t.Logf("Testing all margin levels from 6%% down to 2%%")
-
 	var totalMatchedLiquidity float64
 	var rawLiq1, rawLiq2 float64
 	var maxValidI, maxValidJ int
-	iteration := 0
 
 	i, j := 0, 0
 	for i < len(asks1) && j < len(asks2) {
@@ -305,11 +212,7 @@ func TestDepthAggregationRealistic(t *testing.T) {
 		p2 := asks2[j].Price
 		sum := p1 + p2
 
-		t.Logf("Iter %d: %.3f + %.3f = %.3f (%.1f%% margin), sizes: %.0f/%.0f",
-			iteration, p1, p2, sum, (1-sum)*100, asks1[i].Size, asks2[j].Size)
-
 		if sum > maxSum {
-			t.Logf("  → BREAK: exceeds maxSum %.2f", maxSum)
 			break
 		}
 
@@ -345,13 +248,7 @@ func TestDepthAggregationRealistic(t *testing.T) {
 		} else {
 			asks2[j].Size = remaining2
 		}
-		iteration++
 	}
-
-	t.Logf("\n=== RESULTS ===")
-	t.Logf("rawLiq: %.0f/%.0f", rawLiq1, rawLiq2)
-	t.Logf("totalMatchedLiquidity: %.0f", totalMatchedLiquidity)
-	t.Logf("validLevels: %d/%d (out of %d/%d)", maxValidI, maxValidJ, len(asks1), len(asks2))
 
 	// Expected: 5 levels on each side (6%, 5%, 4%, 3%, 2%)
 	expectedLiq := 20.0 + 15 + 25 + 18 + 30 // = 108

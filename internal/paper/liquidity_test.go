@@ -521,3 +521,148 @@ func BenchmarkCalculateSafeShares(b *testing.B) {
 		CalculateSafeShares(10, 3.0, 1.5, 25, false)
 	}
 }
+
+// === Merged from liquidity_accuracy_test.go ===
+
+// TestLiquidityEdgeCases tests boundary conditions in liquidity handling
+func TestLiquidityEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		asks1     []MarketLevel
+		asks2     []MarketLevel
+		maxSum    float64
+		expectLiq float64
+	}{
+		{
+			name: "Very small size (0.5 shares)",
+			asks1: []MarketLevel{
+				{Price: 0.48, Size: 0.5},
+			},
+			asks2: []MarketLevel{
+				{Price: 0.50, Size: 0.5},
+			},
+			maxSum:    0.99,
+			expectLiq: 0.5,
+		},
+		{
+			name: "Large liquidity (1000 shares)",
+			asks1: []MarketLevel{
+				{Price: 0.48, Size: 1000},
+			},
+			asks2: []MarketLevel{
+				{Price: 0.50, Size: 1000},
+			},
+			maxSum:    0.99,
+			expectLiq: 1000,
+		},
+		{
+			name: "Fractional shares",
+			asks1: []MarketLevel{
+				{Price: 0.48, Size: 12.75},
+			},
+			asks2: []MarketLevel{
+				{Price: 0.50, Size: 8.25},
+			},
+			maxSum:    0.99,
+			expectLiq: 8.25, // min(12.75, 8.25)
+		},
+		{
+			name: "Price exactly at threshold",
+			asks1: []MarketLevel{
+				{Price: 0.49, Size: 10},
+			},
+			asks2: []MarketLevel{
+				{Price: 0.49, Size: 10},
+			},
+			maxSum:    0.98, // 0.49+0.49=0.98, exactly at threshold
+			expectLiq: 10,
+		},
+		{
+			name: "Price just over threshold",
+			asks1: []MarketLevel{
+				{Price: 0.495, Size: 10},
+			},
+			asks2: []MarketLevel{
+				{Price: 0.49, Size: 10},
+			},
+			maxSum:    0.98, // 0.495+0.49=0.985 > 0.98
+			expectLiq: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := CalculateAggregatedLiquidity(tc.asks1, tc.asks2, tc.maxSum)
+
+			if result.TotalMatchedLiquidity != tc.expectLiq {
+				t.Errorf("Expected %.2f liquidity, got %.2f",
+					tc.expectLiq, result.TotalMatchedLiquidity)
+			}
+		})
+	}
+}
+
+// TestOrderSizing_MatchesRealScenarios verifies order sizing matches production scenarios
+func TestOrderSizing_MatchesRealScenarios(t *testing.T) {
+	tests := []struct {
+		name           string
+		liq1           float64
+		liq2           float64
+		baseShares     float64
+		margin         float64
+		multiplier     float64
+		expectedShares float64
+		description    string
+	}{
+		{
+			name:           "SOL 10/10 liq at 2% margin",
+			liq1:           10,
+			liq2:           10,
+			baseShares:     5,
+			margin:         2.0,
+			multiplier:     1.1,
+			expectedShares: 8, // 80% of min(10,10) = 8
+			description:    "With 10/10 liquidity, should cap at 8 shares (80% safety)",
+		},
+		{
+			name:           "BTC 25/25 liq at 2% margin",
+			liq1:           25,
+			liq2:           25,
+			baseShares:     5,
+			margin:         2.0,
+			multiplier:     1.1,
+			expectedShares: 11, // 5*2*1.1=11, less than 20 (80% of 25)
+			description:    "With 25/25 liquidity, 11 shares is under 80% cap of 20",
+		},
+		{
+			name:           "BTC 25/25 liq with higher scaling",
+			liq1:           25,
+			liq2:           25,
+			baseShares:     10,
+			margin:         3.0,
+			multiplier:     1.1,
+			expectedShares: 20, // 10*3*1.1=33, but capped at 80% of 25 = 20
+			description:    "Larger trade should be capped at 80% liquidity",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			matchedLiq := MinFloat(tc.liq1, tc.liq2)
+			result := CalculateSafeShares(
+				tc.baseShares,
+				tc.margin,
+				tc.multiplier,
+				matchedLiq,
+				false,
+			)
+
+			if result != tc.expectedShares {
+				t.Errorf("%s\nExpected %.0f shares, got %.0f\nMatched liquidity: %.0f, 80%% cap: %.0f",
+					tc.description,
+					tc.expectedShares, result,
+					matchedLiq, matchedLiq*0.80)
+			}
+		})
+	}
+}
