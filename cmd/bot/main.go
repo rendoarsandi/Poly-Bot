@@ -504,6 +504,9 @@ func getOutcomes(market *api.Market) []string {
 	for _, token := range market.Tokens {
 		outcomes = append(outcomes, token.Outcome)
 	}
+	// Sort outcomes for consistent ordering across API calls
+	// This prevents token-to-price mapping bugs if API returns tokens in different order
+	sort.Strings(outcomes)
 	return outcomes
 }
 
@@ -757,9 +760,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				select {
 				case msg, ok := <-wsMsgChan:
 					if !ok {
-						// Channel closed, WebSocket done
-						wsChannelClosed = true
-						goto doneProcessingWS
+						// Channel closed - check if context cancelled or unexpected
+						select {
+						case <-ctx.Done():
+							// Context cancelled, normal shutdown
+							return nil, ctx.Err()
+						default:
+							// Unexpected close, mark for reconnect attempt
+							wsChannelClosed = true
+							goto doneProcessingWS
+						}
 					}
 					messagesProcessed++
 
