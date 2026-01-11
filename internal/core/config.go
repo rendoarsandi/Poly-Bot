@@ -80,7 +80,7 @@ func LoadConfig() (*Config, error) {
 		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 312), // Calibrated: ~1.6% effective at p=0.50
 		// Safety settings
 		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
-		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 50.0), // Default $50 max daily loss
+		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
 		RequireConfirm: os.Getenv("REQUIRE_CONFIRM") == "true",
 		TestMode:       os.Getenv("TEST_MODE") != "false", // Default true for safety
 		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",

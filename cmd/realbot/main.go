@@ -143,7 +143,11 @@ func run() error {
 	fmt.Println()
 	fmt.Println("🛡️  Safety Settings:")
 	fmt.Printf("   • Max trade size: $%.2f\n", cfg.MaxTradeSize)
-	fmt.Printf("   • Max daily loss: $%.2f\n", cfg.MaxDailyLoss)
+	if cfg.MaxDailyLoss > 0 {
+		fmt.Printf("   • Max daily loss: $%.2f\n", cfg.MaxDailyLoss)
+	} else {
+		fmt.Println("   • Max daily loss: disabled (using 25% drawdown kill switch)")
+	}
 	fmt.Println()
 
 	// Confirmation prompt
@@ -304,7 +308,7 @@ func run() error {
 
 			// Create per-market Risk Manager
 			riskConfig := paper.RiskConfig{
-				MaxExposure:        500.0, // $500 max exposure
+				MaxExposure:        math.MaxFloat64, // Unlimited exposure (rely on kill switch for safety)
 				MaxUnmatchedRatio:  0.20,  // 20% max unmatched
 				MaxUnmatchedShares: 500.0, // 500 shares max on one side
 				SkewThreshold:      0.10,  // 10% skew triggers rebalance
