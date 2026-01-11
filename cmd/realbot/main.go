@@ -460,6 +460,9 @@ func getOutcomes(market *api.Market) []string {
 	for _, token := range market.Tokens {
 		outcomes = append(outcomes, token.Outcome)
 	}
+	// Sort outcomes for consistent ordering across API calls
+	// This prevents token-to-price mapping bugs if API returns tokens in different order
+	sort.Strings(outcomes)
 	return outcomes
 }
 
@@ -542,8 +545,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			select {
 			case msg, ok := <-wsMsgChan:
 				if !ok {
-					tui.LogEvent("[%s] ⚠️ WS closed", id)
-					return
+					// Channel closed - this only happens when context is cancelled
+					// Check if we should exit or if it's a reconnection scenario
+					select {
+					case <-ctx.Done():
+						tui.LogEvent("[%s] ⚠️ WS closed (context cancelled)", id)
+						return
+					default:
+						// Context still active but channel closed unexpectedly
+						// This shouldn't happen with the current WS manager, but handle it
+						tui.LogEvent("[%s] ⚠️ WS channel closed unexpectedly, continuing with REST only", id)
+						goto doneWS
+					}
 				}
 				messagesProcessed++
 
@@ -601,12 +614,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}
 
-						// ============ REST PRIMARY FOR LIQUIDITY ============
-						// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-						// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
-						// Global rate limiter in RestClient caps total at 148 RPS across all traders
-						staleTime := time.Since(lastUpdate)
-						restPollInterval := 20 * time.Millisecond
+		// ============ REST PRIMARY FOR LIQUIDITY ============
+		// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
+		// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
+		// Global rate limiter in RestClient caps total at 148 RPS across all traders
+		staleTime := time.Since(lastUpdate)
+		restPollInterval := 20 * time.Millisecond
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
 		// Update WS staleness in TUI
@@ -782,8 +795,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						currentCash = latestBalance
 					}
 
-					// Scale down if cost exceeds cash
-					if !riskMgr.CanPlaceOrder(cost) || cost < (cost * 1.02) { // 2% buffer for price movements
+					// Scale down if cost exceeds cash (add 2% buffer for price movements)
+					costWithBuffer := cost * 1.02
+					if !riskMgr.CanPlaceOrder(cost) || costWithBuffer > currentCash {
 						if cost > currentCash {
 							maxAffordableShares := (currentCash * 0.98) / sum // Use 98% of cash for safety
 							if maxAffordableShares < 1.0 {
@@ -851,19 +865,21 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						cost1 := shares * price1
 						cost2 := shares * price2
 
-						// Process results
-						if err1 == nil && res1 != nil && res1.Success {
+						// Track success state - defer engine recording until final state is known
+						side1Success := err1 == nil && res1 != nil && res1.Success
+						side2Success := err2 == nil && res2 != nil && res2.Success
+
+						// Log results (but don't record to engine yet)
+						if side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
-							engine.BuyForMarket(id, outcomes[0], price1, shares)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FILLED")
 						} else {
 							tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FAILED")
 						}
 
-						if err2 == nil && res2 != nil && res2.Success {
+						if side2Success {
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
-							engine.BuyForMarket(id, outcomes[1], price2, shares)
 							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FILLED")
 						} else {
 							tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
@@ -874,9 +890,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// UNBALANCED FILL RECOVERY: If one side succeeded and other failed,
 						// retry the failed side up to 3 times to prevent unbalanced position
 						// ═══════════════════════════════════════════════════════════════
-						side1Success := err1 == nil && res1 != nil && res1.Success
-						side2Success := err2 == nil && res2 != nil && res2.Success
-
+						recoverySuccess := false
 						if side1Success != side2Success {
 							// One succeeded, one failed - need to recover
 							failedSide := 1
@@ -909,18 +923,46 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 								if retryErr == nil && retryRes != nil && retryRes.Success {
 									tui.LogEvent("[%s] ✅ Recovery SUCCESS for %s!", id, failedOutcome)
-									engine.BuyForMarket(id, failedOutcome, retryPrice, shares)
 									retryCost := shares * retryPrice
 									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, bufferedMargin, "FILLED")
+									recoverySuccess = true
+									// Update the success flag and price for engine recording
+									if failedSide == 1 {
+										side1Success = true
+										price1 = retryPrice
+									} else {
+										side2Success = true
+										price2 = retryPrice
+									}
 									break
 								}
 
 								if retry == 3 {
 									tui.LogEvent("[%s] 🚨 Recovery FAILED after 3 attempts - position unbalanced!", id)
-									// Position is now unbalanced - will be handled by risk manager
 								}
 							}
 						}
+
+						// NOW record to engine - only record positions that actually succeeded
+						// This ensures engine state matches reality for accurate drawdown calculation
+						if side1Success && side2Success {
+							// Both sides filled (either initially or via recovery) - record both
+							engine.BuyForMarket(id, outcomes[0], price1, shares)
+							engine.BuyForMarket(id, outcomes[1], price2, shares)
+						} else if side1Success || side2Success {
+							// Only one side filled and recovery failed - record the unbalanced position
+							// This is important so the risk manager can see the exposure
+							if side1Success {
+								engine.BuyForMarket(id, outcomes[0], price1, shares)
+								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
+							}
+							if side2Success {
+								engine.BuyForMarket(id, outcomes[1], price2, shares)
+								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
+							}
+						}
+						// If both failed, nothing to record
+						_ = recoverySuccess // Used above to update success flags
 
 						// Force refresh balance after trade to ensure accurate tracking
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
@@ -1016,52 +1058,6 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 	return success
 }
 
-
-func handleRestFallback(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
-	success := false
-	for tokenID, outcome := range tokenMap {
-		book, err := restClient.GetOrderBook(ctx, tokenID)
-		if err != nil {
-			continue
-		}
-
-		bid, ask := 0.0, 1.0
-		for _, b := range book.Bids {
-			p, err := strconv.ParseFloat(b.Price, 64)
-			if err != nil {
-				continue
-			}
-			if p > bid {
-				bid = p
-			}
-		}
-		for _, a := range book.Asks {
-			p, err := strconv.ParseFloat(a.Price, 64)
-			if err != nil {
-				continue
-			}
-			if p < ask && p > 0 {
-				ask = p
-			}
-		}
-		if ask >= 1.0 {
-			ask = 0
-		}
-
-		if bid > 0 && ask > 0 {
-			bids[outcome] = bid
-			asks[outcome] = ask
-			mid := (bid + ask) / 2
-			engine.UpdateMarketData(id, outcome, mid, bid, ask)
-			success = true
-		}
-	}
-	if success {
-		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
-	}
-	return success
-}
-
 func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	// Retry resolution check with exponential backoff
 	// 15-min markets may take a few seconds to resolve
@@ -1102,17 +1098,22 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 
 				// AUTOMATIC ON-CHAIN REDEMPTION
 				// This converts winning tokens back into spendable USDC
-				go func() {
+				go func(cid string) {
 					tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
 					// Wait a bit for on-chain state to sync
 					time.Sleep(30 * time.Second)
-					txHash, err := trader.RedeemOnChain(ctx, conditionID)
+					// Use fresh context since parent ctx may be cancelled during shutdown
+					redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					defer cancel()
+					txHash, err := trader.RedeemOnChain(redeemCtx, cid)
 					if err != nil {
 						tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
-					} else {
+					} else if len(txHash) >= 10 {
 						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
+					} else {
+						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
 					}
-				}()
+				}(conditionID)
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}
