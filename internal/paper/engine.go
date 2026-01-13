@@ -419,6 +419,103 @@ func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
 	return result
 }
 
+// MergeResult holds detailed info about a merge operation
+type MergeResult struct {
+	MarketID    string
+	Outcome1    string
+	Outcome2    string
+	Shares      float64
+	TotalCost   float64 // What we paid for both sides
+	TotalPayout float64 // $1 * shares received back
+	PnL         float64 // Profit from the merge
+}
+
+// MergeForMarket simulates merging equal YES+NO tokens back into USDC
+// This is used after buying both sides of an arb - instantly captures profit
+// without waiting for market resolution.
+// Returns the profit from the merge.
+func (e *Engine) MergeForMarket(marketID, outcome1, outcome2 string, shares float64) *MergeResult {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	result := &MergeResult{
+		MarketID: marketID,
+		Outcome1: outcome1,
+		Outcome2: outcome2,
+		Shares:   shares,
+	}
+
+	// Build position keys
+	key1 := outcome1
+	key2 := outcome2
+	if marketID != "" {
+		key1 = marketID + ":" + outcome1
+		key2 = marketID + ":" + outcome2
+	}
+
+	// Get positions
+	pos1, exists1 := e.positions[key1]
+	pos2, exists2 := e.positions[key2]
+
+	if !exists1 || !exists2 {
+		return result // No positions to merge
+	}
+
+	// Merge the minimum of both positions (must have equal shares to merge)
+	mergeQty := shares
+	if pos1.Quantity < mergeQty {
+		mergeQty = pos1.Quantity
+	}
+	if pos2.Quantity < mergeQty {
+		mergeQty = pos2.Quantity
+	}
+
+	if mergeQty <= 0 {
+		return result
+	}
+
+	// Calculate cost basis for merged shares
+	costBasis1 := (pos1.TotalCost / pos1.Quantity) * mergeQty
+	costBasis2 := (pos2.TotalCost / pos2.Quantity) * mergeQty
+	totalCost := costBasis1 + costBasis2
+
+	// Merge returns $1 per share (full set = 1 YES + 1 NO = $1 USDC)
+	payout := mergeQty * 1.0
+	pnl := payout - totalCost
+
+	result.TotalCost = totalCost
+	result.TotalPayout = payout
+	result.PnL = pnl
+
+	// Update balance
+	e.currentBalance += payout
+	e.realizedPnL += pnl
+
+	// Update positions
+	pos1.Quantity -= mergeQty
+	pos1.TotalCost -= costBasis1
+	pos2.Quantity -= mergeQty
+	pos2.TotalCost -= costBasis2
+
+	// Clean up empty positions
+	if pos1.Quantity <= 0.0001 {
+		delete(e.positions, key1)
+	}
+	if pos2.Quantity <= 0.0001 {
+		delete(e.positions, key2)
+	}
+
+	// Track as winning trade if profitable
+	if pnl > 0 {
+		e.winningTrades++
+	} else if pnl < 0 {
+		e.losingTrades++
+	}
+
+	e.updateDrawdown()
+	return result
+}
+
 // LiquidateAll sells all positions at current BID prices (taker - chasing liquidity)
 // This simulates realistic emergency exit where you SELL at the BID (worse price)
 func (e *Engine) LiquidateAll() float64 {

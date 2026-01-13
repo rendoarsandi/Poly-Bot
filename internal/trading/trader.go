@@ -3,6 +3,7 @@ package trading
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -423,6 +424,20 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (str
 
 	// Get signer from clob (we need to export it or add a helper)
 	return t.polygon.RedeemPositions(ctx, t.clob.GetSigner(), conditionID)
+}
+
+// MergeOnChain burns equal YES+NO tokens to reclaim USDC immediately
+// This works ANYTIME - no need to wait for market resolution.
+// Use this immediately after buying both sides of an arb to capture profit instantly.
+func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64) (string, error) {
+	// CTF tokens use 6 decimals (same as USDC)
+	// Convert shares to the proper amount with decimals
+	amount := new(big.Int)
+	// shares * 1e6 for 6 decimal places
+	amountFloat := shares * 1e6
+	amount.SetInt64(int64(amountFloat))
+
+	return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount)
 }
 
 // checkSafetyLimits verifies the trade doesn't exceed safety limits

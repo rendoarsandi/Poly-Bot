@@ -949,6 +949,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							// Both sides filled (either initially or via recovery) - record both
 							engine.BuyForMarket(id, outcomes[0], price1, shares)
 							engine.BuyForMarket(id, outcomes[1], price2, shares)
+
+							// INSTANT MERGE: Immediately merge tokens to capture arb profit
+							// This converts YES+NO tokens back to USDC without waiting for expiry
+							go func(cid string, qty float64, o1, o2 string) {
+								// Small delay to let on-chain state settle after fills
+								time.Sleep(2 * time.Second)
+
+								mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+								defer cancel()
+
+								txHash, err := trader.MergeOnChain(mergeCtx, cid, qty)
+								if err != nil {
+									tui.LogEvent("[%s] ⚠️ Merge failed: %v (will redeem at expiry)", id, err)
+									// Fallback: positions remain, will be redeemed at expiry via checkRedemption
+								} else {
+									// Update engine to reflect closed position
+									result := engine.MergeForMarket(id, o1, o2, qty)
+									if txHash != "" && len(txHash) >= 10 {
+										tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit | Tx: %s...", id, result.PnL, txHash[:10])
+									} else {
+										tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit", id, result.PnL)
+									}
+								}
+							}(market.ConditionID, shares, outcomes[0], outcomes[1])
 						} else if side1Success || side2Success {
 							// Only one side filled and recovery failed - record the unbalanced position
 							// This is important so the risk manager can see the exposure
