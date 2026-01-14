@@ -679,19 +679,33 @@ func (t *TUI) renderMultiMarketInfo() string {
 			sb.WriteString(t.renderOrderBookForMarket(id, m.Outcomes[1], bid2, ask2))
 
 			// Calculate margin - only show valid data
-			if ask1 > 0 && ask2 > 0 {
-				sum := ask1 + ask2
-				margin := (1.0 - sum) * 100
-				marginColor := ColorWhite
-				if margin >= 3 {
-					marginColor = ColorGreen
-				} else if margin >= 2 {
-					marginColor = ColorYellow
-				} else if margin < 1 {
-					marginColor = ColorRed
+			if ask1 > 0 && ask2 > 0 && bid1 > 0 && bid2 > 0 {
+				askSum := ask1 + ask2
+				buyMargin := (1.0 - askSum) * 100
+				buyMarginColor := ColorWhite
+				if buyMargin >= 3 {
+					buyMarginColor = ColorGreen
+				} else if buyMargin >= 2 {
+					buyMarginColor = ColorYellow
+				} else if buyMargin < 1 {
+					buyMarginColor = ColorRed
 				}
-				sb.WriteString(fmt.Sprintf("   📈 Sum: $%.2f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
-				totalMargin += margin
+
+				bidSum := bid1 + bid2
+				sellMargin := (bidSum - 1.0) * 100
+				sellMarginColor := ColorWhite
+				if sellMargin >= 3 {
+					sellMarginColor = ColorGreen
+				} else if sellMargin >= 2 {
+					sellMarginColor = ColorYellow
+				} else if sellMargin < 1 {
+					sellMarginColor = ColorRed
+				}
+
+				sb.WriteString(fmt.Sprintf("   📉 BUY: $%.2f | %s%+.1f%%%s  📈 SELL: $%.2f | %s%+.1f%%%s\n",
+					askSum, buyMarginColor, buyMargin, Reset,
+					bidSum, sellMarginColor, sellMargin, Reset))
+				totalMargin += buyMargin
 				marketCount++
 			} else {
 				sb.WriteString(fmt.Sprintf("   📈 %s(waiting for price data...)%s\n", ColorYellow, Reset))
@@ -830,18 +844,32 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	}
 	sb.WriteString("\n")
 
-	// Calculate margin
-	sum := ask1 + ask2
-	margin := (1.0 - sum) * 100
-	marginColor := ColorWhite
-	if margin >= 3 {
-		marginColor = ColorGreen
-	} else if margin >= 2 {
-		marginColor = ColorYellow
-	} else if margin < 1 {
-		marginColor = ColorRed
+	// Calculate BUY margin (panic buy: when ask_sum < $0.98)
+	askSum := ask1 + ask2
+	buyMargin := (1.0 - askSum) * 100
+	buyMarginColor := ColorWhite
+	if buyMargin >= 3 {
+		buyMarginColor = ColorGreen
+	} else if buyMargin >= 2 {
+		buyMarginColor = ColorYellow
+	} else if buyMargin < 1 {
+		buyMarginColor = ColorRed
 	}
-	sb.WriteString(fmt.Sprintf("│  📈 Ask Sum: %.2f | %sMargin: %.1f%%%s\n", sum, marginColor, margin, Reset))
+
+	// Calculate SELL margin (panic sell: when bid_sum > $1.03)
+	bidSum := bid1 + bid2
+	sellMargin := (bidSum - 1.0) * 100
+	sellMarginColor := ColorWhite
+	if sellMargin >= 3 {
+		sellMarginColor = ColorGreen
+	} else if sellMargin >= 2 {
+		sellMarginColor = ColorYellow
+	} else if sellMargin < 1 {
+		sellMarginColor = ColorRed
+	}
+
+	sb.WriteString(fmt.Sprintf("│  📉 BUY:  ask_sum=$%.2f | %sMargin: %+.1f%%%s\n", askSum, buyMarginColor, buyMargin, Reset))
+	sb.WriteString(fmt.Sprintf("│  📈 SELL: bid_sum=$%.2f | %sMargin: %+.1f%%%s\n", bidSum, sellMarginColor, sellMargin, Reset))
 	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorYellow, Reset))
 
 	// ══════════════════════════════════════════════════════════════
