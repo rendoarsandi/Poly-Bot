@@ -440,6 +440,19 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount)
 }
 
+// SplitOnChain converts USDC into YES+NO token pairs
+// This is the inverse of MergeOnChain - use to create inventory for panic selling.
+// 1 USDC → 1 YES token + 1 NO token
+// Use this to build inventory, then sell when bid_sum > $1.03 for profit.
+func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcAmount float64) (string, error) {
+	// CTF tokens use 6 decimals (same as USDC)
+	amount := new(big.Int)
+	amountFloat := usdcAmount * 1e6
+	amount.SetInt64(int64(amountFloat))
+
+	return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount)
+}
+
 // checkSafetyLimits verifies the trade doesn't exceed safety limits
 func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
 	t.mu.Lock()

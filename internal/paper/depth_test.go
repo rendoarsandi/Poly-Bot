@@ -13,15 +13,15 @@ import (
 // TestDepthAggregation verifies that liquidity is correctly aggregated across all valid levels
 func TestDepthAggregation(t *testing.T) {
 	tests := []struct {
-		name           string
-		asks1          []MarketLevel // Up side
-		asks2          []MarketLevel // Down side
-		maxSum         float64       // e.g., 0.98 for 2% min margin
-		wantRawLiq1    float64
-		wantRawLiq2    float64
-		wantMatched    float64
-		wantValidLvl1  int
-		wantValidLvl2  int
+		name          string
+		asks1         []MarketLevel // Up side
+		asks2         []MarketLevel // Down side
+		maxSum        float64       // e.g., 0.98 for 2% min margin
+		wantRawLiq1   float64
+		wantRawLiq2   float64
+		wantMatched   float64
+		wantValidLvl1 int
+		wantValidLvl2 int
 	}{
 		{
 			name: "Single level valid - prices jump too fast",

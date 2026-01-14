@@ -60,11 +60,11 @@ func (d *DataSource) GetUpdateCount() int {
 
 // HybridDataManager simulates the bot's WS+REST hybrid approach
 type HybridDataManager struct {
-	ws              *DataSource
-	rest            *DataSource
+	ws               *DataSource
+	rest             *DataSource
 	restPollInterval time.Duration
 	wsStaleThreshold time.Duration
-	lastRestPoll    time.Time
+	lastRestPoll     time.Time
 
 	// Tracking
 	restFallbackCount int
@@ -111,46 +111,46 @@ func (h *HybridDataManager) ReceiveWSUpdate() {
 // TestWSStaleDetection verifies WebSocket staleness is correctly detected
 func TestWSStaleDetection(t *testing.T) {
 	tests := []struct {
-		name           string
+		name            string
 		timeSinceUpdate time.Duration
-		threshold      time.Duration
-		expectStale    bool
+		threshold       time.Duration
+		expectStale     bool
 	}{
 		{
-			name:           "Fresh data (0ms)",
+			name:            "Fresh data (0ms)",
 			timeSinceUpdate: 0,
-			threshold:      15 * time.Second,
-			expectStale:    false,
+			threshold:       15 * time.Second,
+			expectStale:     false,
 		},
 		{
-			name:           "Fresh data (1s)",
+			name:            "Fresh data (1s)",
 			timeSinceUpdate: 1 * time.Second,
-			threshold:      15 * time.Second,
-			expectStale:    false,
+			threshold:       15 * time.Second,
+			expectStale:     false,
 		},
 		{
-			name:           "Getting stale (10s)",
+			name:            "Getting stale (10s)",
 			timeSinceUpdate: 10 * time.Second,
-			threshold:      15 * time.Second,
-			expectStale:    false,
+			threshold:       15 * time.Second,
+			expectStale:     false,
 		},
 		{
-			name:           "At threshold (15s) - considered stale",
+			name:            "At threshold (15s) - considered stale",
 			timeSinceUpdate: 15 * time.Second,
-			threshold:      15 * time.Second,
-			expectStale:    true, // >= threshold is stale
+			threshold:       15 * time.Second,
+			expectStale:     true, // >= threshold is stale
 		},
 		{
-			name:           "Definitely stale (16s)",
+			name:            "Definitely stale (16s)",
 			timeSinceUpdate: 16 * time.Second,
-			threshold:      15 * time.Second,
-			expectStale:    true,
+			threshold:       15 * time.Second,
+			expectStale:     true,
 		},
 		{
-			name:           "Very stale (30s)",
+			name:            "Very stale (30s)",
 			timeSinceUpdate: 30 * time.Second,
-			threshold:      15 * time.Second,
-			expectStale:    true,
+			threshold:       15 * time.Second,
+			expectStale:     true,
 		},
 	}
 
@@ -174,14 +174,14 @@ func TestWSStaleDetection(t *testing.T) {
 // TestRESTFallbackTrigger verifies REST fallback triggers correctly
 func TestRESTFallbackTrigger(t *testing.T) {
 	tests := []struct {
-		name            string
-		restPollInterval time.Duration
+		name              string
+		restPollInterval  time.Duration
 		timeSinceRestPoll time.Duration
-		wsConnected     bool
+		wsConnected       bool
 		wsTimeSinceUpdate time.Duration
-		wsStaleThreshold time.Duration
-		expectRESTpoll  bool
-		reason          string
+		wsStaleThreshold  time.Duration
+		expectRESTpoll    bool
+		reason            string
 	}{
 		{
 			name:              "Normal polling interval reached",
@@ -207,8 +207,8 @@ func TestRESTFallbackTrigger(t *testing.T) {
 			name:              "WS disconnected forces REST",
 			restPollInterval:  25 * time.Millisecond,
 			timeSinceRestPoll: 10 * time.Millisecond, // Not due yet
-			wsConnected:       false,                  // WS is down!
-			wsTimeSinceUpdate: 5 * time.Second,        // > 3s stale
+			wsConnected:       false,                 // WS is down!
+			wsTimeSinceUpdate: 5 * time.Second,       // > 3s stale
 			wsStaleThreshold:  15 * time.Second,
 			expectRESTpoll:    true,
 			reason:            "WS disconnected + stale > 3s",
@@ -329,18 +329,18 @@ func TestHybridDataFreshness(t *testing.T) {
 // TestPollingRateWithRateLimiter verifies the effective polling rate
 func TestPollingRateWithRateLimiter(t *testing.T) {
 	tests := []struct {
-		name             string
-		targetInterval   time.Duration
-		rateLimitRPS     int
-		numTokens        int
-		expectedMinRate  float64 // Minimum updates per second per token
-		description      string
+		name            string
+		targetInterval  time.Duration
+		rateLimitRPS    int
+		numTokens       int
+		expectedMinRate float64 // Minimum updates per second per token
+		description     string
 	}{
 		{
 			name:            "25ms interval, 145 RPS, 8 tokens",
 			targetInterval:  25 * time.Millisecond,
 			rateLimitRPS:    145,
-			numTokens:       8, // 4 assets × 2 outcomes
+			numTokens:       8,  // 4 assets × 2 outcomes
 			expectedMinRate: 18, // 145/8 = ~18 per token
 			description:     "Each token gets ~18 updates/sec",
 		},
@@ -348,7 +348,7 @@ func TestPollingRateWithRateLimiter(t *testing.T) {
 			name:            "25ms interval, 145 RPS, 4 tokens",
 			targetInterval:  25 * time.Millisecond,
 			rateLimitRPS:    145,
-			numTokens:       4, // 2 assets × 2 outcomes
+			numTokens:       4,  // 2 assets × 2 outcomes
 			expectedMinRate: 36, // 145/4 = ~36 per token
 			description:     "Fewer tokens = more updates each",
 		},

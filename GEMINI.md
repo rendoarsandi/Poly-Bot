@@ -17,6 +17,7 @@ PolyArb-15m is a high-frequency volatility arbitrage bot designed for Polymarket
 - **Paper Trading Engine:** A built-in simulator for testing strategies without financial risk, including orderbook simulation and position tracking.
 - **Risk Management:** Includes "Kill Switch" mechanisms based on drawdown, exposure, and inventory skew.
 - **Compounding:** Automatically adjusts trade sizes based on cumulative profit from successful rounds.
+- **Dual Strategy System:** Runs panic buy (BUY→MERGE) and panic sell (SPLIT→SELL) strategies with separate inventory tracking.
 
 ## Building and Running
 
@@ -65,11 +66,18 @@ go test ./...
 
 ### Project Structure
 - `cmd/`: Entry points for paper (`bot`) and real (`realbot`) trading.
-- `internal/api/`: Polymarket API clients (REST, WS, Signer) and Polygon integration.
-- `internal/paper/`: The simulation engine, including TUI, risk management, and orderbook logic.
+- `internal/api/`: Polymarket API clients (REST, WS, Signer) and Polygon integration (including CTF split/merge).
+- `internal/paper/`: The simulation engine, including TUI, risk management, orderbook logic, and split inventory tracking.
 - `internal/trading/`: Unified interface for executing trades in both paper and real modes.
 - `internal/core/`: Configuration loading and shared utilities.
 - `scripts/`: Node.js utilities for credential management.
+
+### Trading Strategies
+The bot implements two complementary strategies:
+1. **Panic Buy (BUY → MERGE):** When `ask_sum < $0.98`, buy both YES and NO, then merge via CTF for instant profit.
+2. **Panic Sell (SPLIT → SELL):** When `bid_sum > $1.03`, sell split shares to panic buyers.
+
+Split shares and bought shares are tracked separately in `SplitInventory` to prevent strategy overlap.
 
 ### Testing Practices
 - Unit tests are co-located with source code (e.g., `parser_test.go`).

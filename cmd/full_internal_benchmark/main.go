@@ -65,7 +65,7 @@ func main() {
 		bid, ask := 0.47, 0.48
 		mid := (bid + ask) / 2
 		engine.UpdateMarketData("BTC", outcome, mid, bid, ask)
-		
+
 		// --- THE "THINK" PART ---
 		// 3. Strategy Detection
 		price1 := 0.48 // Up
@@ -79,12 +79,12 @@ func main() {
 			if riskAction != paper.RiskActionKillSwitch {
 				tradeSize := cfg.CalculateTradeSize(engine.GetEquity())
 				_ = tradeSize / sum // shares
-				
+
 				// --- THE "WRITE" PART ---
 				// 5. Dual Order Signing
 				order1 := &api.OrderData{
 					Salt: "1", Maker: signer.Address(), Signer: signer.Address(),
-					Taker: "0x0000000000000000000000000000000000000000",
+					Taker:   "0x0000000000000000000000000000000000000000",
 					TokenID: "token1_id", MakerAmount: "480000", TakerAmount: "1000000",
 					Expiration: "1767882600", Nonce: "0", FeeRateBps: "0", Side: "BUY",
 				}
@@ -92,7 +92,7 @@ func main() {
 
 				order2 := &api.OrderData{
 					Salt: "2", Maker: signer.Address(), Signer: signer.Address(),
-					Taker: "0x0000000000000000000000000000000000000000",
+					Taker:   "0x0000000000000000000000000000000000000000",
 					TokenID: "token2_id", MakerAmount: "480000", TakerAmount: "1000000",
 					Expiration: "1767882600", Nonce: "0", FeeRateBps: "0", Side: "BUY",
 				}
@@ -107,7 +107,7 @@ func main() {
 
 	fmt.Printf("📊 TOTAL INTERNAL PIPELINE LATENCY: %v\n", avgTime)
 	fmt.Printf("   Parsing Overhead: ~%v\n", 15*time.Microsecond) // Estimated JSON cost
-	fmt.Printf("   Logic + Signing:  ~%v\n", avgTime - 15*time.Microsecond)
+	fmt.Printf("   Logic + Signing:  ~%v\n", avgTime-15*time.Microsecond)
 	fmt.Println()
 	fmt.Println("💡 This measures every line of code from receiving the raw")
 	fmt.Println("   network packet to having the final orders ready to ship.")

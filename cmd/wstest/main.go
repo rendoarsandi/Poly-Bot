@@ -37,8 +37,8 @@ func main() {
 
 	// Build token map
 
-tokenMap := make(map[string]string)
-tokenIDs := make([]string, 0)
+	tokenMap := make(map[string]string)
+	tokenIDs := make([]string, 0)
 	for _, t := range market.Tokens {
 		tokenMap[t.TokenID] = t.Outcome
 		tokenIDs = append(tokenIDs, t.TokenID)
@@ -264,7 +264,7 @@ tokenIDs := make([]string, 0)
 				if last, ok := lastRESTState[outcome]; ok {
 					// Check for meaningful change (price or significant liq change)
 					if last.BestAsk != bestAsk ||
-					   (last.AskLiq > 0 && absFloat(last.AskLiq-askLiq)/last.AskLiq > 0.05) {
+						(last.AskLiq > 0 && absFloat(last.AskLiq-askLiq)/last.AskLiq > 0.05) {
 						changed = true
 
 						// Check if WS had this update

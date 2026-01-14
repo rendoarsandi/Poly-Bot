@@ -21,16 +21,16 @@ type Level struct {
 
 // LiquidityReport shows liquidity available at different profit margins
 type LiquidityReport struct {
-	Margin          float64 // Profit margin percentage (e.g., 2.0, 4.0, 6.0)
-	MaxSum          float64 // Maximum price sum for this margin (1.0 - margin/100)
-	MatchedLiq      float64 // Matched liquidity (min of both sides after pairing)
-	RawLiq1         float64 // Raw liquidity on side 1 at valid levels
-	RawLiq2         float64 // Raw liquidity on side 2 at valid levels
-	ValidLevels1    int     // Number of valid price levels on side 1
-	ValidLevels2    int     // Number of valid price levels on side 2
-	AvgPrice1       float64 // Weighted average price on side 1
-	AvgPrice2       float64 // Weighted average price on side 2
-	ExpectedProfit  float64 // Expected profit from matched liquidity
+	Margin         float64 // Profit margin percentage (e.g., 2.0, 4.0, 6.0)
+	MaxSum         float64 // Maximum price sum for this margin (1.0 - margin/100)
+	MatchedLiq     float64 // Matched liquidity (min of both sides after pairing)
+	RawLiq1        float64 // Raw liquidity on side 1 at valid levels
+	RawLiq2        float64 // Raw liquidity on side 2 at valid levels
+	ValidLevels1   int     // Number of valid price levels on side 1
+	ValidLevels2   int     // Number of valid price levels on side 2
+	AvgPrice1      float64 // Weighted average price on side 1
+	AvgPrice2      float64 // Weighted average price on side 2
+	ExpectedProfit float64 // Expected profit from matched liquidity
 }
 
 func main() {

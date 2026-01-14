@@ -35,6 +35,8 @@ The bot acts as a **Market Maker**, placing limit orders on both sides of a bina
 | **WebSocket + REST Hybrid** | WS for price updates, REST for liquidity (20ms polling, 148 RPS) |
 | **Android Background Support** | Keeps running when terminal is backgrounded |
 | **Memory Management** | Automatic cleanup of old orders and trade history |
+| **CTF Split Strategy** | Profit from panic buyers by selling split shares when bid_sum > $1.03 |
+| **Instant Merge** | Immediately merge bought shares to capture arb profit without waiting |
 
 ## Installation
 
@@ -314,6 +316,29 @@ riskConfig := paper.RiskConfig{
 3. **Buy Both Sides** - When combined cost < $1.00
 4. **Guaranteed Profit** - One side always wins and pays $1.00
 
+### Dual Strategy System
+
+The bot runs **two complementary strategies** that never overlap:
+
+| Strategy | Direction | Trigger | Profit Source |
+|----------|-----------|---------|---------------|
+| **Panic Buy** | BUY → MERGE | `ask_sum < $0.98` | Market underpriced |
+| **Panic Sell** | SPLIT → SELL | `bid_sum > $1.03` | Market overpriced |
+
+#### Panic Buy Strategy (Default)
+- Buys both YES and NO when combined asks < $0.98
+- Immediately merges tokens back to USDC via CTF contract
+- Profit = $1.00 - (ask_YES + ask_NO)
+
+#### Panic Sell Strategy (CTF Split)
+- Splits USDC into YES+NO tokens upfront ($1 → 1 YES + 1 NO)
+- Sells to panic buyers when combined bids > $1.03
+- Auto-replenishes inventory when shares deplete
+- Merges remaining shares before market expiry
+- Profit = (bid_YES + bid_NO) - $1.00
+
+**Important**: Split shares are tracked separately from bought shares to prevent strategy overlap.
+
 ### Ladder Quoting
 
 ```
@@ -391,6 +416,7 @@ Market-bot/
 │   │   ├── risk.go           # Risk manager & kill switch
 │   │   ├── liquidity.go      # Aggregated liquidity calculation
 │   │   ├── market.go         # Market resolution handling
+│   │   ├── split_inventory.go # CTF split share tracking (separate from bought)
 │   │   ├── tui.go            # Terminal UI display
 │   │   └── *_test.go         # Comprehensive test suite
 │   ├── trading/
@@ -415,6 +441,10 @@ Market-bot/
 | **Kill Switch** | Emergency stop mechanism |
 | **Realized PnL** | Profit/loss from closed trades |
 | **Unrealized PnL** | Profit/loss from open positions |
+| **CTF Split** | Convert USDC → YES+NO tokens via CTF contract |
+| **CTF Merge** | Convert YES+NO tokens → USDC via CTF contract |
+| **Panic Buy** | Buy both sides when market underpriced (ask_sum < $0.98) |
+| **Panic Sell** | Sell split shares when market overpriced (bid_sum > $1.03) |
 
 ## Paper Trading vs Real Trading
 
@@ -454,6 +484,7 @@ go test -bench=. ./...
 | `internal/paper` | `risk_test.go` | Kill switch, exposure limits, skew detection |
 | `internal/paper` | `liquidity_test.go` | Aggregated liquidity, safety margin (80%) |
 | `internal/paper` | `depth_test.go` | Multi-level depth aggregation |
+| `internal/paper` | `split_inventory_test.go` | CTF split/sell/merge inventory tracking |
 | `internal/trading` | `trader_test.go` | Trader interface, paper/real mode detection |
 | `internal/api` | `signer_test.go` | EIP-712 signing, API authentication |
 
@@ -467,6 +498,8 @@ The realbot is **production-ready** with the following robust features:
 | **Trading** | MARKET+GTC orders for guaranteed fills | ✅ Ready |
 | **Trading** | Parallel order execution (both sides) | ✅ Ready |
 | **Trading** | Unbalanced fill recovery (3 retries) | ✅ Ready |
+| **Trading** | CTF Split strategy (panic sell) | ✅ Ready |
+| **Trading** | Instant merge for immediate profit capture | ✅ Ready |
 | **Liquidity** | Aggregated multi-level depth tracking | ✅ Ready |
 | **Liquidity** | 100% matched liquidity utilization | ✅ Ready |
 | **Liquidity** | Real-time REST polling (20ms / 50 RPS per market) | ✅ Ready |

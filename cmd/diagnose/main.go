@@ -92,12 +92,12 @@ func run() error {
 
 	// Track data
 	type BookData struct {
-		Source    string
-		Timestamp time.Time
-		BestBid   float64
-		BestAsk   float64
-		BidDepth  []api.PriceLevel // Full depth
-		AskDepth  []api.PriceLevel
+		Source      string
+		Timestamp   time.Time
+		BestBid     float64
+		BestAsk     float64
+		BidDepth    []api.PriceLevel // Full depth
+		AskDepth    []api.PriceLevel
 		TotalBidLiq float64
 		TotalAskLiq float64
 	}

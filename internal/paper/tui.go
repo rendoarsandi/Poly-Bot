@@ -87,9 +87,9 @@ type TUI struct {
 	// Network Health - Real-time latency tracking
 	latency        time.Duration
 	latencySource  string
-	restLatency    time.Duration // Latest REST /book latency
-	wsLatency      time.Duration // Time since last WS message
-	restLatencyAvg time.Duration // Rolling average REST latency
+	restLatency    time.Duration   // Latest REST /book latency
+	wsLatency      time.Duration   // Time since last WS message
+	restLatencyAvg time.Duration   // Rolling average REST latency
 	restSamples    []time.Duration // Recent REST latency samples for averaging
 
 	// Display dimensions
@@ -117,9 +117,9 @@ type PendingOrder struct {
 // OrderHistoryEntry represents a completed trade for the order history
 type OrderHistoryEntry struct {
 	Timestamp time.Time
-	MarketID  string  // e.g., "BTC", "ETH"
-	Outcome   string  // e.g., "Up", "Down"
-	Side      string  // "BUY" or "SELL"
+	MarketID  string // e.g., "BTC", "ETH"
+	Outcome   string // e.g., "Up", "Down"
+	Side      string // "BUY" or "SELL"
 	Shares    float64
 	Price     float64
 	Cost      float64

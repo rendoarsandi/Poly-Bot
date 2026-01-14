@@ -204,10 +204,8 @@ func run() error {
 	_ = disableEcho.Run()
 	defer restoreTerminal()
 
-	// Create paper engine for TUI display (tracks simulated P&L alongside real trades)
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
-
 	tui := paper.NewTUI(engine, orderBook)
 
 	// Start TUI
@@ -309,10 +307,10 @@ func run() error {
 			// Create per-market Risk Manager
 			riskConfig := paper.RiskConfig{
 				MaxExposure:        math.MaxFloat64, // Unlimited exposure (rely on kill switch for safety)
-				MaxUnmatchedRatio:  0.20,  // 20% max unmatched
-				MaxUnmatchedShares: 500.0, // 500 shares max on one side
-				SkewThreshold:      0.10,  // 10% skew triggers rebalance
-				KillSwitchDrawdown: 0.25, // 25% drawdown triggers kill switch (real money protection)
+				MaxUnmatchedRatio:  0.20,            // 20% max unmatched
+				MaxUnmatchedShares: 500.0,           // 500 shares max on one side
+				SkewThreshold:      0.10,            // 10% skew triggers rebalance
+				KillSwitchDrawdown: 0.25,            // 25% drawdown triggers kill switch (real money protection)
 			}
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
@@ -466,7 +464,10 @@ func getOutcomes(market *api.Market) []string {
 	return outcomes
 }
 
-func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time, trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64) {
+func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time,
+	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
+	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64) {
+
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
 	for _, token := range market.Tokens {
@@ -520,6 +521,28 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	lastUpdate := time.Now()
 	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
+	lastSplitSell := time.Time{} // Track last split sell to avoid rapid-fire
+
+	// Initial balance tracking
+	currentBalance := startingBalance
+	currentCash := startingBalance
+
+	// Helper to get token ID from outcome
+	getTokenID := func(outcome string) string {
+		for tid, out := range tokenToOutcome {
+			if out == outcome {
+				return tid
+			}
+		}
+		return ""
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// SPLIT STRATEGY INITIALIZATION
+	// Create split inventory tracker (separate from bought shares)
+	// ═══════════════════════════════════════════════════════════════════════════
+	splitInventory := paper.NewSplitInventory()
+	splitInitialized := false // Track if we've done initial split
 
 	for {
 		select {
@@ -592,7 +615,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						tokenBids[outcome] = bid
 						tokenAsks[outcome] = ask
-						
+
 						// Track full depth for liquidity checks
 						tokenFullBids[outcome] = toMarketLevels(tui, id, b.Bids)
 						tokenFullAsks[outcome] = toMarketLevels(tui, id, b.Asks)
@@ -647,6 +670,216 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			continue
 		}
 
+		// ═══════════════════════════════════════════════════════════════════════════
+		// SPLIT STRATEGY: Sell to panic buyers when bid_sum > $1.03
+		// This is SEPARATE from the panic buy strategy (buy when ask_sum < $0.98)
+		// Split shares are ONLY for selling, bought shares are ONLY for merging
+		// ═══════════════════════════════════════════════════════════════════════════
+		skipPanicBuy := false // Flag to skip panic buy when nearing expiry
+
+		if cfg.SplitStrategyEnabled && len(tokenBids) >= 2 && len(outcomes) == 2 {
+			bid1 := tokenBids[outcomes[0]]
+			bid2 := tokenBids[outcomes[1]]
+
+			// Check if we need to merge before expiry
+			timeToExpiry := time.Until(endTime)
+			mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
+
+			if timeToExpiry <= mergeBuffer && timeToExpiry > 0 {
+				// MERGE ALL UNSOLD SPLIT SHARES before market expires
+				availableShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
+				if availableShares >= 1.0 {
+					tui.LogEvent("[%s] ⏰ SPLIT: Merging %.0f unsold shares before expiry", id, availableShares)
+
+					mergeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, availableShares)
+					cancel()
+
+					if err != nil {
+						tui.LogEvent("[%s] ⚠️ SPLIT: Pre-expiry merge failed: %v", id, err)
+					} else {
+						merged := splitInventory.RecordMerge(id, outcomes[0], outcomes[1], availableShares)
+						if txHash != "" && len(txHash) >= 10 {
+							tui.LogEvent("[%s] 💰 SPLIT: Merged %.0f shares | Tx: %s...", id, merged, txHash[:10])
+						} else {
+							tui.LogEvent("[%s] 💰 SPLIT: Merged %.0f shares", id, merged)
+						}
+					}
+				}
+				// Don't do any more trading, let market expire
+				skipPanicBuy = true
+			}
+
+			// Initial split: create inventory if not done yet
+			if !splitInitialized && cfg.SplitInitialUSDC > 0 {
+				tui.LogEvent("[%s] 🔀 SPLIT: Creating initial inventory ($%.2f)", id, cfg.SplitInitialUSDC)
+
+				splitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				txHash, err := trader.SplitOnChain(splitCtx, market.ConditionID, cfg.SplitInitialUSDC)
+				cancel()
+
+				if err != nil {
+					tui.LogEvent("[%s] ⚠️ SPLIT: Initial split failed: %v", id, err)
+				} else {
+					splitInventory.RecordSplit(id, outcomes[0], outcomes[1], cfg.SplitInitialUSDC)
+					splitInitialized = true
+					if txHash != "" && len(txHash) >= 10 {
+						tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each | Tx: %s...", id, cfg.SplitInitialUSDC, txHash[:10])
+					} else {
+						tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each", id, cfg.SplitInitialUSDC)
+					}
+				}
+			}
+
+			// Check for panic sell opportunity: bid_sum > $1.00 + minMargin
+			if bid1 > 0.10 && bid2 > 0.10 && bid1 < 0.90 && bid2 < 0.90 {
+				bidSum := bid1 + bid2
+				sellMargin := (bidSum - 1.0) * 100 // Profit margin from selling
+
+				if sellMargin >= cfg.SplitMinMarginSell && time.Since(lastSplitSell) > 2*time.Second {
+					// We have a panic sell opportunity!
+					availableShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
+
+					if availableShares >= 1.0 {
+						// Determine how many shares to sell
+						sharesToSell := availableShares
+						if sharesToSell > 100 {
+							sharesToSell = 100 // Cap per-trade to manage risk
+						}
+
+						// Check bid depth liquidity
+						bidLiq1 := 0.0
+						bidLiq2 := 0.0
+						for _, lvl := range tokenFullBids[outcomes[0]] {
+							bidLiq1 += lvl.Size
+						}
+						for _, lvl := range tokenFullBids[outcomes[1]] {
+							bidLiq2 += lvl.Size
+						}
+						minBidLiq := bidLiq1
+						if bidLiq2 < minBidLiq {
+							minBidLiq = bidLiq2
+						}
+
+						// Only sell up to available liquidity
+						if sharesToSell > minBidLiq*0.80 {
+							sharesToSell = minBidLiq * 0.80
+						}
+						sharesToSell = float64(int(sharesToSell))
+
+						if sharesToSell >= 1.0 {
+							tui.LogEvent("[%s] 📈 SPLIT SELL! bid_sum=$%.3f (%.1f%% margin) | Selling %.0f shares",
+								id, bidSum, sellMargin, sharesToSell)
+
+							// Sell both sides in parallel
+							token0 := getTokenID(outcomes[0])
+							token1 := getTokenID(outcomes[1])
+
+							// Validate token IDs before trading
+							if token0 == "" || token1 == "" {
+								tui.LogEvent("[%s] ⚠️ SPLIT: Token ID not found for %s/%s", id, outcomes[0], outcomes[1])
+								continue
+							}
+
+							var wg sync.WaitGroup
+							wg.Add(2)
+
+							var res1, res2 *trading.TradeResult
+							var err1, err2 error
+
+							// Use limit orders at bid price to guarantee fill
+							go func() {
+								defer wg.Done()
+								rate := tokenFeeRates[outcomes[0]]
+								res1, err1 = trader.Sell(ctx, token0, outcomes[0], bid1, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+							}()
+
+							go func() {
+								defer wg.Done()
+								rate := tokenFeeRates[outcomes[1]]
+								res2, err2 = trader.Sell(ctx, token1, outcomes[1], bid2, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+							}()
+
+							wg.Wait()
+
+							side1Success := err1 == nil && res1 != nil && res1.Success
+							side2Success := err2 == nil && res2 != nil && res2.Success
+
+							if side1Success && side2Success {
+								// Both sides sold - record in split inventory (NOT in engine/bought shares)
+								profit1 := splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
+								profit2 := splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
+								totalProfit := profit1 + profit2
+								tui.LogEvent("[%s] ✅ SPLIT SOLD! %.0f pairs | Profit: +$%.2f", id, sharesToSell, totalProfit)
+								tui.RecordOrder(id, "SPLIT_SELL", "SELL", sharesToSell*2, (bid1+bid2)/2, sharesToSell*bidSum, sellMargin, "FILLED")
+
+								// Check if we need to replenish
+								remainingShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
+								if remainingShares < cfg.SplitReplenishThreshold {
+									// Auto-replenish
+									replenishAmount := cfg.SplitInitialUSDC
+									tui.LogEvent("[%s] 🔄 SPLIT: Replenishing inventory ($%.2f)", id, replenishAmount)
+
+									replenishCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+									txHash, err := trader.SplitOnChain(replenishCtx, market.ConditionID, replenishAmount)
+									cancel()
+
+									if err != nil {
+										tui.LogEvent("[%s] ⚠️ SPLIT: Replenish failed: %v", id, err)
+									} else {
+										splitInventory.RecordSplit(id, outcomes[0], outcomes[1], replenishAmount)
+										if txHash != "" && len(txHash) >= 10 {
+											tui.LogEvent("[%s] ✅ SPLIT: Replenished %.0f shares | Tx: %s...", id, replenishAmount, txHash[:10])
+										}
+									}
+								}
+							} else {
+								// Handle partial fill - this shouldn't happen often with market orders
+								if side1Success {
+									splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold, %s failed: %v", id, outcomes[0], outcomes[1], err2)
+								}
+								if side2Success {
+									splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold, %s failed: %v", id, outcomes[1], outcomes[0], err1)
+								}
+								if !side1Success && !side2Success {
+									tui.LogEvent("[%s] ❌ SPLIT SELL failed: %v / %v", id, err1, err2)
+								}
+							}
+
+							lastSplitSell = time.Now()
+						}
+					} else if sellMargin >= cfg.SplitTargetMarginReserve {
+						// Great opportunity but no inventory - try to split if we haven't recently
+						if splitInitialized && time.Since(lastSplitSell) > 5*time.Second {
+							replenishAmount := cfg.SplitInitialUSDC * 2 // Double up for good opportunities
+							tui.LogEvent("[%s] 🔀 SPLIT: High margin (%.1f%%), creating inventory ($%.2f)", id, sellMargin, replenishAmount)
+
+							splitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+							txHash, err := trader.SplitOnChain(splitCtx, market.ConditionID, replenishAmount)
+							cancel()
+
+							if err != nil {
+								tui.LogEvent("[%s] ⚠️ SPLIT: Emergency split failed: %v", id, err)
+							} else {
+								splitInventory.RecordSplit(id, outcomes[0], outcomes[1], replenishAmount)
+								if txHash != "" && len(txHash) >= 10 {
+									tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", id, replenishAmount, txHash[:10])
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		// ═══════════════════════════════════════════════════════════════════════════
+		// PANIC BUY STRATEGY: Buy when ask_sum < $0.98, then merge for instant profit
+		// These shares are SEPARATE from split shares - they go straight to merge
+		// ═══════════════════════════════════════════════════════════════════════════
+		if skipPanicBuy {
+			continue
+		}
 		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
@@ -665,18 +898,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Dynamic trade size based on EQUITY (not just cash)
 					// This ensures consistent sizing regardless of how much is in positions
-					currentEquity := engine.GetEquity()
-					currentCash := currentBalance
 					latestBalance, _ := trader.GetBalance(ctx)
 					if latestBalance > 0 {
 						currentCash = latestBalance
 						currentBalance = latestBalance
 					}
 
-					// Use equity for sizing calculation
-					// Equity naturally grows with profits, providing automatic compounding
+					// For real bot, equity = cash + market value of positions
+					// Simplification: use cash balance as proxy for sizing, or fetch equity
+					currentEquity := currentBalance // In realbot we use cash as conservative equity
 					tradeSize := cfg.CalculateTradeSize(currentEquity)
-
 					// Scale shares based on margin
 					shares := tradeSize / sum
 
@@ -733,7 +964,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							break // Can't go deeper, would exceed margin threshold
 						}
 
-
 						// Get liquidity at current levels
 						levelLiq1 := asks1[i].Size
 						levelLiq2 := asks2[j].Size
@@ -744,9 +974,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							matchedAtLevel = levelLiq2
 						}
 
-						
-						if i+1 > maxValidI { maxValidI = i+1; rawLiq1 += asks1[i].Size }
-						if j+1 > maxValidJ { maxValidJ = j+1; rawLiq2 += asks2[j].Size }
+						if i+1 > maxValidI {
+							maxValidI = i + 1
+							rawLiq1 += asks1[i].Size
+						}
+						if j+1 > maxValidJ {
+							maxValidJ = j + 1
+							rawLiq2 += asks2[j].Size
+						}
 						totalMatchedLiquidity += matchedAtLevel
 
 						// Move pointer on the side with less remaining liquidity
@@ -769,7 +1004,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					liq1 := rawLiq1
 					liq2 := rawLiq2
 					minLiquidity := totalMatchedLiquidity
-				bookDepth1 := len(tokenFullAsks[outcomes[0]])
+					bookDepth1 := len(tokenFullAsks[outcomes[0]])
 					bookDepth2 := len(tokenFullAsks[outcomes[1]])
 
 					// Use 100% of matched liquidity - MarketBuy walks the book atomically for guaranteed fills
@@ -778,7 +1013,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					if shares > maxSafeShares {
 						shares = maxSafeShares
 					}
-					
+
 					// Force at least 1 share if there's any matched liquidity and we have budget
 					if shares < 1.0 && minLiquidity >= 1.0 {
 						shares = 1.0
@@ -840,7 +1075,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// MARKET EXECUTION: Force fill both sides with GTC to avoid FOK cancels
 						const worstCasePrice = 0.95
-						
+
 						var wg sync.WaitGroup
 						wg.Add(2)
 

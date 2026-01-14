@@ -104,6 +104,56 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	return c.SendRawTransaction(ctx, signedTx)
 }
 
+// SplitPositions converts USDC into YES+NO tokens via CTF contract (PAID WRITE)
+// This is the inverse of MergePositions - use to create inventory for panic selling.
+// 1 USDC → 1 YES token + 1 NO token
+// Use this to build inventory, then sell when bid_sum > $1.03 for profit.
+func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int) (string, error) {
+	// Function selector for splitPosition(address,bytes32,bytes32,uint256[],uint256): 0x72ce4275
+	// Parameters:
+	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
+	// 3. conditionId: (provided)
+	// 4. partition: [1, 2] for binary markets (YES/NO or Up/Down)
+	// 5. amount: USDC amount to split (returns this many token pairs)
+
+	collateral := "000000000000000000000000" + strings.TrimPrefix(USDCContract, "0x")
+	parent := "0000000000000000000000000000000000000000000000000000000000000000"
+	cond := strings.TrimPrefix(conditionID, "0x")
+
+	// ABI encoding for partition [1, 2] (Dynamic array)
+	// Offset to array data (160 bytes = 5 * 32, since amount is 5th param)
+	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
+	// Amount (5th param) - pad to 32 bytes
+	amtHex := fmt.Sprintf("%064x", amount)
+	// Array: length=2, values=[1,2]
+	arrayLen := "0000000000000000000000000000000000000000000000000000000000000002"
+	idx1 := "0000000000000000000000000000000000000000000000000000000000000001"
+	idx2 := "0000000000000000000000000000000000000000000000000000000000000002"
+
+	data := "0x72ce4275" + collateral + parent + cond + offset + amtHex + arrayLen + idx1 + idx2
+
+	// Get nonce and gas price
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	gasPrice, err := c.GetGasPrice(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Sign transaction (200k gas limit should be plenty for split)
+	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 200000, gasPrice, data)
+	if err != nil {
+		return "", err
+	}
+
+	// Send raw transaction
+	return c.SendRawTransaction(ctx, signedTx)
+}
+
 // MergePositions burns equal YES+NO tokens to get USDC back instantly (PAID WRITE)
 // Unlike RedeemPositions, this works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides to capture arbitrage profit instantly.
@@ -183,7 +233,6 @@ func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string)
 	json.Unmarshal(result, &txHash)
 	return txHash, nil
 }
-
 
 // RPCRequest represents a JSON-RPC request
 type RPCRequest struct {

@@ -32,8 +32,8 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 	// Sign with ChainID 137 (Polygon)
 	chainID := big.NewInt(137)
 	signer := types.NewEIP155Signer(chainID)
-	
-signedTx, err := types.SignTx(tx, signer, s.privateKey)
+
+	signedTx, err := types.SignTx(tx, signer, s.privateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign transaction: %w", err)
 	}

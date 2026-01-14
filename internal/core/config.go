@@ -52,6 +52,18 @@ type Config struct {
 
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// SPLIT STRATEGY SETTINGS (Panic Sell)
+	// Strategy: SPLIT USDC → YES+NO shares, SELL when bid_sum > $1.03
+	// This is the INVERSE of the panic buy strategy (buy when ask_sum < $0.98)
+	// ═══════════════════════════════════════════════════════════════════════════
+	SplitStrategyEnabled     bool    // Enable split strategy (default: false)
+	SplitInitialUSDC         float64 // Initial USDC to split at market start (default: $10)
+	SplitMinMarginSell       float64 // Minimum margin to trigger sell (default: 3%)
+	SplitTargetMarginReserve float64 // Maintain inventory for this margin level (default: 6%)
+	SplitReplenishThreshold  float64 // Trigger new split when shares fall below this (default: 50)
+	SplitMergeBufferSeconds  int     // Seconds before expiry to merge unsold shares (default: 30)
 }
 
 func LoadConfig() (*Config, error) {
@@ -79,11 +91,18 @@ func LoadConfig() (*Config, error) {
 		// Fee settings (paper trading)
 		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 312), // Calibrated: ~1.6% effective at p=0.50
 		// Safety settings
-		MaxTradeSize:   parseEnvFloat("MAX_TRADE_SIZE", 0),    // 0 = no hard cap, use scaling
-		MaxDailyLoss:   parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
-		RequireConfirm: os.Getenv("REQUIRE_CONFIRM") == "true",
-		TestMode:       os.Getenv("TEST_MODE") != "false", // Default true for safety
+		MaxTradeSize:    parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
+		MaxDailyLoss:    parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
+		RequireConfirm:  os.Getenv("REQUIRE_CONFIRM") == "true",
+		TestMode:        os.Getenv("TEST_MODE") != "false", // Default true for safety
 		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",
+		// Split strategy settings (panic sell)
+		SplitStrategyEnabled:     os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
+		SplitInitialUSDC:         parseEnvFloat("SPLIT_INITIAL_USDC", 10.0),
+		SplitMinMarginSell:       parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
+		SplitTargetMarginReserve: parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
+		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
+		SplitMergeBufferSeconds:  parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
 	}
 
 	return cfg, nil

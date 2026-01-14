@@ -666,17 +666,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.LadderMgr.CancelAllLadders()
 
 				// Use more robust resolution simulation
-			winner := t.determineWinner()
-			if winner != "" {
-				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
-				t.Engine.RedeemWithDetails(winner)
-			}
+				winner := t.determineWinner()
+				if winner != "" {
+					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
+					t.Engine.RedeemWithDetails(winner)
+				}
 
-			finalStats := t.Engine.GetStats()
-			return &marketResult{
-				realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
-				trades:      finalStats.TotalTrades - tradesAtStart,
-			}, nil
+				finalStats := t.Engine.GetStats()
+				return &marketResult{
+					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
+					trades:      finalStats.TotalTrades - tradesAtStart,
+				}, nil
 			}
 
 			// Check kill switch - DON'T EXIT, just pause trading
@@ -699,7 +699,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
 
 				// Use more robust resolution simulation
-			winner := t.determineWinner()
+				winner := t.determineWinner()
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
 
 				// Use detailed redemption
@@ -803,15 +803,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									t.FloatPrices[outcome] = mid
 									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 									// Use batch update for better performance
-								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 								}
 								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, b.Bids)
 								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, b.Asks)
 							}
-							}
-							if foundForThisTrader {
-								t.LastUpdate = time.Now()
-							}
+						}
+						if foundForThisTrader {
+							t.LastUpdate = time.Now()
+						}
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						bid, ask := 0.0, 1.0
 						for _, order := range book.Bids {
@@ -819,32 +819,32 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							if p > bid {
 								bid = p
 							}
-							}
-							for _, order := range book.Asks {
+						}
+						for _, order := range book.Asks {
 							p, _ := strconv.ParseFloat(order.Price, 64)
 							if p < ask && p > 0 {
 								ask = p
 							}
-							}
-							if ask >= 1.0 {
-							ask = 0.0
-							}
-							outcome := t.TokenMap[book.AssetID]
-							if outcome != "" {
-								t.LastUpdate = time.Now()
-								t.TokenBids[outcome] = bid
-								t.TokenAsks[outcome] = ask
-								if bid > 0 && ask > 0 && ask < 1.0 {
-									mid := (bid + ask) / 2
-									t.FloatPrices[outcome] = mid
-									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-									// Use batch update for better performance
-								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
-								}
-								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
-								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
-							}
 						}
+						if ask >= 1.0 {
+							ask = 0.0
+						}
+						outcome := t.TokenMap[book.AssetID]
+						if outcome != "" {
+							t.LastUpdate = time.Now()
+							t.TokenBids[outcome] = bid
+							t.TokenAsks[outcome] = ask
+							if bid > 0 && ask > 0 && ask < 1.0 {
+								mid := (bid + ask) / 2
+								t.FloatPrices[outcome] = mid
+								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+								// Use batch update for better performance
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+							}
+							t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
+							t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
+						}
+					}
 				default:
 					// No more messages in channel, continue with rest of loop
 					goto doneProcessingWS
@@ -868,7 +868,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Update WS staleness in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)
 
-									// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
+			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
 			// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
 			// Global rate limiter in RestClient caps total at 148 RPS across all traders
 			restPollInterval := 20 * time.Millisecond
@@ -974,224 +974,223 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					baseSharesPerTrade := tradeSize / sum // Shares = $ / price per share pair
 
 					// Evaluate portfolio risk before trading
-				riskAction, riskReason := t.RiskMgr.Evaluate()
-				if riskAction == paper.RiskActionKillSwitch {
-					t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s (pausing, not exiting)", t.ID, riskReason)
-					continue
-				}
-				if riskAction == paper.RiskActionReduceSize {
-					t.TUI.LogEvent("[%s] ⚠️ RISK: Reducing size - %s", t.ID, riskReason)
-					// Will use baseShares only (no scaling)
-				}
-
-				if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
-					baseShares := baseSharesPerTrade
-
-					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
-					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
-					maxSum := 1.0 - (minMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
-
-					// Adjust maxSum to account for fees if enabled
-					// Polymarket fees: fee_tokens = shares * base_rate * 2 * p * (1-p)
-					// For arb near sum=1.0, prices are ~0.50 each, so curve = 0.5
-					// Conservative: assume worst case fee (both sides at p=0.50)
-					feeRateBps := t.Config.FeeRateBps
-					if feeRateBps > 0 {
-						baseRate := float64(feeRateBps) / 10000.0
-						// Worst case: both sides at p=0.50, curve = 2*0.5*0.5 = 0.5
-						worstCaseFeePerSide := baseRate * 0.5
-						// Total fee for both sides (in tokens, which equals $ at settlement)
-						totalFeeFraction := worstCaseFeePerSide * 2
-						maxSum -= totalFeeFraction
-					}
-
-					// Copy and sort asks by price ascending for both outcomes
-					asks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
-					copy(asks1, t.TokenFullAsks[t.Outcomes[0]])
-					sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
-
-					asks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
-					copy(asks2, t.TokenFullAsks[t.Outcomes[1]])
-					sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
-
-					// Calculate aggregated matched liquidity across valid price levels
-					var totalMatchedLiquidity float64
-					var rawLiq1, rawLiq2 float64 // Track actual liquidity on each side for display
-					var maxValidI, maxValidJ int   // Track deepest valid level on each side price level combinations were valid
-
-					i, j := 0, 0
-					for i < len(asks1) && j < len(asks2) {
-						// Current prices at each pointer
-						p1 := asks1[i].Price
-						p2 := asks2[j].Price
-
-						// Check if this combination maintains minimum margin
-						if p1+p2 > maxSum {
-							break // Can't go deeper, would exceed margin threshold
-						}
-
-
-						// Get liquidity at current levels
-						levelLiq1 := asks1[i].Size
-						levelLiq2 := asks2[j].Size
-
-						// Track deepest valid level on each side (only count once per level)
-						if i+1 > maxValidI {
-							maxValidI = i + 1
-							rawLiq1 += asks1[i].Size
-						}
-						if j+1 > maxValidJ {
-							maxValidJ = j + 1
-							rawLiq2 += asks2[j].Size
-						}
-
-						// Get liquidity at current levels (may be partial after matching)
-
-						// Matched liquidity = min of both sides (arbitrage requires equal shares)
-						matchedAtLevel := levelLiq1
-						if levelLiq2 < matchedAtLevel {
-							matchedAtLevel = levelLiq2
-						}
-
-						totalMatchedLiquidity += matchedAtLevel
-
-						// Move pointer on the side with less remaining liquidity
-						remaining1 := levelLiq1 - matchedAtLevel
-						remaining2 := levelLiq2 - matchedAtLevel
-
-						if remaining1 <= 0 {
-							i++
-						} else {
-							asks1[i].Size = remaining1
-						}
-						if remaining2 <= 0 {
-							j++
-						} else {
-							asks2[j].Size = remaining2
-						}
-						// If both exhausted at same time, both pointers already incremented
-					}
-
-					// Use RAW liquidity for display (shows actual available on each side)
-					liq1 := rawLiq1
-					liq2 := rawLiq2
-					minLiquidity := totalMatchedLiquidity
-					bookDepth1 := len(t.TokenFullAsks[t.Outcomes[0]])
-					bookDepth2 := len(t.TokenFullAsks[t.Outcomes[1]])
-
-					// Use 100% of matched liquidity - force MarketBuy guarantees atomic fills on both sides
-					// No legging risk since we walk the book simultaneously, not single-level limit orders
-					maxSafeShares := minLiquidity * 1.00
-					
-					// Only scale if risk allows
-					shares := baseShares
-					if riskAction != paper.RiskActionReduceSize {
-						// Scale shares based on margin - incremental scaling from 1% baseline
-						if margin >= 5.0 {
-							shares = baseShares * 5
-						} else if margin >= 4.0 {
-							shares = baseShares * 4
-						} else if margin >= 3.0 {
-							shares = baseShares * 3
-						} else if margin >= 2.0 {
-							shares = baseShares * 2
-						} else if margin >= 1.0 {
-							shares = baseShares * 1 // Baseline at 1% margin
-						}
-					}
-
-					// Apply compounding multiplier from profitable rounds
-					compoundMult := t.Engine.GetCompoundMultiplier()
-					shares = float64(int(float64(shares) * compoundMult))
-
-					// Force at least 1 share if there's any matched liquidity and we have budget
-					if shares < 1.0 && minLiquidity >= 1.0 {
-						shares = 1.0
-					}
-
-					// FINAL LIQUIDITY CAP: Ensure shares never exceed available matched liquidity
-					// This must be checked AFTER all scaling (margin scaling + compounding)
-					if shares > maxSafeShares {
-						shares = maxSafeShares
-					}
-					cost, _, _, netProfit := calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
-
-					// Skip if net profit is not positive after order cost
-					if netProfit <= 0 {
+					riskAction, riskReason := t.RiskMgr.Evaluate()
+					if riskAction == paper.RiskActionKillSwitch {
+						t.TUI.LogEvent("[%s] 🛑 RISK: Kill switch - %s (pausing, not exiting)", t.ID, riskReason)
 						continue
 					}
+					if riskAction == paper.RiskActionReduceSize {
+						t.TUI.LogEvent("[%s] ⚠️ RISK: Reducing size - %s", t.ID, riskReason)
+						// Will use baseShares only (no scaling)
+					}
 
-					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash {
-						// Scale back to what cash allows, but still respect liquidity cap
-						maxAffordableShares := currentCash / sum
+					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
+						baseShares := baseSharesPerTrade
 
-						// Apply the stricter of: cash limit OR liquidity limit
-						if maxAffordableShares > maxSafeShares {
-							maxAffordableShares = maxSafeShares
+						// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
+						// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
+						maxSum := 1.0 - (minMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
+
+						// Adjust maxSum to account for fees if enabled
+						// Polymarket fees: fee_tokens = shares * base_rate * 2 * p * (1-p)
+						// For arb near sum=1.0, prices are ~0.50 each, so curve = 0.5
+						// Conservative: assume worst case fee (both sides at p=0.50)
+						feeRateBps := t.Config.FeeRateBps
+						if feeRateBps > 0 {
+							baseRate := float64(feeRateBps) / 10000.0
+							// Worst case: both sides at p=0.50, curve = 2*0.5*0.5 = 0.5
+							worstCaseFeePerSide := baseRate * 0.5
+							// Total fee for both sides (in tokens, which equals $ at settlement)
+							totalFeeFraction := worstCaseFeePerSide * 2
+							maxSum -= totalFeeFraction
 						}
 
-						if maxAffordableShares < 1 {
-							continue // Not enough cash/liquidity for even 1 share
-						}
-						shares = maxAffordableShares
-						cost, _, _, netProfit = calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
+						// Copy and sort asks by price ascending for both outcomes
+						asks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
+						copy(asks1, t.TokenFullAsks[t.Outcomes[0]])
+						sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
-						// If still over risk limit or not profitable after cost, don't trade
-						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
+						asks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
+						copy(asks2, t.TokenFullAsks[t.Outcomes[1]])
+						sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
+
+						// Calculate aggregated matched liquidity across valid price levels
+						var totalMatchedLiquidity float64
+						var rawLiq1, rawLiq2 float64 // Track actual liquidity on each side for display
+						var maxValidI, maxValidJ int // Track deepest valid level on each side price level combinations were valid
+
+						i, j := 0, 0
+						for i < len(asks1) && j < len(asks2) {
+							// Current prices at each pointer
+							p1 := asks1[i].Price
+							p2 := asks2[j].Price
+
+							// Check if this combination maintains minimum margin
+							if p1+p2 > maxSum {
+								break // Can't go deeper, would exceed margin threshold
+							}
+
+							// Get liquidity at current levels
+							levelLiq1 := asks1[i].Size
+							levelLiq2 := asks2[j].Size
+
+							// Track deepest valid level on each side (only count once per level)
+							if i+1 > maxValidI {
+								maxValidI = i + 1
+								rawLiq1 += asks1[i].Size
+							}
+							if j+1 > maxValidJ {
+								maxValidJ = j + 1
+								rawLiq2 += asks2[j].Size
+							}
+
+							// Get liquidity at current levels (may be partial after matching)
+
+							// Matched liquidity = min of both sides (arbitrage requires equal shares)
+							matchedAtLevel := levelLiq1
+							if levelLiq2 < matchedAtLevel {
+								matchedAtLevel = levelLiq2
+							}
+
+							totalMatchedLiquidity += matchedAtLevel
+
+							// Move pointer on the side with less remaining liquidity
+							remaining1 := levelLiq1 - matchedAtLevel
+							remaining2 := levelLiq2 - matchedAtLevel
+
+							if remaining1 <= 0 {
+								i++
+							} else {
+								asks1[i].Size = remaining1
+							}
+							if remaining2 <= 0 {
+								j++
+							} else {
+								asks2[j].Size = remaining2
+							}
+							// If both exhausted at same time, both pointers already incremented
+						}
+
+						// Use RAW liquidity for display (shows actual available on each side)
+						liq1 := rawLiq1
+						liq2 := rawLiq2
+						minLiquidity := totalMatchedLiquidity
+						bookDepth1 := len(t.TokenFullAsks[t.Outcomes[0]])
+						bookDepth2 := len(t.TokenFullAsks[t.Outcomes[1]])
+
+						// Use 100% of matched liquidity - force MarketBuy guarantees atomic fills on both sides
+						// No legging risk since we walk the book simultaneously, not single-level limit orders
+						maxSafeShares := minLiquidity * 1.00
+
+						// Only scale if risk allows
+						shares := baseShares
+						if riskAction != paper.RiskActionReduceSize {
+							// Scale shares based on margin - incremental scaling from 1% baseline
+							if margin >= 5.0 {
+								shares = baseShares * 5
+							} else if margin >= 4.0 {
+								shares = baseShares * 4
+							} else if margin >= 3.0 {
+								shares = baseShares * 3
+							} else if margin >= 2.0 {
+								shares = baseShares * 2
+							} else if margin >= 1.0 {
+								shares = baseShares * 1 // Baseline at 1% margin
+							}
+						}
+
+						// Apply compounding multiplier from profitable rounds
+						compoundMult := t.Engine.GetCompoundMultiplier()
+						shares = float64(int(float64(shares) * compoundMult))
+
+						// Force at least 1 share if there's any matched liquidity and we have budget
+						if shares < 1.0 && minLiquidity >= 1.0 {
+							shares = 1.0
+						}
+
+						// FINAL LIQUIDITY CAP: Ensure shares never exceed available matched liquidity
+						// This must be checked AFTER all scaling (margin scaling + compounding)
+						if shares > maxSafeShares {
+							shares = maxSafeShares
+						}
+						cost, _, _, netProfit := calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
+
+						// Skip if net profit is not positive after order cost
+						if netProfit <= 0 {
 							continue
 						}
+
+						if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash {
+							// Scale back to what cash allows, but still respect liquidity cap
+							maxAffordableShares := currentCash / sum
+
+							// Apply the stricter of: cash limit OR liquidity limit
+							if maxAffordableShares > maxSafeShares {
+								maxAffordableShares = maxSafeShares
+							}
+
+							if maxAffordableShares < 1 {
+								continue // Not enough cash/liquidity for even 1 share
+							}
+							shares = maxAffordableShares
+							cost, _, _, netProfit = calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
+
+							// If still over risk limit or not profitable after cost, don't trade
+							if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
+								continue
+							}
+						}
+						if compoundMult > 1.0 {
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+						} else {
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+						}
+
+						if t.CSVLogger != nil {
+							t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
+						}
+
+						// FORCE FILL: Use MarketBuy to "walk the book" and guarantee fills
+						// This ensures both sides fill completely, avoiding legging risk
+						// Get fresh copies of ask levels (sorted by price ascending)
+						freshAsks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
+						copy(freshAsks1, t.TokenFullAsks[t.Outcomes[0]])
+						sort.Slice(freshAsks1, func(i, j int) bool { return freshAsks1[i].Price < freshAsks1[j].Price })
+
+						freshAsks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
+						copy(freshAsks2, t.TokenFullAsks[t.Outcomes[1]])
+						sort.Slice(freshAsks2, func(i, j int) bool { return freshAsks2[i].Price < freshAsks2[j].Price })
+
+						// Execute market orders that consume liquidity across multiple levels
+						// Force fill: walks the book to guarantee execution
+						trade1, avgPrice1, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
+						trade2, avgPrice2, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
+
+						// Get actual fill quantities
+						filled1, filled2 := shares, shares
+						actualCost1, actualCost2 := shares*avgPrice1, shares*avgPrice2
+						if trade1 != nil {
+							filled1 = trade1.Quantity
+							actualCost1 = trade1.Value
+						}
+						if trade2 != nil {
+							filled2 = trade2.Quantity
+							actualCost2 = trade2.Value
+						}
+
+						// Log if we walked deeper into the book
+						if avgPrice1 != ask1 || avgPrice2 != ask2 {
+							t.TUI.LogEvent("[%s] 📊 Walked book: %s@$%.3f, %s@$%.3f",
+								t.ID, t.Outcomes[0], avgPrice1, t.Outcomes[1], avgPrice2)
+						}
+
+						// Record both sides - force market orders always fill
+						t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, "FILLED")
+						t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, "FILLED")
+						t.LaddersPlaced = true
 					}
-					if compoundMult > 1.0 {
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
-					} else {
-						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
-					}
-
-					if t.CSVLogger != nil {
-						t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
-					}
-
-					// FORCE FILL: Use MarketBuy to "walk the book" and guarantee fills
-					// This ensures both sides fill completely, avoiding legging risk
-					// Get fresh copies of ask levels (sorted by price ascending)
-					freshAsks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
-					copy(freshAsks1, t.TokenFullAsks[t.Outcomes[0]])
-					sort.Slice(freshAsks1, func(i, j int) bool { return freshAsks1[i].Price < freshAsks1[j].Price })
-
-					freshAsks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
-					copy(freshAsks2, t.TokenFullAsks[t.Outcomes[1]])
-					sort.Slice(freshAsks2, func(i, j int) bool { return freshAsks2[i].Price < freshAsks2[j].Price })
-
-					// Execute market orders that consume liquidity across multiple levels
-					// Force fill: walks the book to guarantee execution
-					trade1, avgPrice1, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
-					trade2, avgPrice2, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
-
-					// Get actual fill quantities
-					filled1, filled2 := shares, shares
-					actualCost1, actualCost2 := shares*avgPrice1, shares*avgPrice2
-					if trade1 != nil {
-						filled1 = trade1.Quantity
-						actualCost1 = trade1.Value
-					}
-					if trade2 != nil {
-						filled2 = trade2.Quantity
-						actualCost2 = trade2.Value
-					}
-
-					// Log if we walked deeper into the book
-					if avgPrice1 != ask1 || avgPrice2 != ask2 {
-						t.TUI.LogEvent("[%s] 📊 Walked book: %s@$%.3f, %s@$%.3f",
-							t.ID, t.Outcomes[0], avgPrice1, t.Outcomes[1], avgPrice2)
-					}
-
-					// Record both sides - force market orders always fill
-					t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, "FILLED")
-					t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, "FILLED")
-					t.LaddersPlaced = true
-				}
 				}
 			}
 

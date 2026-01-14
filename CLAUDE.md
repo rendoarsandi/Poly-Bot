@@ -40,8 +40,16 @@ go fmt ./... && go test ./...
 ### Core Trading Flow
 1. **Discovery**: REST API scans for active 15-minute markets
 2. **Trading**: WebSocket streams order book updates; bot places trades when `ask1 + ask2 < $0.98`
-3. **Resolution**: When market expires, winning side pays $1.00 per share
-4. **Rotation**: Bot automatically moves to next available market
+3. **Instant Merge**: Immediately merge bought tokens to capture arb profit
+4. **Resolution**: When market expires, any remaining positions are redeemed
+5. **Rotation**: Bot automatically moves to next available market
+
+### Dual Strategy System
+The bot runs two complementary strategies that never overlap:
+- **Panic Buy** (BUY → MERGE): When `ask_sum < $0.98`, buy both sides and merge for instant profit
+- **Panic Sell** (SPLIT → SELL): When `bid_sum > $1.03`, sell split shares to panic buyers
+
+Split shares and bought shares are tracked separately via `SplitInventory` to prevent overlap.
 
 ### Concurrency Model
 - Main loop spawns one `MarketTrader` goroutine per asset
@@ -54,6 +62,7 @@ go fmt ./... && go test ./...
 - `orderbook.go` - Limit order simulation with FIFO matching
 - `risk.go` - Exposure limits, inventory skew, kill switch triggers
 - `ladder.go` - Multi-level order placement at graduated prices
+- `split_inventory.go` - CTF split share tracking (separate from bought shares)
 - `tui.go` - Live terminal UI with market data and event log
 
 ## Development Workflow
@@ -78,6 +87,10 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 | Ladder | Multiple orders at graduated price levels |
 | Skew | Imbalance between Up/Down positions |
 | Kill Switch | Emergency stop on exposure + skew breach |
+| CTF Split | Convert USDC → YES+NO tokens ($1 → 1 YES + 1 NO) |
+| CTF Merge | Convert YES+NO tokens → USDC (1 YES + 1 NO → $1) |
+| Panic Buy | Buy both sides when ask_sum < $0.98, then merge |
+| Panic Sell | Sell split shares when bid_sum > $1.03 |
 
 ## Configuration
 
@@ -85,3 +98,11 @@ Strategy parameters are in `cmd/bot/main.go`:
 - `StartingBalance` - Paper trading starting capital ($1000)
 - `LadderConfig` - Order levels, shares per level, price step
 - `RiskConfig` - Max exposure, unmatched ratio, skew threshold, kill switch drawdown
+
+Split strategy parameters are in `.env` (for realbot):
+- `SPLIT_STRATEGY_ENABLED` - Enable/disable panic sell strategy (default: false)
+- `SPLIT_INITIAL_USDC` - Initial USDC to split at market start (default: $10)
+- `SPLIT_MIN_MARGIN_SELL` - Minimum margin to trigger sell (default: 3%)
+- `SPLIT_TARGET_MARGIN_RESERVE` - Reserve inventory for this margin (default: 6%)
+- `SPLIT_REPLENISH_THRESHOLD` - Trigger replenish when shares below this (default: 50)
+- `SPLIT_MERGE_BUFFER_SECONDS` - Seconds before expiry to merge unsold (default: 30)

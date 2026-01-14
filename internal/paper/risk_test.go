@@ -40,7 +40,7 @@ func TestRiskManager_KillSwitch_UnmatchedSharesAbsolute(t *testing.T) {
 
 	config := RiskConfig{
 		MaxExposure:        5000.0,
-		MaxUnmatchedRatio:  0.50, // High so it doesn't trigger
+		MaxUnmatchedRatio:  0.50,  // High so it doesn't trigger
 		MaxUnmatchedShares: 100.0, // Low threshold
 		SkewThreshold:      0.10,
 		KillSwitchDrawdown: 0.50,
@@ -189,7 +189,7 @@ func TestRiskManager_CanPlaceOrder_AfterKillSwitch(t *testing.T) {
 	// Trigger kill switch
 	engine.BuyForMarket("", "Up", 0.50, 200)  // 200 Up
 	engine.BuyForMarket("", "Down", 0.50, 50) // 50 Down
-	rm.Evaluate() // This should trigger kill switch
+	rm.Evaluate()                             // This should trigger kill switch
 
 	// Now no orders should be allowed
 	if rm.CanPlaceOrder(1.0) {

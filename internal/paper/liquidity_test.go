@@ -76,9 +76,9 @@ func TestCalculateSafeShares_LiquidityCap(t *testing.T) {
 		{
 			name:                  "Compounding hits liquidity cap",
 			baseShares:            10,
-			margin:                2.0,             // Scales to 20
-			compoundMultiplier:    2.0,             // Compounds to 40
-			totalMatchedLiquidity: 25,              // 80% = 20
+			margin:                2.0, // Scales to 20
+			compoundMultiplier:    2.0, // Compounds to 40
+			totalMatchedLiquidity: 25,  // 80% = 20
 			reduceSize:            false,
 			expectedShares:        20, // Capped at 80% of 25
 			description:           "Compounding should still be capped by liquidity",
@@ -128,15 +128,15 @@ func TestCalculateSafeShares_LiquidityCap(t *testing.T) {
 // TestCalculateAggregatedLiquidity_Basic tests basic liquidity aggregation
 func TestCalculateAggregatedLiquidity_Basic(t *testing.T) {
 	tests := []struct {
-		name              string
-		asks1             []MarketLevel
-		asks2             []MarketLevel
-		maxSum            float64
-		expectedMatched   float64
-		expectedSafe      float64
-		expectedCumLiq1   float64
-		expectedCumLiq2   float64
-		expectedLevels    int
+		name            string
+		asks1           []MarketLevel
+		asks2           []MarketLevel
+		maxSum          float64
+		expectedMatched float64
+		expectedSafe    float64
+		expectedCumLiq1 float64
+		expectedCumLiq2 float64
+		expectedLevels  int
 	}{
 		{
 			name: "Simple 10/10 liquidity",
@@ -146,12 +146,12 @@ func TestCalculateAggregatedLiquidity_Basic(t *testing.T) {
 			asks2: []MarketLevel{
 				{Price: 0.50, Size: 10},
 			},
-			maxSum:            0.99, // 2% margin
-			expectedMatched:   10,
-			expectedSafe:      8, // 80% of 10
-			expectedCumLiq1:   10,
-			expectedCumLiq2:   10,
-			expectedLevels:    1,
+			maxSum:          0.99, // 2% margin
+			expectedMatched: 10,
+			expectedSafe:    8, // 80% of 10
+			expectedCumLiq1: 10,
+			expectedCumLiq2: 10,
+			expectedLevels:  1,
 		},
 		{
 			name: "Unequal liquidity takes minimum",
@@ -161,12 +161,12 @@ func TestCalculateAggregatedLiquidity_Basic(t *testing.T) {
 			asks2: []MarketLevel{
 				{Price: 0.50, Size: 10},
 			},
-			maxSum:            0.99,
-			expectedMatched:   10, // min(20, 10) = 10
-			expectedSafe:      8,  // 80% of 10
-			expectedCumLiq1:   10,
-			expectedCumLiq2:   10,
-			expectedLevels:    1,
+			maxSum:          0.99,
+			expectedMatched: 10, // min(20, 10) = 10
+			expectedSafe:    8,  // 80% of 10
+			expectedCumLiq1: 10,
+			expectedCumLiq2: 10,
+			expectedLevels:  1,
 		},
 		{
 			name: "Multi-level aggregation",
@@ -178,12 +178,12 @@ func TestCalculateAggregatedLiquidity_Basic(t *testing.T) {
 				{Price: 0.50, Size: 10},
 				{Price: 0.52, Size: 20},
 			},
-			maxSum:            0.99, // 0.45+0.50=0.95 OK, 0.48+0.52=1.00 NOT OK
-			expectedMatched:   10,   // Only first levels match under threshold
-			expectedSafe:      8,
-			expectedCumLiq1:   10,
-			expectedCumLiq2:   10,
-			expectedLevels:    1,
+			maxSum:          0.99, // 0.45+0.50=0.95 OK, 0.48+0.52=1.00 NOT OK
+			expectedMatched: 10,   // Only first levels match under threshold
+			expectedSafe:    8,
+			expectedCumLiq1: 10,
+			expectedCumLiq2: 10,
+			expectedLevels:  1,
 		},
 		{
 			name: "Multi-level aggregation with higher threshold",
@@ -195,12 +195,12 @@ func TestCalculateAggregatedLiquidity_Basic(t *testing.T) {
 				{Price: 0.50, Size: 10},
 				{Price: 0.51, Size: 20},
 			},
-			maxSum:            1.00, // 0.45+0.50=0.95 OK, 0.48+0.51=0.99 OK
-			expectedMatched:   25,   // 10 from level 1 + 15 from level 2 (limited by asks1)
-			expectedSafe:      20,   // 80% of 25
-			expectedCumLiq1:   25,
-			expectedCumLiq2:   25,
-			expectedLevels:    2, // Processes 2 levels
+			maxSum:          1.00, // 0.45+0.50=0.95 OK, 0.48+0.51=0.99 OK
+			expectedMatched: 25,   // 10 from level 1 + 15 from level 2 (limited by asks1)
+			expectedSafe:    20,   // 80% of 25
+			expectedCumLiq1: 25,
+			expectedCumLiq2: 25,
+			expectedLevels:  2, // Processes 2 levels
 		},
 		{
 			name: "Price exceeds threshold immediately",
@@ -398,7 +398,7 @@ func TestCalculateSafeShares_MarginScaling(t *testing.T) {
 			result := CalculateSafeShares(
 				tc.baseShares,
 				tc.margin,
-				1.0,          // No compounding
+				1.0, // No compounding
 				tc.liquidity,
 				false,
 			)
