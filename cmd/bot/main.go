@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -1084,19 +1085,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						// Only scale if risk allows
 						shares := baseShares
-						if riskAction != paper.RiskActionReduceSize {
-							// Scale shares based on margin - incremental scaling from 1% baseline
-							if margin >= 5.0 {
-								shares = baseShares * 5
-							} else if margin >= 4.0 {
-								shares = baseShares * 4
-							} else if margin >= 3.0 {
-								shares = baseShares * 3
-							} else if margin >= 2.0 {
-								shares = baseShares * 2
-							} else if margin >= 1.0 {
-								shares = baseShares * 1 // Baseline at 1% margin
+						if t.Config.EnableMarginAggression && riskAction != paper.RiskActionReduceSize {
+							multiplier := math.Floor(margin)
+							if multiplier > t.Config.MaxAggressionMultiplier {
+								multiplier = t.Config.MaxAggressionMultiplier
 							}
+							if multiplier < 1 {
+								multiplier = 1
+							}
+							shares = baseShares * multiplier
 						}
 
 						// Apply compounding multiplier from profitable rounds

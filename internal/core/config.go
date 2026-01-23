@@ -53,13 +53,16 @@ type Config struct {
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
 
+	// Aggression settings
+	EnableMarginAggression  bool    // Scale trade size by margin (e.g., 2% margin = 2x size)
+	MaxAggressionMultiplier float64 // Maximum multiplier for margin-based aggression (default: 5.0)
+
 	// ═══════════════════════════════════════════════════════════════════════════
 	// SPLIT STRATEGY SETTINGS (Panic Sell)
 	// Strategy: SPLIT USDC → YES+NO shares, SELL when bid_sum > $1.03
 	// This is the INVERSE of the panic buy strategy (buy when ask_sum < $0.98)
 	// ═══════════════════════════════════════════════════════════════════════════
 	SplitStrategyEnabled     bool    // Enable split strategy (default: false)
-	SplitInitialUSDC         float64 // Initial USDC to split at market start (default: $10)
 	SplitMinMarginSell       float64 // Minimum margin to trigger sell (default: 3%)
 	SplitTargetMarginReserve float64 // Maintain inventory for this margin level (default: 6%)
 	SplitReplenishThreshold  float64 // Trigger new split when shares fall below this (default: 50)
@@ -96,9 +99,11 @@ func LoadConfig() (*Config, error) {
 		RequireConfirm:  os.Getenv("REQUIRE_CONFIRM") == "true",
 		TestMode:        os.Getenv("TEST_MODE") != "false", // Default true for safety
 		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",
+		// Aggression settings
+		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
+		MaxAggressionMultiplier: parseEnvFloat("MAX_AGGRESSION_MULTIPLIER", 5.0),
 		// Split strategy settings (panic sell)
 		SplitStrategyEnabled:     os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
-		SplitInitialUSDC:         parseEnvFloat("SPLIT_INITIAL_USDC", 10.0),
 		SplitMinMarginSell:       parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
 		SplitTargetMarginReserve: parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
 		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),

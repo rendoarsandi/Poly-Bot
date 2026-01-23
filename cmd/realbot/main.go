@@ -711,22 +711,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			}
 
 			// Initial split: create inventory if not done yet
-			if !splitInitialized && cfg.SplitInitialUSDC > 0 {
-				tui.LogEvent("[%s] 🔀 SPLIT: Creating initial inventory ($%.2f)", id, cfg.SplitInitialUSDC)
+			if !splitInitialized {
+				// Use 5% scaling for initial split (same as panic buy)
+				splitAmount := cfg.CalculateTradeSize(currentBalance)
+				tui.LogEvent("[%s] 🔀 SPLIT: Creating initial inventory ($%.2f)", id, splitAmount)
 
 				splitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				txHash, err := trader.SplitOnChain(splitCtx, market.ConditionID, cfg.SplitInitialUSDC)
+				txHash, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount)
 				cancel()
 
 				if err != nil {
 					tui.LogEvent("[%s] ⚠️ SPLIT: Initial split failed: %v", id, err)
 				} else {
-					splitInventory.RecordSplit(id, outcomes[0], outcomes[1], cfg.SplitInitialUSDC)
+					splitInventory.RecordSplit(id, outcomes[0], outcomes[1], splitAmount)
 					splitInitialized = true
 					if txHash != "" && len(txHash) >= 10 {
-						tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each | Tx: %s...", id, cfg.SplitInitialUSDC, txHash[:10])
+						tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each | Tx: %s...", id, splitAmount, txHash[:10])
 					} else {
-						tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each", id, cfg.SplitInitialUSDC)
+						tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each", id, splitAmount)
 					}
 				}
 			}
@@ -816,8 +818,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								// Check if we need to replenish
 								remainingShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 								if remainingShares < cfg.SplitReplenishThreshold {
-									// Auto-replenish
-									replenishAmount := cfg.SplitInitialUSDC
+									// Auto-replenish using 5% scaling
+									replenishAmount := cfg.CalculateTradeSize(currentBalance)
 									tui.LogEvent("[%s] 🔄 SPLIT: Replenishing inventory ($%.2f)", id, replenishAmount)
 
 									replenishCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -853,7 +855,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					} else if sellMargin >= cfg.SplitTargetMarginReserve {
 						// Great opportunity but no inventory - try to split if we haven't recently
 						if splitInitialized && time.Since(lastSplitSell) > 5*time.Second {
-							replenishAmount := cfg.SplitInitialUSDC * 2 // Double up for good opportunities
+							// Use 10% scaling (double baseline) for high margin opportunities
+							replenishAmount := cfg.CalculateTradeSize(currentBalance) * 2
 							tui.LogEvent("[%s] 🔀 SPLIT: High margin (%.1f%%), creating inventory ($%.2f)", id, sellMargin, replenishAmount)
 
 							splitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -911,17 +914,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Scale shares based on margin
 					shares := tradeSize / sum
 
-					// Apply aggression scaling based on margin (2%, 3%, 4%+)
+					// Apply aggression scaling based on margin (e.g., 2% = 2x, 3% = 3x)
 					// Higher margin = better opportunity = more aggressive sizing
-					if riskAction != paper.RiskActionReduceSize {
-						if margin >= 4.0 {
-							shares *= 4
-						} else if margin >= 3.0 {
-							shares *= 3
-						} else if margin >= 2.0 {
-							shares *= 2
+					if cfg.EnableMarginAggression && riskAction != paper.RiskActionReduceSize {
+						multiplier := math.Floor(margin)
+						if multiplier > cfg.MaxAggressionMultiplier {
+							multiplier = cfg.MaxAggressionMultiplier
 						}
-						// 1% margin = 1x (no scaling, baseline)
+						if multiplier < 1 {
+							multiplier = 1
+						}
+						shares *= multiplier
 					}
 
 					// Round to whole shares

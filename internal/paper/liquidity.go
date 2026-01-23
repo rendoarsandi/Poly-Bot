@@ -96,18 +96,15 @@ func CalculateSafeShares(
 
 	// Only scale if risk allows
 	if !reduceSize {
-		// Scale shares based on margin - incremental scaling from 1% baseline
-		if margin >= 5.0 {
-			shares = baseShares * 5
-		} else if margin >= 4.0 {
-			shares = baseShares * 4
-		} else if margin >= 3.0 {
-			shares = baseShares * 3
-		} else if margin >= 2.0 {
-			shares = baseShares * 2
-		} else if margin >= 1.0 {
-			shares = baseShares * 1 // Baseline at 1% margin
+		// Scale shares based on margin - dynamic scaling from 1% baseline
+		multiplier := margin
+		if multiplier < 1.0 {
+			multiplier = 1.0
 		}
+		if multiplier > 5.0 {
+			multiplier = 5.0
+		}
+		shares = baseShares * float64(int(multiplier))
 	}
 
 	// Apply compounding multiplier from profitable rounds
