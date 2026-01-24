@@ -209,3 +209,46 @@ func (s *SplitInventory) ClearAll() {
 	s.splitShares = make(map[string]float64)
 	s.splitCostBasis = make(map[string]float64)
 }
+
+// SplitPosition represents a split inventory position for display
+type SplitPosition struct {
+	MarketID  string
+	Outcome   string
+	Shares    float64
+	CostBasis float64
+}
+
+// GetAllPositions returns all split positions for display
+func (s *SplitInventory) GetAllPositions() []SplitPosition {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	positions := make([]SplitPosition, 0, len(s.splitShares))
+	for key, shares := range s.splitShares {
+		if shares <= 0 {
+			continue
+		}
+		// Parse key "marketID:outcome"
+		parts := splitKey(key)
+		if len(parts) != 2 {
+			continue
+		}
+		positions = append(positions, SplitPosition{
+			MarketID:  parts[0],
+			Outcome:   parts[1],
+			Shares:    shares,
+			CostBasis: s.splitCostBasis[key],
+		})
+	}
+	return positions
+}
+
+// splitKey splits "marketID:outcome" into parts
+func splitKey(key string) []string {
+	for i := 0; i < len(key); i++ {
+		if key[i] == ':' {
+			return []string{key[:i], key[i+1:]}
+		}
+	}
+	return nil
+}

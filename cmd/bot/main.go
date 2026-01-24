@@ -58,6 +58,12 @@ type MarketTrader struct {
 	// Last time we performed a REST fallback poll
 	LastRestPoll time.Time
 
+	// Split strategy simulation
+	SplitInventory   *paper.SplitInventory
+	ReplenishCtrl    *paper.ReplenishController
+	SplitInitialized bool
+	LastSplitSell    time.Time
+
 	// State
 	LaddersPlaced bool
 	MarketEnded   bool
@@ -537,28 +543,36 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 	monitor := paper.NewMarketMonitor(engine, orderBook, ladderMgr, riskMgr)
 	monitor.SetMarket(market.Slug, market.ConditionID, outcomes, endTime)
 
+	splitInv := paper.NewSplitInventory()
+	engine.RegisterSplitInventory(splitInv) // Register for equity calculation
+	tui.RegisterSplitInventory(splitInv)    // Register for TUI display
+
 	return &MarketTrader{
-		ID:            id,
-		Market:        market,
-		Engine:        engine,
-		OrderBook:     orderBook,
-		LadderMgr:     ladderMgr,
-		RiskMgr:       riskMgr,
-		Monitor:       monitor,
-		TokenMap:      tokenMap,
-		Outcomes:      outcomes,
-		EndTime:       endTime,
-		RestClient:    restClient,
-		TUI:           tui,
-		CSVLogger:     csvLogger,
-		Config:        cfg,
-		TokenBids:     make(map[string]float64),
-		TokenAsks:     make(map[string]float64),
-		TokenFullBids: make(map[string][]paper.MarketLevel),
-		TokenFullAsks: make(map[string][]paper.MarketLevel),
-		FloatPrices:   make(map[string]float64),
-		LastUpdate:    time.Now(),
-		LastRestPoll:  time.Now(),
+		ID:               id,
+		Market:           market,
+		Engine:           engine,
+		OrderBook:        orderBook,
+		LadderMgr:        ladderMgr,
+		RiskMgr:          riskMgr,
+		Monitor:          monitor,
+		TokenMap:         tokenMap,
+		Outcomes:         outcomes,
+		EndTime:          endTime,
+		RestClient:       restClient,
+		TUI:              tui,
+		CSVLogger:        csvLogger,
+		Config:           cfg,
+		TokenBids:        make(map[string]float64),
+		TokenAsks:        make(map[string]float64),
+		TokenFullBids:    make(map[string][]paper.MarketLevel),
+		TokenFullAsks:    make(map[string][]paper.MarketLevel),
+		FloatPrices:      make(map[string]float64),
+		LastUpdate:       time.Now(),
+		LastRestPoll:     time.Now(),
+		SplitInventory:   splitInv,
+		ReplenishCtrl:    paper.NewReplenishController(),
+		SplitInitialized: false,
+		LastSplitSell:    time.Time{},
 	}
 }
 
@@ -1187,6 +1201,166 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, "FILLED")
 						t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, "FILLED")
 						t.LaddersPlaced = true
+					}
+				}
+			}
+
+			// ═══════════════════════════════════════════════════════════════════════════
+			// SPLIT STRATEGY SIMULATION: Sell when bid_sum > $1.00 + margin
+			// This simulates the panic sell strategy without real blockchain calls
+			// ═══════════════════════════════════════════════════════════════════════════
+			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && t.Config.SplitStrategyEnabled {
+				bid1 := t.TokenBids[t.Outcomes[0]]
+				bid2 := t.TokenBids[t.Outcomes[1]]
+				currentEquity := t.Engine.GetEquity()
+
+				// Initial split: create simulated inventory
+				// Split is always safe - can merge back to USDC anytime at 1:1
+				if !t.SplitInitialized {
+					baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+					initialBuffer := baseTradeSize * 2.0
+					if initialBuffer < 50 {
+						initialBuffer = 50
+					}
+					maxInitial := currentEquity * 0.15
+					splitAmount := initialBuffer
+					if splitAmount > maxInitial {
+						splitAmount = maxInitial
+					}
+					if splitAmount >= 10.0 {
+						t.Engine.DeductBalance(splitAmount)
+						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
+						t.SplitInitialized = true
+						t.TUI.LogEvent("[%s] 🔀 SPLIT (sim): Created %.0f shares ($%.2f)", t.ID, splitAmount, splitAmount)
+					}
+				}
+
+				// Check for panic sell opportunity
+				if bid1 > 0.10 && bid2 > 0.10 && bid1 < 0.90 && bid2 < 0.90 {
+					bidSum := bid1 + bid2
+					sellMargin := (bidSum - 1.0) * 100
+
+					// Background replenishment check
+					baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+					targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
+					currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
+					replenishAmount := baseTradeSize * 2.0
+
+					decision := t.ReplenishCtrl.CheckReplenish(paper.ReplenishParams{
+						CurrentShares:      currentShares,
+						TargetBuffer:       targetBuffer,
+						SellMargin:         sellMargin,
+						MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
+						CurrentBalance:     currentEquity,
+						ReplenishAmount:    replenishAmount,
+						MaxBalancePercent:  0.30,
+					})
+
+					if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
+						// Simulate replenishment
+						t.Engine.DeductBalance(replenishAmount)
+						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], replenishAmount)
+						t.TUI.LogEvent("[%s] 🔄 SPLIT (sim): Replenished %.0f shares", t.ID, replenishAmount)
+						t.ReplenishCtrl.MarkComplete()
+					}
+
+					// Panic sell logic
+					if sellMargin >= t.Config.SplitMinMarginSell && time.Since(t.LastSplitSell) > 2*time.Second {
+						requestedShares := baseTradeSize
+						if t.Config.EnableMarginAggression {
+							multiplier := sellMargin / 2.0
+							if multiplier > t.Config.MaxAggressionMultiplier {
+								multiplier = t.Config.MaxAggressionMultiplier
+							}
+							if multiplier < 1.0 {
+								multiplier = 1.0
+							}
+							requestedShares = baseTradeSize * multiplier
+						}
+
+						availableShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
+						sharesToSell := requestedShares
+						if sharesToSell > availableShares {
+							if availableShares >= 1.0 {
+								sharesToSell = availableShares
+							} else {
+								sharesToSell = 0
+							}
+						}
+
+						if sharesToSell >= 1.0 {
+							if sharesToSell > 250 {
+								sharesToSell = 250
+							}
+
+							// Calculate liquidity depth for display (similar to ARB buy)
+							bids1 := t.TokenFullBids[t.Outcomes[0]]
+							bids2 := t.TokenFullBids[t.Outcomes[1]]
+							bookDepth1, bookDepth2 := len(bids1), len(bids2)
+
+							// Calculate matched liquidity across valid bid levels
+							minSum := 1.0 + (t.Config.SplitMinMarginSell / 100.0)
+							var rawLiq1, rawLiq2 float64
+							var maxValidI, maxValidJ int
+
+							// Sort bids by price descending (best bids first)
+							sortedBids1 := make([]paper.MarketLevel, len(bids1))
+							copy(sortedBids1, bids1)
+							sort.Slice(sortedBids1, func(a, b int) bool { return sortedBids1[a].Price > sortedBids1[b].Price })
+
+							sortedBids2 := make([]paper.MarketLevel, len(bids2))
+							copy(sortedBids2, bids2)
+							sort.Slice(sortedBids2, func(a, b int) bool { return sortedBids2[a].Price > sortedBids2[b].Price })
+
+							// Walk bid levels to find matched liquidity
+							for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
+								if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum {
+									break
+								}
+								if bi+1 > maxValidI {
+									maxValidI = bi + 1
+									rawLiq1 += sortedBids1[bi].Size
+								}
+								if bj+1 > maxValidJ {
+									maxValidJ = bj + 1
+									rawLiq2 += sortedBids2[bj].Size
+								}
+								if sortedBids1[bi].Size <= sortedBids2[bj].Size {
+									sortedBids2[bj].Size -= sortedBids1[bi].Size
+									bi++
+								} else {
+									sortedBids1[bi].Size -= sortedBids2[bj].Size
+									bj++
+								}
+							}
+
+							// Simulate sell: record profit
+							profit1 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[0], sharesToSell, bid1)
+							profit2 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[1], sharesToSell, bid2)
+							totalProfit := profit1 + profit2
+
+							// Add proceeds back to balance
+							proceeds := sharesToSell * bidSum
+							t.Engine.AddBalance(proceeds)
+
+							// Enhanced log with liquidity and depth info (same format as ARB buy)
+							t.TUI.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares, profit $%.2f [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+								t.ID, t.Outcomes[0], bid1, t.Outcomes[1], bid2, bidSum, sellMargin, sharesToSell, totalProfit,
+								rawLiq1, rawLiq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+							t.TUI.RecordOrder(t.ID, "SPLIT_SELL", "SELL", sharesToSell*2, bidSum/2, proceeds, sellMargin, "FILLED")
+							t.LastSplitSell = time.Now()
+						}
+					}
+				}
+
+				// End-of-market merge: merge remaining split shares before expiry
+				timeToEnd := time.Until(t.EndTime)
+				if timeToEnd < 30*time.Second && timeToEnd > 0 {
+					remainingShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
+					if remainingShares >= 1.0 {
+						merged := t.SplitInventory.RecordMerge(t.ID, t.Outcomes[0], t.Outcomes[1], remainingShares)
+						t.Engine.AddBalance(merged) // $1 per merged pair
+						t.TUI.LogEvent("[%s] 💰 SPLIT MERGE (sim): Merged %.0f shares → $%.2f", t.ID, merged, merged)
 					}
 				}
 			}

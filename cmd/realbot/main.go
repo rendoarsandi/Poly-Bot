@@ -276,6 +276,7 @@ func run() error {
 			currentBalance = balance // Use last known balance
 		} else {
 			balance = currentBalance // Update stored balance
+			engine.SetBalance(currentBalance) // Sync engine with on-chain balance
 		}
 
 		// Track starting equity for compounding calculation
@@ -542,7 +543,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	// Create split inventory tracker (separate from bought shares)
 	// ═══════════════════════════════════════════════════════════════════════════
 	splitInventory := paper.NewSplitInventory()
+	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
+	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	splitInitialized := false // Track if we've done initial split
+	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 
 	for {
 		select {
@@ -711,37 +715,36 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			}
 
 			// Initial split: create inventory if not done yet
+			// Split is always safe - can merge back to USDC anytime at 1:1
 			if !splitInitialized {
-				// PROACTIVE: Use aggression-scaled buffer for initial split
 				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
-				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
-				if targetBuffer < 100 {
-					targetBuffer = 100
+				initialBuffer := baseTradeSize * 2.0
+				if initialBuffer < 50 {
+					initialBuffer = 50
 				}
-				
-				// Safety: Cap split at 30% of balance
-				maxAllowed := currentBalance * 0.30
-				splitAmount := targetBuffer
-				if splitAmount > maxAllowed {
-					splitAmount = maxAllowed
+
+				maxInitial := currentBalance * 0.15
+				splitAmount := initialBuffer
+				if splitAmount > maxInitial {
+					splitAmount = maxInitial
 				}
 
 				if splitAmount >= 10.0 {
-					tui.LogEvent("[%s] 🔀 SPLIT: Creating proactive inventory ($%.2f)", id, splitAmount)
+					tui.LogEvent("[%s] 🔀 SPLIT: Creating inventory ($%.2f)", id, splitAmount)
 
 					splitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 					txHash, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount)
 					cancel()
 
 					if err != nil {
-						tui.LogEvent("[%s] ⚠️ SPLIT: Initial split failed: %v", id, err)
+						tui.LogEvent("[%s] ⚠️ SPLIT: Failed: %v", id, err)
 					} else {
 						splitInventory.RecordSplit(id, outcomes[0], outcomes[1], splitAmount)
 						splitInitialized = true
 						if txHash != "" && len(txHash) >= 10 {
-							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each | Tx: %s...", id, splitAmount, txHash[:10])
+							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", id, splitAmount, txHash[:10])
 						} else {
-							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares each", id, splitAmount)
+							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares", id, splitAmount)
 						}
 					}
 				}
@@ -756,20 +759,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
 				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
-				
-				if currentShares < targetBuffer*0.4 && sellMargin >= cfg.SplitMinMarginSell-1.0 {
-					// Safety: check 30% balance cap
-					if (currentShares + baseTradeSize*2.0) < currentBalance*0.30 {
-						tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f), background replenish starting...", id, currentShares)
-						go func(mID, condID string, amt float64) {
-							bgCtx, bgCancel := context.WithTimeout(context.Background(), 60*time.Second)
-							defer bgCancel()
-							_, bgErr := trader.SplitOnChain(bgCtx, condID, amt)
-							if bgErr == nil {
-								splitInventory.RecordSplit(mID, outcomes[0], outcomes[1], amt)
-							}
-						}(id, market.ConditionID, baseTradeSize*2.0)
-					}
+				replenishAmount := baseTradeSize * 2.0
+
+				decision := replenishCtrl.CheckReplenish(paper.ReplenishParams{
+					CurrentShares:      currentShares,
+					TargetBuffer:       targetBuffer,
+					SellMargin:         sellMargin,
+					MinMarginThreshold: cfg.SplitMinMarginSell - 1.0,
+					CurrentBalance:     currentBalance,
+					ReplenishAmount:    replenishAmount,
+					MaxBalancePercent:  0.30,
+				})
+
+				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {
+					tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f), background replenish starting...", id, currentShares)
+					go func(mID, condID, out0, out1 string, amt float64) {
+						defer replenishCtrl.MarkComplete()
+						// Use derived context for proper shutdown propagation
+						bgCtx, bgCancel := context.WithTimeout(ctx, 60*time.Second)
+						defer bgCancel()
+						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt)
+						if bgErr == nil {
+							splitInventory.RecordSplit(mID, out0, out1, amt)
+						}
+					}(id, market.ConditionID, outcomes[0], outcomes[1], replenishAmount)
 				}
 
 				if sellMargin >= cfg.SplitMinMarginSell && time.Since(lastSplitSell) > 2*time.Second {
@@ -825,8 +838,51 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						sharesToSell = float64(int(sharesToSell))
 
 						if sharesToSell >= 1.0 {
-							tui.LogEvent("[%s] 📈 SPLIT SELL! bid_sum=$%.3f (%.1f%% margin) | Selling %.0f shares",
-								id, bidSum, sellMargin, sharesToSell)
+							// Calculate liquidity depth for display (same as paper bot)
+							bids1 := tokenFullBids[outcomes[0]]
+							bids2 := tokenFullBids[outcomes[1]]
+							bookDepth1, bookDepth2 := len(bids1), len(bids2)
+
+							// Calculate matched liquidity across valid bid levels
+							minSum := 1.0 + (cfg.SplitMinMarginSell / 100.0)
+							var rawLiq1, rawLiq2 float64
+							var maxValidI, maxValidJ int
+
+							// Sort bids by price descending (best bids first)
+							sortedBids1 := make([]paper.MarketLevel, len(bids1))
+							copy(sortedBids1, bids1)
+							sort.Slice(sortedBids1, func(a, b int) bool { return sortedBids1[a].Price > sortedBids1[b].Price })
+
+							sortedBids2 := make([]paper.MarketLevel, len(bids2))
+							copy(sortedBids2, bids2)
+							sort.Slice(sortedBids2, func(a, b int) bool { return sortedBids2[a].Price > sortedBids2[b].Price })
+
+							// Walk bid levels to find matched liquidity
+							for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
+								if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum {
+									break
+								}
+								if bi+1 > maxValidI {
+									maxValidI = bi + 1
+									rawLiq1 += sortedBids1[bi].Size
+								}
+								if bj+1 > maxValidJ {
+									maxValidJ = bj + 1
+									rawLiq2 += sortedBids2[bj].Size
+								}
+								if sortedBids1[bi].Size <= sortedBids2[bj].Size {
+									sortedBids2[bj].Size -= sortedBids1[bi].Size
+									bi++
+								} else {
+									sortedBids1[bi].Size -= sortedBids2[bj].Size
+									bj++
+								}
+							}
+
+							// Enhanced log with liquidity and depth info (same format as paper bot)
+							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell,
+								rawLiq1, rawLiq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
 
 							// Sell both sides in parallel
 							token0 := getTokenID(outcomes[0])

@@ -56,6 +56,10 @@ type Engine struct {
 	// Positions: "marketID:outcome" -> position
 	positions map[string]*Position
 
+	// Split inventory reference (for equity calculation)
+	// Split tokens are worth $1.00 per YES+NO pair
+	splitInventories []*SplitInventory
+
 	// Trade history (capped to prevent memory growth)
 	trades    []Trade
 	maxTrades int
@@ -621,7 +625,21 @@ func (e *Engine) recalculateDrawdown() {
 func (e *Engine) GetEquity() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.currentBalance + e.getUnrealizedValue()
+	return e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue()
+}
+
+// getSplitInventoryValue returns the value of all split inventories
+// Split tokens are worth $1.00 per YES+NO pair (can merge anytime)
+func (e *Engine) getSplitInventoryValue() float64 {
+	value := 0.0
+	for _, inv := range e.splitInventories {
+		_, _, unrealizedValue := inv.GetStats()
+		// unrealizedValue is shares * $0.50 cost basis per share
+		// But a YES+NO pair is worth $1.00, so we need to count pairs
+		// The unrealizedValue already accounts for this correctly
+		value += unrealizedValue
+	}
+	return value
 }
 
 func (e *Engine) getUnrealizedValue() float64 {
@@ -762,6 +780,44 @@ func (e *Engine) GetBalance() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.currentBalance
+}
+
+// DeductBalance removes amount from balance (for split operations)
+func (e *Engine) DeductBalance(amount float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if amount > e.currentBalance {
+		amount = e.currentBalance
+	}
+	e.currentBalance -= amount
+}
+
+// AddBalance adds amount to balance (for split sell/merge proceeds)
+func (e *Engine) AddBalance(amount float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.currentBalance += amount
+	if e.currentBalance > e.peakBalance {
+		e.peakBalance = e.currentBalance
+	}
+}
+
+// RegisterSplitInventory registers a split inventory for equity calculation
+// Split tokens are worth $1.00 per YES+NO pair (can merge anytime)
+func (e *Engine) RegisterSplitInventory(inv *SplitInventory) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.splitInventories = append(e.splitInventories, inv)
+}
+
+// SetBalance sets the current balance (for syncing with on-chain balance)
+func (e *Engine) SetBalance(balance float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.currentBalance = balance
+	if balance > e.peakBalance {
+		e.peakBalance = balance
+	}
 }
 
 // GetExposure returns exposure metrics

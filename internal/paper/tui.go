@@ -104,6 +104,9 @@ type TUI struct {
 
 	// Non-blocking output channel
 	frameCh chan string
+
+	// Split inventory references for display
+	splitInventories []*SplitInventory
 }
 
 // PendingOrder represents an order the bot intends to place
@@ -381,6 +384,23 @@ func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
 	result := make([]OrderHistoryEntry, len(t.orderHistory))
 	copy(result, t.orderHistory)
 	return result
+}
+
+// RegisterSplitInventory adds a split inventory for display in the positions section
+func (t *TUI) RegisterSplitInventory(inv *SplitInventory) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.splitInventories = append(t.splitInventories, inv)
+}
+
+// getSplitPositions collects all split positions from registered inventories
+// Must be called WITHOUT holding t.mu lock (inventories have their own locks)
+func (t *TUI) getSplitPositions() []SplitPosition {
+	var all []SplitPosition
+	for _, inv := range t.splitInventories {
+		all = append(all, inv.GetAllPositions()...)
+	}
+	return all
 }
 
 // Stop stops the UI - safe to call multiple times
@@ -1101,6 +1121,50 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 		}
 		sb.WriteString(fmt.Sprintf("   %s🔒 Locked Profit: %s%s$%.2f%s%s\n",
 			Bold, lckColor, lckSign, totalLockedPnL, Reset, Reset))
+	}
+
+	// Show split inventory positions (for panic sell strategy)
+	splitPositions := t.getSplitPositions()
+	if len(splitPositions) > 0 {
+		sb.WriteString(fmt.Sprintf("\n%s🔀 SPLIT INVENTORY%s (panic sell)\n", Bold, Reset))
+
+		// Group split positions by market
+		splitByMarket := make(map[string][]SplitPosition)
+		for _, sp := range splitPositions {
+			splitByMarket[sp.MarketID] = append(splitByMarket[sp.MarketID], sp)
+		}
+
+		for _, marketID := range assetOrder {
+			positions, ok := splitByMarket[marketID]
+			if !ok || len(positions) == 0 {
+				continue
+			}
+
+			color := assetColors[marketID]
+			if color == "" {
+				color = ColorWhite
+			}
+
+			sb.WriteString(fmt.Sprintf("   %s[%s]%s ", color, marketID, Reset))
+
+			posStrs := make([]string, 0, len(positions))
+			for _, sp := range positions {
+				posStrs = append(posStrs, fmt.Sprintf("%s: %.0f@$%.2f", core.SanitizeString(sp.Outcome), sp.Shares, sp.CostBasis))
+			}
+			sb.WriteString(strings.Join(posStrs, " | "))
+
+			// Show min matched (sellable pairs)
+			if len(positions) >= 2 {
+				minShares := positions[0].Shares
+				for _, p := range positions[1:] {
+					if p.Shares < minShares {
+						minShares = p.Shares
+					}
+				}
+				sb.WriteString(fmt.Sprintf(" → %s%.0f pairs sellable%s", ColorGreen, minShares, Reset))
+			}
+			sb.WriteString("\n")
+		}
 	}
 
 	return sb.String()
