@@ -811,6 +811,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							outcome := t.TokenMap[b.AssetID]
 							if outcome != "" {
 								foundForThisTrader = true
+								t.mu.Lock()
 								t.TokenBids[outcome] = bid
 								t.TokenAsks[outcome] = ask
 								if bid > 0 && ask > 0 && ask < 1.0 {
@@ -822,10 +823,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								}
 								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, b.Bids)
 								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, b.Asks)
+								t.mu.Unlock()
 							}
 						}
 						if foundForThisTrader {
+							t.mu.Lock()
 							t.LastUpdate = time.Now()
+							t.mu.Unlock()
 						}
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						bid, ask := 0.0, 1.0
@@ -846,6 +850,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 						outcome := t.TokenMap[book.AssetID]
 						if outcome != "" {
+							t.mu.Lock()
 							t.LastUpdate = time.Now()
 							t.TokenBids[outcome] = bid
 							t.TokenAsks[outcome] = ask
@@ -858,6 +863,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 							t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
 							t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
+							t.mu.Unlock()
 						}
 					}
 				default:

@@ -64,9 +64,11 @@ func (r *ReplenishController) CheckReplenish(params ReplenishParams) ReplenishDe
 	}
 
 	// Check balance cap - don't exceed MaxBalancePercent of balance in inventory
+	// CurrentShares is in shares, but maxAllowed is in dollars - need to compare same units
+	// Split shares cost $1 per share (1 USDC -> 1 YES + 1 NO), so shares ~= dollars
 	maxAllowed := params.CurrentBalance * params.MaxBalancePercent
-	projectedInventory := params.CurrentShares + params.ReplenishAmount
-	if projectedInventory >= maxAllowed {
+	projectedInventoryValue := params.CurrentShares + params.ReplenishAmount
+	if projectedInventoryValue >= maxAllowed {
 		return ReplenishDecision{
 			ShouldReplenish: false,
 			Amount:          0,

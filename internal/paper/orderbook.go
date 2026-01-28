@@ -212,6 +212,10 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 		const maxSanePrice = 0.80
 		const maxPriceImprovement = 0.30
 
+		// Track if we skipped fills due to price sanity issues
+		skippedDueToSanity := false
+		hadValidLiquidity := false
+
 		if order.Side == "buy" {
 			// BUY order matches against market ASKS
 			fillThreshold := order.Price - ob.queueBuffer
@@ -222,12 +226,16 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 					continue
 				}
 
-				// Sanity checks
+				hadValidLiquidity = true
+
+				// Sanity checks - if price is outside bounds, skip but track it
 				if ask.Price < minSanePrice || ask.Price > maxSanePrice {
+					skippedDueToSanity = true
 					continue
 				}
 				priceImprovement := (order.Price - ask.Price) / order.Price
 				if priceImprovement > maxPriceImprovement {
+					skippedDueToSanity = true
 					continue
 				}
 
@@ -253,6 +261,10 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 					}
 				}
 			}
+			// Cancel order if we had liquidity but all failed sanity checks
+			if skippedDueToSanity && hadValidLiquidity && order.Status == OrderStatusOpen {
+				order.Status = OrderStatusCancelled
+			}
 		} else if order.Side == "sell" {
 			// SELL order matches against market BIDS
 			fillThreshold := order.Price + ob.queueBuffer
@@ -263,12 +275,16 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 					continue
 				}
 
-				// Sanity checks
+				hadValidLiquidity = true
+
+				// Sanity checks - if price is outside bounds, skip but track it
 				if bid.Price < minSanePrice || bid.Price > maxSanePrice {
+					skippedDueToSanity = true
 					continue
 				}
 				priceImprovement := (bid.Price - order.Price) / order.Price
 				if priceImprovement > maxPriceImprovement {
+					skippedDueToSanity = true
 					continue
 				}
 
@@ -293,6 +309,10 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 						break
 					}
 				}
+			}
+			// Cancel order if we had liquidity but all failed sanity checks
+			if skippedDueToSanity && hadValidLiquidity && order.Status == OrderStatusOpen {
+				order.Status = OrderStatusCancelled
 			}
 		}
 	}

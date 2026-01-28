@@ -149,8 +149,8 @@ func (s *SplitInventory) RecordMerge(marketID, outcome1, outcome2 string, shares
 	s.splitShares[key2] -= shares
 
 	// Merge returns $1 per pair, cost was $1 per pair, so break-even
-	// (we're just recovering our split cost, no profit/loss)
-	s.totalSellProceeds += shares // $1 per merged pair
+	// Unlike selling, merging doesn't generate profit/loss - it just recovers capital
+	// So we DON'T add to totalSellProceeds (that would incorrectly count as profit)
 
 	return shares
 }
