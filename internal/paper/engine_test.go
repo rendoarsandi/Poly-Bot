@@ -240,3 +240,170 @@ func absFloat(x float64) float64 {
 	}
 	return x
 }
+
+// TestEngine_RegisterSplitInventory verifies split inventory registration
+func TestEngine_RegisterSplitInventory(t *testing.T) {
+	engine := NewEngine(1000.0)
+	inv := NewSplitInventory()
+
+	inv.RecordSplit("BTC", "Up", "Down", 100.0)
+
+	// Register the split inventory
+	engine.RegisterSplitInventory(inv)
+
+	// Verify it was registered by checking equity includes split value
+	equity := engine.GetEquity()
+	// Balance $1000 + split value $100 (at cost) = $1100
+	if equity != 1100.0 {
+		t.Errorf("Expected equity $1100.00 (balance + split), got $%.2f", equity)
+	}
+}
+
+// TestEngine_DeductBalance verifies balance deduction
+func TestEngine_DeductBalance(t *testing.T) {
+	engine := NewEngine(1000.0)
+
+	engine.DeductBalance(100.0)
+	if engine.GetBalance() != 900.0 {
+		t.Errorf("Expected balance $900.00 after deduct, got $%.2f", engine.GetBalance())
+	}
+
+	// Test deduct more than balance caps at zero
+	engine.DeductBalance(1000.0)
+	if engine.GetBalance() != 0.0 {
+		t.Errorf("Expected balance $0.00 after over-deduct, got $%.2f", engine.GetBalance())
+	}
+}
+
+// TestEngine_AddBalance verifies balance addition and peak tracking
+func TestEngine_AddBalance(t *testing.T) {
+	engine := NewEngine(1000.0)
+
+	engine.AddBalance(100.0)
+	if engine.GetBalance() != 1100.0 {
+		t.Errorf("Expected balance $1100.00 after add, got $%.2f", engine.GetBalance())
+	}
+
+	stats := engine.GetStats()
+	if stats.PeakBalance != 1100.0 {
+		t.Errorf("Expected peak balance $1100.00, got $%.2f", stats.PeakBalance)
+	}
+}
+
+// TestEngine_SetBalance verifies balance setting for on-chain sync
+func TestEngine_SetBalance(t *testing.T) {
+	engine := NewEngine(1000.0)
+
+	// Simulate on-chain balance update
+	engine.SetBalance(850.0)
+	if engine.GetBalance() != 850.0 {
+		t.Errorf("Expected balance $850.00 after set, got $%.2f", engine.GetBalance())
+	}
+
+	// Test peak balance updates
+	engine.SetBalance(1200.0)
+	stats := engine.GetStats()
+	if stats.PeakBalance != 1200.0 {
+		t.Errorf("Expected peak balance $1200.00, got $%.2f", stats.PeakBalance)
+	}
+}
+
+// TestEngine_GetEquity_WithSplitInventory verifies equity calculation includes splits
+func TestEngine_GetEquity_WithSplitInventory(t *testing.T) {
+	engine := NewEngine(1000.0)
+	inv := NewSplitInventory()
+
+	// Initially equity = balance
+	if engine.GetEquity() != 1000.0 {
+		t.Errorf("Expected initial equity $1000.00, got $%.2f", engine.GetEquity())
+	}
+
+	// Record a split
+	inv.RecordSplit("BTC", "Up", "Down", 100.0)
+	engine.RegisterSplitInventory(inv)
+
+	// Equity should now include split value at cost basis ($50 + $50 = $100)
+	equity := engine.GetEquity()
+	if equity != 1100.0 {
+		t.Errorf("Expected equity $1100.00 after split, got $%.2f", equity)
+	}
+
+	// Sell some shares (this updates split inventory but not engine balance)
+	inv.RecordSell("BTC", "Up", 50.0, 0.55) // Profit: 50 * ($0.55 - $0.50) = $2.50
+
+	// Remaining: Up=50, Down=100
+	// Unrealized value: 50 * $0.50 + 100 * $0.50 = $75
+	// Equity = $1000 (balance unchanged) + $75 (split value) = $1075
+	equity = engine.GetEquity()
+	if equity != 1075.0 {
+		t.Errorf("Expected equity $1075.00 after sell, got $%.2f", equity)
+	}
+
+	// In real usage, proceeds would be added via AddBalance
+	// This simulates the actual flow in cmd/bot/main.go
+	proceeds := 50.0 * 0.55 // Sold 50 shares at $0.55
+	engine.AddBalance(proceeds)
+
+	// Now equity = $1027.50 (balance) + $75 (split) - $27.50 (realized profit already counted)
+	// Actually realized P&L is separate from equity calculation
+	// Equity = balance + unrealized positions + unrealized split value
+	equity = engine.GetEquity()
+	expectedEquity := 1000.0 + proceeds + 75.0 // Balance + proceeds + remaining split value
+	if equity != expectedEquity {
+		t.Errorf("Expected equity $%.2f after adding proceeds, got $%.2f", expectedEquity, equity)
+	}
+}
+
+// TestEngine_MultipleSplitInventories verifies handling multiple inventories
+func TestEngine_MultipleSplitInventories(t *testing.T) {
+	engine := NewEngine(1000.0)
+
+	inv1 := NewSplitInventory()
+	inv1.RecordSplit("BTC", "Up", "Down", 50.0)
+
+	inv2 := NewSplitInventory()
+	inv2.RecordSplit("ETH", "Yes", "No", 30.0)
+
+	engine.RegisterSplitInventory(inv1)
+	engine.RegisterSplitInventory(inv2)
+
+	// Equity = $1000 + $50 (BTC) + $30 (ETH) = $1080
+	equity := engine.GetEquity()
+	if equity != 1080.0 {
+		t.Errorf("Expected equity $1080.00 with multiple inventories, got $%.2f", equity)
+	}
+}
+
+// TestEngine_getSplitInventoryValue_ThreadSafe verifies thread-safe access
+func TestEngine_getSplitInventoryValue_ThreadSafe(t *testing.T) {
+	engine := NewEngine(1000.0)
+	inv := NewSplitInventory()
+	inv.RecordSplit("BTC", "Up", "Down", 100.0)
+	engine.RegisterSplitInventory(inv)
+
+	done := make(chan bool, 2)
+
+	// Concurrent equity reads
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = engine.GetEquity()
+		}
+		done <- true
+	}()
+
+	// Concurrent balance modification
+	go func() {
+		for i := 0; i < 100; i++ {
+			engine.AddBalance(1.0)
+		}
+		done <- true
+	}()
+
+	<-done
+	<-done
+
+	// Verify final state is consistent
+	if engine.GetEquity() != 1200.0 { // 1000 + 100 (split) + 100 (added)
+		t.Errorf("Expected final equity $1200.00, got $%.2f", engine.GetEquity())
+	}
+}

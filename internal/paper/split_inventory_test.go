@@ -170,3 +170,162 @@ func TestSplitInventory_SeparateFromBoughtShares(t *testing.T) {
 		t.Error("Expected no remaining shares after selling all")
 	}
 }
+
+func TestSplitInventory_GetAllPositions(t *testing.T) {
+	inv := NewSplitInventory()
+
+	// Initially should be empty
+	positions := inv.GetAllPositions()
+	if len(positions) != 0 {
+		t.Errorf("Expected 0 positions initially, got %d", len(positions))
+	}
+
+	// Split for BTC
+	inv.RecordSplit("BTC", "Up", "Down", 50.0)
+
+	// Split for ETH
+	inv.RecordSplit("ETH", "Yes", "No", 30.0)
+
+	// Get positions
+	positions = inv.GetAllPositions()
+
+	// Should have 4 positions (2 markets x 2 outcomes each)
+	if len(positions) != 4 {
+		t.Errorf("Expected 4 positions, got %d", len(positions))
+	}
+
+	// Build a map for easier verification
+	posMap := make(map[string]SplitPosition)
+	for _, p := range positions {
+		key := p.MarketID + ":" + p.Outcome
+		posMap[key] = p
+	}
+
+	// Verify BTC positions
+	if btcUp, ok := posMap["BTC:Up"]; !ok {
+		t.Error("Expected BTC:Up position")
+	} else {
+		if btcUp.Shares != 50.0 {
+			t.Errorf("Expected BTC:Up shares = 50, got %.2f", btcUp.Shares)
+		}
+		if btcUp.CostBasis != 0.50 {
+			t.Errorf("Expected BTC:Up cost basis = 0.50, got %.2f", btcUp.CostBasis)
+		}
+	}
+
+	if btcDown, ok := posMap["BTC:Down"]; !ok {
+		t.Error("Expected BTC:Down position")
+	} else {
+		if btcDown.Shares != 50.0 {
+			t.Errorf("Expected BTC:Down shares = 50, got %.2f", btcDown.Shares)
+		}
+	}
+
+	// Verify ETH positions
+	if ethYes, ok := posMap["ETH:Yes"]; !ok {
+		t.Error("Expected ETH:Yes position")
+	} else {
+		if ethYes.Shares != 30.0 {
+			t.Errorf("Expected ETH:Yes shares = 30, got %.2f", ethYes.Shares)
+		}
+	}
+
+	// Sell some shares and verify positions update
+	inv.RecordSell("BTC", "Up", 20.0, 0.55)
+
+	positions = inv.GetAllPositions()
+	if len(positions) != 4 {
+		t.Errorf("Expected 4 positions after sell, got %d", len(positions))
+	}
+
+	// Check that zero shares are filtered out
+	inv.RecordSell("BTC", "Up", 30.0, 0.55) // Sell remaining
+	positions = inv.GetAllPositions()
+	posMap = make(map[string]SplitPosition)
+	for _, p := range positions {
+		key := p.MarketID + ":" + p.Outcome
+		posMap[key] = p
+	}
+
+	if _, ok := posMap["BTC:Up"]; ok {
+		t.Error("BTC:Up should not appear in positions when shares = 0")
+	}
+
+	// BTC:Down should still exist
+	if btcDown, ok := posMap["BTC:Down"]; !ok {
+		t.Error("Expected BTC:Down position to still exist")
+	} else if btcDown.Shares != 50.0 {
+		t.Errorf("Expected BTC:Down shares = 50, got %.2f", btcDown.Shares)
+	}
+}
+
+func TestSplitInventory_GetAllPositions_EmptyAndNegative(t *testing.T) {
+	inv := NewSplitInventory()
+
+	// Empty inventory should return empty slice (not nil)
+	positions := inv.GetAllPositions()
+	if positions == nil {
+		t.Error("GetAllPositions should return empty slice, not nil")
+	}
+	if len(positions) != 0 {
+		t.Errorf("Expected 0 positions, got %d", len(positions))
+	}
+
+	// Split then merge all should result in no positions
+	inv.RecordSplit("BTC", "Up", "Down", 10.0)
+	inv.RecordMerge("BTC", "Up", "Down", 10.0)
+
+	positions = inv.GetAllPositions()
+	if len(positions) != 0 {
+		t.Errorf("Expected 0 positions after merging all, got %d", len(positions))
+	}
+}
+
+func TestSplitInventory_splitKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		expected []string
+	}{
+		{
+			name:     "standard key",
+			key:      "BTC:Up",
+			expected: []string{"BTC", "Up"},
+		},
+		{
+			name:     "key with colon in outcome",
+			key:      "market:Yes:Above",
+			expected: []string{"market", "Yes:Above"},
+		},
+		{
+			name:     "key without colon",
+			key:      "invalidkey",
+			expected: []string{"invalidkey"},
+		},
+		{
+			name:     "empty key",
+			key:      "",
+			expected: []string{""},
+		},
+		{
+			name:     "multiple colons",
+			key:      "a:b:c:d",
+			expected: []string{"a", "b:c:d"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := splitKey(tc.key)
+			if len(result) != len(tc.expected) {
+				t.Errorf("Expected %d parts, got %d", len(tc.expected), len(result))
+				return
+			}
+			for i := range result {
+				if result[i] != tc.expected[i] {
+					t.Errorf("Part %d: expected %q, got %q", i, tc.expected[i], result[i])
+				}
+			}
+		})
+	}
+}
