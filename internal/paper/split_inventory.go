@@ -1,6 +1,7 @@
 package paper
 
 import (
+	"strings"
 	"sync"
 )
 
@@ -245,10 +246,5 @@ func (s *SplitInventory) GetAllPositions() []SplitPosition {
 
 // splitKey splits "marketID:outcome" into parts
 func splitKey(key string) []string {
-	for i := 0; i < len(key); i++ {
-		if key[i] == ':' {
-			return []string{key[:i], key[i+1:]}
-		}
-	}
-	return nil
+	return strings.SplitN(key, ":", 2)
 }

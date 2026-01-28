@@ -275,7 +275,7 @@ func run() error {
 			tui.LogEvent("⚠️ Could not refresh balance: %v", err)
 			currentBalance = balance // Use last known balance
 		} else {
-			balance = currentBalance // Update stored balance
+			balance = currentBalance          // Update stored balance
 			engine.SetBalance(currentBalance) // Sync engine with on-chain balance
 		}
 
@@ -543,9 +543,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	// Create split inventory tracker (separate from bought shares)
 	// ═══════════════════════════════════════════════════════════════════════════
 	splitInventory := paper.NewSplitInventory()
-	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
-	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
-	splitInitialized := false // Track if we've done initial split
+	engine.RegisterSplitInventory(splitInventory)   // Register for equity calculation
+	tui.RegisterSplitInventory(splitInventory)      // Register for TUI display
+	splitInitialized := false                       // Track if we've done initial split
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 
 	for {
@@ -781,6 +781,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt)
 						if bgErr == nil {
 							splitInventory.RecordSplit(mID, out0, out1, amt)
+							tui.LogEvent("[%s] ✅ SPLIT: Background replenish completed (%.0f shares)", mID, amt)
+						} else {
+							tui.LogEvent("[%s] ⚠️ SPLIT: Background replenish failed: %v", mID, bgErr)
 						}
 					}(id, market.ConditionID, outcomes[0], outcomes[1], replenishAmount)
 				}

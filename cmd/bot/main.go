@@ -25,6 +25,13 @@ import (
 const (
 	StartingBalance = 100.0 // $100 paper trading balance
 	UseLiveUI       = true  // Set to false for traditional logging
+
+	// Split strategy constants
+	MinSplitBuffer     = 50.0  // Minimum initial split buffer ($)
+	MaxInitialSplitPct = 0.15  // Maximum 15% of equity for initial split
+	MinSplitAmount     = 10.0  // Minimum split amount to execute ($)
+	MaxSharesPerSell   = 250.0 // Hard safety cap on shares per sell
+	MaxBalancePercent  = 0.30  // Maximum 30% of balance in split inventory
 )
 
 // MarketTrader holds state for trading a single market
@@ -1225,15 +1232,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				if !t.SplitInitialized {
 					baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
 					initialBuffer := baseTradeSize * 2.0
-					if initialBuffer < 50 {
-						initialBuffer = 50
+					if initialBuffer < MinSplitBuffer {
+						initialBuffer = MinSplitBuffer
 					}
-					maxInitial := currentEquity * 0.15
+					maxInitial := currentEquity * MaxInitialSplitPct
 					splitAmount := initialBuffer
 					if splitAmount > maxInitial {
 						splitAmount = maxInitial
 					}
-					if splitAmount >= 10.0 {
+					if splitAmount >= MinSplitAmount {
 						t.Engine.DeductBalance(splitAmount)
 						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
 						t.SplitInitialized = true
@@ -1259,7 +1266,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
 						CurrentBalance:     currentEquity,
 						ReplenishAmount:    replenishAmount,
-						MaxBalancePercent:  0.30,
+						MaxBalancePercent:  MaxBalancePercent,
 					})
 
 					if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
@@ -1295,8 +1302,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 
 						if sharesToSell >= 1.0 {
-							if sharesToSell > 250 {
-								sharesToSell = 250
+							if sharesToSell > MaxSharesPerSell {
+								sharesToSell = MaxSharesPerSell
 							}
 
 							// Calculate liquidity depth for display (similar to ARB buy)
