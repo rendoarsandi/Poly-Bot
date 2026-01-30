@@ -426,19 +426,12 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (str
 	return t.polygon.RedeemPositions(ctx, t.clob.GetSigner(), conditionID)
 }
 
-// MergeOnChain burns equal YES+NO tokens to reclaim USDC immediately
-// This works ANYTIME - no need to wait for market resolution.
-// Use this immediately after buying both sides of an arb to capture profit instantly.
+// retryOnChainTx executes an on-chain transaction with retry logic and confirmation waiting.
+// txName is used for error messages (e.g., "merge", "split").
+// txFunc is the function that sends the transaction and returns (txHash, error).
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
-func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64) (string, error) {
-	// CTF tokens use 6 decimals (same as USDC)
-	// Convert shares to the proper amount with decimals
-	amount := new(big.Int)
-	// shares * 1e6 for 6 decimal places
-	amountFloat := shares * 1e6
-	amount.SetInt64(int64(amountFloat))
-
+func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc func() (string, error)) (string, error) {
 	var lastErr error
 	var txHash string
 
@@ -451,20 +444,20 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 		default:
 		}
 
-		txHash, lastErr = t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount)
+		txHash, lastErr = txFunc()
 		if lastErr != nil {
 			// Failed to send tx - retry after backoff
 			if attempt < 3 {
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
 				continue
 			}
-			return "", fmt.Errorf("failed to send merge tx after %d attempts: %w", attempt, lastErr)
+			return "", fmt.Errorf("failed to send %s tx after %d attempts: %w", txName, attempt, lastErr)
 		}
 
 		// Wait for transaction confirmation
 		success, err := t.polygon.WaitForTransaction(ctx, txHash)
 		if err != nil {
-			lastErr = fmt.Errorf("merge tx %s failed: %w", txHash, err)
+			lastErr = fmt.Errorf("%s tx %s failed: %w", txName, txHash, err)
 			// Tx sent but failed on-chain - don't retry same tx, try new one
 			if attempt < 3 {
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
@@ -474,7 +467,7 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 		}
 
 		if !success {
-			lastErr = fmt.Errorf("merge tx %s reverted on-chain", txHash)
+			lastErr = fmt.Errorf("%s tx %s reverted on-chain", txName, txHash)
 			if attempt < 3 {
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
 				continue
@@ -489,6 +482,24 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	return txHash, lastErr
 }
 
+// MergeOnChain burns equal YES+NO tokens to reclaim USDC immediately
+// This works ANYTIME - no need to wait for market resolution.
+// Use this immediately after buying both sides of an arb to capture profit instantly.
+// Returns txHash only after transaction is confirmed on-chain.
+// Retries up to 3 times on failure with exponential backoff.
+func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64) (string, error) {
+	// CTF tokens use 6 decimals (same as USDC)
+	// Convert shares to the proper amount with decimals
+	amount := new(big.Int)
+	// shares * 1e6 for 6 decimal places
+	amountFloat := shares * 1e6
+	amount.SetInt64(int64(amountFloat))
+
+	return t.retryOnChainTx(ctx, "merge", func() (string, error) {
+		return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount)
+	})
+}
+
 // SplitOnChain converts USDC into YES+NO token pairs
 // This is the inverse of MergeOnChain - use to create inventory for panic selling.
 // 1 USDC → 1 YES token + 1 NO token
@@ -501,54 +512,9 @@ func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcA
 	amountFloat := usdcAmount * 1e6
 	amount.SetInt64(int64(amountFloat))
 
-	var lastErr error
-	var txHash string
-
-	// Retry up to 3 times with exponential backoff
-	for attempt := 1; attempt <= 3; attempt++ {
-		// Check context before each attempt
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		default:
-		}
-
-		txHash, lastErr = t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount)
-		if lastErr != nil {
-			// Failed to send tx - retry after backoff
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * 2 * time.Second)
-				continue
-			}
-			return "", fmt.Errorf("failed to send split tx after %d attempts: %w", attempt, lastErr)
-		}
-
-		// Wait for transaction confirmation
-		success, err := t.polygon.WaitForTransaction(ctx, txHash)
-		if err != nil {
-			lastErr = fmt.Errorf("split tx %s failed: %w", txHash, err)
-			// Tx sent but failed on-chain - don't retry same tx, try new one
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * 2 * time.Second)
-				continue
-			}
-			return txHash, lastErr
-		}
-
-		if !success {
-			lastErr = fmt.Errorf("split tx %s reverted on-chain", txHash)
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * 2 * time.Second)
-				continue
-			}
-			return txHash, lastErr
-		}
-
-		// Success!
-		return txHash, nil
-	}
-
-	return txHash, lastErr
+	return t.retryOnChainTx(ctx, "split", func() (string, error) {
+		return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount)
+	})
 }
 
 // checkSafetyLimits verifies the trade doesn't exceed safety limits

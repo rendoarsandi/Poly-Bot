@@ -974,6 +974,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										break
 									}
 
+									// Log intermediate failure with error details
+									if retryErr != nil {
+										tui.LogEvent("[%s] ⚠️ SPLIT Recovery %d/3 failed: %v", id, retry, retryErr)
+									} else if retryRes != nil && !retryRes.Success {
+										tui.LogEvent("[%s] ⚠️ SPLIT Recovery %d/3 failed: %s", id, retry, retryRes.Message)
+									}
 									if retry == 3 {
 										tui.LogEvent("[%s] 🚨 SPLIT Recovery FAILED after 3 attempts - inventory unbalanced!", id)
 									}

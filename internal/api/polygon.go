@@ -271,6 +271,9 @@ func (c *PolygonClient) WaitForTransaction(ctx context.Context, txHash string) (
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	rpcErrors := 0
+	const maxRPCErrors = 10
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -278,9 +281,16 @@ func (c *PolygonClient) WaitForTransaction(ctx context.Context, txHash string) (
 		case <-ticker.C:
 			receipt, err := c.GetTransactionReceipt(ctx, txHash)
 			if err != nil {
-				// RPC error - keep trying
+				// RPC error - keep trying up to a limit
+				rpcErrors++
+				if rpcErrors > maxRPCErrors {
+					return false, fmt.Errorf("too many RPC errors (%d) waiting for tx %s: %w", rpcErrors, txHash, err)
+				}
 				continue
 			}
+
+			// Reset error counter on successful RPC call
+			rpcErrors = 0
 
 			if receipt == nil {
 				// Still pending, keep waiting
