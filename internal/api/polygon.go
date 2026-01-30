@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Polygon USDC contract address
@@ -232,6 +233,69 @@ func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string)
 	var txHash string
 	json.Unmarshal(result, &txHash)
 	return txHash, nil
+}
+
+// TransactionReceipt represents the result of a mined transaction
+type TransactionReceipt struct {
+	Status      string `json:"status"`      // "0x1" = success, "0x0" = reverted
+	BlockNumber string `json:"blockNumber"` // Block where tx was mined
+	GasUsed     string `json:"gasUsed"`     // Actual gas consumed
+	TxHash      string `json:"transactionHash"`
+}
+
+// GetTransactionReceipt fetches the receipt for a mined transaction
+// Returns nil if transaction is still pending (not yet mined)
+func (c *PolygonClient) GetTransactionReceipt(ctx context.Context, txHash string) (*TransactionReceipt, error) {
+	result, err := c.call(ctx, "eth_getTransactionReceipt", []interface{}{txHash})
+	if err != nil {
+		return nil, err
+	}
+
+	// null result means transaction is still pending
+	if string(result) == "null" {
+		return nil, nil
+	}
+
+	var receipt TransactionReceipt
+	if err := json.Unmarshal(result, &receipt); err != nil {
+		return nil, fmt.Errorf("failed to parse receipt: %w", err)
+	}
+
+	return &receipt, nil
+}
+
+// WaitForTransaction polls for transaction confirmation until mined or timeout
+// Returns (success, error) where success indicates if the tx executed successfully on-chain
+func (c *PolygonClient) WaitForTransaction(ctx context.Context, txHash string) (bool, error) {
+	// Poll every 1 second for up to context deadline
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("timeout waiting for transaction %s", txHash)
+		case <-ticker.C:
+			receipt, err := c.GetTransactionReceipt(ctx, txHash)
+			if err != nil {
+				// RPC error - keep trying
+				continue
+			}
+
+			if receipt == nil {
+				// Still pending, keep waiting
+				continue
+			}
+
+			// Transaction mined - check status
+			// status: "0x1" = success, "0x0" = reverted
+			if receipt.Status == "0x1" {
+				return true, nil
+			}
+
+			return false, fmt.Errorf("transaction %s reverted on-chain", txHash)
+		}
+	}
 }
 
 // RPCRequest represents a JSON-RPC request

@@ -703,6 +703,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						tui.LogEvent("[%s] ⚠️ SPLIT: Pre-expiry merge failed: %v", id, err)
 					} else {
 						merged := splitInventory.RecordMerge(id, outcomes[0], outcomes[1], availableShares)
+						// Refresh balance after merge (tokens converted back to USDC)
+						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+							currentBalance = newBal
+						}
 						if txHash != "" && len(txHash) >= 10 {
 							tui.LogEvent("[%s] 💰 SPLIT: Merged %.0f shares | Tx: %s...", id, merged, txHash[:10])
 						} else {
@@ -741,6 +745,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					} else {
 						splitInventory.RecordSplit(id, outcomes[0], outcomes[1], splitAmount)
 						splitInitialized = true
+						// Refresh balance after split (USDC converted to tokens)
+						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+							currentBalance = newBal
+						}
 						if txHash != "" && len(txHash) >= 10 {
 							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", id, splitAmount, txHash[:10])
 						} else {
@@ -921,6 +929,57 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							side1Success := err1 == nil && res1 != nil && res1.Success
 							side2Success := err2 == nil && res2 != nil && res2.Success
 
+							// ═══════════════════════════════════════════════════════════════
+							// UNBALANCED SELL RECOVERY: If one side succeeded and other failed,
+							// retry the failed side up to 3 times to prevent unbalanced inventory
+							// ═══════════════════════════════════════════════════════════════
+							if side1Success != side2Success {
+								failedSide := 1
+								failedToken := token0
+								failedOutcome := outcomes[0]
+								failedBid := bid1
+								if side1Success {
+									failedSide = 2
+									failedToken = token1
+									failedOutcome = outcomes[1]
+									failedBid = bid2
+								}
+
+								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, attempting recovery...", id, failedSide)
+
+								// Retry failed side up to 3 times with decreasing price (more aggressive)
+								for retry := 1; retry <= 3; retry++ {
+									time.Sleep(100 * time.Millisecond)
+
+									// Decrease price each retry to increase fill chance
+									retryPrice := failedBid - (float64(retry) * 0.01)
+									if retryPrice < 0.05 {
+										retryPrice = 0.05
+									}
+
+									tui.LogEvent("[%s] 🔄 SPLIT Recovery %d/3 for %s @ $%.3f", id, retry, failedOutcome, retryPrice)
+
+									rate := tokenFeeRates[failedOutcome]
+									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+
+									if retryErr == nil && retryRes != nil && retryRes.Success {
+										tui.LogEvent("[%s] ✅ SPLIT Recovery SUCCESS for %s!", id, failedOutcome)
+										if failedSide == 1 {
+											side1Success = true
+											bid1 = retryPrice
+										} else {
+											side2Success = true
+											bid2 = retryPrice
+										}
+										break
+									}
+
+									if retry == 3 {
+										tui.LogEvent("[%s] 🚨 SPLIT Recovery FAILED after 3 attempts - inventory unbalanced!", id)
+									}
+								}
+							}
+
 							if side1Success && side2Success {
 								// Both sides sold - record in split inventory
 								profit1 := splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
@@ -928,15 +987,19 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								totalProfit := profit1 + profit2
 								tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
 								tui.RecordOrder(id, "SPLIT_SELL", "SELL", sharesToSell*2, (bid1+bid2)/2, sharesToSell*bidSum, sellMargin, "FILLED")
+								// Refresh balance after successful sell (cash increased)
+								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+									currentBalance = newBal
+								}
 							} else {
-								// Recovery logic: if one side fails, we record the success and try to balance next loop
+								// Recovery failed - record partial success to keep inventory accurate
 								if side1Success {
 									splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold, re-balancing in next loop", id, outcomes[0])
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold after recovery attempts", id, outcomes[0])
 								}
 								if side2Success {
 									splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold, re-balancing in next loop", id, outcomes[1])
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold after recovery attempts", id, outcomes[1])
 								}
 							}
 
@@ -1274,6 +1337,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								} else {
 									// Update engine to reflect closed position
 									result := engine.MergeForMarket(id, o1, o2, qty)
+									// Note: Balance will be refreshed on next trade cycle via GetBalance
+									// We can't update currentBalance here as it's not in scope
 									if txHash != "" && len(txHash) >= 10 {
 										tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit | Tx: %s...", id, result.PnL, txHash[:10])
 									} else {
