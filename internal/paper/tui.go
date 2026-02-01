@@ -2,6 +2,7 @@ package paper
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1045,6 +1046,11 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 
 		sb.WriteString(fmt.Sprintf("   %s[%s]%s ", color, marketID, Reset))
 
+		// Sort positions: "Down" before "Up" for consistent display
+		sort.Slice(marketPositions, func(i, j int) bool {
+			return marketPositions[i].Outcome < marketPositions[j].Outcome
+		})
+
 		// Display each position for this market
 		positionStrs := make([]string, 0, len(marketPositions))
 		for _, pos := range marketPositions {
@@ -1157,6 +1163,11 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 			}
 
 			sb.WriteString(fmt.Sprintf("   %s[%s]%s ", color, marketID, Reset))
+
+			// Sort positions: "Up" before "Down" for consistent display
+			sort.Slice(positions, func(i, j int) bool {
+				return positions[i].Outcome < positions[j].Outcome
+			})
 
 			posStrs := make([]string, 0, len(positions))
 			for _, sp := range positions {
