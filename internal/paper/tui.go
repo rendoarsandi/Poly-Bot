@@ -987,13 +987,25 @@ func (t *TUI) renderAccountStatus(stats Stats, totalExposure, equity, multiplier
 func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s", Bold, Reset))
+	// Check if we have any positions or split inventory to show
+	splitPositions := t.getSplitPositions()
+	hasPositions := len(positionsWithPnL) > 0
+	hasSplitInventory := len(splitPositions) > 0
 
-	if len(positionsWithPnL) == 0 {
-		sb.WriteString(" (none)\n")
+	// If no positions and no split inventory, show minimal output
+	if !hasPositions && !hasSplitInventory {
+		sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s (none)\n", Bold, Reset))
 		return sb.String()
 	}
-	sb.WriteString(fmt.Sprintf(" (%d)\n", len(positionsWithPnL)))
+
+	// Show in-flight positions (awaiting merge)
+	if hasPositions {
+		sb.WriteString(fmt.Sprintf("%s📦 IN-FLIGHT%s", Bold, Reset))
+		sb.WriteString(fmt.Sprintf(" (%d) %s⏳ awaiting merge%s\n", len(positionsWithPnL), ColorYellow, Reset))
+	} else if hasSplitInventory {
+		// Show header even when only split inventory exists
+		sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s\n", Bold, Reset))
+	}
 
 	// Group positions by market
 	byMarket := make(map[string][]PositionPnL)
@@ -1124,8 +1136,7 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 	}
 
 	// Show split inventory positions (for panic sell strategy)
-	splitPositions := t.getSplitPositions()
-	if len(splitPositions) > 0 {
+	if hasSplitInventory {
 		sb.WriteString(fmt.Sprintf("\n%s🔀 SPLIT INVENTORY%s (panic sell)\n", Bold, Reset))
 
 		// Group split positions by market
@@ -1171,14 +1182,15 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 }
 
 func (t *TUI) renderOrders(orders []*LimitOrder) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("%s📝 OPEN ORDERS%s", Bold, Reset))
-
+	// Only show this section if there are actually open orders
+	// The current strategy uses market orders, not limit orders,
+	// so this section is typically empty
 	if len(orders) == 0 {
-		sb.WriteString(" (none)\n")
-		return sb.String()
+		return "" // Don't show empty section
 	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s📝 LIMIT ORDERS%s", Bold, Reset))
 	sb.WriteString(fmt.Sprintf(" (%d)\n", len(orders)))
 
 	// Group by outcome
