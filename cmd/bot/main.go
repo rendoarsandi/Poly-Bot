@@ -1214,6 +1214,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						// Record both sides - force market orders always fill
 						t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, "FILLED")
 						t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, "FILLED")
+
+						// INSTANT MERGE: Immediately merge to realize profit
+						// This matches realbot behavior and ensures round PnL is accurate
+						minFilled := filled1
+						if filled2 < minFilled {
+							minFilled = filled2
+						}
+						if minFilled > 0 {
+							result := t.Engine.MergeForMarket(t.ID, t.Outcomes[0], t.Outcomes[1], minFilled)
+							if result.PnL != 0 {
+								t.TUI.LogEvent("[%s] 💰 MERGED! +$%.2f profit", t.ID, result.PnL)
+							}
+						}
+
 						t.LaddersPlaced = true
 					}
 				}

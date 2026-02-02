@@ -331,6 +331,14 @@ func run() error {
 
 		select {
 		case <-done:
+			// Sync engine with on-chain balance before calculating round PnL
+			// This ensures merges that happened in background are reflected
+			endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
+			if endBal, err := realTrader.GetBalance(endBalCtx); err == nil {
+				engine.SetBalance(endBal)
+			}
+			endBalFn()
+
 			// Calculate round PnL and update compounding multiplier
 			roundPnL := engine.GetEquity() - startingEquity
 			engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
@@ -579,6 +587,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	tui.RegisterSplitInventory(splitInventory)      // Register for TUI display
 	splitInitialized := false                       // Track if we've done initial split
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
+	var initialSplitAmount float64                  // Track initial split for replenishment target
 
 	for {
 		select {
@@ -779,6 +788,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					} else {
 						splitInventory.RecordSplit(id, outcomes[0], outcomes[1], splitAmount)
 						splitInitialized = true
+						initialSplitAmount = splitAmount // Store for replenishment target
 						// Refresh balance after split (USDC converted to tokens)
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 							currentBalance = newBal
@@ -806,6 +816,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				decision := replenishCtrl.CheckReplenish(paper.ReplenishParams{
 					CurrentShares:      currentShares,
 					TargetBuffer:       targetBuffer,
+					InitialShares:      initialSplitAmount, // Replenish back to initial amount
 					SellMargin:         sellMargin,
 					MinMarginThreshold: cfg.SplitMinMarginSell - 1.0,
 					CurrentBalance:     currentBalance,
@@ -814,7 +825,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				})
 
 				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {
-					tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f), background replenish starting...", id, currentShares)
+					tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f/%.0f), replenishing +%.0f shares...", id, currentShares, initialSplitAmount, decision.Amount)
 					go func(mID, condID, out0, out1 string, amt float64) {
 						defer replenishCtrl.MarkComplete()
 						// Use derived context for proper shutdown propagation
@@ -823,11 +834,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt)
 						if bgErr == nil {
 							splitInventory.RecordSplit(mID, out0, out1, amt)
-							tui.LogEvent("[%s] ✅ SPLIT: Background replenish completed (%.0f shares)", mID, amt)
+							tui.LogEvent("[%s] ✅ SPLIT: Replenished to %.0f shares (+%.0f)", mID, initialSplitAmount, amt)
 						} else {
 							tui.LogEvent("[%s] ⚠️ SPLIT: Background replenish failed: %v", mID, bgErr)
 						}
-					}(id, market.ConditionID, outcomes[0], outcomes[1], replenishAmount)
+					}(id, market.ConditionID, outcomes[0], outcomes[1], decision.Amount)
 				}
 
 				if sellMargin >= cfg.SplitMinMarginSell && time.Since(lastSplitSell) > 2*time.Second {

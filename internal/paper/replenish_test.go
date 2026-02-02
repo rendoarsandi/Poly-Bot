@@ -273,3 +273,136 @@ func TestReplenishController_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestReplenishController_CheckReplenish_InitialShares(t *testing.T) {
+	ctrl := NewReplenishController()
+
+	tests := []struct {
+		name           string
+		currentShares  float64
+		initialShares  float64
+		expectedReplen bool
+		expectedAmount float64
+		expectedReason string
+	}{
+		{
+			name:           "below initial, should replenish exact difference",
+			currentShares:  8,
+			initialShares:  15,
+			expectedReplen: true,
+			expectedAmount: 7, // 15 - 8 = 7
+			expectedReason: "low inventory with good margin",
+		},
+		{
+			name:           "at initial, should not replenish",
+			currentShares:  15,
+			initialShares:  15,
+			expectedReplen: false,
+			expectedAmount: 0,
+			expectedReason: "inventory at or above initial amount",
+		},
+		{
+			name:           "above initial, should not replenish",
+			currentShares:  20,
+			initialShares:  15,
+			expectedReplen: false,
+			expectedAmount: 0,
+			expectedReason: "inventory at or above initial amount",
+		},
+		{
+			name:           "zero shares remaining, replenish full initial",
+			currentShares:  0,
+			initialShares:  15,
+			expectedReplen: true,
+			expectedAmount: 15, // Full replenish
+			expectedReason: "low inventory with good margin",
+		},
+		{
+			name:           "just below initial, replenish small amount",
+			currentShares:  14,
+			initialShares:  15,
+			expectedReplen: true,
+			expectedAmount: 1,
+			expectedReason: "low inventory with good margin",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			params := ReplenishParams{
+				CurrentShares:      tc.currentShares,
+				TargetBuffer:       100,
+				InitialShares:      tc.initialShares,
+				SellMargin:         5.0, // Good margin
+				MinMarginThreshold: 2.0,
+				CurrentBalance:     1000,
+				ReplenishAmount:    50, // Ignored when InitialShares > 0
+				MaxBalancePercent:  0.30,
+			}
+
+			decision := ctrl.CheckReplenish(params)
+
+			if decision.ShouldReplenish != tc.expectedReplen {
+				t.Errorf("Expected ShouldReplenish=%v, got %v. Reason: %s",
+					tc.expectedReplen, decision.ShouldReplenish, decision.Reason)
+			}
+			if decision.Amount != tc.expectedAmount {
+				t.Errorf("Expected Amount=%.2f, got %.2f", tc.expectedAmount, decision.Amount)
+			}
+			if decision.Reason != tc.expectedReason {
+				t.Errorf("Expected reason '%s', got '%s'", tc.expectedReason, decision.Reason)
+			}
+		})
+	}
+}
+
+func TestReplenishController_CheckReplenish_InitialShares_BalanceCap(t *testing.T) {
+	ctrl := NewReplenishController()
+
+	// Test that balance cap is still respected with InitialShares
+	params := ReplenishParams{
+		CurrentShares:      5,
+		TargetBuffer:       100,
+		InitialShares:      50, // Want to replenish 45 shares
+		SellMargin:         5.0,
+		MinMarginThreshold: 2.0,
+		CurrentBalance:     100,         // Small balance
+		ReplenishAmount:    50,          // Ignored
+		MaxBalancePercent:  0.30,        // Cap at 30 shares (100 * 0.30)
+	}
+
+	decision := ctrl.CheckReplenish(params)
+
+	// 5 + 45 = 50, which exceeds 30 cap
+	if decision.ShouldReplenish {
+		t.Error("Expected ShouldReplenish=false when would exceed balance cap")
+	}
+	if decision.Reason != "would exceed balance cap" {
+		t.Errorf("Expected reason 'would exceed balance cap', got '%s'", decision.Reason)
+	}
+}
+
+func TestReplenishController_CheckReplenish_InitialShares_MarginCheck(t *testing.T) {
+	ctrl := NewReplenishController()
+
+	// Test that margin threshold is still checked with InitialShares
+	params := ReplenishParams{
+		CurrentShares:      5,
+		TargetBuffer:       100,
+		InitialShares:      15,
+		SellMargin:         1.0, // Below threshold
+		MinMarginThreshold: 2.0,
+		CurrentBalance:     1000,
+		ReplenishAmount:    50,
+		MaxBalancePercent:  0.30,
+	}
+
+	decision := ctrl.CheckReplenish(params)
+
+	if decision.ShouldReplenish {
+		t.Error("Expected ShouldReplenish=false when margin below threshold")
+	}
+	if decision.Reason != "margin below threshold" {
+		t.Errorf("Expected reason 'margin below threshold', got '%s'", decision.Reason)
+	}
+}
