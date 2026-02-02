@@ -636,10 +636,10 @@ type MarketInfo struct {
 	EndDateISO      string `json:"end_date_iso"`
 	GameStartTime   string `json:"game_start_time"`
 	Tokens          []struct {
-		TokenID string  `json:"token_id"`
-		Outcome string  `json:"outcome"`
-		Winner  bool    `json:"winner"`
-		Price   float64 `json:"price,string"`
+		TokenID string      `json:"token_id"`
+		Outcome string      `json:"outcome"`
+		Winner  bool        `json:"winner"`
+		Price   interface{} `json:"price"` // Can be string, number, or null
 	} `json:"tokens"`
 }
 

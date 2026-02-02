@@ -47,6 +47,7 @@ type WSManager struct {
 	// Stats
 	reconnectCount atomic.Int32
 	messageCount   atomic.Int64
+	pingLatencyNs  atomic.Int64 // Last ping round-trip time in nanoseconds
 }
 
 func NewWSManager(url string) *WSManager {
@@ -153,7 +154,9 @@ func (m *WSManager) heartbeatLoop() {
 				// Send ping outside of lock to prevent blocking
 				// Use longer timeout - Android may throttle when backgrounded
 				pingCtx, pingCancel := context.WithTimeout(ctx, 15*time.Second)
+				pingStart := time.Now()
 				err := conn.Ping(pingCtx)
+				pingLatency := time.Since(pingStart)
 				pingCancel()
 				if err != nil {
 					consecutivePingFailures++
@@ -165,9 +168,10 @@ func (m *WSManager) heartbeatLoop() {
 					}
 					continue
 				}
-				// Ping succeeded - connection is alive
+				// Ping succeeded - connection is alive, record latency
 				consecutivePingFailures = 0
 				m.lastHeartbeat.Store(time.Now().Unix())
+				m.pingLatencyNs.Store(pingLatency.Nanoseconds())
 				// NOTE: Do NOT update lastMessage here - only actual data messages
 				// should update lastMessage. This allows the bot to detect when
 				// the connection is alive but no market data is flowing, triggering
@@ -396,6 +400,11 @@ func (m *WSManager) GetStats() (connected bool, lastMsg time.Time, reconnects in
 // TimeSinceLastMessage returns duration since last message received
 func (m *WSManager) TimeSinceLastMessage() time.Duration {
 	return time.Since(time.Unix(m.lastMessage.Load(), 0))
+}
+
+// PingLatency returns the last measured ping round-trip time
+func (m *WSManager) PingLatency() time.Duration {
+	return time.Duration(m.pingLatencyNs.Load())
 }
 
 // StartStreaming starts a goroutine that continuously reads messages and sends to channel

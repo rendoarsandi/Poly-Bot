@@ -410,7 +410,13 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 	found := make(map[string]*api.Market)
 	assets := []string{"btc", "eth", "sol"}
 
-	for attempts := 0; attempts < 30; attempts++ {
+	// Fast polling for new markets - check every 500ms for first 30 seconds
+	// Then slow down to every 2 seconds
+	maxFastAttempts := 60 // 30 seconds of fast polling
+	maxSlowAttempts := 60 // 2 more minutes of slow polling
+	lastLogTime := time.Now()
+
+	for attempts := 0; attempts < maxFastAttempts+maxSlowAttempts; attempts++ {
 		select {
 		case <-ctx.Done():
 			return found
@@ -419,7 +425,15 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 
 		markets, err := restClient.Get15mMarkets(ctx, nil)
 		if err != nil {
-			time.Sleep(500 * time.Millisecond)
+			if attempts == 0 {
+				tui.LogEvent("⚠️ Market fetch error: %v, retrying...", err)
+			}
+			// Short sleep on error
+			select {
+			case <-ctx.Done():
+				return found
+			case <-time.After(500 * time.Millisecond):
+			}
 			continue
 		}
 
@@ -444,13 +458,31 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			}
 		}
 
+		// Return if we found at least one market
 		if len(found) > 0 {
 			return found
 		}
 
-		time.Sleep(500 * time.Millisecond)
+		// Log progress every 5 seconds
+		if time.Since(lastLogTime) >= 5*time.Second {
+			tui.LogEvent("🔍 Waiting for new markets... (%ds)", attempts/2)
+			lastLogTime = time.Now()
+		}
+
+		// Fast polling for first 30 seconds, then slow down
+		sleepDuration := 500 * time.Millisecond
+		if attempts >= maxFastAttempts {
+			sleepDuration = 2 * time.Second
+		}
+
+		select {
+		case <-ctx.Done():
+			return found
+		case <-time.After(sleepDuration):
+		}
 	}
 
+	tui.LogEvent("⚠️ No 15m markets found after polling")
 	return found
 }
 
@@ -556,9 +588,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		}
 
 		// Check if market ended
-		if time.Now().After(endTime.Add(30 * time.Second)) {
+		if time.Now().After(endTime.Add(5 * time.Second)) {
 			tui.LogEvent("[%s] ⏰ Market ended", id)
-			checkRedemption(ctx, id, market.ConditionID, trader, engine, tui)
+			// Run redemption check in background so we can find next market immediately
+			go checkRedemption(ctx, id, market.ConditionID, trader, engine, tui)
 			return
 		}
 
@@ -649,9 +682,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		restPollInterval := 20 * time.Millisecond
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
-		// Update WS staleness in TUI
+		// Update WS staleness and ping latency in TUI
 		wsTimeSinceMsg := wsMgr.TimeSinceLastMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
+		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 
 		// Also force REST if WS is unhealthy
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
@@ -1178,6 +1212,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						if cost > currentCash {
 							maxAffordableShares := (currentCash * 0.98) / sum // Use 98% of cash for safety
 							if maxAffordableShares < 1.0 {
+								tui.LogEvent("[%s] ⚠️ Insufficient funds: Need $%.2f for 1 share, have $%.2f", id, sum, currentCash)
 								continue // Truly not enough cash for 1 share
 							}
 							shares = math.Floor(maxAffordableShares)
@@ -1191,7 +1226,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						continue
 					}
 
-					if time.Since(lastTrade) > 2*time.Second && shares >= 1.0 {
+					// Check why we might skip trading
+					if shares < 1.0 {
+						tui.LogEvent("[%s] ⚠️ No liquidity: shares=%.2f (need ≥1), matched_liq=%.0f", id, shares, minLiquidity)
+						continue
+					}
+					if time.Since(lastTrade) <= 2*time.Second {
+						// Cooldown - don't spam logs, just skip silently
+						continue
+					}
+
+					if true { // Always execute if we got here
 						// Add slippage buffer: willing to pay up to 1.5% more for guaranteed fill
 						const slippageBuffer = 0.015
 						price1 := ask1 + slippageBuffer
@@ -1462,6 +1507,22 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 }
 
 func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
+	// Check if we have any positions to redeem first
+	// If merge already happened, we have no positions and can skip redemption entirely
+	positions := engine.GetPositions()
+	hasPositions := false
+	for _, pos := range positions {
+		if pos.Quantity > 0 {
+			hasPositions = true
+			break
+		}
+	}
+
+	if !hasPositions {
+		tui.LogEvent("[%s] ✅ No positions to redeem (already merged)", id)
+		return
+	}
+
 	// Retry resolution check with exponential backoff
 	// 15-min markets may take a few seconds to resolve
 	retryDelays := []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second}

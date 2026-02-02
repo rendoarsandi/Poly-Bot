@@ -90,6 +90,7 @@ type TUI struct {
 	latencySource  string
 	restLatency    time.Duration   // Latest REST /book latency
 	wsLatency      time.Duration   // Time since last WS message
+	wsPingLatency  time.Duration   // WS ping round-trip time
 	restLatencyAvg time.Duration   // Rolling average REST latency
 	restSamples    []time.Duration // Recent REST latency samples for averaging
 
@@ -193,6 +194,13 @@ func (t *TUI) UpdateWSLatency(timeSinceLastMsg time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.wsLatency = timeSinceLastMsg
+}
+
+// UpdateWSPingLatency updates WebSocket ping round-trip time
+func (t *TUI) UpdateWSPingLatency(pingLatency time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.wsPingLatency = pingLatency
 }
 
 // AddMarket adds a market to the multi-market display
@@ -540,12 +548,44 @@ func (t *TUI) renderHeader() string {
 		restStr = fmt.Sprintf("%v", t.restLatency.Round(time.Millisecond))
 	}
 
-	// Health line showing uptime and REST latency
-	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s%s%s",
-		uptime, restColor, restStr, Reset)
+	// WS ping latency health (actual network round-trip)
+	wsColor := ColorGreen
+	wsStatus := "✓"
+	if t.wsPingLatency == 0 {
+		wsColor = ColorYellow
+		wsStatus = "?"
+	} else if t.wsPingLatency > 500*time.Millisecond {
+		wsColor = ColorRed
+		wsStatus = "⚠"
+	} else if t.wsPingLatency > 200*time.Millisecond {
+		wsColor = ColorYellow
+	}
+
+	// WS data freshness indicator
+	freshColor := ColorGreen
+	if t.wsLatency > 10*time.Second {
+		freshColor = ColorRed
+		wsStatus = "✗"
+	} else if t.wsLatency > 5*time.Second {
+		freshColor = ColorYellow
+	}
+
+	wsStr := "..."
+	if t.wsPingLatency > 0 {
+		wsStr = fmt.Sprintf("%v", t.wsPingLatency.Round(time.Millisecond))
+	}
+
+	freshStr := "..."
+	if t.wsLatency > 0 {
+		freshStr = fmt.Sprintf("%.1fs", t.wsLatency.Seconds())
+	}
+
+	// Health line showing uptime, REST and WS latency
+	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s%s%s | 🔌 WS: %s%s%s (%s%s%s %s)",
+		uptime, restColor, restStr, Reset, wsColor, wsStr, Reset, freshColor, freshStr, Reset, wsStatus)
 
 	// Calculate display width (excluding ANSI codes and accounting for emoji width)
-	healthDisplayWidth := len(uptime.String()) + len(restStr) + 30 // fixed text + 2 emojis
+	healthDisplayWidth := len(uptime.String()) + len(restStr) + len(wsStr) + len(freshStr) + 50 // fixed text + emojis
 	healthPadding := t.width - healthDisplayWidth
 	if healthPadding < 0 {
 		healthPadding = 0

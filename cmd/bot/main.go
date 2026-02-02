@@ -893,8 +893,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastMessage()
 
-			// Update WS staleness in TUI
+			// Update WS staleness and ping latency in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)
+			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
 			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
 			// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
