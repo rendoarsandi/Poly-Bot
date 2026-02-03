@@ -66,10 +66,11 @@ type MarketTrader struct {
 	LastRestPoll time.Time
 
 	// Split strategy simulation
-	SplitInventory   *paper.SplitInventory
-	ReplenishCtrl    *paper.ReplenishController
-	SplitInitialized bool
-	LastSplitSell    time.Time
+	SplitInventory     *paper.SplitInventory
+	ReplenishCtrl      *paper.ReplenishController
+	SplitInitialized   bool
+	InitialSplitAmount float64 // Track initial split for replenishment target
+	LastSplitSell      time.Time
 
 	// State
 	LaddersPlaced bool
@@ -1259,6 +1260,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						t.Engine.DeductBalance(splitAmount)
 						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
 						t.SplitInitialized = true
+						t.InitialSplitAmount = splitAmount // Store for replenishment target
 						t.TUI.LogEvent("[%s] 🔀 SPLIT (sim): Created %.0f shares ($%.2f)", t.ID, splitAmount, splitAmount)
 					}
 				}
@@ -1277,6 +1279,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					decision := t.ReplenishCtrl.CheckReplenish(paper.ReplenishParams{
 						CurrentShares:      currentShares,
 						TargetBuffer:       targetBuffer,
+						InitialShares:      t.InitialSplitAmount, // Replenish back to initial amount immediately
 						SellMargin:         sellMargin,
 						MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
 						CurrentBalance:     currentEquity,
@@ -1285,10 +1288,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					})
 
 					if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
-						// Simulate replenishment
-						t.Engine.DeductBalance(replenishAmount)
-						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], replenishAmount)
-						t.TUI.LogEvent("[%s] 🔄 SPLIT (sim): Replenished %.0f shares", t.ID, replenishAmount)
+						// Simulate replenishment - use exact amount needed to reach initial
+						actualReplenish := decision.Amount
+						t.Engine.DeductBalance(actualReplenish)
+						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], actualReplenish)
+						t.TUI.LogEvent("[%s] 🔄 SPLIT (sim): Replenished +%.0f shares (now %.0f)", t.ID, actualReplenish, t.InitialSplitAmount)
 						t.ReplenishCtrl.MarkComplete()
 					}
 
