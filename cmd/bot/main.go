@@ -544,7 +544,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 		MaxUnmatchedRatio:  0.40,
 		MaxUnmatchedShares: 300.0,
 		SkewThreshold:      0.30,
-		KillSwitchDrawdown: 999.0,
+		KillSwitchDrawdown: 0.10,
 	}
 	riskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 

@@ -146,7 +146,7 @@ func run() error {
 	if cfg.MaxDailyLoss > 0 {
 		fmt.Printf("   • Max daily loss: $%.2f\n", cfg.MaxDailyLoss)
 	} else {
-		fmt.Println("   • Max daily loss: disabled (using 25% drawdown kill switch)")
+		fmt.Println("   • Max daily loss: disabled (using 10% drawdown kill switch)")
 	}
 	fmt.Println()
 
@@ -311,7 +311,7 @@ func run() error {
 				MaxUnmatchedRatio:  0.20,            // 20% max unmatched
 				MaxUnmatchedShares: 500.0,           // 500 shares max on one side
 				SkewThreshold:      0.10,            // 10% skew triggers rebalance
-				KillSwitchDrawdown: 0.25,            // 25% drawdown triggers kill switch (real money protection)
+				KillSwitchDrawdown: 0.10,            // 10% drawdown triggers kill switch (real money protection)
 			}
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
