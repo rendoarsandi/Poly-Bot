@@ -990,25 +990,44 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									failedBid = bid2
 								}
 
-								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, attempting recovery...", id, failedSide)
+								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, retrying until success...", id, failedSide)
 
-								// Retry failed side up to 3 times with decreasing price (more aggressive)
-								for retry := 1; retry <= 3; retry++ {
-									time.Sleep(100 * time.Millisecond)
+								// Retry failed side INDEFINITELY until success (off-chain CLOB orders are fast)
+								// This ensures we NEVER leave split inventory unbalanced
+								retryCount := 0
+								baseDelay := 200 * time.Millisecond
+								maxDelay := 3 * time.Second
+								for {
+									retryCount++
 
-									// Decrease price each retry to increase fill chance
-									retryPrice := failedBid - (float64(retry) * 0.01)
-									if retryPrice < 0.05 {
-										retryPrice = 0.05
+									// Check context cancellation to allow graceful shutdown
+									select {
+									case <-ctx.Done():
+										tui.LogEvent("[%s] 🛑 SPLIT Recovery interrupted by shutdown after %d attempts", id, retryCount)
+										goto splitRecoveryDone
+									default:
 									}
 
-									tui.LogEvent("[%s] 🔄 SPLIT Recovery %d/3 for %s @ $%.3f", id, retry, failedOutcome, retryPrice)
+									// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 30s (capped)
+									delay := baseDelay * time.Duration(1<<uint(retryCount-1))
+									if delay > maxDelay {
+										delay = maxDelay
+									}
+									time.Sleep(delay)
+
+									// Decrease price each retry to increase fill chance (floor at $0.01)
+									retryPrice := failedBid - (float64(retryCount) * 0.005)
+									if retryPrice < 0.01 {
+										retryPrice = 0.01
+									}
+
+									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s @ $%.3f", id, retryCount, failedOutcome, retryPrice)
 
 									rate := tokenFeeRates[failedOutcome]
 									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 
 									if retryErr == nil && retryRes != nil && retryRes.Success {
-										tui.LogEvent("[%s] ✅ SPLIT Recovery SUCCESS for %s!", id, failedOutcome)
+										tui.LogEvent("[%s] ✅ SPLIT Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
 										if failedSide == 1 {
 											side1Success = true
 											bid1 = retryPrice
@@ -1019,16 +1038,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										break
 									}
 
-									// Log intermediate failure with error details
+									// Log failure with error details
 									if retryErr != nil {
-										tui.LogEvent("[%s] ⚠️ SPLIT Recovery %d/3 failed: %v", id, retry, retryErr)
+										tui.LogEvent("[%s] ⚠️ SPLIT Recovery #%d failed: %v", id, retryCount, retryErr)
 									} else if retryRes != nil && !retryRes.Success {
-										tui.LogEvent("[%s] ⚠️ SPLIT Recovery %d/3 failed: %s", id, retry, retryRes.Message)
-									}
-									if retry == 3 {
-										tui.LogEvent("[%s] 🚨 SPLIT Recovery FAILED after 3 attempts - inventory unbalanced!", id)
+										tui.LogEvent("[%s] ⚠️ SPLIT Recovery #%d failed: %s", id, retryCount, retryRes.Message)
 									}
 								}
+							splitRecoveryDone:
 							}
 
 							if side1Success && side2Success {
@@ -1337,25 +1354,44 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								failedPrice = price2
 							}
 
-							tui.LogEvent("[%s] ⚠️ UNBALANCED: Side %d failed, attempting recovery...", id, failedSide)
+							tui.LogEvent("[%s] ⚠️ UNBALANCED: Side %d failed, retrying until success...", id, failedSide)
 
-							// Retry failed side up to 3 times with increasing aggression
-							for retry := 1; retry <= 3; retry++ {
-								time.Sleep(100 * time.Millisecond) // Brief pause between retries
+							// Retry failed side INDEFINITELY until success (off-chain CLOB orders are fast)
+							// This ensures we NEVER leave arb positions unbalanced
+							retryCount := 0
+							baseDelay := 200 * time.Millisecond
+							maxDelay := 3 * time.Second
+							for {
+								retryCount++
 
-								// Increase price aggressiveness each retry
-								retryPrice := failedPrice + (float64(retry) * 0.01) // +1%, +2%, +3%
-								if retryPrice > 0.95 {
-									retryPrice = 0.95 // Cap at 95 cents
+								// Check context cancellation to allow graceful shutdown
+								select {
+								case <-ctx.Done():
+									tui.LogEvent("[%s] 🛑 ARB Recovery interrupted by shutdown after %d attempts", id, retryCount)
+									goto arbRecoveryDone
+								default:
 								}
 
-								tui.LogEvent("[%s] 🔄 Recovery attempt %d/3 for %s @ $%.3f", id, retry, failedOutcome, retryPrice)
+								// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 30s (capped)
+								delay := baseDelay * time.Duration(1<<uint(retryCount-1))
+								if delay > maxDelay {
+									delay = maxDelay
+								}
+								time.Sleep(delay)
+
+								// Increase price aggressiveness each retry (cap at $0.99)
+								retryPrice := failedPrice + (float64(retryCount) * 0.005)
+								if retryPrice > 0.99 {
+									retryPrice = 0.99
+								}
+
+								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s @ $%.3f", id, retryCount, failedOutcome, retryPrice)
 
 								rate := tokenFeeRates[failedOutcome]
 								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 
 								if retryErr == nil && retryRes != nil && retryRes.Success {
-									tui.LogEvent("[%s] ✅ Recovery SUCCESS for %s!", id, failedOutcome)
+									tui.LogEvent("[%s] ✅ ARB Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
 									retryCost := shares * retryPrice
 									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, bufferedMargin, "FILLED")
 									recoverySuccess = true
@@ -1370,10 +1406,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									break
 								}
 
-								if retry == 3 {
-									tui.LogEvent("[%s] 🚨 Recovery FAILED after 3 attempts - position unbalanced!", id)
+								// Log failure with error details
+								if retryErr != nil {
+									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %v", id, retryCount, retryErr)
+								} else if retryRes != nil && !retryRes.Success {
+									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %s", id, retryCount, retryRes.Message)
 								}
 							}
+						arbRecoveryDone:
 						}
 
 						// NOW record to engine - only record positions that actually succeeded
