@@ -280,6 +280,7 @@ func TestEngine_AddBalance(t *testing.T) {
 	engine := NewEngine(1000.0)
 
 	engine.AddBalance(100.0)
+	engine.RecalculateDrawdown()
 	if engine.GetBalance() != 1100.0 {
 		t.Errorf("Expected balance $1100.00 after add, got $%.2f", engine.GetBalance())
 	}
@@ -296,12 +297,14 @@ func TestEngine_SetBalance(t *testing.T) {
 
 	// Simulate on-chain balance update
 	engine.SetBalance(850.0)
+	engine.RecalculateDrawdown()
 	if engine.GetBalance() != 850.0 {
 		t.Errorf("Expected balance $850.00 after set, got $%.2f", engine.GetBalance())
 	}
 
 	// Test peak balance updates
 	engine.SetBalance(1200.0)
+	engine.RecalculateDrawdown()
 	stats := engine.GetStats()
 	if stats.PeakBalance != 1200.0 {
 		t.Errorf("Expected peak balance $1200.00, got $%.2f", stats.PeakBalance)

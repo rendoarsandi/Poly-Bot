@@ -28,10 +28,10 @@ const (
 
 	// Split strategy constants
 	MinSplitBuffer     = 50.0  // Minimum initial split buffer ($)
-	MaxInitialSplitPct = 0.15  // Maximum 15% of equity for initial split
+	MaxInitialSplitPct = 0.25  // Maximum 25% of equity for initial split
 	MinSplitAmount     = 10.0  // Minimum split amount to execute ($)
 	MaxSharesPerSell   = 250.0 // Hard safety cap on shares per sell
-	MaxBalancePercent  = 0.30  // Maximum 30% of balance in split inventory
+	MaxBalancePercent  = 0.50  // Maximum 50% of balance in split inventory
 )
 
 // MarketTrader holds state for trading a single market
@@ -188,6 +188,7 @@ func run() error {
 	// Create shared order book and TUI (persistent across market rotations)
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
+	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
 	// Initialize CSV Logger if enabled in config
 	if cfg.EnableCSVLogger {
@@ -429,10 +430,10 @@ func run() error {
 	}
 }
 
-// findMarkets searches for BTC, ETH, SOL markets
+// findMarkets searches for BTC, ETH markets
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth", "sol"}
+	assets := []string{"btc", "eth"}
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
@@ -899,9 +900,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
 			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
-			// Global rate limiter in RestClient caps total at 148 RPS across all traders
-			restPollInterval := 20 * time.Millisecond
+			// Poll REST every 13ms for high-frequency liquidity updates (75 RPS per trader)
+			// Global rate limiter in RestClient caps total at 149 RPS across all traders
+			restPollInterval := 13 * time.Millisecond
 
 			// Individual trader staleness watchdog
 			staleTime := time.Since(t.LastUpdate)
@@ -1257,8 +1258,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						splitAmount = maxInitial
 					}
 					if splitAmount >= MinSplitAmount {
-						t.Engine.DeductBalance(splitAmount)
 						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
+						t.Engine.DeductBalance(splitAmount)
+						t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 						t.SplitInitialized = true
 						t.InitialSplitAmount = splitAmount // Store for replenishment target
 						t.TUI.LogEvent("[%s] 🔀 SPLIT (sim): Created %.0f shares ($%.2f)", t.ID, splitAmount, splitAmount)
@@ -1290,8 +1292,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
 						// Simulate replenishment - use exact amount needed to reach initial
 						actualReplenish := decision.Amount
-						t.Engine.DeductBalance(actualReplenish)
 						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], actualReplenish)
+						t.Engine.DeductBalance(actualReplenish)
+						t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 						t.TUI.LogEvent("[%s] 🔄 SPLIT (sim): Replenished +%.0f shares (now %.0f)", t.ID, actualReplenish, t.InitialSplitAmount)
 						t.ReplenishCtrl.MarkComplete()
 					}
@@ -1374,6 +1377,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							// Add proceeds back to balance
 							proceeds := sharesToSell * bidSum
 							t.Engine.AddBalance(proceeds)
+							t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 
 							// Enhanced log with liquidity and depth info (same format as ARB buy)
 							t.TUI.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares, profit $%.2f [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
@@ -1392,6 +1396,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if remainingShares >= 1.0 {
 						merged := t.SplitInventory.RecordMerge(t.ID, t.Outcomes[0], t.Outcomes[1], remainingShares)
 						t.Engine.AddBalance(merged) // $1 per merged pair
+						t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 						t.TUI.LogEvent("[%s] 💰 SPLIT MERGE (sim): Merged %.0f shares → $%.2f", t.ID, merged, merged)
 					}
 				}

@@ -61,8 +61,8 @@ func NewRestClient(baseURL string) *RestClient {
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
-	// Rate limit to 148 RPS (just under 150 /book endpoint limit)
-	limiter := time.NewTicker(time.Second / 148)
+	// Rate limit to 149 RPS (just under 150 /book endpoint limit)
+	limiter := time.NewTicker(time.Second / 149)
 	return &RestClient{
 		BaseURL:  baseURL,
 		GammaURL: "https://gamma-api.polymarket.com",
@@ -86,7 +86,7 @@ type GammaMarket struct {
 
 func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Market, error) {
 	if len(assets) == 0 {
-		assets = []string{"btc", "eth", "sol", "xrp"}
+		assets = []string{"btc", "eth"}
 	}
 
 	now := time.Now().UTC()

@@ -609,7 +609,7 @@ func (e *Engine) addTrade(trade Trade) {
 
 // recalculateDrawdown updates max drawdown based on current equity
 func (e *Engine) recalculateDrawdown() {
-	totalEquity := e.currentBalance + e.getUnrealizedValue()
+	totalEquity := e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue()
 	if totalEquity > e.peakBalance {
 		e.peakBalance = totalEquity
 	}
@@ -797,9 +797,6 @@ func (e *Engine) AddBalance(amount float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.currentBalance += amount
-	if e.currentBalance > e.peakBalance {
-		e.peakBalance = e.currentBalance
-	}
 }
 
 // RegisterSplitInventory registers a split inventory for equity calculation
@@ -815,9 +812,15 @@ func (e *Engine) SetBalance(balance float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.currentBalance = balance
-	if balance > e.peakBalance {
-		e.peakBalance = balance
-	}
+}
+
+// RecalculateDrawdown manually triggers a drawdown recalculation.
+// Use this after performing a multi-step operation (like a split) to ensure
+// drawdown is checked only when the state is consistent.
+func (e *Engine) RecalculateDrawdown() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.recalculateDrawdown()
 }
 
 // GetExposure returns exposure metrics

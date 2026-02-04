@@ -100,6 +100,9 @@ type TUI struct {
 	// Startup time
 	startTime time.Time
 
+	// Trading settings for display
+	tradeFactor float64
+
 	// Stop channel for clean shutdown
 	stopCh   chan struct{}
 	stopOnce sync.Once // Ensure Stop() only runs once
@@ -201,6 +204,13 @@ func (t *TUI) UpdateWSPingLatency(pingLatency time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.wsPingLatency = pingLatency
+}
+
+// SetTradeFactor updates the trade factor for display
+func (t *TUI) SetTradeFactor(factor float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tradeFactor = factor
 }
 
 // AddMarket adds a market to the multi-market display
@@ -1014,6 +1024,16 @@ func (t *TUI) renderAccountStatus(stats Stats, totalExposure, equity, multiplier
 	sb.WriteString(fmt.Sprintf("   📦 Exposure: $%.2f\n", totalExposure))
 	sb.WriteString(fmt.Sprintf("   💰 Equity:   $%.2f (%s%s$%.2f%s)\n",
 		equity, changeColor, changeSign, netChange, Reset))
+	
+	// Show trade factor and estimated cost
+	if t.tradeFactor > 0 {
+		tradeCost := equity * t.tradeFactor
+		if tradeCost < 1.0 {
+			tradeCost = 1.0
+		}
+		sb.WriteString(fmt.Sprintf("   🎯 Trade:    %.1f%% ($%.2f/trade)\n", t.tradeFactor*100, tradeCost))
+	}
+
 	sb.WriteString(fmt.Sprintf("   📊 Realized: $%.2f | 🎯 Arb Profit: %s%s$%.2f%s\n",
 		stats.RealizedPnL, arbColor, arbSign, guaranteedProfit, Reset))
 	sb.WriteString(fmt.Sprintf("   📈 Compound: %s%.2fx%s | Rounds: %d (%d profitable)\n",

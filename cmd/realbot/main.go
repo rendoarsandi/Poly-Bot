@@ -207,6 +207,7 @@ func run() error {
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
+	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
 	// Start TUI
 	if UseLiveUI {
@@ -277,6 +278,7 @@ func run() error {
 		} else {
 			balance = currentBalance          // Update stored balance
 			engine.SetBalance(currentBalance) // Sync engine with on-chain balance
+			engine.RecalculateDrawdown()      // Check drawdown after sync
 		}
 
 		// Track starting equity for compounding calculation
@@ -336,6 +338,7 @@ func run() error {
 			endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
 			if endBal, err := realTrader.GetBalance(endBalCtx); err == nil {
 				engine.SetBalance(endBal)
+				engine.RecalculateDrawdown()
 			}
 			endBalFn()
 
@@ -416,7 +419,7 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth", "sol"}
+	assets := []string{"btc", "eth"}
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
@@ -685,10 +688,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 		// ============ REST PRIMARY FOR LIQUIDITY ============
 		// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-		// Poll REST every 20ms for high-frequency liquidity updates (50 RPS per trader)
-		// Global rate limiter in RestClient caps total at 148 RPS across all traders
+		// Poll REST every 13ms for high-frequency liquidity updates (75 RPS per trader)
+		// Global rate limiter in RestClient caps total at 149 RPS across all traders
 		staleTime := time.Since(lastUpdate)
-		restPollInterval := 20 * time.Millisecond
+		restPollInterval := 13 * time.Millisecond
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
 		// Update WS staleness and ping latency in TUI
@@ -770,7 +773,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					initialBuffer = 50
 				}
 
-				maxInitial := currentBalance * 0.15
+				maxInitial := currentBalance * 0.25
 				splitAmount := initialBuffer
 				if splitAmount > maxInitial {
 					splitAmount = maxInitial
@@ -786,12 +789,19 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					if err != nil {
 						tui.LogEvent("[%s] ⚠️ SPLIT: Failed: %v", id, err)
 					} else {
+						// Update engine simulation immediately to prevent peakBalance inflation
+						// This ensures totalEquity (Balance + Split) remains stable at $1.00 per share
 						splitInventory.RecordSplit(id, outcomes[0], outcomes[1], splitAmount)
+						engine.DeductBalance(splitAmount)
+						engine.RecalculateDrawdown()
+
 						splitInitialized = true
 						initialSplitAmount = splitAmount // Store for replenishment target
 						// Refresh balance after split (USDC converted to tokens)
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 							currentBalance = newBal
+							engine.SetBalance(newBal) // Sync with actual balance
+							engine.RecalculateDrawdown()
 						}
 						if txHash != "" && len(txHash) >= 10 {
 							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", id, splitAmount, txHash[:10])
@@ -821,7 +831,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					MinMarginThreshold: cfg.SplitMinMarginSell - 1.0,
 					CurrentBalance:     currentBalance,
 					ReplenishAmount:    replenishAmount,
-					MaxBalancePercent:  0.30,
+					MaxBalancePercent:  0.50,
 				})
 
 				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {
@@ -833,7 +843,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						defer bgCancel()
 						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt)
 						if bgErr == nil {
+							// Update engine simulation immediately
 							splitInventory.RecordSplit(mID, out0, out1, amt)
+							engine.DeductBalance(amt)
+							engine.RecalculateDrawdown()
 							tui.LogEvent("[%s] ✅ SPLIT: Replenished to %.0f shares (+%.0f)", mID, initialSplitAmount, amt)
 						} else {
 							tui.LogEvent("[%s] ⚠️ SPLIT: Background replenish failed: %v", mID, bgErr)
