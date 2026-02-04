@@ -372,6 +372,22 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	return bal, nil
 }
 
+// GetBalanceSnapshot returns on-chain (Polygon) and off-chain (CLOB) balances.
+// This helps distinguish on-chain USDC from CLOB allowance balance for sizing decisions.
+func (t *RealTrader) GetBalanceSnapshot(ctx context.Context) (onChain float64, offChain float64, offChainOK bool, err error) {
+	onChain, err = t.GetBalance(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	allowance, offErr := t.clob.GetBalanceAllowance(ctx)
+	if offErr != nil {
+		return onChain, 0, false, nil
+	}
+
+	return onChain, allowance.Balance, true, nil
+}
+
 // ForceRefreshBalance clears the cache and fetches fresh balance
 // Use this after trades to ensure accurate balance
 func (t *RealTrader) ForceRefreshBalance(ctx context.Context) (float64, error) {

@@ -267,22 +267,27 @@ func run() error {
 		default:
 		}
 
-		// Get fresh balance at start of each round for compounding
+		// Get fresh on-chain balance at start of each round for compounding
 		balCtx, balFn := context.WithTimeout(ctx, 10*time.Second)
-		currentBalance, err := realTrader.GetBalance(balCtx)
+		onChainBalance, offChainBalance, offChainOK, err := realTrader.GetBalanceSnapshot(balCtx)
 		balFn()
 		if err != nil {
-			tui.LogEvent("⚠️ Could not refresh balance: %v", err)
+			tui.LogEvent("⚠️ Could not refresh on-chain balance: %v", err)
 			currentBalance = balance // Use last known balance
 		} else {
-			balance = currentBalance          // Update stored balance
+			currentBalance = onChainBalance
+			balance = currentBalance          // Update stored balance (on-chain)
 			engine.SetBalance(currentBalance) // Sync engine with on-chain balance
 		}
 
 		// Track starting equity for compounding calculation
 		startingEquity := engine.GetEquity()
 		compoundMultiplier := engine.GetCompoundMultiplier()
-		tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
+		if offChainOK {
+			tui.LogEvent("📊 Round starting | On-chain: $%.2f | Off-chain: $%.2f | Multiplier: %.2fx", currentBalance, offChainBalance, compoundMultiplier)
+		} else {
+			tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
+		}
 
 		// Find markets
 		tui.LogEvent("🔍 Searching for active 15m markets...")
