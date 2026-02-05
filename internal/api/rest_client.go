@@ -61,8 +61,8 @@ func NewRestClient(baseURL string) *RestClient {
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
-	// Rate limit to 149 RPS (just under 150 /book endpoint limit)
-	limiter := time.NewTicker(time.Second / 149)
+	// Rate limit to 500 RPS (matches Polymarket burst limit)
+	limiter := time.NewTicker(time.Second / 500)
 	return &RestClient{
 		BaseURL:  baseURL,
 		GammaURL: "https://gamma-api.polymarket.com",

@@ -688,10 +688,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 		// ============ REST PRIMARY FOR LIQUIDITY ============
 		// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-		// Poll REST every 13ms for high-frequency liquidity updates (75 RPS per trader)
-		// Global rate limiter in RestClient caps total at 149 RPS across all traders
+		// Poll REST every 4ms for high-frequency liquidity updates (~250 RPS per trader)
+		// Global rate limiter in RestClient caps total at 500 RPS across all traders
 		staleTime := time.Since(lastUpdate)
-		restPollInterval := 13 * time.Millisecond
+		restPollInterval := 4 * time.Millisecond
 		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
 		// Update WS staleness and ping latency in TUI
@@ -969,17 +969,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							var res1, res2 *trading.TradeResult
 							var err1, err2 error
 
-							// Use market orders for split selling
+							// Use market orders for split selling with aggressive $0.01 floor
+							// This ensures immediate fill against any available liquidity
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[0]]
-								res1, err1 = trader.Sell(ctx, token0, outcomes[0], bid1, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 							}()
 
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[1]]
-								res2, err2 = trader.Sell(ctx, token1, outcomes[1], bid2, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 							}()
 
 							wg.Wait()
@@ -995,21 +996,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								failedSide := 1
 								failedToken := token0
 								failedOutcome := outcomes[0]
-								failedBid := bid1
 								if side1Success {
 									failedSide = 2
 									failedToken = token1
 									failedOutcome = outcomes[1]
-									failedBid = bid2
 								}
 
-								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, retrying until success...", id, failedSide)
+								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, retrying AGGRESSIVELY until success...", id, failedSide)
 
-								// Retry failed side INDEFINITELY until success (off-chain CLOB orders are fast)
+								// Retry failed side AGGRESSIVELY until success (off-chain CLOB orders are fast)
 								// This ensures we NEVER leave split inventory unbalanced
 								retryCount := 0
-								baseDelay := 200 * time.Millisecond
-								maxDelay := 3 * time.Second
 								for {
 									retryCount++
 
@@ -1021,20 +1018,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									default:
 									}
 
-									// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 30s (capped)
-									delay := baseDelay * time.Duration(1<<uint(retryCount-1))
-									if delay > maxDelay {
-										delay = maxDelay
-									}
-									time.Sleep(delay)
+									// Fast constant delay for balancing: 50ms
+									time.Sleep(50 * time.Millisecond)
 
-									// Decrease price each retry to increase fill chance (floor at $0.01)
-									retryPrice := failedBid - (float64(retryCount) * 0.005)
-									if retryPrice < 0.01 {
-										retryPrice = 0.01
-									}
+									// Force fill with floor price ($0.01) for split selling
+									// Since it's a MARKET order, it will fill at the BEST available bid price
+									// but providing $0.01 as the "price" gives enough room for any liquidity
+									retryPrice := 0.01
 
-									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s @ $%.3f", id, retryCount, failedOutcome, retryPrice)
+									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s (MARKET @ $0.01 floor)", id, retryCount, failedOutcome)
 
 									rate := tokenFeeRates[failedOutcome]
 									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
@@ -1302,7 +1294,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 
 						// MARKET EXECUTION: Force fill both sides with GTC to avoid FOK cancels
-						const worstCasePrice = 0.95
+						// Using $0.99 as worst-case to ensure enough USDC is provided for a guaranteed fill
+						const worstCasePrice = 0.99
 
 						var wg sync.WaitGroup
 						wg.Add(2)
@@ -1359,21 +1352,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							failedSide := 1
 							failedToken := token0
 							failedOutcome := outcomes[0]
-							failedPrice := price1
 							if side1Success {
 								failedSide = 2
 								failedToken = token1
 								failedOutcome = outcomes[1]
-								failedPrice = price2
 							}
 
-							tui.LogEvent("[%s] ⚠️ UNBALANCED: Side %d failed, retrying until success...", id, failedSide)
+							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: Side %d failed, retrying AGGRESSIVELY until success...", id, failedSide)
 
-							// Retry failed side INDEFINITELY until success (off-chain CLOB orders are fast)
+							// Retry failed side AGGRESSIVELY until success (off-chain CLOB orders are fast)
 							// This ensures we NEVER leave arb positions unbalanced
 							retryCount := 0
-							baseDelay := 200 * time.Millisecond
-							maxDelay := 3 * time.Second
 							for {
 								retryCount++
 
@@ -1385,20 +1374,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								default:
 								}
 
-								// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 30s (capped)
-								delay := baseDelay * time.Duration(1<<uint(retryCount-1))
-								if delay > maxDelay {
-									delay = maxDelay
-								}
-								time.Sleep(delay)
+								// Fast constant delay for balancing: 50ms
+								time.Sleep(50 * time.Millisecond)
 
-								// Increase price aggressiveness each retry (cap at $0.99)
-								retryPrice := failedPrice + (float64(retryCount) * 0.005)
-								if retryPrice > 0.99 {
-									retryPrice = 0.99
-								}
+								// Force fill with ceiling price ($0.99) for arb recovery
+								// Since it's a MARKET order, it will fill at the BEST available ask price
+								// but providing $0.99 as the "price" gives enough room for any liquidity
+								retryPrice := 0.99
 
-								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s @ $%.3f", id, retryCount, failedOutcome, retryPrice)
+								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $0.99 cap)", id, retryCount, failedOutcome)
 
 								rate := tokenFeeRates[failedOutcome]
 								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)

@@ -900,9 +900,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
 			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 13ms for high-frequency liquidity updates (75 RPS per trader)
-			// Global rate limiter in RestClient caps total at 149 RPS across all traders
-			restPollInterval := 13 * time.Millisecond
+			// Poll REST every 4ms for high-frequency liquidity updates (~250 RPS per trader)
+			// Global rate limiter in RestClient caps total at 500 RPS across all traders
+			restPollInterval := 4 * time.Millisecond
 
 			// Individual trader staleness watchdog
 			staleTime := time.Since(t.LastUpdate)
