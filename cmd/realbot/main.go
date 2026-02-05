@@ -562,6 +562,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
+	lastUpdateTs := make(map[string]int64) // outcome -> unix nano timestamp
 	lastUpdate := time.Now()
 	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
@@ -639,6 +640,25 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							continue
 						}
 
+						// Parse timestamp for freshness check
+						var msgTs int64
+						if b.Timestamp != "" {
+							// Try parsing as unix nano or micro string first
+							if ts, err := strconv.ParseInt(b.Timestamp, 10, 64); err == nil {
+								msgTs = ts
+							} else if t, err := time.Parse(time.RFC3339Nano, b.Timestamp); err == nil {
+								msgTs = t.UnixNano()
+							}
+						}
+
+						// Only update if data is newer or same age
+						if msgTs > 0 && msgTs < lastUpdateTs[outcome] {
+							continue
+						}
+						if msgTs > 0 {
+							lastUpdateTs[outcome] = msgTs
+						}
+
 						bid, ask := 0.0, 1.0
 						for _, order := range b.Bids {
 							p, err := strconv.ParseFloat(order.Price, 64)
@@ -708,7 +728,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		if needsRestPoll {
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
-			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, engine, restClient, tui) {
+			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastUpdateTs, engine, restClient, tui) {
 				lastUpdate = time.Now()
 			}
 		}
@@ -1504,7 +1524,7 @@ func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.
 	return result
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, lastUpdateTs map[string]int64, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
 	success := false
 	for tokenID, outcome := range tokenMap {
 		start := time.Now()
@@ -1518,6 +1538,22 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			continue
 		}
 
+		// Parse timestamp for freshness check
+		var msgTs int64
+		if book.Timestamp != "" {
+			if ts, err := strconv.ParseInt(book.Timestamp, 10, 64); err == nil {
+				msgTs = ts
+			} else if t, err := time.Parse(time.RFC3339Nano, book.Timestamp); err == nil {
+				msgTs = t.UnixNano()
+			}
+		}
+
+		// FRESHNESS CHECK: Only update prices if this REST data is newer than what we have
+		isNewer := msgTs >= lastUpdateTs[outcome]
+		if msgTs > 0 && isNewer {
+			lastUpdateTs[outcome] = msgTs
+		}
+
 		bid, ask := 0.0, 1.0
 		for _, b := range book.Bids {
 			p, _ := strconv.ParseFloat(b.Price, 64)
@@ -1526,7 +1562,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			}
 		}
 		for _, a := range book.Asks {
-			p, _ := strconv.ParseFloat(a.Price, 64)
+			p, _ := strconv.ParseFloat(a.Price, 0)
 			if p < ask && p > 0 {
 				ask = p
 			}
@@ -1535,18 +1571,21 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			ask = 0
 		}
 
-		if bid > 0 || (ask > 0 && ask < 1.0) {
+		// Update prices only if newer
+		if isNewer && (bid > 0 || (ask > 0 && ask < 1.0)) {
 			bids[outcome] = bid
 			asks[outcome] = ask
-			fullBids[outcome] = toMarketLevels(tui, id, book.Bids)
-			fullAsks[outcome] = toMarketLevels(tui, id, book.Asks)
-
 			if bid > 0 && ask > 0 && ask < 1.0 {
 				mid := (bid + ask) / 2
 				engine.UpdateMarketData(id, outcome, mid, bid, ask)
 			}
 			success = true
 		}
+
+		// ALWAYS update full depth (liquidity), as REST is our primary source for this
+		// and stale liquidity is better than no liquidity for safety checks
+		fullBids[outcome] = toMarketLevels(tui, id, book.Bids)
+		fullAsks[outcome] = toMarketLevels(tui, id, book.Asks)
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
