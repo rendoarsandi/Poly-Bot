@@ -64,14 +64,14 @@ func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string
 
 // RedeemPositions sends the on-chain transaction to redeem winning tokens (PAID WRITE)
 func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string) (string, error) {
-	// Function selector for redeemPositions(address,bytes32,bytes32,uint256[]): 0x6968749c
+	// Function selector for redeemPositions(address,bytes32,bytes32,uint256[]): 0x01b7037c
 	// Parameters:
 	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 	// 2. parentCollectionId: 0x0000000000000000000000000000000000000000000000000000000000000000
 	// 3. conditionId: (provided)
-	// 4. indexSets: [1, 2] for binary markets (Up/Down)
+	// 4. indexSets: [1, 2] for binary markets - redeems both outcomes (only winner pays out)
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(USDCContract, "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
@@ -82,7 +82,7 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	idx1 := "0000000000000000000000000000000000000000000000000000000000000001"
 	idx2 := "0000000000000000000000000000000000000000000000000000000000000002"
 
-	data := "0x6968749c" + collateral + parent + cond + offset + arrayLen + idx1 + idx2
+	data := "0x01b7037c" + collateral + parent + cond + offset + arrayLen + idx1 + idx2
 
 	// Get nonce and gas price
 	nonce, err := c.GetNonce(ctx, signer.Address())
@@ -118,7 +118,7 @@ func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, cond
 	// 4. partition: [1, 2] for binary markets (YES/NO or Up/Down)
 	// 5. amount: USDC amount to split (returns this many token pairs)
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(USDCContract, "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
