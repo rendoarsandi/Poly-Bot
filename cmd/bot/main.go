@@ -116,16 +116,33 @@ func logEvent(tui *paper.TUI, csv *core.CSVLogger, engine *paper.Engine, level, 
 
 func run() error {
 	var engine *paper.Engine
+	var orderBook *paper.OrderBook
 	var csvLogger *core.CSVLogger
 
 	// Setup signal handling with immediate terminal restore
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// emergencyCleanup ensures terminal is restored and positions are handled on crash/exit
+	emergencyCleanup := func() {
+		restoreTerminal()
+		if engine != nil {
+			positions := engine.GetPositions()
+			if len(positions) > 0 {
+				fmt.Println("💰 Emergency: Liquidating all paper positions...")
+				proceeds := engine.LiquidateAll()
+				fmt.Printf("💵 Liquidation proceeds: $%.2f\n", proceeds)
+			}
+		}
+		if orderBook != nil {
+			orderBook.CancelAllOrders()
+		}
+	}
+
 	// Global panic recovery - restore terminal on any panic
 	defer func() {
 		if r := recover(); r != nil {
-			restoreTerminal()
+			emergencyCleanup()
 			stack := make([]byte, 4096)
 			length := runtime.Stack(stack, false)
 			fmt.Printf("\n🚨 PANIC RECOVERED: %v\n%s\n", r, stack[:length])
@@ -143,8 +160,8 @@ func run() error {
 	// This ensures we never get stuck even if goroutines are blocked
 	go func() {
 		<-ctx.Done()
-		// Give graceful shutdown 5 seconds, then force exit
-		time.Sleep(5 * time.Second)
+		// Give graceful shutdown 10 seconds, then force exit
+		time.Sleep(10 * time.Second)
 		restoreTerminal()
 		fmt.Println("\n⚠️ Force exit: graceful shutdown timed out")
 		os.Exit(1)
@@ -186,7 +203,7 @@ func run() error {
 	restClient := api.NewRestClient("")
 
 	// Create shared order book and TUI (persistent across market rotations)
-	orderBook := paper.NewOrderBook()
+	orderBook = paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
@@ -277,18 +294,10 @@ func run() error {
 		select {
 		case <-ctx.Done():
 			tui.Stop()
-			fmt.Println("\n👋 Shutting down - liquidating positions...")
+			fmt.Println("\n👋 Shutting down...")
 
-			// Liquidate all positions before exit
-			positions := engine.GetPositions()
-			if len(positions) > 0 {
-				fmt.Println("💰 Cashing out positions at current market prices...")
-				proceeds := engine.LiquidateAll()
-				fmt.Printf("💵 Liquidation proceeds: $%.2f\n", proceeds)
-				if csvLogger != nil {
-					csvLogger.Log("INFO", "SYSTEM", "LIQUIDATION", fmt.Sprintf("Proceeds: %.2f", proceeds), engine.GetEquity())
-				}
-			}
+			// Run emergency cleanup
+			emergencyCleanup()
 
 			stats := engine.GetStats()
 			duration := time.Since(startTime).Round(time.Second)

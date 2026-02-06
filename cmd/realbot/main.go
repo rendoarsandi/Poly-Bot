@@ -179,6 +179,73 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	restClient := api.NewRestClient("")
+
+	// emergencyCleanup ensures we don't leave hanging orders or unmerged positions
+	emergencyCleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		fmt.Println("\n🧹 Running emergency cleanup...")
+
+		// 1. Cancel all open orders
+		if err := realTrader.CancelAll(cleanupCtx); err != nil {
+			fmt.Printf("⚠️  Failed to cancel orders: %v\n", err)
+		} else {
+			fmt.Println("✅ All orders cancelled")
+		}
+
+		// 2. Identify and merge balanced positions
+		positions, err := realTrader.GetPositions(cleanupCtx)
+		if err != nil {
+			fmt.Printf("⚠️  Could not fetch positions for merge: %v\n", err)
+		} else if len(positions) > 0 {
+			// Map positions to their markets to find ConditionIDs
+			// We'll need a fresh list of markets for this
+			markets, err := restClient.Get15mMarkets(cleanupCtx, nil)
+			if err == nil {
+				// Group tokens by ConditionID
+				condToTokens := make(map[string][]string)
+				for _, m := range markets {
+					for _, t := range m.Tokens {
+						condToTokens[m.ConditionID] = append(condToTokens[m.ConditionID], t.TokenID)
+					}
+				}
+
+				// Find balanced pairs for each market
+				for condID, tokens := range condToTokens {
+					if len(tokens) != 2 {
+						continue
+					}
+
+					var qty1, qty2 float64
+					for _, pos := range positions {
+						if pos.TokenID == tokens[0] {
+							qty1 = pos.Size
+						} else if pos.TokenID == tokens[1] {
+							qty2 = pos.Size
+						}
+					}
+
+					minQty := qty1
+					if qty2 < minQty {
+						minQty = qty2
+					}
+
+					if minQty >= 1.0 {
+						fmt.Printf("💰 Merging %.0f pairs for market %s...\n", minQty, condID[:10])
+						_, err := realTrader.MergeOnChain(cleanupCtx, condID, minQty)
+						if err != nil {
+							fmt.Printf("❌ Merge failed: %v\n", err)
+						} else {
+							fmt.Println("✅ Merge successful")
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Panic recovery
 	defer func() {
 		if r := recover(); r != nil {
@@ -186,15 +253,26 @@ func run() error {
 			stack := make([]byte, 4096)
 			length := runtime.Stack(stack, false)
 			fmt.Printf("\n🚨 PANIC: %v\n%s\n", r, stack[:length])
+
+			// Run emergency cleanup on panic
+			emergencyCleanup()
 		}
 	}()
 
 	// Watchdog for graceful shutdown
 	go func() {
 		<-ctx.Done()
-		time.Sleep(5 * time.Second)
+		// If we receive another interrupt during cleanup, force exit
+		go func() {
+			<-ctx.Done()
+			restoreTerminal()
+			fmt.Println("\n⚠️ Force exit requested")
+			os.Exit(1)
+		}()
+
+		time.Sleep(10 * time.Second) // Give cleanup more time
 		restoreTerminal()
-		fmt.Println("\n⚠️ Force exit")
+		fmt.Println("\n⚠️ Force exit: cleanup timed out")
 		os.Exit(1)
 	}()
 
@@ -214,8 +292,6 @@ func run() error {
 		tui.StartRenderLoop(250 * time.Millisecond)
 		defer tui.Stop()
 	}
-
-	restClient := api.NewRestClient("")
 
 	// Network health monitor
 	go func() {
@@ -245,14 +321,8 @@ func run() error {
 			tui.Stop()
 			fmt.Println("\n👋 Shutting down...")
 
-			// Cancel all open orders
-			cancelCtx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := realTrader.CancelAll(cancelCtx); err != nil {
-				fmt.Printf("⚠️  Failed to cancel orders: %v\n", err)
-			} else {
-				fmt.Println("✅ All orders cancelled")
-			}
-			cancelFn()
+			// Run emergency cleanup on graceful shutdown
+			emergencyCleanup()
 
 			// Show final balance
 			balCtx, balFn := context.WithTimeout(context.Background(), 10*time.Second)
@@ -320,6 +390,15 @@ func run() error {
 			wg.Add(1)
 			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						restoreTerminal()
+						stack := make([]byte, 4096)
+						length := runtime.Stack(stack, false)
+						fmt.Printf("\n🚨 TRADER PANIC [%s]: %v\n%s\n", id, r, stack[:length])
+						emergencyCleanup()
+					}
+				}()
 				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal)
 			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
