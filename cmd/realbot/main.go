@@ -1641,7 +1641,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			}
 		}
 		for _, a := range book.Asks {
-			p, _ := strconv.ParseFloat(a.Price, 0)
+			p, _ := strconv.ParseFloat(a.Price, 64)
 			if p < ask && p > 0 {
 				ask = p
 			}
