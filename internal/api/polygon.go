@@ -159,29 +159,29 @@ func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, cond
 // Unlike RedeemPositions, this works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides to capture arbitrage profit instantly.
 func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int) (string, error) {
-	// Function selector for mergePositions(address,bytes32,bytes32,uint256[],uint256): 0x0d7ef7c4
+	// Function selector for mergePositions(address,bytes32,bytes32,uint256[],uint256): 0x9e7212ad
 	// Parameters:
 	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
 	// 3. conditionId: (provided)
-	// 4. partition: [1, 2] for binary markets (Up/Down)
+	// 4. partition: [2, 1] for binary markets (index sets for NO, YES)
 	// 5. amount: number of full sets to merge (returns this much USDC)
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(USDCContract, "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
-	// ABI encoding for partition [1, 2] (Dynamic array)
-	// Offset to array data (160 bytes = 5 * 32, since amount is 5th param)
+	// ABI encoding for partition [2, 1] (Dynamic array)
+	// Offset to array data (160 bytes = 5 * 32, pointing past the 5 fixed params)
 	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
 	// Amount (5th param) - pad to 32 bytes
 	amtHex := fmt.Sprintf("%064x", amount)
-	// Array: length=2, values=[1,2]
+	// Array: length=2, values=[2, 1] (NO index set first, YES index set second)
 	arrayLen := "0000000000000000000000000000000000000000000000000000000000000002"
-	idx1 := "0000000000000000000000000000000000000000000000000000000000000001"
-	idx2 := "0000000000000000000000000000000000000000000000000000000000000002"
+	idx1 := "0000000000000000000000000000000000000000000000000000000000000002"
+	idx2 := "0000000000000000000000000000000000000000000000000000000000000001"
 
-	data := "0x0d7ef7c4" + collateral + parent + cond + offset + amtHex + arrayLen + idx1 + idx2
+	data := "0x9e7212ad" + collateral + parent + cond + offset + amtHex + arrayLen + idx1 + idx2
 
 	// Get nonce and gas price
 	nonce, err := c.GetNonce(ctx, signer.Address())
