@@ -1379,8 +1379,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						_, _, _, _ = calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
 						bufferedMargin := (1.0 - bufferedSum) * 100
 
-						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-							id, outcomes[0], price1, outcomes[1], price2, bufferedSum, bufferedMargin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin, %.1f%% after slippage) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+							id, outcomes[0], ask1, outcomes[1], ask2, sum, margin, bufferedMargin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -1429,7 +1429,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FILLED")
 						} else {
-							tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
+							errMsg := "unknown error"
+							if err1 != nil {
+								errMsg = err1.Error()
+							} else if res1 != nil && res1.Message != "" {
+								errMsg = res1.Message
+							} else if res1 == nil {
+								errMsg = "nil response"
+							}
+							tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, errMsg)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FAILED")
 						}
 
@@ -1437,7 +1445,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
 							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FILLED")
 						} else {
-							tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
+							errMsg := "unknown error"
+							if err2 != nil {
+								errMsg = err2.Error()
+							} else if res2 != nil && res2.Message != "" {
+								errMsg = res2.Message
+							} else if res2 == nil {
+								errMsg = "nil response"
+							}
+							tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, errMsg)
 							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FAILED")
 						}
 
