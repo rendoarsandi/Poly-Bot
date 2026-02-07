@@ -43,7 +43,7 @@ func main() {
 	timeLeft := time.Until(endTime)
 
 	fmt.Printf("Market: %s\nTime Left: %v\n", market.Slug, timeLeft.Round(time.Second))
-	
+
 	fmt.Print("Outcomes found: ")
 	var outcomes []string
 	for _, t := range market.Tokens {
@@ -99,15 +99,19 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market api.Mar
 		go func(o string) {
 			defer wg.Done()
 			tokenID := getTokenID(market, o)
+			if tokenID == "" {
+				printTradeResult(side+" "+o, nil, fmt.Errorf("token id not found for outcome %q", o))
+				return
+			}
 			var res *trading.TradeResult
 			var err error
 
 			if side == "BUY" {
-				// Use LIMIT with high price to simulate MARKET
-				res, err = trader.Buy(ctx, tokenID, o, 0.99, amt, api.OrderTypeLimit, api.TIFGoodTilCancelled, 0)
+				// Use true MARKET order with protective price cap, same style as realbot.
+				res, err = trader.Buy(ctx, tokenID, o, 0.99, amt, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
 			} else {
-				// Use LIMIT with low price to simulate MARKET
-				res, err = trader.Sell(ctx, tokenID, o, 0.01, amt, api.OrderTypeLimit, api.TIFGoodTilCancelled, 0)
+				// Use true MARKET order with protective price floor, same style as realbot.
+				res, err = trader.Sell(ctx, tokenID, o, 0.01, amt, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
 			}
 			printTradeResult(side+" "+o, res, err)
 		}(outcome)
