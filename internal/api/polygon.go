@@ -371,6 +371,63 @@ func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (flo
 	return result64, nil
 }
 
+// GetUSDCAllowance returns the current allowance for a spender to use an owner's USDC
+func (c *PolygonClient) GetUSDCAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
+	// ERC20 allowance(address,address) function selector: 0xdd62ed3e
+	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
+	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+
+	data := "0xdd62ed3e" + ownerAddr + spenderAddr
+
+	callParams := map[string]string{
+		"to":   USDCContract,
+		"data": data,
+	}
+
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get USDC allowance: %w", err)
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return nil, fmt.Errorf("failed to parse allowance result: %w", err)
+	}
+
+	return parseHexBigInt(hexResult)
+}
+
+// IsCTFApproved checks if a spender is approved for all of an owner's CTF tokens
+func (c *PolygonClient) IsCTFApproved(ctx context.Context, owner, operator string) (bool, error) {
+	// ERC1155 isApprovedForAll(address,address) function selector: 0xe985e9c5
+	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
+	operatorAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(operator), "0x")
+
+	data := "0xe985e9c5" + ownerAddr + operatorAddr
+
+	callParams := map[string]string{
+		"to":   CTFContract,
+		"data": data,
+	}
+
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return false, fmt.Errorf("failed to check CTF approval: %w", err)
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return false, fmt.Errorf("failed to parse approval result: %w", err)
+	}
+
+	val, err := parseHexBigInt(hexResult)
+	if err != nil {
+		return false, err
+	}
+
+	return val.Cmp(big.NewInt(0)) > 0, nil
+}
+
 // ApproveUSDC grants allowance to the Polymarket Exchange contract to spend USDC (PAID WRITE)
 func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
 	// Function selector for approve(address,uint256): 0x095ea7b3

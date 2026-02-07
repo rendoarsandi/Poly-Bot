@@ -315,6 +315,9 @@ func run() error {
 	}()
 
 	// Main trading loop
+	globalSplitStatus := make(map[string]bool)
+	var splitMu sync.Mutex
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -399,7 +402,7 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal)
+				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, &splitMu)
 			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
@@ -589,7 +592,8 @@ func getOutcomes(market *api.Market) []string {
 
 func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
-	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64) {
+	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
+	globalSplitStatus map[string]bool, splitMu *sync.Mutex) {
 
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
@@ -646,6 +650,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{} // Track last split sell to avoid rapid-fire
+	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -668,7 +673,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	splitInventory := paper.NewSplitInventory()
 	engine.RegisterSplitInventory(splitInventory)   // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)      // Register for TUI display
-	splitInitialized := false                       // Track if we've done initial split
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var initialSplitAmount float64                  // Track initial split for replenishment target
 
@@ -864,12 +868,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			}
 
 			// Initial split: create inventory if not done yet
-			// Split is always safe - can merge back to USDC anytime at 1:1
-			if !splitInitialized {
+			// Move to BACKGROUND to prevent blocking the main trading loop
+			splitMu.Lock()
+			isSplit := globalSplitStatus[market.ConditionID]
+			splitMu.Unlock()
+
+			if !isSplit && time.Now().After(nextSplitAttempt) && replenishCtrl.MarkInProgress() {
 				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
+				
+				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
 				initialBuffer := baseTradeSize * 2.0
-				if initialBuffer < 50 {
-					initialBuffer = 50
+				if initialBuffer < 2.0 {
+					initialBuffer = 2.0
 				}
 
 				maxInitial := currentBalance * 0.25
@@ -878,36 +888,49 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					splitAmount = maxInitial
 				}
 
-				if splitAmount >= 10.0 {
-					tui.LogEvent("[%s] 🔀 SPLIT: Creating inventory ($%.2f)", id, splitAmount)
+				// Lower threshold to $1.0 to support testing with small balances (like $5)
+				if splitAmount >= 1.0 {
+					tui.LogEvent("[%s] 🔀 SPLIT: Creating inventory ($%.2f) in background...", id, splitAmount)
 
-					splitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-					txHash, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount)
-					cancel()
-
-					if err != nil {
-						tui.LogEvent("[%s] ⚠️ SPLIT: Failed: %v", id, err)
-					} else {
-						// Update engine simulation immediately to prevent peakBalance inflation
-						// This ensures totalEquity (Balance + Split) remains stable at $1.00 per share
-						splitInventory.RecordSplit(id, outcomes[0], outcomes[1], splitAmount)
-						engine.DeductBalance(splitAmount)
-						engine.RecalculateDrawdown()
-
-						splitInitialized = true
-						initialSplitAmount = splitAmount // Store for replenishment target
-						// Refresh balance after split (USDC converted to tokens)
-						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-							currentBalance = newBal
-							engine.SetBalance(newBal) // Sync with actual balance
-							engine.RecalculateDrawdown()
-						}
-						if txHash != "" && len(txHash) >= 10 {
-							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", id, splitAmount, txHash[:10])
+					go func(mID, condID, out0, out1 string, amt float64) {
+						defer replenishCtrl.MarkComplete()
+						// Increase timeout to 120s to be more resilient to Polygon congestion
+						splitCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+						defer cancel()
+						
+						txHash, err := trader.SplitOnChain(splitCtx, condID, amt)
+						if err != nil {
+							tui.LogEvent("[%s] ⚠️ SPLIT: Background initial split failed: %v (will retry in 60s)", mID, err)
+							// Set cooldown on failure to prevent RPC spam and nonce issues
+							nextSplitAttempt = time.Now().Add(60 * time.Second)
 						} else {
-							tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares", id, splitAmount)
+							// Update engine simulation immediately
+							splitInventory.RecordSplit(mID, out0, out1, amt)
+							engine.DeductBalance(amt)
+							engine.RecalculateDrawdown()
+							
+							if txHash != "" && len(txHash) >= 10 {
+								tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", mID, amt, txHash[:10])
+							} else {
+								tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares", mID, amt)
+							}
+							
+							// Only mark as initialized on SUCCESS (globally)
+							splitMu.Lock()
+							globalSplitStatus[condID] = true
+							splitMu.Unlock()
+							initialSplitAmount = amt
 						}
+					}(id, market.ConditionID, outcomes[0], outcomes[1], splitAmount)
+				} else {
+					// Not enough balance to split even $1
+					replenishCtrl.MarkComplete()
+					splitMu.Lock()
+					if !globalSplitStatus[market.ConditionID] {
+						tui.LogEvent("[%s] ⚠️ SPLIT: Balance too low for split ($%.2f < $1.00)", id, splitAmount)
+						globalSplitStatus[market.ConditionID] = true // Mark true to stop spamming, even if skipped
 					}
+					splitMu.Unlock()
 				}
 			}
 

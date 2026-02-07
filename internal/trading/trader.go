@@ -190,6 +190,7 @@ type RealTrader struct {
 	polygon           *api.PolygonClient
 	config            *core.Config
 	mu                sync.Mutex
+	onChainMu         sync.Mutex // Mutex for on-chain transactions (Split, Merge, Redeem)
 	dailyLoss         float64
 	startOfDay        time.Time
 	cachedBalance     float64
@@ -432,6 +433,10 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (str
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc func() (string, error)) (string, error) {
+	// Lock globally so only one on-chain transaction happens at a time across all assets
+	t.onChainMu.Lock()
+	defer t.onChainMu.Unlock()
+
 	var lastErr error
 	var txHash string
 
