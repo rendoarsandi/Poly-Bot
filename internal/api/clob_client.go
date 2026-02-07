@@ -281,6 +281,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -323,6 +324,7 @@ func (c *CLOBClient) CancelOrder(ctx context.Context, orderID string) error {
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -355,6 +357,7 @@ func (c *CLOBClient) CancelAllOrders(ctx context.Context) error {
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -395,6 +398,7 @@ func (c *CLOBClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -428,6 +432,7 @@ func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, 
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -523,6 +528,7 @@ func (c *CLOBClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -556,6 +562,7 @@ func (c *CLOBClient) GetPositions(ctx context.Context) ([]Position, error) {
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)
@@ -605,6 +612,7 @@ func (c *CLOBClient) GetTradeHistory(ctx context.Context) ([]TradeHistory, error
 	}
 
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 	req.Header.Set("POLY_TIMESTAMP", timestamp)
 	req.Header.Set("POLY_SIGNATURE", signature)

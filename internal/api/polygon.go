@@ -371,6 +371,78 @@ func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (flo
 	return result64, nil
 }
 
+// ApproveUSDC grants allowance to the Polymarket Exchange contract to spend USDC (PAID WRITE)
+func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
+	// Function selector for approve(address,uint256): 0x095ea7b3
+	// Parameters:
+	// 1. spender: (provided)
+	// 2. amount: (provided)
+
+	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	amtHex := fmt.Sprintf("%064x", amount)
+
+	data := "0x095ea7b3" + spenderAddr + amtHex
+
+	// Get nonce and gas price
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	gasPrice, err := c.GetGasPrice(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Sign transaction
+	signedTx, err := signer.SignTransaction(nonce, USDCContract, big.NewInt(0), 100000, gasPrice, data)
+	if err != nil {
+		return "", err
+	}
+
+	// Send raw transaction
+	return c.SendRawTransaction(ctx, signedTx)
+}
+
+// ApproveCTF grants allowance for Conditional Tokens (ERC1155) (PAID WRITE)
+func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender string, approved bool) (string, error) {
+	// Function selector for setApprovalForAll(address,bool): 0xa22cb465
+	// Parameters:
+	// 1. operator: (spender)
+	// 2. approved: (true/false)
+
+	operator := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	
+	val := "0000000000000000000000000000000000000000000000000000000000000001"
+	if !approved {
+		val = "0000000000000000000000000000000000000000000000000000000000000000"
+	}
+
+	data := "0x22cb465" // Note: the selector is shorter if we don't pad correctly, but we'll use standard 8 chars
+	// Correct selector for setApprovalForAll is 0xa22cb465
+	data = "0xa22cb465" + operator + val
+
+	// Get nonce and gas price
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	gasPrice, err := c.GetGasPrice(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Sign transaction
+	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 100000, gasPrice, data)
+	if err != nil {
+		return "", err
+	}
+
+	// Send raw transaction
+	return c.SendRawTransaction(ctx, signedTx)
+}
+
 // GetMATICBalance returns the native MATIC balance for an address
 func (c *PolygonClient) GetMATICBalance(ctx context.Context, address string) (float64, error) {
 	result, err := c.call(ctx, "eth_getBalance", []interface{}{address, "latest"})
