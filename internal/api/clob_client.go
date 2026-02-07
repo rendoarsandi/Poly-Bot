@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"Market-bot/internal/core"
@@ -102,14 +103,13 @@ type OrderRequest struct {
 // SignedOrder represents a signed order ready for submission
 type SignedOrder struct {
 	Order     OrderPayload `json:"order"`
-	Signature string       `json:"signature"`
 	Owner     string       `json:"owner"`
 	OrderType string       `json:"orderType"`
 }
 
 // OrderPayload is the order data to be signed
 type OrderPayload struct {
-	Salt          string `json:"salt"`
+	Salt          int64  `json:"salt"`
 	Maker         string `json:"maker"`
 	Signer        string `json:"signer"`
 	Taker         string `json:"taker"`
@@ -121,54 +121,94 @@ type OrderPayload struct {
 	FeeRateBps    string `json:"feeRateBps"`
 	Side          string `json:"side"`
 	SignatureType int    `json:"signatureType"`
+	Signature     string `json:"signature"`
 }
 
 // OrderResponse represents the API response for order placement
 type OrderResponse struct {
 	OrderID  string `json:"orderID"`
 	Status   string `json:"status"`
-	ErrorMsg string `json:"errorMsg,omitempty"`
+	ErrorMsg string `json:"error,omitempty"`
 	Success  bool   `json:"success"`
 }
 
 // PlaceOrder places a new limit order
 func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
+	// Safety Check: Minimum Order Size
+	// Polymarket CLOB has a $1.00 minimum for marketable orders
+	// (Check based on req.Price * req.Size)
+	if (req.Price * req.Size) < 1.0 {
+		return nil, fmt.Errorf("order size $%.2f is below the $1.00 minimum", req.Price*req.Size)
+	}
+
 	// Generate random salt
 	salt := generateSalt()
 
-	// Calculate amounts in base units (10^6 for USDC)
-	// For BUY: makerAmount = USDC to pay, takerAmount = shares to receive
-	// For SELL: makerAmount = shares to sell, takerAmount = USDC to receive
+	// Calculate amounts in base units (API expects 18 decimals for everything)
 	var makerAmount, takerAmount string
 	if req.Side == SideBuy {
-		usdcAmount := req.Price * req.Size * 1e6 // USDC has 6 decimals
-		makerAmount = strconv.FormatInt(int64(usdcAmount), 10)
-		takerAmount = strconv.FormatInt(int64(req.Size*1e6), 10)
+		// BUY: makerAmount = USDC, takerAmount = shares
+		usdcAmount := req.Price * req.Size
+		// Round USDC to 2 decimals
+		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
+		
+		// USDC to 18 decimals
+		uAmt := new(big.Int)
+		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e18))
+		uFloat.Int(uAmt)
+		makerAmount = uAmt.String()
+		
+		// Shares to 18 decimals
+		sAmt := new(big.Int)
+		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e18))
+		sFloat.Int(sAmt)
+		takerAmount = sAmt.String()
 	} else {
-		makerAmount = strconv.FormatInt(int64(req.Size*1e6), 10)
-		usdcAmount := req.Price * req.Size * 1e6
-		takerAmount = strconv.FormatInt(int64(usdcAmount), 10)
+		// SELL: makerAmount = shares, takerAmount = USDC
+		usdcAmount := req.Price * req.Size
+		// Round USDC to 2 decimals
+		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
+
+		// Shares to 18 decimals
+		sAmt := new(big.Int)
+		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e18))
+		sFloat.Int(sAmt)
+		makerAmount = sAmt.String()
+		
+		// USDC to 18 decimals
+		uAmt := new(big.Int)
+		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e18))
+		uFloat.Int(uAmt)
+		takerAmount = uAmt.String()
 	}
 
 	// Default expiration: 24 hours from now
-	expiration := req.Expiration
-	if expiration == 0 {
-		expiration = time.Now().Add(24 * time.Hour).Unix()
+	// For FOK, Polymarket API expects 0
+	expirationStr := strconv.FormatInt(req.Expiration, 10)
+	if req.TimeInForce == "FOK" {
+		expirationStr = "0"
+	} else if req.Expiration == 0 {
+		expirationStr = strconv.FormatInt(time.Now().Add(24*time.Hour).Unix(), 10)
 	}
 
 	// Build order data
+	sideInt := 0
+	if req.Side == SideSell {
+		sideInt = 1
+	}
+
 	orderData := &OrderData{
-		Salt:          salt,
+		Salt:          strconv.FormatInt(salt, 10),
 		Maker:         c.signer.Address(),
 		Signer:        c.signer.Address(),
 		Taker:         "0x0000000000000000000000000000000000000000", // Any taker
 		TokenID:       req.TokenID,
 		MakerAmount:   makerAmount,
 		TakerAmount:   takerAmount,
-		Expiration:    strconv.FormatInt(expiration, 10),
+		Expiration:    expirationStr,
 		Nonce:         "0",
 		FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-		Side:          string(req.Side),
+		Side:          sideInt,
 		SignatureType: 0, // EOA signature
 	}
 
@@ -178,19 +218,28 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		return nil, fmt.Errorf("failed to sign order: %w", err)
 	}
 
+	// Ensure tokenID is in hex format for JSON payload
+	tokenIDHex := req.TokenID
+	if !strings.HasPrefix(tokenIDHex, "0x") {
+		// Convert decimal string to hex
+		n := new(big.Int)
+		n.SetString(tokenIDHex, 10)
+		tokenIDHex = "0x" + n.Text(16)
+	}
+
 	// Build signed order
 	sideStr := "0"
-	if orderData.Side == "SELL" {
+	if orderData.Side == 1 {
 		sideStr = "1"
 	}
 
 	signedOrder := &SignedOrder{
 		Order: OrderPayload{
-			Salt:          orderData.Salt,
+			Salt:          salt,
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       orderData.TokenID,
+			TokenID:       req.TokenID,
 			MakerAmount:   orderData.MakerAmount,
 			TakerAmount:   orderData.TakerAmount,
 			Expiration:    orderData.Expiration,
@@ -198,9 +247,9 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			FeeRateBps:    orderData.FeeRateBps,
 			Side:          sideStr,
 			SignatureType: orderData.SignatureType,
+			Signature:     signature,
 		},
-		Signature: signature,
-		Owner:     c.signer.Address(),
+		Owner:     c.auth.APIKey,
 		OrderType: string(req.OrderType),
 	}
 
@@ -213,17 +262,14 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	// Build the payload (needed for both test mode validation and real submission)
 	payload := make(map[string]interface{})
 
-	orderJSON, _ := json.Marshal(signedOrder.Order)
-	var orderMap map[string]interface{}
-	json.Unmarshal(orderJSON, &orderMap)
-
-	payload["order"] = orderMap
-	payload["signature"] = signedOrder.Signature
-	payload["owner"] = signedOrder.Owner
-	payload["orderType"] = signedOrder.OrderType
-
+	payload["order"] = signedOrder.Order
+	payload["owner"] = c.auth.APIKey
+	
+	// Polymarket's orderType field at the top level
 	if tif != "" {
-		payload["timeInForce"] = string(tif)
+		payload["orderType"] = string(tif)
+	} else {
+		payload["orderType"] = signedOrder.OrderType
 	}
 
 	body, err := json.Marshal(payload)
@@ -301,31 +347,33 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	// Read full body for error reporting
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		// Log the failed request and response for debugging
+		fmt.Printf("\n--- API ERROR DEBUG ---\n")
+		fmt.Printf("Request Body: %s\n", string(body))
+		fmt.Printf("Response Status: %d\n", resp.StatusCode)
+		fmt.Printf("Response Body: %s\n", string(bodyBytes))
+		fmt.Printf("-----------------------\n\n")
+
+		var result OrderResponse
+		if err := json.Unmarshal(bodyBytes, &result); err != nil {
+			return &OrderResponse{
+				Success:  false,
+				ErrorMsg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
+			}, nil
+		}
+		result.Success = false
+		return &result, nil
+	}
+
 	var result OrderResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		// If decoding fails, provide the status code and raw body
 		return &OrderResponse{
-			Success:  false,
-			ErrorMsg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
+			Success:  true,
+			ErrorMsg: fmt.Sprintf("Success but decode failed: %v", err),
 		}, nil
 	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		result.Success = false
-		if result.ErrorMsg == "" {
-			// Check if error is in another field like "error"
-			var raw map[string]interface{}
-			json.Unmarshal(bodyBytes, &raw)
-			if msg, ok := raw["error"].(string); ok {
-				result.ErrorMsg = msg
-			} else {
-				result.ErrorMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
-			}
-		}
-	} else {
-		result.Success = true
-	}
-
+	result.Success = true
 	return &result, nil
 }
 
@@ -740,8 +788,13 @@ func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string) er
 }
 
 // generateSalt generates a random salt for order signing
-func generateSalt() string {
-	b := make([]byte, 32)
+func generateSalt() int64 {
+	b := make([]byte, 8)
 	rand.Read(b)
-	return new(big.Int).SetBytes(b).String()
+	// Ensure positive salt
+	val := new(big.Int).SetBytes(b).Int64()
+	if val < 0 {
+		return -val
+	}
+	return val
 }

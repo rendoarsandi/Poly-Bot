@@ -84,7 +84,7 @@ type OrderData struct {
 	Expiration    string
 	Nonce         string
 	FeeRateBps    string
-	Side          string // "BUY" or "SELL"
+	Side          int // 0 for BUY, 1 for SELL
 	SignatureType int
 }
 
@@ -130,9 +130,11 @@ func (s *Signer) getDomainSeparator() [32]byte {
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
 	
-	chainIdBytes := chainId.Bytes()
-	copy(encoded[128-len(chainIdBytes):128], chainIdBytes)
+	// ChainId as uint256 (32 bytes)
+	chainIdBytes := padLeft(chainId.Bytes(), 32)
+	copy(encoded[96:128], chainIdBytes)
 	
+	// address as uint256 (32 bytes, padded left)
 	copy(encoded[128:160], padLeft(verifyingContract, 32))
 
 	return keccak256(encoded)
@@ -140,9 +142,9 @@ func (s *Signer) getDomainSeparator() [32]byte {
 
 // getOrderStructHash returns the struct hash for an order
 func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
-	// Order struct type hash (EXACT field order required by Polymarket)
+	// Order struct type hash (EXACT field order and casing required by Polymarket)
 	typeHash := keccak256([]byte(
-		"Order(address maker,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 salt,uint256 expiration,uint256 nonce,address signer,uint256 feeRateBps,uint8 side,uint8 signatureType)",
+		"Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)",
 	))
 
 	// Parse values
@@ -157,28 +159,25 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	nonce := parseBigInt(order.Nonce)
 	feeRateBps := parseBigInt(order.FeeRateBps)
 
-	side := uint8(0) // BUY
-	if order.Side == "SELL" {
-		side = 1
-	}
+	side := uint8(order.Side)
 	signatureType := uint8(order.SignatureType)
 
 	// Encode all fields (32 bytes each, padded)
-	// Sequence: maker, taker, tokenId, makerAmount, takerAmount, salt, expiration, nonce, signer, feeRateBps, side, signatureType
+	// Sequence: salt, maker, signer, taker, tokenId, makerAmount, takerAmount, expiration, nonce, feeRateBps, side, signatureType
 	encoded := make([]byte, 13*32) // typeHash + 12 fields
 	copy(encoded[0:32], typeHash[:])
-	copy(encoded[32:64], padLeft(maker, 32))
-	copy(encoded[64:96], padLeft(taker, 32))
-	copy(encoded[96:128], padLeft(tokenID.Bytes(), 32))
-	copy(encoded[128:160], padLeft(makerAmount.Bytes(), 32))
-	copy(encoded[160:192], padLeft(takerAmount.Bytes(), 32))
-	copy(encoded[192:224], padLeft(salt.Bytes(), 32))
-	copy(encoded[224:256], padLeft(expiration.Bytes(), 32))
-	copy(encoded[256:288], padLeft(nonce.Bytes(), 32))
-	copy(encoded[288:320], padLeft(signer, 32))
+	copy(encoded[32:64], padLeft(salt.Bytes(), 32))
+	copy(encoded[64:96], padLeft(maker, 32))
+	copy(encoded[96:128], padLeft(signer, 32))
+	copy(encoded[128:160], padLeft(taker, 32))
+	copy(encoded[160:192], padLeft(tokenID.Bytes(), 32))
+	copy(encoded[192:224], padLeft(makerAmount.Bytes(), 32))
+	copy(encoded[224:256], padLeft(takerAmount.Bytes(), 32))
+	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
+	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
 	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
 	
-	// uint8 fields are at the end of their 32-byte slots
+	// uint8 fields are at the end of their 32-byte slots (padded left)
 	encoded[352+31] = side
 	encoded[384+31] = signatureType
 

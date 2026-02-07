@@ -95,6 +95,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market api.Mar
 	var wg sync.WaitGroup
 	wg.Add(len(outcomes))
 
+	client := api.NewRestClient("")
+
 	for _, outcome := range outcomes {
 		go func(o string) {
 			defer wg.Done()
@@ -103,15 +105,25 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market api.Mar
 				printTradeResult(side+" "+o, nil, fmt.Errorf("token id not found for outcome %q", o))
 				return
 			}
+
+			// Fetch current fee rate
+			feeRate, err := client.GetFeeRate(ctx, tokenID)
+			if err != nil {
+				fmt.Printf("Warning: could not fetch fee rate for %s: %v. Using 1000.\n", o, err)
+				feeRate = 1000
+			}
+			if feeRate == 0 {
+				feeRate = 1000
+			}
+
 			var res *trading.TradeResult
-			var err error
 
 			if side == "BUY" {
 				// Use true MARKET order with protective price cap, same style as realbot.
-				res, err = trader.Buy(ctx, tokenID, o, 0.99, amt, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
+				res, err = trader.Buy(ctx, tokenID, o, 0.99, amt, api.OrderTypeMarket, api.TIFFillOrKill, feeRate)
 			} else {
 				// Use true MARKET order with protective price floor, same style as realbot.
-				res, err = trader.Sell(ctx, tokenID, o, 0.01, amt, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
+				res, err = trader.Sell(ctx, tokenID, o, 0.60, amt, api.OrderTypeMarket, api.TIFFillOrKill, feeRate)
 			}
 			printTradeResult(side+" "+o, res, err)
 		}(outcome)

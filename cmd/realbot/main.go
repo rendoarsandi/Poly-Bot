@@ -1068,18 +1068,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							var res1, res2 *trading.TradeResult
 							var err1, err2 error
 
-							// Use market orders for split selling with aggressive $0.01 floor
+							// Use market orders for split selling with aggressive $0.10 floor
 							// This ensures immediate fill against any available liquidity
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[0]]
-								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 							}()
 
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[1]]
-								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 							}()
 
 							wg.Wait()
@@ -1120,12 +1120,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									// Fast constant delay for balancing: 50ms
 									time.Sleep(50 * time.Millisecond)
 
-									// Force fill with floor price ($0.01) for split selling
+									// Force fill with floor price ($0.10) for split selling
 									// Since it's a MARKET order, it will fill at the BEST available bid price
-									// but providing $0.01 as the "price" gives enough room for any liquidity
-									retryPrice := 0.01
+									// but providing $0.10 as the "price" gives enough room for any liquidity
+									retryPrice := 0.10
 
-									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s (MARKET @ $0.01 floor)", id, retryCount, failedOutcome)
+									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s (MARKET @ $0.10 floor)", id, retryCount, failedOutcome)
 
 									rate := tokenFeeRates[failedOutcome]
 									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
@@ -1195,7 +1195,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
 				// Slippage buffer: willing to pay up to 1.5% more per side for guaranteed fill
 				// Must account for this in margin check to avoid trading with negative effective margin
-				const slippageBuffer = 0.015
+				const slippageBuffer = 0.105
 				sum := ask1 + ask2
 				bufferedSum := (ask1 + slippageBuffer) + (ask2 + slippageBuffer)
 				margin := (1.0 - bufferedSum) * 100 // Use buffered sum for margin check
@@ -1406,13 +1406,13 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						go func() {
 							defer wg.Done()
 							rate := tokenFeeRates[outcomes[0]]
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						go func() {
 							defer wg.Done()
 							rate := tokenFeeRates[outcomes[1]]
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						wg.Wait()
