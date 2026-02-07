@@ -88,7 +88,7 @@ func main() {
 	fmt.Printf("POLY_PASSPHRASE=%s\n", creds.Passphrase)
 }
 
-func signClobAuthMessage(privateKey *crypto.PrivateKey, address, timestamp, nonce, message string) (string, error) {
+func signClobAuthMessage(privateKey *ecdsa.PrivateKey, address, timestamp, nonce, message string) (string, error) {
 	// EIP-712 Domain
 	domainTypeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId)"))
 	nameHash := keccak256([]byte("ClobAuthDomain"))
