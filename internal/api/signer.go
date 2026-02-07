@@ -204,12 +204,25 @@ type APIAuth struct {
 // SignL2Request signs an L2 API request for authentication
 func (a *APIAuth) SignL2Request(method, path string, body string) (timestamp, signature string) {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	message := ts + method + path + body
 
-	key, _ := base64.StdEncoding.DecodeString(a.APISecret)
+	// Strip query params from path for signing (Polymarket signs base path only)
+	signPath := path
+	if idx := strings.Index(path, "?"); idx != -1 {
+		signPath = path[:idx]
+	}
+
+	message := ts + method + signPath + body
+
+	// Polymarket uses URL-safe base64 for both decoding secret AND encoding signature
+	key, err := base64.URLEncoding.DecodeString(a.APISecret)
+	if err != nil {
+		// Fallback to standard encoding for decoding
+		key, _ = base64.StdEncoding.DecodeString(a.APISecret)
+	}
 	h := hmac.New(sha256.New, key)
 	h.Write([]byte(message))
-	sig := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	// Use URL-safe base64 for output signature (matches Python/TS clients)
+	sig := base64.URLEncoding.EncodeToString(h.Sum(nil))
 
 	return ts, sig
 }

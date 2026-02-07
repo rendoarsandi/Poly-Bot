@@ -238,6 +238,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+		req.Header.Set("POLY_ADDRESS", c.signer.Address())
 		req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
 		req.Header.Set("POLY_TIMESTAMP", timestamp)
 		req.Header.Set("POLY_SIGNATURE", signature)
@@ -513,7 +514,7 @@ type BalanceAllowance struct {
 
 // GetBalanceAllowance retrieves USDC balance and allowance from CLOB
 func (c *CLOBClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance, error) {
-	path := "/balance-allowance?asset_type=USDC"
+	path := "/balance-allowance?asset_type=COLLATERAL"
 	timestamp, signature := c.auth.SignL2Request("GET", path, "")
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)

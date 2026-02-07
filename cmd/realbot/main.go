@@ -1193,8 +1193,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			ask2 := tokenAsks[outcomes[1]]
 
 			if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
+				// Slippage buffer: willing to pay up to 1.5% more per side for guaranteed fill
+				// Must account for this in margin check to avoid trading with negative effective margin
+				const slippageBuffer = 0.015
 				sum := ask1 + ask2
-				margin := (1.0 - sum) * 100
+				bufferedSum := (ask1 + slippageBuffer) + (ask2 + slippageBuffer)
+				margin := (1.0 - bufferedSum) * 100 // Use buffered sum for margin check
 
 				if margin >= cfg.MinMarginPercent {
 					// Evaluate risk
@@ -1369,18 +1373,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					}
 
 					if true { // Always execute if we got here
-						// Add slippage buffer: willing to pay up to 1.5% more for guaranteed fill
-						const slippageBuffer = 0.015
+						// Use buffered prices (slippageBuffer already defined above)
 						price1 := ask1 + slippageBuffer
 						price2 := ask2 + slippageBuffer
 
-						// Recalculate with buffered prices including order cost overhead
-						bufferedSum := price1 + price2
+						// Calculate trade metrics with buffered prices
 						_, _, _, _ = calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
-						bufferedMargin := (1.0 - bufferedSum) * 100
 
 						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin, %.1f%% after slippage) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-							id, outcomes[0], ask1, outcomes[1], ask2, sum, margin, bufferedMargin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+							id, outcomes[0], ask1, outcomes[1], ask2, sum, (1.0-sum)*100, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -1427,34 +1428,36 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// Log results (but don't record to engine yet)
 						if side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FILLED")
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FILLED")
 						} else {
-							errMsg := "unknown error"
+							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
-								errMsg = err1.Error()
+								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
 							} else if res1 != nil && res1.Message != "" {
-								errMsg = res1.Message
+								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, res1.Message)
 							} else if res1 == nil {
-								errMsg = "nil response"
+								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: nil response", id)
+							} else {
+								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 							}
-							tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, errMsg)
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, bufferedMargin, "FAILED")
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FAILED")
 						}
 
 						if side2Success {
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FILLED")
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, "FILLED")
 						} else {
-							errMsg := "unknown error"
+							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
-								errMsg = err2.Error()
+								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
 							} else if res2 != nil && res2.Message != "" {
-								errMsg = res2.Message
+								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, res2.Message)
 							} else if res2 == nil {
-								errMsg = "nil response"
+								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: nil response", id)
+							} else {
+								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 							}
-							tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, errMsg)
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, bufferedMargin, "FAILED")
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, "FAILED")
 						}
 
 						// ═══════════════════════════════════════════════════════════════
@@ -1505,7 +1508,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								if retryErr == nil && retryRes != nil && retryRes.Success {
 									tui.LogEvent("[%s] ✅ ARB Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
 									retryCost := shares * retryPrice
-									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, bufferedMargin, "FILLED")
+									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, margin, "FILLED")
 									recoverySuccess = true
 									// Update the success flag and price for engine recording
 									if failedSide == 1 {
