@@ -443,6 +443,36 @@ func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender 
 	return c.SendRawTransaction(ctx, signedTx)
 }
 
+// GetCTFBalance returns the balance of a specific Conditional Token (ERC1155)
+func (c *PolygonClient) GetCTFBalance(ctx context.Context, address string, tokenID *big.Int) (*big.Int, error) {
+	// ERC1155 balanceOf(address,uint256) function selector: 0x00fdd58e
+	// Parameters:
+	// 1. account: address (padded to 32 bytes)
+	// 2. id: tokenID (padded to 32 bytes)
+
+	account := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(address), "0x")
+	idHex := fmt.Sprintf("%064x", tokenID)
+
+	data := "0x00fdd58e" + account + idHex
+
+	callParams := map[string]string{
+		"to":   CTFContract,
+		"data": data,
+	}
+
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CTF balance: %w", err)
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return nil, fmt.Errorf("failed to parse balance result: %w", err)
+	}
+
+	return parseHexBigInt(hexResult)
+}
+
 // GetMATICBalance returns the native MATIC balance for an address
 func (c *PolygonClient) GetMATICBalance(ctx context.Context, address string) (float64, error) {
 	result, err := c.call(ctx, "eth_getBalance", []interface{}{address, "latest"})

@@ -14,7 +14,7 @@ import (
 
 // Optimized HTTP client with connection pooling and timeouts for ultra-low latency
 var httpClient = &http.Client{
-	Timeout: 3 * time.Second, // Reduced timeout for faster failure detection
+	Timeout: 10 * time.Second, // Increased timeout for better stability on slower networks
 	Transport: &http.Transport{
 		MaxIdleConns:        200, // More idle connections
 		MaxIdleConnsPerHost: 50,  // More per-host connections
@@ -153,15 +153,6 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 				continue
 			}
 
-			// For markets that aren't active yet, only accept if they're in the future
-			// This handles pre-created markets
-			if !gm.Active {
-				// Only accept inactive markets if they're for future windows
-				if windowStart <= currentWindowStart {
-					continue
-				}
-			}
-
 			// Parse clobTokenIds (it's a JSON-encoded string array)
 			var tokenIds []string
 			if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err != nil || len(tokenIds) < 2 {
@@ -175,7 +166,7 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 				outcomes = []string{"Up", "Down"}
 			}
 
-			// Build Market from Gamma data with correct outcome mapping
+			// Build Market from Gamma data
 			market := &Market{
 				ConditionID: gm.ConditionID,
 				Slug:        core.SanitizeString(slug),
@@ -188,7 +179,6 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 			}
 
 			markets = append(markets, *market)
-			break // Found market for this asset
 		}
 	}
 
