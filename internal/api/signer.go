@@ -116,29 +116,33 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
 func (s *Signer) getDomainSeparator() [32]byte {
-	// keccak256("EIP712Domain(string name,string version,uint256 chainId)")
-	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId)"))
+	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
+	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
 
-	// Encode: typeHash + nameHash + versionHash + chainId
-	encoded := make([]byte, 128)
+	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
+	encoded := make([]byte, 32*5)
 	copy(encoded[0:32], typeHash[:])
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
+	
 	chainIdBytes := chainId.Bytes()
 	copy(encoded[128-len(chainIdBytes):128], chainIdBytes)
+	
+	copy(encoded[128:160], padLeft(verifyingContract, 32))
 
 	return keccak256(encoded)
 }
 
 // getOrderStructHash returns the struct hash for an order
 func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
-	// Order struct type hash
+	// Order struct type hash (EXACT field order required by Polymarket)
 	typeHash := keccak256([]byte(
-		"Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)",
+		"Order(address maker,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 salt,uint256 expiration,uint256 nonce,address signer,uint256 feeRateBps,uint8 side,uint8 signatureType)",
 	))
 
 	// Parse values
@@ -160,20 +164,23 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	signatureType := uint8(order.SignatureType)
 
 	// Encode all fields (32 bytes each, padded)
-	encoded := make([]byte, 12*32) // 12 fields
+	// Sequence: maker, taker, tokenId, makerAmount, takerAmount, salt, expiration, nonce, signer, feeRateBps, side, signatureType
+	encoded := make([]byte, 13*32) // typeHash + 12 fields
 	copy(encoded[0:32], typeHash[:])
-	copy(encoded[32:64], padLeft(salt.Bytes(), 32))
-	copy(encoded[64:96], padLeft(maker, 32))
-	copy(encoded[96:128], padLeft(signer, 32))
-	copy(encoded[128:160], padLeft(taker, 32))
-	copy(encoded[160:192], padLeft(tokenID.Bytes(), 32))
-	copy(encoded[192:224], padLeft(makerAmount.Bytes(), 32))
-	copy(encoded[224:256], padLeft(takerAmount.Bytes(), 32))
-	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
-	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
+	copy(encoded[32:64], padLeft(maker, 32))
+	copy(encoded[64:96], padLeft(taker, 32))
+	copy(encoded[96:128], padLeft(tokenID.Bytes(), 32))
+	copy(encoded[128:160], padLeft(makerAmount.Bytes(), 32))
+	copy(encoded[160:192], padLeft(takerAmount.Bytes(), 32))
+	copy(encoded[192:224], padLeft(salt.Bytes(), 32))
+	copy(encoded[224:256], padLeft(expiration.Bytes(), 32))
+	copy(encoded[256:288], padLeft(nonce.Bytes(), 32))
+	copy(encoded[288:320], padLeft(signer, 32))
 	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
+	
+	// uint8 fields are at the end of their 32-byte slots
 	encoded[352+31] = side
-	encoded[384-1] = signatureType
+	encoded[384+31] = signatureType
 
 	return keccak256(encoded)
 }

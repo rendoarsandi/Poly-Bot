@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -178,6 +179,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Build signed order
+	sideStr := "0"
+	if orderData.Side == "SELL" {
+		sideStr = "1"
+	}
+
 	signedOrder := &SignedOrder{
 		Order: OrderPayload{
 			Salt:          orderData.Salt,
@@ -190,7 +196,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			Expiration:    orderData.Expiration,
 			Nonce:         orderData.Nonce,
 			FeeRateBps:    orderData.FeeRateBps,
-			Side:          orderData.Side,
+			Side:          sideStr,
 			SignatureType: orderData.SignatureType,
 		},
 		Signature: signature,
@@ -257,7 +263,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		makerAmount, _ := strconv.ParseFloat(signedOrder.Order.MakerAmount, 64)
 		makerAmountUSDC := makerAmount / 1e6 // Convert from base units
 
-		if signedOrder.Order.Side == string(SideBuy) && allowance.Balance < makerAmountUSDC {
+		if signedOrder.Order.Side == "0" && allowance.Balance < makerAmountUSDC {
 			return &OrderResponse{
 				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
 				Success:  false,
@@ -292,15 +298,29 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	}
 	defer resp.Body.Close()
 
+	// Read full body for error reporting
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	
 	var result OrderResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		// If decoding fails, provide the status code and raw body
+		return &OrderResponse{
+			Success:  false,
+			ErrorMsg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
+		}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		result.Success = false
 		if result.ErrorMsg == "" {
-			result.ErrorMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			// Check if error is in another field like "error"
+			var raw map[string]interface{}
+			json.Unmarshal(bodyBytes, &raw)
+			if msg, ok := raw["error"].(string); ok {
+				result.ErrorMsg = msg
+			} else {
+				result.ErrorMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+			}
 		}
 	} else {
 		result.Success = true
