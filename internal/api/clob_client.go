@@ -136,31 +136,36 @@ type OrderResponse struct {
 func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
 	// Safety Check: Minimum Order Size
 	// Polymarket CLOB has a $1.00 minimum for marketable orders
-	// (Check based on req.Price * req.Size)
-	if (req.Price * req.Size) < 1.0 {
+	// For MARKET orders, req.Price is just a floor/ceiling (not actual fill price),
+	// so only enforce the check for LIMIT orders where price represents the real price
+	if req.OrderType != OrderTypeMarket && (req.Price*req.Size) < 1.0 {
 		return nil, fmt.Errorf("order size $%.2f is below the $1.00 minimum", req.Price*req.Size)
+	}
+	// For MARKET orders, enforce minimum share count instead (Polymarket requires >= 1 share)
+	if req.OrderType == OrderTypeMarket && req.Size < 1.0 {
+		return nil, fmt.Errorf("market order size %.2f shares is below the 1 share minimum", req.Size)
 	}
 
 	// Generate random salt
 	salt := generateSalt()
 
-	// Calculate amounts in base units (API expects 18 decimals for everything)
+	// Calculate amounts in base units (USDC and conditional tokens both use 6 decimals)
 	var makerAmount, takerAmount string
 	if req.Side == SideBuy {
 		// BUY: makerAmount = USDC, takerAmount = shares
 		usdcAmount := req.Price * req.Size
 		// Round USDC to 2 decimals
 		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
-		
-		// USDC to 18 decimals
+
+		// USDC to 6 decimals
 		uAmt := new(big.Int)
-		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e18))
+		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e6))
 		uFloat.Int(uAmt)
 		makerAmount = uAmt.String()
-		
-		// Shares to 18 decimals
+
+		// Shares to 6 decimals
 		sAmt := new(big.Int)
-		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e18))
+		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e6))
 		sFloat.Int(sAmt)
 		takerAmount = sAmt.String()
 	} else {
@@ -169,15 +174,15 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		// Round USDC to 2 decimals
 		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
 
-		// Shares to 18 decimals
+		// Shares to 6 decimals
 		sAmt := new(big.Int)
-		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e18))
+		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e6))
 		sFloat.Int(sAmt)
 		makerAmount = sAmt.String()
-		
-		// USDC to 18 decimals
+
+		// USDC to 6 decimals
 		uAmt := new(big.Int)
-		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e18))
+		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e6))
 		uFloat.Int(uAmt)
 		takerAmount = uAmt.String()
 	}
@@ -617,6 +622,37 @@ func (c *CLOBClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance
 	}
 
 	return &result, nil
+}
+
+// UpdateBalanceAllowance syncs the CLOB's cached view of on-chain allowance.
+// Must be called after on-chain approve to enable trading.
+func (c *CLOBClient) UpdateBalanceAllowance(ctx context.Context) error {
+	path := "/balance-allowance/update?asset_type=COLLATERAL&signature_type=0"
+	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build update-balance-allowance request: %w", err)
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to update balance allowance: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("update balance allowance failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // GetPositions retrieves all positions

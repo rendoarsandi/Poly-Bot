@@ -92,6 +92,14 @@ func run() error {
 	// Setup context
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
+	// Sync CLOB cached allowance with on-chain state
+	fmt.Println("🔄 Syncing CLOB balance allowance...")
+	if err := realTrader.UpdateBalanceAllowance(ctx); err != nil {
+		fmt.Printf("⚠️  Failed to update balance allowance: %v\n", err)
+	} else {
+		fmt.Println("✅ CLOB balance allowance synced")
+	}
+
 	// Display wallet info
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════")
@@ -633,11 +641,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	tokenFeeRates := make(map[string]int)
 	for tid, outcome := range tokenMap {
 		rate, err := restClient.GetFeeRate(ctx, tid)
-		if err == nil {
+		if err == nil && rate > 0 {
 			tokenFeeRates[outcome] = rate
-			if rate > 0 {
-				tui.LogEvent("[%s] ℹ️ Fee enabled for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
-			}
+			tui.LogEvent("[%s] ℹ️ Fee enabled for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
+		} else {
+			tokenFeeRates[outcome] = 1000 // Default taker fee
+			tui.LogEvent("[%s] ⚠️ Fee fetch failed for %s (err=%v, rate=%d), using default 1000 bps", id, outcome, err, rate)
 		}
 	}
 
@@ -1096,12 +1105,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[0]]
+								if rate == 0 {
+									rate = 1000
+								}
 								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 							}()
 
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[1]]
+								if rate == 0 {
+									rate = 1000
+								}
 								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 							}()
 
@@ -1151,6 +1166,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s (MARKET @ $0.10 floor)", id, retryCount, failedOutcome)
 
 									rate := tokenFeeRates[failedOutcome]
+									if rate == 0 {
+										rate = 1000
+									}
 									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 
 									if retryErr == nil && retryRes != nil && retryRes.Success {
@@ -1429,12 +1447,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						go func() {
 							defer wg.Done()
 							rate := tokenFeeRates[outcomes[0]]
+							if rate == 0 {
+								rate = 1000
+							}
 							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						go func() {
 							defer wg.Done()
 							rate := tokenFeeRates[outcomes[1]]
+							if rate == 0 {
+								rate = 1000
+							}
 							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
@@ -1526,6 +1550,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $0.99 cap)", id, retryCount, failedOutcome)
 
 								rate := tokenFeeRates[failedOutcome]
+								if rate == 0 {
+									rate = 1000
+								}
 								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 
 								if retryErr == nil && retryRes != nil && retryRes.Success {
@@ -1563,20 +1590,32 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 							// INSTANT MERGE: Immediately merge tokens to capture arb profit
 							// This converts YES+NO tokens back to USDC without waiting for expiry
-							go func(cid string, qty float64, o1, o2 string) {
+							go func(cid string, qty float64, o1, o2, tid0, tid1 string) {
 								// Small delay to let on-chain state settle after fills
-								time.Sleep(2 * time.Second)
+								time.Sleep(3 * time.Second)
 
 								mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 								defer cancel()
 
-								txHash, err := trader.MergeOnChain(mergeCtx, cid, qty)
+								// Query actual on-chain balances to merge the correct amount
+								mergeQty := qty
+								bal0, err0 := trader.GetCTFBalanceFloat(mergeCtx, tid0)
+								bal1, err1 := trader.GetCTFBalanceFloat(mergeCtx, tid1)
+								if err0 == nil && err1 == nil {
+									actualMin := math.Floor(math.Min(bal0, bal1))
+									if actualMin >= 1.0 {
+										mergeQty = actualMin
+										tui.LogEvent("[%s] 📊 On-chain balances: %s=%.2f, %s=%.2f → merging %.0f", id, o1, bal0, o2, bal1, mergeQty)
+									}
+								}
+
+								txHash, err := trader.MergeOnChain(mergeCtx, cid, mergeQty)
 								if err != nil {
 									tui.LogEvent("[%s] ⚠️ Merge failed: %v (will redeem at expiry)", id, err)
 									// Fallback: positions remain, will be redeemed at expiry via checkRedemption
 								} else {
 									// Update engine to reflect closed position
-									result := engine.MergeForMarket(id, o1, o2, qty)
+									result := engine.MergeForMarket(id, o1, o2, mergeQty)
 									// Note: Balance will be refreshed on next trade cycle via GetBalance
 									// We can't update currentBalance here as it's not in scope
 									if txHash != "" && len(txHash) >= 10 {
@@ -1585,7 +1624,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit", id, result.PnL)
 									}
 								}
-							}(market.ConditionID, shares, outcomes[0], outcomes[1])
+							}(market.ConditionID, shares, outcomes[0], outcomes[1], token0, token1)
 						} else if side1Success || side2Success {
 							// Only one side filled and recovery failed - record the unbalanced position
 							// This is important so the risk manager can see the exposure

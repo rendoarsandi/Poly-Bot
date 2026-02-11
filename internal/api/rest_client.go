@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"Market-bot/internal/core"
@@ -321,9 +323,22 @@ func (c *RestClient) GetFeeRate(ctx context.Context, tokenID string) (int, error
 		return 0, fmt.Errorf("failed to fetch fee rate: status %d", resp.StatusCode)
 	}
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read fee rate response: %w", err)
+	}
+
+	// Try plain number first (API may return e.g. "1000" or 1000)
+	trimmed := strings.TrimSpace(string(bodyBytes))
+	trimmed = strings.Trim(trimmed, "\"")
+	if v, err := strconv.Atoi(trimmed); err == nil {
+		return v, nil
+	}
+
+	// Fall back to JSON object parsing
 	var result FeeRateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("failed to decode fee rate: %w", err)
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("failed to decode fee rate (body=%q): %w", trimmed, err)
 	}
 
 	return result.FeeRateBps, nil

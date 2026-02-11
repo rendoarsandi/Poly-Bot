@@ -382,6 +382,12 @@ func (t *RealTrader) ForceRefreshBalance(ctx context.Context) (float64, error) {
 	return t.GetBalance(ctx)
 }
 
+// UpdateBalanceAllowance syncs the CLOB's cached allowance with on-chain state.
+// Call this before trading to ensure the CLOB knows about unlimited on-chain allowance.
+func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
+	return t.clob.UpdateBalanceAllowance(ctx)
+}
+
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
 	positions, err := t.clob.GetPositions(ctx)
 	if err != nil {
@@ -556,6 +562,20 @@ func (t *RealTrader) RecordLoss(amount float64) {
 // Address returns the wallet address
 func (t *RealTrader) Address() string {
 	return t.clob.Address()
+}
+
+// GetCTFBalanceFloat returns the on-chain CTF token balance as a float64 (human-readable shares)
+func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
+	tid := new(big.Int)
+	tid.SetString(tokenID, 10)
+	bal, err := t.polygon.GetCTFBalance(ctx, t.clob.Address(), tid)
+	if err != nil {
+		return 0, err
+	}
+	shares := new(big.Float).SetInt(bal)
+	shares = shares.Quo(shares, big.NewFloat(1e6))
+	s, _ := shares.Float64()
+	return s, nil
 }
 
 // WaitForFill waits for an order to be filled
