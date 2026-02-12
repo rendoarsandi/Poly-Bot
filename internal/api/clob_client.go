@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"Market-bot/internal/core"
@@ -254,15 +253,6 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		return nil, fmt.Errorf("failed to sign order: %w", err)
 	}
 
-	// Ensure tokenID is in hex format for JSON payload
-	tokenIDHex := req.TokenID
-	if !strings.HasPrefix(tokenIDHex, "0x") {
-		// Convert decimal string to hex
-		n := new(big.Int)
-		n.SetString(tokenIDHex, 10)
-		tokenIDHex = "0x" + n.Text(16)
-	}
-
 	// Build signed order
 	sideStr := "0"
 	if orderData.Side == 1 {
@@ -275,7 +265,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       tokenIDHex,
+			TokenID:       req.TokenID,
 			MakerAmount:   orderData.MakerAmount,
 			TakerAmount:   orderData.TakerAmount,
 			Expiration:    orderData.Expiration,
