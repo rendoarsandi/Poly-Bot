@@ -173,15 +173,15 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	} else {
 		// SELL: makerAmount = shares, takerAmount = USDC
 		//
-		// IMPORTANT: For side=SELL, CLOB price validation uses maker/taker.
+		// IMPORTANT: For side=SELL, CLOB price validation uses taker/maker.
 		// To encode a target binary price p in (0,1), we need:
-		//   maker/taker = p  =>  taker = maker/p
+		//   taker/maker = p  =>  taker = maker * p
 		// where maker is shares and taker is USDC.
 		if req.Price <= 0 {
 			return nil, fmt.Errorf("sell price must be > 0")
 		}
 
-		usdcAmount := req.Size / req.Price
+		usdcAmount := req.Size * req.Price
 		// Round USDC to 2 decimals
 		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
 
@@ -229,6 +229,10 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	selectedExchange := defaultExchangeContract
+	if c.signer.IsNegRiskToken(req.TokenID) {
+		selectedExchange = negRiskExchangeContract
+	}
+
 	if c.rest != nil {
 		negRiskInfo, err := c.rest.GetNegRisk(ctx, req.TokenID)
 		if err != nil {
@@ -271,7 +275,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       req.TokenID,
+			TokenID:       tokenIDHex,
 			MakerAmount:   orderData.MakerAmount,
 			TakerAmount:   orderData.TakerAmount,
 			Expiration:    orderData.Expiration,

@@ -28,8 +28,8 @@ func TestSigner_DomainSelectionByToken(t *testing.T) {
 	regular := signer.getDomainSeparator("0xregular-token")
 	negRisk := signer.getDomainSeparator("0xneg-risk-token")
 
-	expectedRegular := domainSeparatorForContract(regularExchangeVerifyingContract)
-	expectedNegRisk := domainSeparatorForContract(negRiskExchangeVerifyingContract)
+	expectedRegular := domainSeparatorForContract(defaultExchangeContract)
+	expectedNegRisk := domainSeparatorForContract(negRiskExchangeContract)
 
 	if regular != expectedRegular {
 		t.Fatalf("regular token should use regular exchange domain")
@@ -61,12 +61,12 @@ func TestSigner_SignatureRecoversWithSelectedDomain(t *testing.T) {
 		SignatureType: 0,
 	}
 
-	sigHex, err := signer.SignOrder(order)
+	sigHex, err := signer.SignOrderWithContract(order, negRiskExchangeContract)
 	if err != nil {
-		t.Fatalf("SignOrder failed: %v", err)
+		t.Fatalf("SignOrderWithContract failed: %v", err)
 	}
 
-	recovered, err := recoverSigner(sigHex, domainSeparatorForContract(negRiskExchangeVerifyingContract), signer.getOrderStructHash(order))
+	recovered, err := recoverSigner(sigHex, domainSeparatorForContract(negRiskExchangeContract), signer.getOrderStructHash(order))
 	if err != nil {
 		t.Fatalf("recoverSigner failed: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestSigner_SignatureRecoversWithSelectedDomain(t *testing.T) {
 		t.Fatalf("signature did not recover to signer under neg-risk domain")
 	}
 
-	wrongDomainRecovered, err := recoverSigner(sigHex, domainSeparatorForContract(regularExchangeVerifyingContract), signer.getOrderStructHash(order))
+	wrongDomainRecovered, err := recoverSigner(sigHex, domainSeparatorForContract(defaultExchangeContract), signer.getOrderStructHash(order))
 	if err == nil && strings.EqualFold(wrongDomainRecovered, signer.Address()) {
 		t.Fatalf("signature should not validate under regular domain for neg-risk token")
 	}
@@ -112,7 +112,7 @@ func TestCLOBClient_PlaceOrderSellRatioAcceptedWithCorrectDomain(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"unexpected makerAmount"}`))
 			return
 		}
-		if payload.Order.TakerAmount != "4080000" && payload.Order.TakerAmount != "4000000" {
+		if payload.Order.TakerAmount != "980000" && payload.Order.TakerAmount != "1000000" {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"unexpected takerAmount"}`))
 			return
@@ -135,7 +135,8 @@ func TestCLOBClient_PlaceOrderSellRatioAcceptedWithCorrectDomain(t *testing.T) {
 			orderForHash.Side = 1
 		}
 
-		recovered, err := recoverSigner(payload.Order.Signature, domainSeparatorForContract(negRiskExchangeVerifyingContract), clob.GetSigner().getOrderStructHash(orderForHash))
+		// Verify signature recovers with the NEG-RISK domain (asserting correct exchange selection)
+		recovered, err := recoverSigner(payload.Order.Signature, domainSeparatorForContract(negRiskExchangeContract), clob.GetSigner().getOrderStructHash(orderForHash))
 		if err != nil || !strings.EqualFold(recovered, clob.Address()) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"bad signature"}`))

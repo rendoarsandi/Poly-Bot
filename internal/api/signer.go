@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultExchangeContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
-	negRiskExchangeContract = "0xC5d563A36AE78145C45A50134D48A1215220ccf1"
+	negRiskExchangeContract = "0xC5d563A36AE781fCFD0F887C46f6bA2eE8f6a6f1"
 )
 
 // SignTransaction signs a legacy Ethereum transaction for the Polygon network
@@ -92,10 +92,6 @@ func NewSigner(privateKeyHex string, verifyingContract ...string) (*Signer, erro
 	}, nil
 }
 
-const (
-	regularExchangeVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
-	negRiskExchangeVerifyingContract = "0xC5d563A36AE781fCFD0F887C46f6bA2eE8f6a6f1"
-)
 
 // SetNegRiskTokenIDs defines which token IDs should be signed using the neg-risk domain.
 func (s *Signer) SetNegRiskTokenIDs(tokenIDs []string) {
@@ -116,7 +112,7 @@ func normalizeTokenID(tokenID string) string {
 	return strings.TrimSpace(strings.ToLower(tokenID))
 }
 
-func (s *Signer) isNegRiskToken(tokenID string) bool {
+func (s *Signer) IsNegRiskToken(tokenID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, ok := s.negRiskIDs[normalizeTokenID(tokenID)]
@@ -154,7 +150,7 @@ func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract strin
 	// Polymarket CLOB uses EIP-712 typed data signing
 	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
 
-	domainSeparator := s.getDomainSeparator(order.TokenID)
+	domainSeparator := s.getDomainSeparatorForContract(verifyingContract)
 	structHash := s.getOrderStructHash(order)
 
 	// EIP-712: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -176,18 +172,24 @@ func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract strin
 }
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
+// based on whether the token is a neg-risk token.
 func (s *Signer) getDomainSeparator(tokenID string) [32]byte {
+	verifyingContractAddr := defaultExchangeContract
+	if s.IsNegRiskToken(tokenID) {
+		verifyingContractAddr = negRiskExchangeContract
+	}
+	return s.getDomainSeparatorForContract(verifyingContractAddr)
+}
+
+// getDomainSeparatorForContract returns the EIP-712 domain separator for a specific contract.
+func (s *Signer) getDomainSeparatorForContract(contractAddr string) [32]byte {
 	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
-	verifyingContractAddr := regularExchangeVerifyingContract
-	if s.isNegRiskToken(tokenID) {
-		verifyingContractAddr = negRiskExchangeVerifyingContract
-	}
-	verifyingContract := parseAddress(verifyingContractAddr)
+	verifyingContract := parseAddress(contractAddr)
 
 	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
 	encoded := make([]byte, 32*5)
