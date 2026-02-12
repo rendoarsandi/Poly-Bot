@@ -49,7 +49,7 @@ func main() {
 	// 1. Find markets
 	fmt.Println("🔍 Searching for active 15m markets...")
 	markets := findMarkets(ctx, client)
-	
+
 	if len(markets) == 0 {
 		log.Fatal("❌ No active 15m markets found.")
 	}
@@ -57,7 +57,9 @@ func main() {
 	// 1.2 Asset selection
 	var selectedAsset string
 	var assetNames []string
-	for k := range markets { assetNames = append(assetNames, k) }
+	for k := range markets {
+		assetNames = append(assetNames, k)
+	}
 	sort.Strings(assetNames)
 
 	if len(markets) > 1 {
@@ -121,20 +123,32 @@ func main() {
 			if books, err := api.ParseOrderBooks(msg); err == nil {
 				for _, b := range books {
 					out := tokenToOutcome[b.AssetID]
-					if out == "" { continue }
+					if out == "" {
+						continue
+					}
 					// Find best bid (highest) and best ask (lowest) like realbot
 					bid, ask := 0.0, 1.0
 					for _, order := range b.Bids {
 						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > bid { bid = p }
+						if p > bid {
+							bid = p
+						}
 					}
 					for _, order := range b.Asks {
 						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p < ask && p > 0 { ask = p }
+						if p < ask && p > 0 {
+							ask = p
+						}
 					}
-					if ask >= 1.0 { ask = 0 }
-					if bid > 0 { tokenBids[out] = bid }
-					if ask > 0 { tokenAsks[out] = ask }
+					if ask >= 1.0 {
+						ask = 0
+					}
+					if bid > 0 {
+						tokenBids[out] = bid
+					}
+					if ask > 0 {
+						tokenAsks[out] = ask
+					}
 					tokenFullBids[out] = toMarketLevels(b.Bids)
 					tokenFullAsks[out] = toMarketLevels(b.Asks)
 				}
@@ -142,20 +156,32 @@ func main() {
 		case <-ticker.C:
 			// REST Refresh: always poll for fresh prices and depth (WS may lag or miss updates)
 			for tid, out := range tokenMap {
-				if rate, err := client.GetFeeRate(ctx, tid); err == nil { tokenFeeRates[out] = rate }
+				if rate, err := client.GetFeeRate(ctx, tid); err == nil {
+					tokenFeeRates[out] = rate
+				}
 				if book, err := client.GetOrderBook(ctx, tid); err == nil {
 					bid, ask := 0.0, 1.0
 					for _, b := range book.Bids {
 						p, _ := strconv.ParseFloat(b.Price, 64)
-						if p > bid { bid = p }
+						if p > bid {
+							bid = p
+						}
 					}
 					for _, a := range book.Asks {
 						p, _ := strconv.ParseFloat(a.Price, 64)
-						if p < ask && p > 0 { ask = p }
+						if p < ask && p > 0 {
+							ask = p
+						}
 					}
-					if ask >= 1.0 { ask = 0 }
-					if bid > 0 { tokenBids[out] = bid }
-					if ask > 0 { tokenAsks[out] = ask }
+					if ask >= 1.0 {
+						ask = 0
+					}
+					if bid > 0 {
+						tokenBids[out] = bid
+					}
+					if ask > 0 {
+						tokenAsks[out] = ask
+					}
 					tokenFullBids[out] = toMarketLevels(book.Bids)
 					tokenFullAsks[out] = toMarketLevels(book.Asks)
 				}
@@ -171,12 +197,18 @@ func main() {
 			for _, out := range outcomes {
 				b, a := tokenBids[out], tokenAsks[out]
 				bs, as := 0.0, 0.0
-				if len(tokenFullBids[out]) > 0 { bs = tokenFullBids[out][0].Size }
-				if len(tokenFullAsks[out]) > 0 { as = tokenFullAsks[out][0].Size }
+				if len(tokenFullBids[out]) > 0 {
+					bs = tokenFullBids[out][0].Size
+				}
+				if len(tokenFullAsks[out]) > 0 {
+					as = tokenFullAsks[out][0].Size
+				}
 				fmt.Printf("%-12s | %5.3f (%-6.0f) | %5.3f (%-6.0f) | %5.3f\n", out, b, bs, a, as, a-b)
 			}
 			sum := tokenAsks[outcomes[0]] + tokenAsks[outcomes[1]]
-			if sum < 1.0 && sum > 0.1 { fmt.Printf("\n💰 ARB: %.3f (%.1f%%)\n", sum, (1-sum)*100) }
+			if sum < 1.0 && sum > 0.1 {
+				fmt.Printf("\n💰 ARB: %.3f (%.1f%%)\n", sum, (1-sum)*100)
+			}
 			fmt.Println("\nPress ENTER to stop live view and take action...")
 		case <-inputChan:
 			goto takeAction
@@ -197,9 +229,9 @@ takeAction:
 	fmt.Scanln(&amt)
 
 	if choice == 1 {
-		executeBoth(ctx, trader, market, outcomes, "BUY", amt/0.5, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, market, outcomes, "BUY", amt, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	} else {
-		executeBoth(ctx, trader, market, outcomes, "SELL", amt/0.5, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, market, outcomes, "SELL", amt, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	}
 }
 
@@ -208,12 +240,15 @@ func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*ap
 	assets := []string{"btc", "eth"}
 	for {
 		select {
-		case <-ctx.Done(): return found
+		case <-ctx.Done():
+			return found
 		default:
 			if ms, err := restClient.Get15mMarkets(ctx, nil); err == nil {
 				for _, m := range ms {
 					et, _ := paper.ParseEndTimeFromSlug(m.Slug)
-					if time.Now().After(et) || time.Until(et) < 30*time.Second { continue }
+					if time.Now().After(et) || time.Until(et) < 30*time.Second {
+						continue
+					}
 					for _, a := range assets {
 						if strings.Contains(strings.ToLower(m.Slug), a) {
 							mCopy := m
@@ -222,7 +257,9 @@ func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*ap
 					}
 				}
 			}
-			if len(found) > 0 { return found }
+			if len(found) > 0 {
+				return found
+			}
 			fmt.Print(".")
 			time.Sleep(2 * time.Second)
 		}
@@ -232,39 +269,67 @@ func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*ap
 func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
 	shares := targetShares
 	if side == "BUY" {
-		asks1, asks2 := tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]]
+		asks1 := append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...)
+		asks2 := append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[1]]...)
 		sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 		sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
 		var totalLiq float64
 		i, j := 0, 0
 		for i < len(asks1) && j < len(asks2) {
-			if asks1[i].Price+asks2[j].Price > 1.10 { break }
+			if asks1[i].Price+asks2[j].Price > 1.10 {
+				break
+			}
 			matched := math.Min(asks1[i].Size, asks2[j].Size)
 			totalLiq += matched
-			if asks1[i].Size <= asks2[j].Size { asks2[j].Size -= asks1[i].Size; i++ } else { asks1[i].Size -= asks2[j].Size; j++ }
+			if asks1[i].Size <= asks2[j].Size {
+				asks2[j].Size -= asks1[i].Size
+				i++
+			} else {
+				asks1[i].Size -= asks2[j].Size
+				j++
+			}
 		}
-		if shares > totalLiq { fmt.Printf("⚠️ Capping shares: %.2f -> %.2f\n", shares, totalLiq); shares = totalLiq }
+		if shares > totalLiq {
+			fmt.Printf("⚠️ Capping shares: %.2f -> %.2f\n", shares, totalLiq)
+			shares = totalLiq
+		}
 	} else {
-		bids1, bids2 := tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]]
+		bids1 := append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...)
+		bids2 := append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...)
 		sort.Slice(bids1, func(i, j int) bool { return bids1[i].Price > bids1[j].Price })
 		sort.Slice(bids2, func(i, j int) bool { return bids2[i].Price > bids2[j].Price })
 		var totalLiq float64
 		i, j := 0, 0
 		for i < len(bids1) && j < len(bids2) {
-			if bids1[i].Price+bids2[j].Price < 0.90 { break }
+			if bids1[i].Price+bids2[j].Price < 0.90 {
+				break
+			}
 			matched := math.Min(bids1[i].Size, bids2[j].Size)
 			totalLiq += matched
-			if bids1[i].Size <= bids2[j].Size { bids2[j].Size -= bids1[i].Size; i++ } else { bids1[i].Size -= bids2[j].Size; j++ }
+			if bids1[i].Size <= bids2[j].Size {
+				bids2[j].Size -= bids1[i].Size
+				i++
+			} else {
+				bids1[i].Size -= bids2[j].Size
+				j++
+			}
 		}
-		if shares > totalLiq { fmt.Printf("⚠️ Capping shares: %.2f -> %.2f\n", shares, totalLiq); shares = totalLiq }
+		if shares > totalLiq {
+			fmt.Printf("⚠️ Capping shares: %.2f -> %.2f\n", shares, totalLiq)
+			shares = totalLiq
+		}
 	}
 
-	if shares < 1.0 { log.Fatal("No liquidity.") }
+	if shares < 1.0 {
+		log.Fatal("No liquidity.")
+	}
 	shares = math.Floor(shares)
 	fmt.Printf("🚀 Executing: %s %.0f shares. Confirm? (y/n): ", side, shares)
 	var confirm string
 	fmt.Scanln(&confirm)
-	if strings.ToLower(confirm) != "y" { log.Fatal("Cancelled.") }
+	if strings.ToLower(confirm) != "y" {
+		log.Fatal("Cancelled.")
+	}
 
 	// For SELL: Split USDC into YES+NO tokens first
 	if side == "SELL" {
@@ -294,10 +359,16 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			if side == "BUY" {
 				results[i], errs[i] = trader.Buy(ctx, tid, o, 0.99, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
-				// Use bid price as the sell price floor (minimum acceptable)
-				bidPrice := tokenFullBids[o][0].Price
+				// Use bid price as the sell price floor (minimum acceptable), clamped to valid API range.
+				bidPrice := 0.01
+				if len(tokenFullBids[o]) > 0 {
+					bidPrice = tokenFullBids[o][0].Price
+				}
 				if bidPrice <= 0 {
-					bidPrice = 0.01 // Absolute minimum
+					bidPrice = 0.01
+				}
+				if bidPrice >= 1 {
+					bidPrice = 0.99
 				}
 				results[i], errs[i] = trader.Sell(ctx, tid, o, bidPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}
@@ -353,14 +424,21 @@ func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
 
 func getTokenIDForOutcome(m *api.Market, outcome string) string {
 	for _, t := range m.Tokens {
-		if strings.EqualFold(t.Outcome, outcome) { return t.TokenID }
+		if strings.EqualFold(t.Outcome, outcome) {
+			return t.TokenID
+		}
 	}
 	return ""
 }
 
 func printTradeResult(act string, res *trading.TradeResult, err error) {
 	if err != nil || (res != nil && !res.Success) {
-		msg := "Error"; if err != nil { msg = err.Error() } else if res != nil { msg = res.Message }
+		msg := "Error"
+		if err != nil {
+			msg = err.Error()
+		} else if res != nil {
+			msg = res.Message
+		}
 		fmt.Printf("FAILED: %s - %s\n", act, msg)
 	} else {
 		fmt.Printf("SUCCESS: %s - OrderID: %s\n", act, res.OrderID)
