@@ -172,7 +172,16 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		takerAmount = sAmt.String()
 	} else {
 		// SELL: makerAmount = shares, takerAmount = USDC
-		usdcAmount := req.Price * req.Size
+		//
+		// IMPORTANT: For side=SELL, CLOB price validation uses maker/taker.
+		// To encode a target binary price p in (0,1), we need:
+		//   maker/taker = p  =>  taker = maker/p
+		// where maker is shares and taker is USDC.
+		if req.Price <= 0 {
+			return nil, fmt.Errorf("sell price must be > 0")
+		}
+
+		usdcAmount := req.Size / req.Price
 		// Round USDC to 2 decimals
 		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
 

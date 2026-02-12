@@ -112,7 +112,7 @@ func TestCLOBClient_PlaceOrderSellRatioAcceptedWithCorrectDomain(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"unexpected makerAmount"}`))
 			return
 		}
-		if payload.Order.TakerAmount != "980000" && payload.Order.TakerAmount != "1000000" {
+		if payload.Order.TakerAmount != "4080000" && payload.Order.TakerAmount != "4000000" {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"unexpected takerAmount"}`))
 			return
