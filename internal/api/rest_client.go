@@ -35,17 +35,23 @@ var httpClient = &http.Client{
 }
 
 type Token struct {
-	TokenID string `json:"token_id"`
-	Outcome string `json:"outcome"`
+	TokenID         string `json:"token_id"`
+	Outcome         string `json:"outcome"`
+	NegRisk         bool   `json:"neg_risk,omitempty"`
+	NegRiskMarketID string `json:"neg_risk_market_id,omitempty"`
+	NegRiskExchange string `json:"neg_risk_exchange_address,omitempty"`
 }
 
 type Market struct {
-	Active      bool    `json:"active"`
-	Closed      bool    `json:"closed"`
-	ConditionID string  `json:"condition_id"`
-	Slug        string  `json:"slug"`
-	MarketSlug  string  `json:"market_slug"` // Used in list response
-	Tokens      []Token `json:"tokens"`
+	Active                 bool    `json:"active"`
+	Closed                 bool    `json:"closed"`
+	ConditionID            string  `json:"condition_id"`
+	Slug                   string  `json:"slug"`
+	MarketSlug             string  `json:"market_slug"` // Used in list response
+	NegRisk                bool    `json:"neg_risk,omitempty"`
+	NegRiskMarketID        string  `json:"neg_risk_market_id,omitempty"`
+	NegRiskExchangeAddress string  `json:"neg_risk_exchange_address,omitempty"`
+	Tokens                 []Token `json:"tokens"`
 }
 
 type ListMarketsResponse struct {
@@ -261,6 +267,163 @@ type OrderBookResponse struct {
 }
 
 // GetOrderBook fetches the current order book for a token from REST API
+
+// NegRiskInfo captures token/market neg-risk metadata used to select exchange contract for signing.
+type NegRiskInfo struct {
+	TokenID         string
+	MarketID        string
+	NegRisk         bool
+	NegRiskMarketID string
+	ExchangeAddress string
+}
+
+// GetNegRisk fetches neg-risk metadata for a token and resolves the target exchange address when available.
+func (c *RestClient) GetNegRisk(ctx context.Context, tokenID string) (*NegRiskInfo, error) {
+	info := &NegRiskInfo{TokenID: tokenID}
+
+	book, err := c.GetOrderBook(ctx, tokenID)
+	if err == nil && book != nil {
+		info.MarketID = strings.TrimSpace(book.Market)
+	}
+
+	endpoints := []string{
+		fmt.Sprintf("%s/markets?clob_token_ids=%s", c.GammaURL, tokenID),
+		fmt.Sprintf("%s/markets?clobTokenIds=%s", c.GammaURL, tokenID),
+	}
+	if info.MarketID != "" {
+		endpoints = append(endpoints, fmt.Sprintf("%s/markets?id=%s", c.GammaURL, info.MarketID))
+		endpoints = append(endpoints, fmt.Sprintf("%s/markets?condition_ids=%s", c.GammaURL, info.MarketID))
+	}
+
+	for _, url := range endpoints {
+		select {
+		case <-c.limiter:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+
+		var payload []map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if err != nil || len(payload) == 0 {
+			continue
+		}
+
+		if populateNegRiskInfo(info, payload[0], tokenID) {
+			return info, nil
+		}
+	}
+
+	return info, nil
+}
+
+func populateNegRiskInfo(info *NegRiskInfo, market map[string]interface{}, tokenID string) bool {
+	if info.MarketID == "" {
+		info.MarketID = stringFromKeys(market, "condition_id", "conditionId", "id")
+	}
+
+	if b, ok := boolFromKeys(market, "neg_risk", "negRisk"); ok {
+		info.NegRisk = b
+	}
+	if v := stringFromKeys(market, "neg_risk_market_id", "negRiskMarketID", "negRiskMarketId"); v != "" {
+		info.NegRiskMarketID = v
+	}
+	if v := stringFromKeys(market, "neg_risk_exchange_address", "negRiskExchangeAddress", "neg_risk_exchange"); v != "" {
+		info.ExchangeAddress = normalizeAddress(v)
+	}
+
+	if tokens, ok := market["tokens"].([]interface{}); ok {
+		for _, t := range tokens {
+			tok, ok := t.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			tID := stringFromKeys(tok, "token_id", "tokenId", "clob_token_id", "clobTokenId")
+			if tID != "" && tID != tokenID {
+				continue
+			}
+			if b, ok := boolFromKeys(tok, "neg_risk", "negRisk"); ok {
+				info.NegRisk = b
+			}
+			if v := stringFromKeys(tok, "neg_risk_market_id", "negRiskMarketID", "negRiskMarketId"); v != "" {
+				info.NegRiskMarketID = v
+			}
+			if v := stringFromKeys(tok, "neg_risk_exchange_address", "negRiskExchangeAddress", "neg_risk_exchange"); v != "" {
+				info.ExchangeAddress = normalizeAddress(v)
+			}
+		}
+	}
+
+	return info.NegRisk || info.ExchangeAddress != "" || info.NegRiskMarketID != ""
+}
+
+func normalizeAddress(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "0x") {
+		return "0x" + v
+	}
+	return v
+}
+
+func boolFromKeys(m map[string]interface{}, keys ...string) (bool, bool) {
+	for _, k := range keys {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		switch x := v.(type) {
+		case bool:
+			return x, true
+		case string:
+			x = strings.ToLower(strings.TrimSpace(x))
+			if x == "true" {
+				return true, true
+			}
+			if x == "false" {
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
+func stringFromKeys(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		v, ok := m[k]
+		if !ok || v == nil {
+			continue
+		}
+		switch x := v.(type) {
+		case string:
+			if strings.TrimSpace(x) != "" {
+				return strings.TrimSpace(x)
+			}
+		case float64:
+			if x == float64(int64(x)) {
+				return strconv.FormatInt(int64(x), 10)
+			}
+			return strconv.FormatFloat(x, 'f', -1, 64)
+		}
+	}
+	return ""
+}
+
 func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBookResponse, error) {
 	// Rate limit check
 	select {

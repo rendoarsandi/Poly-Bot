@@ -21,6 +21,7 @@ type CLOBClient struct {
 	BaseURL  string
 	signer   *Signer
 	auth     *APIAuth
+	rest     *RestClient
 	testMode bool
 }
 
@@ -39,6 +40,7 @@ func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLO
 			APISecret:  apiSecret,
 			Passphrase: apiPassphrase,
 		},
+		rest:     NewRestClient("https://clob.polymarket.com"),
 		testMode: false,
 	}, nil
 }
@@ -217,8 +219,24 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		SignatureType: 0, // EOA signature
 	}
 
-	// Sign the order
-	signature, err := c.signer.SignOrder(orderData)
+	selectedExchange := defaultExchangeContract
+	if c.rest != nil {
+		negRiskInfo, err := c.rest.GetNegRisk(ctx, req.TokenID)
+		if err != nil {
+			fmt.Printf("[PlaceOrder] neg-risk lookup failed token_id=%s err=%v; using default exchange=%s\n", req.TokenID, err, selectedExchange)
+		} else {
+			if negRiskInfo.NegRisk {
+				if negRiskInfo.ExchangeAddress == "" {
+					return nil, fmt.Errorf("neg-risk token %s missing neg-risk exchange address", req.TokenID)
+				}
+				selectedExchange = negRiskInfo.ExchangeAddress
+			}
+			fmt.Printf("[PlaceOrder] token_id=%s neg_risk=%t neg_risk_market_id=%s exchange=%s\n", req.TokenID, negRiskInfo.NegRisk, negRiskInfo.NegRiskMarketID, selectedExchange)
+		}
+	}
+
+	// Sign the order with domain matching selected exchange contract
+	signature, err := c.signer.SignOrderWithContract(orderData, selectedExchange)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign order: %w", err)
 	}
@@ -269,7 +287,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	payload["order"] = signedOrder.Order
 	payload["owner"] = c.auth.APIKey
-	
+
 	// Polymarket's orderType field at the top level
 	if tif != "" {
 		payload["orderType"] = string(tif)
@@ -351,7 +369,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	// Read full body for error reporting
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		// Log the failed request and response for debugging
 		fmt.Printf("\n--- API ERROR DEBUG ---\n")

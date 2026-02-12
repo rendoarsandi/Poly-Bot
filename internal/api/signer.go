@@ -18,6 +18,10 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+const (
+	defaultExchangeContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+)
+
 // SignTransaction signs a legacy Ethereum transaction for the Polygon network
 func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLimit uint64, gasPrice *big.Int, data string) (string, error) {
 	toAddr := common.HexToAddress(to)
@@ -90,10 +94,15 @@ type OrderData struct {
 
 // SignOrder signs an order using EIP-712
 func (s *Signer) SignOrder(order *OrderData) (string, error) {
+	return s.SignOrderWithContract(order, defaultExchangeContract)
+}
+
+// SignOrderWithContract signs an order using EIP-712 for a specific verifying contract.
+func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract string) (string, error) {
 	// Polymarket CLOB uses EIP-712 typed data signing
 	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
 
-	domainSeparator := s.getDomainSeparator()
+	domainSeparator := s.getDomainSeparator(verifyingContract)
 	structHash := s.getOrderStructHash(order)
 
 	// EIP-712: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -115,27 +124,27 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 }
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
-func (s *Signer) getDomainSeparator() [32]byte {
+func (s *Signer) getDomainSeparator(verifyingContract string) [32]byte {
 	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
-	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+	contractAddress := parseAddress(verifyingContract)
 
 	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
 	encoded := make([]byte, 32*5)
 	copy(encoded[0:32], typeHash[:])
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
-	
+
 	// ChainId as uint256 (32 bytes)
 	chainIdBytes := padLeft(chainId.Bytes(), 32)
 	copy(encoded[96:128], chainIdBytes)
-	
+
 	// address as uint256 (32 bytes, padded left)
-	copy(encoded[128:160], padLeft(verifyingContract, 32))
+	copy(encoded[128:160], padLeft(contractAddress, 32))
 
 	return keccak256(encoded)
 }
@@ -176,7 +185,7 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
 	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
 	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
-	
+
 	// uint8 fields are at the end of their 32-byte slots (padded left)
 	encoded[352+31] = side
 	encoded[384+31] = signatureType
