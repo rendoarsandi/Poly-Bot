@@ -288,8 +288,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			tid := getTokenIDForOutcome(market, o)
 			rate := tokenFeeRates[o]
 			if rate == 0 {
-				rate = 1000 // Default taker fee rate for Polymarket 15m markets
-				log.Printf("⚠️ Using default fee rate %d bps for %s (fetch may have failed)", rate, o)
+				// Keep fallback at 0 bps. A guessed high fee rate can produce invalid orders.
+				rate = 0
+				log.Printf("⚠️ Using default fee rate %d bps for %s (fee-rate fetch failed)", rate, o)
 			}
 			if side == "BUY" {
 				results[i], errs[i] = trader.Buy(ctx, tid, o, 0.99, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)

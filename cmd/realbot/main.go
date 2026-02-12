@@ -645,8 +645,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			tokenFeeRates[outcome] = rate
 			tui.LogEvent("[%s] ℹ️ Fee enabled for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
 		} else {
-			tokenFeeRates[outcome] = 1000 // Default taker fee
-			tui.LogEvent("[%s] ⚠️ Fee fetch failed for %s (err=%v, rate=%d), using default 1000 bps", id, outcome, err, rate)
+			// Keep fallback at 0 bps. A guessed high fee rate can produce invalid orders.
+			tokenFeeRates[outcome] = 0
+			tui.LogEvent("[%s] ⚠️ Fee fetch failed for %s (err=%v, rate=%d), using default 0 bps", id, outcome, err, rate)
 		}
 	}
 
@@ -1105,18 +1106,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[0]]
-								if rate == 0 {
-									rate = 1000
-								}
 								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 							}()
 
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[1]]
-								if rate == 0 {
-									rate = 1000
-								}
 								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 							}()
 
@@ -1166,9 +1161,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s (MARKET @ $0.10 floor)", id, retryCount, failedOutcome)
 
 									rate := tokenFeeRates[failedOutcome]
-									if rate == 0 {
-										rate = 1000
-									}
 									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 
 									if retryErr == nil && retryRes != nil && retryRes.Success {
@@ -1447,18 +1439,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						go func() {
 							defer wg.Done()
 							rate := tokenFeeRates[outcomes[0]]
-							if rate == 0 {
-								rate = 1000
-							}
 							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						go func() {
 							defer wg.Done()
 							rate := tokenFeeRates[outcomes[1]]
-							if rate == 0 {
-								rate = 1000
-							}
 							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
@@ -1550,9 +1536,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $0.99 cap)", id, retryCount, failedOutcome)
 
 								rate := tokenFeeRates[failedOutcome]
-								if rate == 0 {
-									rate = 1000
-								}
 								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 
 								if retryErr == nil && retryRes != nil && retryRes.Success {
