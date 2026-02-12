@@ -200,7 +200,7 @@ func (s *Signer) getDomainSeparator(tokenID string) [32]byte {
 	copy(encoded[96:128], chainIdBytes)
 
 	// address as uint256 (32 bytes, padded left)
-	copy(encoded[128:160], padLeft(contractAddress, 32))
+	copy(encoded[128:160], padLeft(verifyingContract, 32))
 
 	return keccak256(encoded)
 }
