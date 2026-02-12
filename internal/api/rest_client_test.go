@@ -59,3 +59,44 @@ func TestListMarkets(t *testing.T) {
 		t.Errorf("Expected 2 markets, got %d", len(markets))
 	}
 }
+
+func TestGetNegRisk(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/book":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"market":"condition-1","asset_id":"token-1","timestamp":"0","bids":[],"asks":[]}`))
+		case r.URL.Path == "/markets":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`[
+				{
+					"condition_id":"condition-1",
+					"neg_risk": true,
+					"neg_risk_market_id": "neg-market-1",
+					"neg_risk_exchange_address": "0xabc",
+					"tokens": [{"token_id":"token-1","neg_risk": true}]
+				}
+			]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewRestClient(server.URL)
+	client.GammaURL = server.URL
+
+	info, err := client.GetNegRisk(context.Background(), "token-1")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if !info.NegRisk {
+		t.Fatalf("Expected neg-risk token")
+	}
+	if info.ExchangeAddress != "0xabc" {
+		t.Fatalf("Expected exchange address 0xabc, got %s", info.ExchangeAddress)
+	}
+	if info.NegRiskMarketID != "neg-market-1" {
+		t.Fatalf("Expected neg-risk market id neg-market-1, got %s", info.NegRiskMarketID)
+	}
+}

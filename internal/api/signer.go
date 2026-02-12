@@ -18,6 +18,11 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+const (
+	defaultExchangeContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+	negRiskExchangeContract = "0xC5d563A36AE78145C45A50134D48A1215220ccf1"
+)
+
 // SignTransaction signs a legacy Ethereum transaction for the Polygon network
 func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLimit uint64, gasPrice *big.Int, data string) (string, error) {
 	toAddr := common.HexToAddress(to)
@@ -108,10 +113,15 @@ type OrderData struct {
 
 // SignOrder signs an order using EIP-712
 func (s *Signer) SignOrder(order *OrderData) (string, error) {
+	return s.SignOrderWithContract(order, defaultExchangeContract)
+}
+
+// SignOrderWithContract signs an order using EIP-712 for a specific verifying contract.
+func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract string) (string, error) {
 	// Polymarket CLOB uses EIP-712 typed data signing
 	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
 
-	domainSeparator := s.getDomainSeparator()
+	domainSeparator := s.getDomainSeparator(verifyingContract)
 	structHash := s.getOrderStructHash(order)
 
 	// EIP-712: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -133,14 +143,14 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 }
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
-func (s *Signer) getDomainSeparator() [32]byte {
+func (s *Signer) getDomainSeparator(verifyingContract string) [32]byte {
 	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
-	verifyingContract := s.verifyingContractRaw[:]
+	contractAddress := parseAddress(verifyingContract)
 
 	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
 	encoded := make([]byte, 32*5)
@@ -153,7 +163,7 @@ func (s *Signer) getDomainSeparator() [32]byte {
 	copy(encoded[96:128], chainIdBytes)
 
 	// address as uint256 (32 bytes, padded left)
-	copy(encoded[128:160], padLeft(verifyingContract, 32))
+	copy(encoded[128:160], padLeft(contractAddress, 32))
 
 	return keccak256(encoded)
 }
