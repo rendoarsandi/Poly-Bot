@@ -226,10 +226,10 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			fmt.Printf("[PlaceOrder] neg-risk lookup failed token_id=%s err=%v; using default exchange=%s\n", req.TokenID, err, selectedExchange)
 		} else {
 			if negRiskInfo.NegRisk {
-				if negRiskInfo.ExchangeAddress == "" {
-					return nil, fmt.Errorf("neg-risk token %s missing neg-risk exchange address", req.TokenID)
+				selectedExchange = negRiskExchangeContract
+				if negRiskInfo.ExchangeAddress != "" {
+					selectedExchange = negRiskInfo.ExchangeAddress
 				}
-				selectedExchange = negRiskInfo.ExchangeAddress
 			}
 			fmt.Printf("[PlaceOrder] token_id=%s neg_risk=%t neg_risk_market_id=%s exchange=%s\n", req.TokenID, negRiskInfo.NegRisk, negRiskInfo.NegRiskMarketID, selectedExchange)
 		}

@@ -20,6 +20,7 @@ import (
 
 const (
 	defaultExchangeContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+	negRiskExchangeContract = "0xC5d563A36AE78145C45A50134D48A1215220ccf1"
 )
 
 // SignTransaction signs a legacy Ethereum transaction for the Polygon network
