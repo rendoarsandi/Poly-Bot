@@ -60,7 +60,7 @@ func setupRealClients(t *testing.T) (*api.PolygonClient, *api.Signer, *core.Conf
 
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
-	signer, err := api.NewSigner(cfg.PK)
+	signer, err := api.NewSigner(cfg.PK, api.DefaultVerifyingContract)
 	if err != nil {
 		t.Fatalf("Failed to create signer: %v", err)
 	}

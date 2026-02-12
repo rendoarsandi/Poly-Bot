@@ -19,6 +19,11 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+const (
+	defaultExchangeContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+	negRiskExchangeContract = "0xC5d563A36AE78145C45A50134D48A1215220ccf1"
+)
+
 // SignTransaction signs a legacy Ethereum transaction for the Polygon network
 func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLimit uint64, gasPrice *big.Int, data string) (string, error) {
 	toAddr := common.HexToAddress(to)
@@ -54,15 +59,31 @@ type Signer struct {
 	negRiskIDs map[string]struct{}
 }
 
+const DefaultVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
 // NewSigner creates a new signer from a hex-encoded private key
-func NewSigner(privateKeyHex string) (*Signer, error) {
+func NewSigner(privateKeyHex string, verifyingContract ...string) (*Signer, error) {
 	pk := strings.TrimPrefix(privateKeyHex, "0x")
 	privateKey, err := crypto.HexToECDSA(pk)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 
+	contractHex := DefaultVerifyingContract
+	if len(verifyingContract) > 0 {
+		contractHex = strings.TrimSpace(verifyingContract[0])
+	}
+	if contractHex == "" {
+		return nil, fmt.Errorf("invalid verifying contract: empty address")
+	}
+	if !common.IsHexAddress(contractHex) {
+		return nil, fmt.Errorf("invalid verifying contract: malformed address %q", contractHex)
+	}
+	contractAddr := common.HexToAddress(contractHex)
+
 	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	var contract [20]byte
+	copy(contract[:], contractAddr.Bytes())
 
 	return &Signer{
 		privateKey: privateKey,
@@ -125,6 +146,11 @@ type OrderData struct {
 
 // SignOrder signs an order using EIP-712
 func (s *Signer) SignOrder(order *OrderData) (string, error) {
+	return s.SignOrderWithContract(order, defaultExchangeContract)
+}
+
+// SignOrderWithContract signs an order using EIP-712 for a specific verifying contract.
+func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract string) (string, error) {
 	// Polymarket CLOB uses EIP-712 typed data signing
 	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
 
@@ -174,7 +200,7 @@ func (s *Signer) getDomainSeparator(tokenID string) [32]byte {
 	copy(encoded[96:128], chainIdBytes)
 
 	// address as uint256 (32 bytes, padded left)
-	copy(encoded[128:160], padLeft(verifyingContract, 32))
+	copy(encoded[128:160], padLeft(contractAddress, 32))
 
 	return keccak256(encoded)
 }
