@@ -27,7 +27,7 @@ type CLOBClient struct {
 
 // NewCLOBClient creates a new authenticated CLOB client
 func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLOBClient, error) {
-	signer, err := NewSigner(privateKeyHex)
+	signer, err := NewSigner(privateKeyHex, DefaultVerifyingContract)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create signer: %w", err)
 	}

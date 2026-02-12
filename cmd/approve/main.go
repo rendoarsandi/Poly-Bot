@@ -27,9 +27,9 @@ func main() {
 	// api.CTFContract is defined in internal/api/polygon.go
 
 	fmt.Println("🚀 Initializing Enhanced Approval Script...")
-	
+
 	// Create signer
-	signer, err := api.NewSigner(cfg.PK)
+	signer, err := api.NewSigner(cfg.PK, api.DefaultVerifyingContract)
 	if err != nil {
 		log.Fatalf("Failed to create signer: %v", err)
 	}

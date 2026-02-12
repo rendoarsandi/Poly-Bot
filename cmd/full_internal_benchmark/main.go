@@ -35,7 +35,7 @@ func main() {
 	messageBytes := []byte(rawWSMessage)
 
 	// Setup components
-	signer, _ := api.NewSigner(cfg.PK)
+	signer, _ := api.NewSigner(cfg.PK, api.DefaultVerifyingContract)
 	engine := paper.NewEngine(1000.0)
 	orderBook := paper.NewOrderBook()
 	outcomes := []string{"Up", "Down"}
@@ -86,7 +86,7 @@ func main() {
 					Salt: "1", Maker: signer.Address(), Signer: signer.Address(),
 					Taker:   "0x0000000000000000000000000000000000000000",
 					TokenID: "token1_id", MakerAmount: "480000", TakerAmount: "1000000",
-					Expiration: "1767882600", Nonce: "0", FeeRateBps: "0", Side: "BUY",
+					Expiration: "1767882600", Nonce: "0", FeeRateBps: "0", Side: 0,
 				}
 				_, _ = signer.SignOrder(order1)
 
@@ -94,7 +94,7 @@ func main() {
 					Salt: "2", Maker: signer.Address(), Signer: signer.Address(),
 					Taker:   "0x0000000000000000000000000000000000000000",
 					TokenID: "token2_id", MakerAmount: "480000", TakerAmount: "1000000",
-					Expiration: "1767882600", Nonce: "0", FeeRateBps: "0", Side: "BUY",
+					Expiration: "1767882600", Nonce: "0", FeeRateBps: "0", Side: 0,
 				}
 				_, _ = signer.SignOrder(order2)
 			}

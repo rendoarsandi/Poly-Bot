@@ -52,23 +52,41 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 
 // Signer handles EIP-712 signing for Polymarket CLOB API
 type Signer struct {
-	privateKey *ecdsa.PrivateKey
-	address    string
+	privateKey           *ecdsa.PrivateKey
+	address              string
+	verifyingContractRaw [20]byte
 }
 
+const DefaultVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
 // NewSigner creates a new signer from a hex-encoded private key
-func NewSigner(privateKeyHex string) (*Signer, error) {
+func NewSigner(privateKeyHex string, verifyingContract ...string) (*Signer, error) {
 	pk := strings.TrimPrefix(privateKeyHex, "0x")
 	privateKey, err := crypto.HexToECDSA(pk)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 
+	contractHex := DefaultVerifyingContract
+	if len(verifyingContract) > 0 {
+		contractHex = strings.TrimSpace(verifyingContract[0])
+	}
+	if contractHex == "" {
+		return nil, fmt.Errorf("invalid verifying contract: empty address")
+	}
+	if !common.IsHexAddress(contractHex) {
+		return nil, fmt.Errorf("invalid verifying contract: malformed address %q", contractHex)
+	}
+	contractAddr := common.HexToAddress(contractHex)
+
 	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	var contract [20]byte
+	copy(contract[:], contractAddr.Bytes())
 
 	return &Signer{
-		privateKey: privateKey,
-		address:    address,
+		privateKey:           privateKey,
+		address:              address,
+		verifyingContractRaw: contract,
 	}, nil
 }
 
