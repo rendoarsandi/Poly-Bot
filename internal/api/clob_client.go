@@ -171,22 +171,30 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		sFloat.Int(sAmt)
 		takerAmount = sAmt.String()
 	} else {
-		// SELL: makerAmount = shares, takerAmount = USDC
+		// SELL: makerAmount = USDC, takerAmount = shares
+		//
+		// Polymarket validates order price from maker/taker ratio and expects
+		// prices in the (0,1) interval for binary markets.
+		//
+		// Using maker=shares and taker=USDC inverts that ratio (>1 for typical
+		// sells), which gets rejected as "invalid price".
+		// Keep the same orientation as BUY (USDC/shares) and rely on Side to
+		// indicate trade direction.
 		usdcAmount := req.Price * req.Size
 		// Round USDC to 2 decimals
 		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
-
-		// Shares to 6 decimals
-		sAmt := new(big.Int)
-		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e6))
-		sFloat.Int(sAmt)
-		makerAmount = sAmt.String()
 
 		// USDC to 6 decimals
 		uAmt := new(big.Int)
 		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e6))
 		uFloat.Int(uAmt)
-		takerAmount = uAmt.String()
+		makerAmount = uAmt.String()
+
+		// Shares to 6 decimals
+		sAmt := new(big.Int)
+		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e6))
+		sFloat.Int(sAmt)
+		takerAmount = sAmt.String()
 	}
 
 	// Default expiration: 24 hours from now
