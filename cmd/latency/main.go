@@ -221,7 +221,7 @@ func main() {
 	if cfg.PK == "" {
 		fmt.Println("   ⚠️  POLY_PK not set - skipping signing benchmark")
 	} else {
-		signer, err := api.NewSigner(cfg.PK)
+		signer, err := api.NewSigner(cfg.PK, api.DefaultVerifyingContract)
 		if err != nil {
 			fmt.Printf("   ❌ Failed to create signer: %v\n", err)
 		} else {
@@ -236,7 +236,7 @@ func main() {
 				Expiration:    "123456789",
 				Nonce:         "0",
 				FeeRateBps:    "0",
-				Side:          "BUY",
+				Side:          0,
 				SignatureType: 0,
 			}
 

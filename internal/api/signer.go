@@ -47,23 +47,41 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 
 // Signer handles EIP-712 signing for Polymarket CLOB API
 type Signer struct {
-	privateKey *ecdsa.PrivateKey
-	address    string
+	privateKey           *ecdsa.PrivateKey
+	address              string
+	verifyingContractRaw [20]byte
 }
 
+const DefaultVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
 // NewSigner creates a new signer from a hex-encoded private key
-func NewSigner(privateKeyHex string) (*Signer, error) {
+func NewSigner(privateKeyHex string, verifyingContract ...string) (*Signer, error) {
 	pk := strings.TrimPrefix(privateKeyHex, "0x")
 	privateKey, err := crypto.HexToECDSA(pk)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 
+	contractHex := DefaultVerifyingContract
+	if len(verifyingContract) > 0 {
+		contractHex = strings.TrimSpace(verifyingContract[0])
+	}
+	if contractHex == "" {
+		return nil, fmt.Errorf("invalid verifying contract: empty address")
+	}
+	if !common.IsHexAddress(contractHex) {
+		return nil, fmt.Errorf("invalid verifying contract: malformed address %q", contractHex)
+	}
+	contractAddr := common.HexToAddress(contractHex)
+
 	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	var contract [20]byte
+	copy(contract[:], contractAddr.Bytes())
 
 	return &Signer{
-		privateKey: privateKey,
-		address:    address,
+		privateKey:           privateKey,
+		address:              address,
+		verifyingContractRaw: contract,
 	}, nil
 }
 
@@ -122,18 +140,18 @@ func (s *Signer) getDomainSeparator() [32]byte {
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
-	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+	verifyingContract := s.verifyingContractRaw[:]
 
 	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
 	encoded := make([]byte, 32*5)
 	copy(encoded[0:32], typeHash[:])
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
-	
+
 	// ChainId as uint256 (32 bytes)
 	chainIdBytes := padLeft(chainId.Bytes(), 32)
 	copy(encoded[96:128], chainIdBytes)
-	
+
 	// address as uint256 (32 bytes, padded left)
 	copy(encoded[128:160], padLeft(verifyingContract, 32))
 
@@ -176,7 +194,7 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
 	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
 	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
-	
+
 	// uint8 fields are at the end of their 32-byte slots (padded left)
 	encoded[352+31] = side
 	encoded[384+31] = signatureType
