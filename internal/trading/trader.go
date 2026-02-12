@@ -188,6 +188,8 @@ func (t *PaperTrader) GetMarketInfo(ctx context.Context, conditionID string) (*a
 type RealTrader struct {
 	clob              *api.CLOBClient
 	polygon           *api.PolygonClient
+	placeOrderFn      func(context.Context, *api.OrderRequest) (*api.OrderResponse, error)
+	isTestModeFn      func() bool
 	config            *core.Config
 	mu                sync.Mutex
 	onChainMu         sync.Mutex // Mutex for on-chain transactions (Split, Merge, Redeem)
@@ -216,10 +218,12 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
 	return &RealTrader{
-		clob:       clob,
-		polygon:    polygon,
-		config:     cfg,
-		startOfDay: time.Now().Truncate(24 * time.Hour),
+		clob:         clob,
+		polygon:      polygon,
+		placeOrderFn: clob.PlaceOrder,
+		isTestModeFn: clob.IsTestMode,
+		config:       cfg,
+		startOfDay:   time.Now().Truncate(24 * time.Hour),
 	}, nil
 }
 
@@ -244,7 +248,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		}, nil
 	}
 
-	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
+	resp, err := t.placeOrderFn(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
 		Price:       price,
 		Size:        size,
@@ -269,7 +273,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}
 
 	status := "PENDING"
-	if t.clob.IsTestMode() {
+	if t.isTestModeFn() {
 		status = "TEST"
 	}
 
@@ -290,7 +294,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 }
 
 func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
-	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
+	resp, err := t.placeOrderFn(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
 		Price:       price,
 		Size:        size,
@@ -321,7 +325,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 	}
 
 	status := "PENDING"
-	if t.clob.IsTestMode() {
+	if t.isTestModeFn() {
 		status = "TEST"
 	}
 
@@ -410,7 +414,10 @@ func (t *RealTrader) IsPaperMode() bool {
 }
 
 func (t *RealTrader) IsTestMode() bool {
-	return t.clob.IsTestMode()
+	if t.isTestModeFn == nil {
+		return false
+	}
+	return t.isTestModeFn()
 }
 
 func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {

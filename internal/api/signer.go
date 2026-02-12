@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -52,9 +53,10 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 
 // Signer handles EIP-712 signing for Polymarket CLOB API
 type Signer struct {
-	privateKey           *ecdsa.PrivateKey
-	address              string
-	verifyingContractRaw [20]byte
+	privateKey *ecdsa.PrivateKey
+	address    string
+	mu         sync.RWMutex
+	negRiskIDs map[string]struct{}
 }
 
 const DefaultVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
@@ -84,10 +86,41 @@ func NewSigner(privateKeyHex string, verifyingContract ...string) (*Signer, erro
 	copy(contract[:], contractAddr.Bytes())
 
 	return &Signer{
-		privateKey:           privateKey,
-		address:              address,
-		verifyingContractRaw: contract,
+		privateKey: privateKey,
+		address:    address,
+		negRiskIDs: make(map[string]struct{}),
 	}, nil
+}
+
+const (
+	regularExchangeVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+	negRiskExchangeVerifyingContract = "0xC5d563A36AE781fCFD0F887C46f6bA2eE8f6a6f1"
+)
+
+// SetNegRiskTokenIDs defines which token IDs should be signed using the neg-risk domain.
+func (s *Signer) SetNegRiskTokenIDs(tokenIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.negRiskIDs = make(map[string]struct{}, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		normalized := normalizeTokenID(tokenID)
+		if normalized == "" {
+			continue
+		}
+		s.negRiskIDs[normalized] = struct{}{}
+	}
+}
+
+func normalizeTokenID(tokenID string) string {
+	return strings.TrimSpace(strings.ToLower(tokenID))
+}
+
+func (s *Signer) isNegRiskToken(tokenID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.negRiskIDs[normalizeTokenID(tokenID)]
+	return ok
 }
 
 // Address returns the Ethereum address for this signer
@@ -121,7 +154,7 @@ func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract strin
 	// Polymarket CLOB uses EIP-712 typed data signing
 	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
 
-	domainSeparator := s.getDomainSeparator(verifyingContract)
+	domainSeparator := s.getDomainSeparator(order.TokenID)
 	structHash := s.getOrderStructHash(order)
 
 	// EIP-712: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -143,14 +176,18 @@ func (s *Signer) SignOrderWithContract(order *OrderData, verifyingContract strin
 }
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
-func (s *Signer) getDomainSeparator(verifyingContract string) [32]byte {
+func (s *Signer) getDomainSeparator(tokenID string) [32]byte {
 	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
-	contractAddress := parseAddress(verifyingContract)
+	verifyingContractAddr := regularExchangeVerifyingContract
+	if s.isNegRiskToken(tokenID) {
+		verifyingContractAddr = negRiskExchangeVerifyingContract
+	}
+	verifyingContract := parseAddress(verifyingContractAddr)
 
 	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
 	encoded := make([]byte, 32*5)
