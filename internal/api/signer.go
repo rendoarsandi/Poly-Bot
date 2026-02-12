@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -49,6 +50,8 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 type Signer struct {
 	privateKey *ecdsa.PrivateKey
 	address    string
+	mu         sync.RWMutex
+	negRiskIDs map[string]struct{}
 }
 
 // NewSigner creates a new signer from a hex-encoded private key
@@ -64,7 +67,39 @@ func NewSigner(privateKeyHex string) (*Signer, error) {
 	return &Signer{
 		privateKey: privateKey,
 		address:    address,
+		negRiskIDs: make(map[string]struct{}),
 	}, nil
+}
+
+const (
+	regularExchangeVerifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+	negRiskExchangeVerifyingContract = "0xC5d563A36AE781fCFD0F887C46f6bA2eE8f6a6f1"
+)
+
+// SetNegRiskTokenIDs defines which token IDs should be signed using the neg-risk domain.
+func (s *Signer) SetNegRiskTokenIDs(tokenIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.negRiskIDs = make(map[string]struct{}, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		normalized := normalizeTokenID(tokenID)
+		if normalized == "" {
+			continue
+		}
+		s.negRiskIDs[normalized] = struct{}{}
+	}
+}
+
+func normalizeTokenID(tokenID string) string {
+	return strings.TrimSpace(strings.ToLower(tokenID))
+}
+
+func (s *Signer) isNegRiskToken(tokenID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.negRiskIDs[normalizeTokenID(tokenID)]
+	return ok
 }
 
 // Address returns the Ethereum address for this signer
@@ -93,7 +128,7 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 	// Polymarket CLOB uses EIP-712 typed data signing
 	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
 
-	domainSeparator := s.getDomainSeparator()
+	domainSeparator := s.getDomainSeparator(order.TokenID)
 	structHash := s.getOrderStructHash(order)
 
 	// EIP-712: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -115,25 +150,29 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 }
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
-func (s *Signer) getDomainSeparator() [32]byte {
+func (s *Signer) getDomainSeparator(tokenID string) [32]byte {
 	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
 	versionHash := keccak256([]byte("1"))
 	chainId := big.NewInt(137) // Polygon mainnet
-	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+	verifyingContractAddr := regularExchangeVerifyingContract
+	if s.isNegRiskToken(tokenID) {
+		verifyingContractAddr = negRiskExchangeVerifyingContract
+	}
+	verifyingContract := parseAddress(verifyingContractAddr)
 
 	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
 	encoded := make([]byte, 32*5)
 	copy(encoded[0:32], typeHash[:])
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
-	
+
 	// ChainId as uint256 (32 bytes)
 	chainIdBytes := padLeft(chainId.Bytes(), 32)
 	copy(encoded[96:128], chainIdBytes)
-	
+
 	// address as uint256 (32 bytes, padded left)
 	copy(encoded[128:160], padLeft(verifyingContract, 32))
 
@@ -176,7 +215,7 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
 	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
 	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
-	
+
 	// uint8 fields are at the end of their 32-byte slots (padded left)
 	encoded[352+31] = side
 	encoded[384+31] = signatureType

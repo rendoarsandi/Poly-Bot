@@ -2,10 +2,13 @@ package trading
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 )
 
@@ -315,5 +318,63 @@ func TestRealTrader_DailyLossReset(t *testing.T) {
 	tomorrow := now.Add(24 * time.Hour).Truncate(24 * time.Hour)
 	if tomorrow == startOfDay {
 		t.Error("Tomorrow should not equal today's start of day")
+	}
+}
+
+func TestRealTrader_BuySellCarryTokenContextToPlaceOrder(t *testing.T) {
+	ctx := context.Background()
+	calls := make([]*api.OrderRequest, 0, 2)
+
+	trader := &RealTrader{
+		config: &core.Config{},
+		placeOrderFn: func(ctx context.Context, req *api.OrderRequest) (*api.OrderResponse, error) {
+			calls = append(calls, req)
+			return &api.OrderResponse{OrderID: "ok", Success: true}, nil
+		},
+		isTestModeFn: func() bool { return false },
+	}
+
+	if _, err := trader.Buy(ctx, "buy-token", "Yes", 0.50, 10, api.OrderTypeMarket, api.TIFFillOrKill, 0); err != nil {
+		t.Fatalf("Buy failed: %v", err)
+	}
+	if _, err := trader.Sell(ctx, "sell-token", "No", 0.49, 2, api.OrderTypeMarket, api.TIFFillOrKill, 0); err != nil {
+		t.Fatalf("Sell failed: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 order calls, got %d", len(calls))
+	}
+	if calls[0].Side != api.SideBuy || calls[0].TokenID != "buy-token" {
+		t.Fatalf("buy call lost token context: %+v", calls[0])
+	}
+	if calls[1].Side != api.SideSell || calls[1].TokenID != "sell-token" {
+		t.Fatalf("sell call lost token context: %+v", calls[1])
+	}
+}
+
+func TestEntryPathSmoke_RealbotAndUtilUseCentralRealTrader(t *testing.T) {
+	realbot, err := os.ReadFile("../../cmd/realbot/main.go")
+	if err != nil {
+		t.Fatalf("failed to read realbot entrypoint: %v", err)
+	}
+	utilbot, err := os.ReadFile("../../cmd/util/main.go")
+	if err != nil {
+		t.Fatalf("failed to read util entrypoint: %v", err)
+	}
+
+	realbotSrc := string(realbot)
+	utilSrc := string(utilbot)
+
+	if !strings.Contains(realbotSrc, "trading.NewRealTrader(cfg)") {
+		t.Fatalf("realbot no longer constructs trading.NewRealTrader")
+	}
+	if !strings.Contains(utilSrc, "trading.NewRealTrader(cfg)") {
+		t.Fatalf("util no longer constructs trading.NewRealTrader")
+	}
+	if !strings.Contains(realbotSrc, "trader.Buy(") || !strings.Contains(realbotSrc, "trader.Sell(") {
+		t.Fatalf("realbot no longer routes first-order execution through trader.Buy/Sell")
+	}
+	if !strings.Contains(utilSrc, "trader.Buy(") || !strings.Contains(utilSrc, "trader.Sell(") {
+		t.Fatalf("util no longer routes first-order execution through trader.Buy/Sell")
 	}
 }
