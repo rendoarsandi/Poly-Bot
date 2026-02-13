@@ -304,14 +304,16 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		price := 0.99 // BUY market cap
 		if side == "SELL" {
 			// Use best bid as floor for market sell orders, clamped to valid API range.
-			price = 0.01
+			// Keep a practical floor of $0.10 to avoid extreme minimum-size inflation
+			// (e.g. 1 share -> 100 shares at bid $0.01).
+			price = 0.10
 			if len(tokenFullBids[out]) > 0 {
 				price = tokenFullBids[out][0].Price
 			}
 			if price >= 1.0 {
 				price = 0.99
-			} else if price <= 0 {
-				price = 0.01
+			} else if price < 0.10 {
+				price = 0.10
 			}
 		}
 		prices[out] = price
@@ -321,7 +323,18 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		}
 	}
 	if shares < minSharesForNotional {
-		fmt.Printf("⚠️ Requested %.0f share(s) is below Polymarket's $1.00 minimum notional at current prices; using %.0f share(s) per side instead\n", shares, minSharesForNotional)
+		fmt.Printf("⚠️ Requested %.0f share(s) is below Polymarket's $1.00 minimum notional at current prices. Minimum is %.0f share(s) per side.\n", shares, minSharesForNotional)
+		fmt.Printf("   This will place 2 orders (%s + %s) for %.0f share(s) each", outcomes[0], outcomes[1], minSharesForNotional)
+		if side == "SELL" {
+			fmt.Printf(" and split $%.0f first", minSharesForNotional)
+		}
+		fmt.Println(".")
+		fmt.Print("   Proceed with adjusted size? (y/n): ")
+		var resizeConfirm string
+		fmt.Scanln(&resizeConfirm)
+		if strings.ToLower(strings.TrimSpace(resizeConfirm)) != "y" {
+			log.Fatal("Cancelled.")
+		}
 		shares = minSharesForNotional
 	}
 
