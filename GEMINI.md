@@ -2,12 +2,13 @@
 
 ## Project Overview
 
-PolyArb-15m is a high-frequency volatility arbitrage bot designed for Polymarket's 15-minute crypto binary option markets. It employs the "Gabagool" strategy, acting as a market maker by placing limit orders on both sides of a market (Up/Down) to lock in profits when the combined entry price is mathematically guaranteed to be less than the $1.00 payout.
+PolyArb-15m is a high-frequency volatility arbitrage bot designed for Polymarket's 15-minute crypto binary option markets. It employs the "Gabagool" strategy, executing simultaneous **market orders** on both sides of a market (Up/Down) to ensure atomic fills and lock in profits when the combined entry price is mathematically guaranteed to be less than the $1.00 payout. By using market orders (FOK), the bot avoids the risk of "legging into" unbalanced positions that limit orders might cause.
 
 ### Key Technologies
 - **Backend:** Go (1.25+)
 - **API Integration:** Polymarket CLOB (Central Limit Order Book) REST and WebSocket APIs.
-- **Blockchain:** Polygon (for balance queries and EIP-712 signing).
+- **Blockchain:** Polygon (for balance queries, EIP-712 signing, and on-chain Merge/Split).
+- **Execution:** Uses Market Orders with Fill-or-Kill (FOK) to guarantee price and atomic execution.
 - **Frontend/UI:** Custom Terminal UI (TUI) for real-time monitoring.
 - **Utilities:** Node.js (for API key derivation from private keys).
 
@@ -73,11 +74,21 @@ go test ./...
 - `scripts/`: Node.js utilities for credential management.
 
 ### Trading Strategies
-The bot implements two complementary strategies:
-1. **Panic Buy (BUY → MERGE):** When `ask_sum < $0.98`, buy both YES and NO, then merge via CTF for instant profit.
-2. **Panic Sell (SPLIT → SELL):** When `bid_sum > $1.03`, sell split shares to panic buyers.
+The bot implements two complementary strategies optimized for the 15-minute window:
 
-Split shares and bought shares are tracked separately in `SplitInventory` to prevent strategy overlap.
+1. **Panic Buy (Atomic Entry):** When `ask_sum < $0.98`, the bot submits simultaneous **Market Orders** for both YES and NO. It uses a price buffer ($0.99 cap) and Fill-or-Kill (FOK) to ensure both sides fill immediately or not at all.
+   - **Recovery Logic:** If an order becomes unbalanced (one side fills, one fails), the bot enters an aggressive recovery loop, retrying the failed side with GTC market orders until the position is balanced.
+   - **Instant Capture:** After a successful buy, it executes an on-chain **Merge** to convert tokens back to USDC and lock in profit.
+
+2. **Panic Sell (Inventory Strategy):** When `bid_sum > $1.03`, the bot sells pre-split shares to panic buyers.
+   - **Inventory Management:** Uses **Split** operations to create YES/NO pairs when capital is idle, allowing for instant selling when premiums spike.
+
+### Why 15-Minute Markets?
+While 5-minute markets offer faster capital rotation, the bot targets 15-minute markets for several critical reasons:
+- **Liquidity:** 15m markets have significantly deeper order books, allowing for larger trade sizes without slippage.
+- **Volatility Capture:** The longer window provides more time for "wicks" to hit both target price levels.
+- **Fee Management:** 15m markets offer a better balance for avoiding "Taker Fees" during the entry phase by allowing the bot to walk the book effectively.
+- **Safety:** Reduced "legging risk" compared to the hyper-fast 5m markets where oracles and price feeds can be extremely erratic.
 
 ### Testing Practices
 - Unit tests are co-located with source code (e.g., `parser_test.go`).
