@@ -224,7 +224,7 @@ takeAction:
 	fmt.Print("Choice: ")
 	var choice int
 	fmt.Scanln(&choice)
-	fmt.Print("USDC per side: ")
+	fmt.Print("Shares per side: ")
 	var amt float64
 	fmt.Scanln(&amt)
 
@@ -329,7 +329,14 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				log.Printf("⚠️ Using default fee rate %d bps for %s (fetch may have failed)", rate, o)
 			}
 			if side == "BUY" {
-				results[i], errs[i] = trader.Buy(ctx, tid, o, 0.99, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				// Ensure min order size $1.00
+				price := 0.99
+				if shares*price < 1.0 {
+					newShares := math.Ceil(1.0 / price)
+					fmt.Printf("⚠️ Adjusting shares for %s: %.0f -> %.0f to meet $1.00 minimum\n", o, shares, newShares)
+					shares = newShares
+				}
+				results[i], errs[i] = trader.Buy(ctx, tid, o, price, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
 				// Use bid price as the sell price floor (minimum acceptable), clamped to valid API range.
 				bidPrice := 0.01
@@ -340,6 +347,12 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 					bidPrice = 0.99
 				} else if bidPrice <= 0 {
 					bidPrice = 0.01
+				}
+				// Ensure min order size $1.00
+				if shares*bidPrice < 1.0 {
+					newShares := math.Ceil(1.0 / bidPrice)
+					fmt.Printf("⚠️ Adjusting shares for %s: %.0f -> %.0f to meet $1.00 minimum (Bid: %.3f)\n", o, shares, newShares, bidPrice)
+					shares = newShares
 				}
 				results[i], errs[i] = trader.Sell(ctx, tid, o, bidPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}

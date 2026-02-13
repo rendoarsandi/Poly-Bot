@@ -136,14 +136,8 @@ type OrderResponse struct {
 func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
 	// Safety Check: Minimum Order Size
 	// Polymarket CLOB has a $1.00 minimum for marketable orders
-	// For MARKET orders, req.Price is just a floor/ceiling (not actual fill price),
-	// so only enforce the check for LIMIT orders where price represents the real price
-	if req.OrderType != OrderTypeMarket && (req.Price*req.Size) < 1.0 {
-		return nil, fmt.Errorf("order size $%.2f is below the $1.00 minimum", req.Price*req.Size)
-	}
-	// For MARKET orders, enforce minimum share count instead (Polymarket requires >= 1 share)
-	if req.OrderType == OrderTypeMarket && req.Size < 1.0 {
-		return nil, fmt.Errorf("market order size %.2f shares is below the 1 share minimum", req.Size)
+	if (req.Price * req.Size) < 1.0 {
+		return nil, fmt.Errorf("order value $%.4f is below the $1.00 minimum (Price: %.4f, Size: %.2f)", req.Price*req.Size, req.Price, req.Size)
 	}
 
 	// Generate random salt
@@ -154,8 +148,6 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	if req.Side == SideBuy {
 		// BUY: makerAmount = USDC, takerAmount = shares
 		usdcAmount := req.Price * req.Size
-		// Round USDC to 2 decimals
-		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
 
 		// USDC to 6 decimals
 		uAmt := new(big.Int)
@@ -171,8 +163,6 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	} else {
 		// SELL: makerAmount = shares, takerAmount = USDC
 		usdcAmount := req.Price * req.Size
-		// Round USDC to 2 decimals
-		usdcAmount = float64(int(usdcAmount*100+0.5)) / 100.0
 
 		// Shares to 6 decimals
 		sAmt := new(big.Int)

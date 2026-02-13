@@ -1035,9 +1035,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						if sharesToSell > minBidLiq*0.85 {
 							sharesToSell = minBidLiq * 0.85
 						}
-						sharesToSell = float64(int(sharesToSell))
+						
+						// Ensure min order size $1.00 at floor price 0.10
+						const floorPrice = 0.10
+						if sharesToSell*floorPrice < 1.0 {
+							sharesToSell = math.Ceil(1.0 / floorPrice)
+						}
+						
+						sharesToSell = math.Floor(sharesToSell)
 
-						if sharesToSell >= 1.0 {
+						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
 							// Calculate liquidity depth for display (same as paper bot)
 							bids1 := tokenFullBids[outcomes[0]]
 							bids2 := tokenFullBids[outcomes[1]]
@@ -1278,7 +1285,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					}
 
 					// Round to whole shares
-					shares = float64(int(shares))
+					shares = math.Floor(shares)
+					
+					// Ensure min order size $1.00 at worstCasePrice 0.99
+					if shares*0.99 < 1.0 {
+						shares = math.Ceil(1.0 / 0.99)
+					}
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
