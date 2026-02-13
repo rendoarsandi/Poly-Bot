@@ -269,51 +269,23 @@ func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*ap
 func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
 	shares := targetShares
 	if side == "BUY" {
-		asks1 := append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...)
-		asks2 := append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[1]]...)
-		sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
-		sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
-		var totalLiq float64
-		i, j := 0, 0
-		for i < len(asks1) && j < len(asks2) {
-			if asks1[i].Price+asks2[j].Price > 1.10 {
-				break
-			}
-			matched := math.Min(asks1[i].Size, asks2[j].Size)
-			totalLiq += matched
-			if asks1[i].Size <= asks2[j].Size {
-				asks2[j].Size -= asks1[i].Size
-				i++
-			} else {
-				asks1[i].Size -= asks2[j].Size
-				j++
-			}
-		}
+		totalLiq := estimateMatchedLiquidity(
+			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...),
+			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[1]]...),
+			func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price < levels[j].Price },
+			func(p1, p2 float64) bool { return p1+p2 <= 1.10 },
+		)
 		if shares > totalLiq {
 			fmt.Printf("⚠️ Capping shares: %.2f -> %.2f\n", shares, totalLiq)
 			shares = totalLiq
 		}
 	} else {
-		bids1 := append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...)
-		bids2 := append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...)
-		sort.Slice(bids1, func(i, j int) bool { return bids1[i].Price > bids1[j].Price })
-		sort.Slice(bids2, func(i, j int) bool { return bids2[i].Price > bids2[j].Price })
-		var totalLiq float64
-		i, j := 0, 0
-		for i < len(bids1) && j < len(bids2) {
-			if bids1[i].Price+bids2[j].Price < 0.90 {
-				break
-			}
-			matched := math.Min(bids1[i].Size, bids2[j].Size)
-			totalLiq += matched
-			if bids1[i].Size <= bids2[j].Size {
-				bids2[j].Size -= bids1[i].Size
-				i++
-			} else {
-				bids1[i].Size -= bids2[j].Size
-				j++
-			}
-		}
+		totalLiq := estimateMatchedLiquidity(
+			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...),
+			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...),
+			func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price > levels[j].Price },
+			func(p1, p2 float64) bool { return p1+p2 >= 0.90 },
+		)
 		if shares > totalLiq {
 			fmt.Printf("⚠️ Capping shares: %.2f -> %.2f\n", shares, totalLiq)
 			shares = totalLiq
@@ -364,11 +336,10 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				if len(tokenFullBids[o]) > 0 {
 					bidPrice = tokenFullBids[o][0].Price
 				}
-				if bidPrice <= 0 {
-					bidPrice = 0.01
-				}
 				if bidPrice >= 1 {
 					bidPrice = 0.99
+				} else if bidPrice <= 0 {
+					bidPrice = 0.01
 				}
 				results[i], errs[i] = trader.Sell(ctx, tid, o, bidPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}
@@ -410,6 +381,31 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 		}
 	}
+}
+
+func estimateMatchedLiquidity(levels1, levels2 []paper.MarketLevel, less func(i, j int, levels []paper.MarketLevel) bool, priceCheck func(p1, p2 float64) bool) float64 {
+	sort.Slice(levels1, func(i, j int) bool { return less(i, j, levels1) })
+	sort.Slice(levels2, func(i, j int) bool { return less(i, j, levels2) })
+
+	totalLiq := 0.0
+	i, j := 0, 0
+	for i < len(levels1) && j < len(levels2) {
+		if !priceCheck(levels1[i].Price, levels2[j].Price) {
+			break
+		}
+
+		matched := math.Min(levels1[i].Size, levels2[j].Size)
+		totalLiq += matched
+		if levels1[i].Size <= levels2[j].Size {
+			levels2[j].Size -= levels1[i].Size
+			i++
+		} else {
+			levels1[i].Size -= levels2[j].Size
+			j++
+		}
+	}
+
+	return totalLiq
 }
 
 func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
