@@ -296,6 +296,35 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		log.Fatal("No liquidity.")
 	}
 	shares = math.Floor(shares)
+
+	// Determine execution pricing BEFORE confirmation so user sees the true order size.
+	prices := make(map[string]float64, len(outcomes))
+	minSharesForNotional := 1.0
+	for _, out := range outcomes {
+		price := 0.99 // BUY market cap
+		if side == "SELL" {
+			// Use best bid as floor for market sell orders, clamped to valid API range.
+			price = 0.01
+			if len(tokenFullBids[out]) > 0 {
+				price = tokenFullBids[out][0].Price
+			}
+			if price >= 1.0 {
+				price = 0.99
+			} else if price <= 0 {
+				price = 0.01
+			}
+		}
+		prices[out] = price
+		required := math.Ceil(1.0 / price)
+		if required > minSharesForNotional {
+			minSharesForNotional = required
+		}
+	}
+	if shares < minSharesForNotional {
+		fmt.Printf("⚠️ Requested %.0f share(s) is below Polymarket's $1.00 minimum notional at current prices; using %.0f share(s) per side instead\n", shares, minSharesForNotional)
+		shares = minSharesForNotional
+	}
+
 	fmt.Printf("🚀 Executing: %s %.0f shares. Confirm? (y/n): ", side, shares)
 	var confirm string
 	fmt.Scanln(&confirm)
@@ -323,38 +352,18 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		go func(o string, i int) {
 			defer wg.Done()
 			tid := getTokenIDForOutcome(market, o)
+			execShares := shares
 			rate := tokenFeeRates[o]
 			if rate == 0 {
 				rate = 1000 // Default taker fee rate for Polymarket 15m markets
 				log.Printf("⚠️ Using default fee rate %d bps for %s (fetch may have failed)", rate, o)
 			}
 			if side == "BUY" {
-				// Ensure min order size $1.00
-				price := 0.99
-				if shares*price < 1.0 {
-					newShares := math.Ceil(1.0 / price)
-					fmt.Printf("⚠️ Adjusting shares for %s: %.0f -> %.0f to meet $1.00 minimum\n", o, shares, newShares)
-					shares = newShares
-				}
-				results[i], errs[i] = trader.Buy(ctx, tid, o, price, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				price := prices[o]
+				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
-				// Use bid price as the sell price floor (minimum acceptable), clamped to valid API range.
-				bidPrice := 0.01
-				if len(tokenFullBids[o]) > 0 {
-					bidPrice = tokenFullBids[o][0].Price
-				}
-				if bidPrice >= 1 {
-					bidPrice = 0.99
-				} else if bidPrice <= 0 {
-					bidPrice = 0.01
-				}
-				// Ensure min order size $1.00
-				if shares*bidPrice < 1.0 {
-					newShares := math.Ceil(1.0 / bidPrice)
-					fmt.Printf("⚠️ Adjusting shares for %s: %.0f -> %.0f to meet $1.00 minimum (Bid: %.3f)\n", o, shares, newShares, bidPrice)
-					shares = newShares
-				}
-				results[i], errs[i] = trader.Sell(ctx, tid, o, bidPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				price := prices[o]
+				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
@@ -372,15 +381,17 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			time.Sleep(3 * time.Second) // Wait for on-chain state to settle
 
 			// Query actual on-chain CTF balances to merge the correct amount
-			bal0, err0 := trader.GetCTFBalanceFloat(context.Background(), market.Tokens[0].TokenID)
-			bal1, err1 := trader.GetCTFBalanceFloat(context.Background(), market.Tokens[1].TokenID)
+			token0 := getTokenIDForOutcome(market, outcomes[0])
+			token1 := getTokenIDForOutcome(market, outcomes[1])
+			bal0, err0 := trader.GetCTFBalanceFloat(context.Background(), token0)
+			bal1, err1 := trader.GetCTFBalanceFloat(context.Background(), token1)
 			if err0 != nil || err1 != nil {
 				fmt.Printf("⚠️ Failed to query balances (err0=%v, err1=%v), falling back to requested shares\n", err0, err1)
 				bal0, bal1 = shares, shares
 			}
 			fmt.Printf("📊 On-chain balances: %s=%.2f, %s=%.2f\n", outcomes[0], bal0, outcomes[1], bal1)
 
-			minQty := math.Floor(math.Min(bal0, bal1))
+			minQty := math.Floor(math.Min(math.Min(bal0, bal1), shares))
 			if minQty >= 1.0 {
 				fmt.Printf("🔄 Merging %.0f pairs...\n", minQty)
 				tx, mergeErr := trader.MergeOnChain(context.Background(), market.ConditionID, minQty)
