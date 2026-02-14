@@ -256,10 +256,10 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["orderType"] = signedOrder.OrderType
 	}
 
-	// Top-level side field for validation
-	if side != "" {
-		payload["side"] = side
-	}
+	// NOTE: Do not include top-level "side" in POST /order payload.
+	// Official py-clob-client only sends {order, owner, orderType, postOnly?}.
+	// Some server validators mis-handle extra top-level fields for market sells.
+	_ = side
 
 	// IMPORTANT: Official py-clob-client post_order payload does NOT include a top-level
 	// "price" field for market orders. Sending it can trigger server-side validation
