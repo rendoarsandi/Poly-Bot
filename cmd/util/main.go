@@ -301,14 +301,22 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	prices := make(map[string]float64, len(outcomes))
 	minSharesForNotional := 1.0
 	for _, out := range outcomes {
-		price := 0.99 // BUY market cap
+		price := 0.99 // BUY market cap (worst-case max spend)
+		refPrice := price
+		if side == "BUY" && len(tokenFullAsks[out]) > 0 && tokenFullAsks[out][0].Price > 0 {
+			// Use top-of-book ask to estimate minimum notional; this avoids inflating
+			// 1-share requests to 2 shares just because market cap is set to 0.99.
+			refPrice = tokenFullAsks[out][0].Price
+		}
 		if side == "SELL" {
 			// Use best bid as floor for market sell orders, clamped to valid API range.
 			// Keep a practical floor of $0.10 to avoid extreme minimum-size inflation
 			// (e.g. 1 share -> 100 shares at bid $0.01).
 			price = 0.10
+			refPrice = 0.10
 			if len(tokenFullBids[out]) > 0 {
 				price = tokenFullBids[out][0].Price
+				refPrice = price
 			}
 			if price >= 1.0 {
 				price = 0.99
@@ -317,7 +325,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 		}
 		prices[out] = price
-		required := math.Ceil(1.0 / price)
+		required := math.Ceil(1.0 / refPrice)
 		if required > minSharesForNotional {
 			minSharesForNotional = required
 		}
@@ -384,8 +392,43 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	wg.Wait()
 
 	if (errs[0] == nil && results[0].Success) != (errs[1] == nil && results[1].Success) {
-		fmt.Println("⚠️ UNBALANCED FILL! Recovery needed.")
-		// recovery logic...
+		fmt.Println("⚠️ UNBALANCED FILL! Retrying failed side to rebalance...")
+
+		failedIdx := 0
+		if errs[0] == nil && results[0] != nil && results[0].Success {
+			failedIdx = 1
+		}
+		failedOutcome := outcomes[failedIdx]
+		failedTokenID := getTokenIDForOutcome(market, failedOutcome)
+
+		for attempt := 1; attempt <= 3; attempt++ {
+			time.Sleep(100 * time.Millisecond)
+			rate := tokenFeeRates[failedOutcome]
+			if rate == 0 {
+				rate = 1000
+			}
+
+			retryPrice := prices[failedOutcome]
+			if side == "BUY" {
+				retryPrice = 0.99
+			}
+
+			var retryRes *trading.TradeResult
+			var retryErr error
+			if side == "BUY" {
+				retryRes, retryErr = trader.Buy(ctx, failedTokenID, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+			} else {
+				retryRes, retryErr = trader.Sell(ctx, failedTokenID, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+			}
+
+			if retryErr == nil && retryRes != nil && retryRes.Success {
+				fmt.Printf("✅ Recovery succeeded on attempt %d for %s\n", attempt, failedOutcome)
+				results[failedIdx] = retryRes
+				errs[failedIdx] = nil
+				break
+			}
+			fmt.Printf("⚠️ Recovery attempt %d failed for %s: %v\n", attempt, failedOutcome, retryErr)
+		}
 	}
 
 	if (errs[0] == nil && results[0].Success) && (errs[1] == nil && results[1].Success) {
