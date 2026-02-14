@@ -119,7 +119,7 @@ type OrderPayload struct {
 	Expiration    string `json:"expiration"`
 	Nonce         string `json:"nonce"`
 	FeeRateBps    string `json:"feeRateBps"`
-	Side          string `json:"side"`
+	Side          int    `json:"side"`
 	SignatureType int    `json:"signatureType"`
 	Signature     string `json:"signature"`
 }
@@ -223,24 +223,19 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Build signed order
-	sideStr := "0"
-	if orderData.Side == 1 {
-		sideStr = "1"
-	}
-
 	signedOrder := &SignedOrder{
 		Order: OrderPayload{
 			Salt:          salt,
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       req.TokenID,
+			TokenID:       req.TokenID, // Use decimal string for JSON payload
 			MakerAmount:   orderData.MakerAmount,
 			TakerAmount:   orderData.TakerAmount,
 			Expiration:    orderData.Expiration,
 			Nonce:         orderData.Nonce,
 			FeeRateBps:    orderData.FeeRateBps,
-			Side:          sideStr,
+			Side:          orderData.Side, // Use integer
 			SignatureType: orderData.SignatureType,
 			Signature:     signature,
 		},
@@ -249,11 +244,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Submit order to API
-	return c.submitOrder(ctx, signedOrder, req.TimeInForce)
+	return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, string(req.Side))
 }
 
 // submitOrder sends the signed order to the CLOB API
-func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce) (*OrderResponse, error) {
+func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce, price float64, side string) (*OrderResponse, error) {
 	// Build the payload (needed for both test mode validation and real submission)
 	payload := make(map[string]interface{})
 
@@ -265,6 +260,16 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["orderType"] = string(tif)
 	} else {
 		payload["orderType"] = signedOrder.OrderType
+	}
+
+	// Top-level side field for validation
+	if side != "" {
+		payload["side"] = side
+	}
+
+	// Some versions of the API require an explicit price field for validation
+	if price > 0 {
+		payload["price"] = price
 	}
 
 	body, err := json.Marshal(payload)
@@ -304,7 +309,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		makerAmount, _ := strconv.ParseFloat(signedOrder.Order.MakerAmount, 64)
 		makerAmountUSDC := makerAmount / 1e6 // Convert from base units
 
-		if signedOrder.Order.Side == "0" && allowance.Balance < makerAmountUSDC {
+		if signedOrder.Order.Side == 0 && allowance.Balance < makerAmountUSDC {
 			return &OrderResponse{
 				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
 				Success:  false,
