@@ -223,14 +223,14 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       req.TokenID, // MUST be Decimal String
-			MakerAmount:   orderData.MakerAmount, // MUST be String
-			TakerAmount:   orderData.TakerAmount, // MUST be String
-			Expiration:    orderData.Expiration, // MUST be String
-			Nonce:         orderData.Nonce, // MUST be String
+			TokenID:       req.TokenID,                  // MUST be Decimal String
+			MakerAmount:   orderData.MakerAmount,        // MUST be String
+			TakerAmount:   orderData.TakerAmount,        // MUST be String
+			Expiration:    orderData.Expiration,         // MUST be String
+			Nonce:         orderData.Nonce,              // MUST be String
 			FeeRateBps:    strconv.Itoa(req.FeeRateBps), // MUST be String
 			Side:          strconv.Itoa(orderData.Side), // MUST be string "0" or "1"
-			SignatureType: orderData.SignatureType, // MUST be Integer
+			SignatureType: orderData.SignatureType,      // MUST be Integer
 			Signature:     signature,
 		},
 		Owner:     c.auth.APIKey, // MUST be API Key for CLOB
@@ -248,7 +248,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	payload["order"] = signedOrder.Order
 	payload["owner"] = c.auth.APIKey
-	
+
 	// Polymarket's orderType field at the top level
 	if tif != "" {
 		payload["orderType"] = string(tif)
@@ -261,8 +261,11 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["side"] = side
 	}
 
-	// Some versions of the API require an explicit price field for validation
-	if price > 0 {
+	// IMPORTANT: Official py-clob-client post_order payload does NOT include a top-level
+	// "price" field for market orders. Sending it can trigger server-side validation
+	// errors (e.g. generic "invalid price") despite valid signed order amounts.
+	// Keep top-level price only for explicit limit orders.
+	if signedOrder.OrderType == string(OrderTypeLimit) && price > 0 {
 		payload["price"] = price
 	}
 
@@ -340,7 +343,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	// Read full body for error reporting
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		// Log the failed request and response for debugging
 		fmt.Printf("\n--- API ERROR DEBUG ---\n")
