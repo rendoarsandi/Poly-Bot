@@ -10,10 +10,10 @@ PolyArb-15m is a high-frequency paper trading bot for Polymarket's 15-minute cry
 
 ```bash
 # Build
-go build -o market-bot ./cmd/bot
+go build -o market-bot ./cmd/paperbot
 
 # Run (paper trading mode)
-go run cmd/bot/main.go
+go run cmd/paperbot/main.go
 
 # Run tests
 go test ./...
@@ -31,7 +31,7 @@ go fmt ./... && go test ./...
 ## Architecture
 
 ### Package Structure
-- `cmd/bot/main.go` - Entry point; spawns concurrent `MarketTrader` goroutines for each asset (BTC, ETH, SOL, XRP)
+- `cmd/paperbot/main.go` - Entry point; spawns concurrent `MarketTrader` goroutines for each asset (BTC, ETH, SOL, XRP)
 - `internal/api/` - Polymarket API clients (REST for market discovery, WebSocket for real-time order books)
 - `internal/paper/` - Paper trading simulation engine
 - `internal/core/` - Configuration loading
@@ -94,7 +94,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 
 ## Configuration
 
-Strategy parameters are in `cmd/bot/main.go`:
+Strategy parameters are in `cmd/paperbot/main.go`:
 - `StartingBalance` - Paper trading starting capital ($1000)
 - `LadderConfig` - Order levels, shares per level, price step
 - `RiskConfig` - Max exposure, unmatched ratio, skew threshold, kill switch drawdown

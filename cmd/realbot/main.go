@@ -73,7 +73,7 @@ func run() error {
 		fmt.Println("     POLY_API_SECRET=your_api_secret")
 		fmt.Println("     POLY_PASSPHRASE=your_passphrase")
 		fmt.Println()
-		fmt.Println("For paper trading, use: go run cmd/bot/main.go")
+		fmt.Println("For paper trading, use: go run cmd/paperbot/main.go")
 		return nil
 	}
 
@@ -240,8 +240,8 @@ func run() error {
 						minQty = qty2
 					}
 
-					if minQty >= 1.0 {
-						fmt.Printf("💰 Merging %.0f pairs for market %s...\n", minQty, condID[:10])
+					if minQty >= 0.000001 {
+						fmt.Printf("💰 Merging %.6f pairs for market %s...\n", minQty, condID[:10])
 						_, err := realTrader.MergeOnChain(cleanupCtx, condID, minQty)
 						if err != nil {
 							fmt.Printf("❌ Merge failed: %v\n", err)
@@ -640,13 +640,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	// Fetch fee rates for the tokens
 	tokenFeeRates := make(map[string]int)
 	for tid, outcome := range tokenMap {
-		rate, err := restClient.GetFeeRate(ctx, tid)
-		if err == nil && rate > 0 {
+		// Retry fee fetch a few times at startup
+		var rate int
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			rate, err = restClient.GetFeeRate(ctx, tid)
+			if err == nil {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if err == nil {
 			tokenFeeRates[outcome] = rate
-			tui.LogEvent("[%s] ℹ️ Fee enabled for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
+			// 15m markets require 1000 bps authorization even if endpoint returns 0
+			if rate == 0 {
+				tokenFeeRates[outcome] = 1000
+				tui.LogEvent("[%s] ℹ️ Fee rate returned 0, forcing 1000 bps (required)", id)
+			} else {
+				tui.LogEvent("[%s] ℹ️ Fee rate: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
+			}
 		} else {
-			tokenFeeRates[outcome] = 1000 // Default taker fee
-			tui.LogEvent("[%s] ⚠️ Fee fetch failed for %s (err=%v, rate=%d), using default 1000 bps", id, outcome, err, rate)
+			// If API fails, use 1000 bps (10%) which is the standard taker fee for 15m markets
+			tokenFeeRates[outcome] = 1000
+			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using default 1000 bps", id)
 		}
 	}
 
@@ -1036,10 +1053,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							sharesToSell = minBidLiq * 0.85
 						}
 						
-						// Ensure min order size $1.00 at floor price 0.10
-						const floorPrice = 0.10
-						if sharesToSell*floorPrice < 1.0 {
-							sharesToSell = math.Ceil(1.0 / floorPrice)
+						// Ensure min order size 1 share
+						if sharesToSell < 1.0 {
+							sharesToSell = 1.0
 						}
 						
 						sharesToSell = math.Floor(sharesToSell)
@@ -1379,11 +1395,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						shares = maxSafeShares
 					}
 
-					// Force at least 1 share if there's any matched liquidity and we have budget
-					if shares < 1.0 && minLiquidity >= 1.0 {
-						shares = 1.0
-					}
-
 					// Calculate metrics for reporting
 					cost, _, _, _ := calculateTradeMetrics(shares, sum, maxFeeRateBps)
 
@@ -1402,7 +1413,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							maxAffordableShares := (currentCash * 0.98) / sum // Use 98% of cash for safety
 							if maxAffordableShares < 1.0 {
 								tui.LogEvent("[%s] ⚠️ Insufficient funds: Need $%.2f for 1 share, have $%.2f", id, sum, currentCash)
-								continue // Truly not enough cash for 1 share
+								continue 
 							}
 							shares = math.Floor(maxAffordableShares)
 							cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
@@ -1417,7 +1428,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Check why we might skip trading
 					if shares < 1.0 {
-						tui.LogEvent("[%s] ⚠️ No liquidity: shares=%.2f (need ≥1), matched_liq=%.0f", id, shares, minLiquidity)
+						tui.LogEvent("[%s] ⚠️ Shares below 1.0 minimum: %.2f", id, shares)
 						continue
 					}
 					if time.Since(lastTrade) <= 2*time.Second {
@@ -1614,10 +1625,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								bal0, err0 := trader.GetCTFBalanceFloat(mergeCtx, tid0)
 								bal1, err1 := trader.GetCTFBalanceFloat(mergeCtx, tid1)
 								if err0 == nil && err1 == nil {
-									actualMin := math.Floor(math.Min(bal0, bal1))
-									if actualMin >= 1.0 {
+									// Don't floor! Merge exact fractional amount available
+									actualMin := math.Min(bal0, bal1)
+									// Filter dust
+									if actualMin >= 0.000001 {
 										mergeQty = actualMin
-										tui.LogEvent("[%s] 📊 On-chain balances: %s=%.2f, %s=%.2f → merging %.0f", id, o1, bal0, o2, bal1, mergeQty)
+										tui.LogEvent("[%s] 📊 On-chain balances: %s=%.2f, %s=%.2f → merging %.6f", id, o1, bal0, o2, bal1, mergeQty)
 									}
 								}
 

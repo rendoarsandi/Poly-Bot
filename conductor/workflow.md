@@ -161,7 +161,7 @@ go mod tidy
 ### Daily Development
 ```bash
 # Run the application
-go run cmd/bot/main.go
+go run cmd/paperbot/main.go
 
 # Run all tests
 go test ./...

@@ -15,7 +15,7 @@ PolyArb-15m is a high-frequency trading bot designed to automate volatility arbi
 
 ## 3. User Experience
 -   **Interface:** Headless Command Line Interface (CLI).
--   **Interaction:** The user launches the bot via a terminal command (e.g., `go run cmd/bot/main.go`).
+-   **Interaction:** The user launches the bot via a terminal command (e.g., `go run cmd/paperbot/main.go`).
 -   **Feedback:** Real-time operation status, trade executions, and error alerts are streamed to the console logs. No graphical interface or interactive TUI is required.
 
 ## 4. Strategic Logic (The "Gabagool" Algorithm)

@@ -119,7 +119,7 @@ type OrderPayload struct {
 	Expiration    string `json:"expiration"`
 	Nonce         string `json:"nonce"`
 	FeeRateBps    string `json:"feeRateBps"`
-	Side          int    `json:"side"`
+	Side          string `json:"side"` // API expects string "0" or "1"
 	SignatureType int    `json:"signatureType"`
 	Signature     string `json:"signature"`
 }
@@ -134,12 +134,6 @@ type OrderResponse struct {
 
 // PlaceOrder places a new limit order
 func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
-	// Safety Check: Minimum Order Size
-	// Polymarket CLOB has a $1.00 minimum for marketable orders
-	if (req.Price * req.Size) < 1.0 {
-		return nil, fmt.Errorf("order value $%.4f is below the $1.00 minimum (Price: %.4f, Size: %.2f)", req.Price*req.Size, req.Price, req.Size)
-	}
-
 	// Generate random salt
 	salt := generateSalt()
 
@@ -225,21 +219,21 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	// Build signed order
 	signedOrder := &SignedOrder{
 		Order: OrderPayload{
-			Salt:          salt,
+			Salt:          salt, // MUST be Integer
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       req.TokenID, // Use decimal string for JSON payload
-			MakerAmount:   orderData.MakerAmount,
-			TakerAmount:   orderData.TakerAmount,
-			Expiration:    orderData.Expiration,
-			Nonce:         orderData.Nonce,
-			FeeRateBps:    orderData.FeeRateBps,
-			Side:          orderData.Side, // Use integer
-			SignatureType: orderData.SignatureType,
+			TokenID:       req.TokenID, // MUST be Decimal String
+			MakerAmount:   orderData.MakerAmount, // MUST be String
+			TakerAmount:   orderData.TakerAmount, // MUST be String
+			Expiration:    orderData.Expiration, // MUST be String
+			Nonce:         orderData.Nonce, // MUST be String
+			FeeRateBps:    strconv.Itoa(req.FeeRateBps), // MUST be String
+			Side:          strconv.Itoa(orderData.Side), // MUST be string "0" or "1"
+			SignatureType: orderData.SignatureType, // MUST be Integer
 			Signature:     signature,
 		},
-		Owner:     c.auth.APIKey,
+		Owner:     c.auth.APIKey, // MUST be API Key for CLOB
 		OrderType: string(req.OrderType),
 	}
 
@@ -309,7 +303,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		makerAmount, _ := strconv.ParseFloat(signedOrder.Order.MakerAmount, 64)
 		makerAmountUSDC := makerAmount / 1e6 // Convert from base units
 
-		if signedOrder.Order.Side == 0 && allowance.Balance < makerAmountUSDC {
+		if signedOrder.Order.Side == "0" && allowance.Balance < makerAmountUSDC {
 			return &OrderResponse{
 				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
 				Success:  false,

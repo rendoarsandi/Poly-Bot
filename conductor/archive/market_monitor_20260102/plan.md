@@ -6,8 +6,8 @@
     - [x] Sub-task: Install initial dependencies: `go get github.com/joho/godotenv`.
     - [x] Sub-task: Create `.env.example` and `.env` for API keys and config.
 - [x] Task: Create Basic Directory Structure aa5c6e4
-    - [x] Sub-task: Create `cmd/bot/`, `internal/api/`, `internal/core/`, `internal/strategy/` directories.
-    - [x] Sub-task: Create `cmd/bot/main.go` entry point.
+    - [x] Sub-task: Create `cmd/paperbot/`, `internal/api/`, `internal/core/`, `internal/strategy/` directories.
+    - [x] Sub-task: Create `cmd/paperbot/main.go` entry point.
 - [x] Task: Implement Configuration Loader 59190a8
     - [x] Sub-task: Write Tests for config loading in `internal/core/config_test.go`.
     - [x] Sub-task: Implement `internal/core/config.go` to load settings from environment variables.
@@ -41,6 +41,6 @@
 
     - [x] Sub-task: Write Integration Test for the full loop.
 
-    - [x] Sub-task: Wire everything together in `cmd/bot/main.go` to subscribe, calculate, and log.
+    - [x] Sub-task: Wire everything together in `cmd/paperbot/main.go` to subscribe, calculate, and log.
 
 - [x] Task: Conductor - User Manual Verification 'Core Logic & Output' (Protocol in workflow.md) 878a66d

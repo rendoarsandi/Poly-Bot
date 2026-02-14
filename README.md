@@ -62,7 +62,7 @@ npm install
 cp .env.example .env
 
 # Build
-go build -o market-bot ./cmd/bot
+go build -o market-bot ./cmd/paperbot
 ```
 
 ### Deriving Polymarket API Credentials
@@ -98,10 +98,10 @@ Paper trading uses simulated balance to test strategies without risk:
 
 ```bash
 # Run the paper trading bot
-go run cmd/bot/main.go
+go run cmd/paperbot/main.go
 
 # Or build and run
-go build -o market-bot ./cmd/bot
+go build -o market-bot ./cmd/paperbot
 ./market-bot
 ```
 
@@ -283,7 +283,7 @@ POLYMARKET_SECRET=
 POLYGON_PRIVATE_KEY=
 ```
 
-### Strategy Parameters (cmd/bot/main.go)
+### Strategy Parameters (cmd/paperbot/main.go)
 
 ```go
 // Starting balance for paper trading
@@ -450,7 +450,7 @@ Market-bot/
 
 | Aspect | Paper Trading | Real Trading |
 |--------|---------------|--------------|
-| Command | `go run cmd/bot/main.go` | `go run cmd/realbot/main.go` |
+| Command | `go run cmd/paperbot/main.go` | `go run cmd/realbot/main.go` |
 | Money | Simulated $1000 | Real USDC from wallet |
 | Orders | Simulated fills | Actual CLOB limit orders |
 | Balance | Tracked in memory | From Polymarket API |

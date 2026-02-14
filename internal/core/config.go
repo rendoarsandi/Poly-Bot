@@ -57,6 +57,9 @@ type Config struct {
 	EnableMarginAggression  bool    // Scale trade size by margin (e.g., 2% margin = 2x size)
 	MaxAggressionMultiplier float64 // Maximum multiplier for margin-based aggression (default: 5.0)
 
+	// API constraints
+	MinOrderSize float64 // Minimum shares per order enforced by CLOB API (default: 5.0)
+
 	// ═══════════════════════════════════════════════════════════════════════════
 	// SPLIT STRATEGY SETTINGS (Panic Sell)
 	// Strategy: SPLIT USDC → YES+NO shares, SELL when bid_sum > $1.03

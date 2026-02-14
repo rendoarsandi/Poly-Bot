@@ -44,7 +44,7 @@ node scripts/derive-api-key.js <YOUR_PRIVATE_KEY>
 #### Running the Bot
 - **Paper Trading (Default):**
   ```bash
-  go run cmd/bot/main.go
+  go run cmd/paperbot/main.go
   ```
 - **Real Trading (WARNING: Uses real USDC):**
   ```bash

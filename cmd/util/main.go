@@ -105,6 +105,31 @@ func main() {
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
 	tokenFeeRates := make(map[string]int)
+	for tid, out := range tokenMap {
+		var rate int
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			rate, err = client.GetFeeRate(ctx, tid)
+			if err == nil {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if err == nil {
+			tokenFeeRates[out] = rate
+			// 15m markets require 1000 bps authorization even if endpoint returns 0
+			if rate == 0 {
+				tokenFeeRates[out] = 1000
+				fmt.Printf("ℹ️  Fee rate for %s returned 0, forcing 1000 bps (required for 15m)\n", out)
+			} else {
+				fmt.Printf("ℹ️  Fee rate for %s: %d bps\n", out, rate)
+			}
+		} else {
+			tokenFeeRates[out] = 1000 // Fallback to 1000 bps (10%) as required by API
+			fmt.Printf("⚠️  Fee fetch failed for %s, using 1000 bps fallback\n", out)
+		}
+	}
 
 	// Input handler
 	inputChan := make(chan string)
@@ -154,11 +179,8 @@ func main() {
 				}
 			}
 		case <-ticker.C:
-			// REST Refresh: always poll for fresh prices and depth (WS may lag or miss updates)
+			// REST Refresh: always poll for fresh prices and depth
 			for tid, out := range tokenMap {
-				if rate, err := client.GetFeeRate(ctx, tid); err == nil {
-					tokenFeeRates[out] = rate
-				}
 				if book, err := client.GetOrderBook(ctx, tid); err == nil {
 					bid, ask := 0.0, 1.0
 					for _, b := range book.Bids {
@@ -224,14 +246,14 @@ takeAction:
 	fmt.Print("Choice: ")
 	var choice int
 	fmt.Scanln(&choice)
-	fmt.Print("USDC per side (min $1.00): ")
-	var amt float64
-	fmt.Scanln(&amt)
+	fmt.Print("Shares per side (min 5): ")
+	var shares float64
+	fmt.Scanln(&shares)
 
 	if choice == 1 {
-		executeBoth(ctx, trader, market, outcomes, "BUY", amt, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, market, outcomes, "BUY", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	} else {
-		executeBoth(ctx, trader, market, outcomes, "SELL", amt, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, market, outcomes, "SELL", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	}
 }
 
@@ -266,10 +288,9 @@ func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*ap
 	}
 }
 
-func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Market, outcomes []string, side string, targetUSDC float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
-	// Determine execution pricing FIRST to calculate shares from USDC
+func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
+	// Determine execution pricing
 	prices := make(map[string]float64, len(outcomes))
-	minPrice := 1.0
 	for _, out := range outcomes {
 		var price float64
 		if side == "BUY" {
@@ -305,28 +326,10 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 		}
 		prices[out] = price
-		if price < minPrice {
-			minPrice = price
-		}
 	}
 
-	// Calculate shares required to spend targetUSDC per side.
-	// To maintain a balanced arbitrage, we must have the same number of shares on both sides.
-	// Each side's notional (shares * price) MUST be >= $1.00.
+	shares := targetShares
 	
-	// sharesNeeded for side A = targetUSDC / priceA
-	// sharesNeeded for side B = targetUSDC / priceB
-	// We take the MAX to ensure both sides meet the target, but then we must check notional floor.
-	shares := math.Ceil(targetUSDC / minPrice)
-	
-	// Safety: ensure both sides meet $1.00 notional floor
-	for _, p := range prices {
-		minReq := math.Ceil(1.0 / p)
-		if shares < minReq {
-			shares = minReq
-		}
-	}
-
 	if side == "BUY" {
 		totalLiq := estimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...),
@@ -351,26 +354,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		}
 	}
 
-	if shares < 1.0 {
-		log.Fatal("No liquidity.")
-	}
-
-	// Re-verify notional after capping
-	minSharesForNotional := 1.0
-	for _, p := range prices {
-		req := math.Ceil(1.0 / p)
-		if req > minSharesForNotional {
-			minSharesForNotional = req
-		}
-	}
-
-	if shares < minSharesForNotional {
-		fmt.Printf("⚠️  Adjusting to minimum: %.0f shares needed to meet Polymarket's $1.00 floor.\n", minSharesForNotional)
-		shares = minSharesForNotional
-	}
-
 	totalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
-	fmt.Printf("🚀 Executing: %s %.0f shares (Est. cost: $%.2f USDC total). Confirm? (y/n): ", side, shares, totalValue)
+	fmt.Printf("🚀 Executing: %s %.0f shares (Est. total value: $%.2f USDC). Confirm? (y/n): ", side, shares, totalValue)
 	var confirm string
 	fmt.Scanln(&confirm)
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
@@ -399,9 +384,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			tid := getTokenIDForOutcome(market, o)
 			execShares := shares
 			rate := tokenFeeRates[o]
-			if rate == 0 {
-				rate = 1000 // Default taker fee rate for Polymarket 15m markets
-				log.Printf("⚠️ Using default fee rate %d bps for %s (fetch may have failed)", rate, o)
+			if rate == -1 {
+				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
+				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
 			}
 			if side == "BUY" {
 				price := prices[o]
@@ -475,6 +460,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			// Query actual on-chain CTF balances to merge the correct amount
 			token0 := getTokenIDForOutcome(market, outcomes[0])
 			token1 := getTokenIDForOutcome(market, outcomes[1])
+			fmt.Printf("🔍 Querying balances for tokens: %s (%s), %s (%s)\n", outcomes[0], token0, outcomes[1], token1)
+			
 			bal0, err0 := trader.GetCTFBalanceFloat(context.Background(), token0)
 			bal1, err1 := trader.GetCTFBalanceFloat(context.Background(), token1)
 			if err0 != nil || err1 != nil {
@@ -483,9 +470,13 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 			fmt.Printf("📊 On-chain balances: %s=%.2f, %s=%.2f\n", outcomes[0], bal0, outcomes[1], bal1)
 
-			minQty := math.Floor(math.Min(math.Min(bal0, bal1), shares))
-			if minQty >= 1.0 {
-				fmt.Printf("🔄 Merging %.0f pairs...\n", minQty)
+			// Don't floor the merge quantity! CTF supports 6 decimals.
+			// Use the minimum available balance directly to merge everything.
+			minQty := math.Min(math.Min(bal0, bal1), shares)
+			
+			// Only filter out tiny dust (< 0.000001)
+			if minQty >= 0.000001 {
+				fmt.Printf("🔄 Merging %.6f pairs...\n", minQty)
 				tx, mergeErr := trader.MergeOnChain(context.Background(), market.ConditionID, minQty)
 				if mergeErr != nil {
 					fmt.Printf("❌ Merge failed: %v\n", mergeErr)
@@ -493,7 +484,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 					fmt.Printf("✅ Merge successful! Tx: %s\n", tx)
 				}
 			} else {
-				fmt.Printf("⚠️ Not enough balanced pairs to merge (min=%.2f)\n", minQty)
+				fmt.Printf("⚠️ Not enough balanced pairs to merge (min=%.6f)\n", minQty)
 			}
 		}
 	}
