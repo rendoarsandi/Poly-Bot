@@ -1258,7 +1258,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
 				// Slippage buffer: willing to pay up to 1.5% more per side for guaranteed fill
 				// Must account for this in margin check to avoid trading with negative effective margin
-				const slippageBuffer = 0.105
+				const slippageBuffer = 0.0075
 				sum := ask1 + ask2
 				bufferedSum := (ask1 + slippageBuffer) + (ask2 + slippageBuffer)
 				margin := (1.0 - bufferedSum) * 100 // Use buffered sum for margin check
