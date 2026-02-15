@@ -176,65 +176,72 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		expirationStr = strconv.FormatInt(req.Expiration, 10)
 	}
 
-	// Build order data
+	submitSigned := func(salt int64, makerAmt, takerAmt string, sideInt int) (*OrderResponse, error) {
+		orderData := &OrderData{
+			Salt:          strconv.FormatInt(salt, 10),
+			Maker:         c.signer.Address(),
+			Signer:        c.signer.Address(),
+			Taker:         "0x0000000000000000000000000000000000000000", // Any taker
+			TokenID:       req.TokenID,
+			MakerAmount:   makerAmt,
+			TakerAmount:   takerAmt,
+			Expiration:    expirationStr,
+			Nonce:         "0",
+			FeeRateBps:    strconv.Itoa(req.FeeRateBps),
+			Side:          sideInt,
+			SignatureType: 0, // EOA signature
+		}
+
+		signature, err := c.signer.SignOrder(orderData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign order: %w", err)
+		}
+
+		signedOrder := &SignedOrder{
+			Order: OrderPayload{
+				Salt:          salt,
+				Maker:         orderData.Maker,
+				Signer:        orderData.Signer,
+				Taker:         orderData.Taker,
+				TokenID:       req.TokenID,
+				MakerAmount:   orderData.MakerAmount,
+				TakerAmount:   orderData.TakerAmount,
+				Expiration:    orderData.Expiration,
+				Nonce:         orderData.Nonce,
+				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
+				Side:          strconv.Itoa(orderData.Side),
+				SignatureType: orderData.SignatureType,
+				Signature:     signature,
+			},
+			Owner:     c.auth.APIKey,
+			OrderType: string(req.OrderType),
+		}
+
+		return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, req.Side)
+	}
+
 	sideInt := 0
 	if req.Side == SideSell {
 		sideInt = 1
 	}
 
-	orderData := &OrderData{
-		Salt:          strconv.FormatInt(salt, 10),
-		Maker:         c.signer.Address(),
-		Signer:        c.signer.Address(),
-		Taker:         "0x0000000000000000000000000000000000000000", // Any taker
-		TokenID:       req.TokenID,
-		MakerAmount:   makerAmount,
-		TakerAmount:   takerAmount,
-		Expiration:    expirationStr,
-		Nonce:         "0",
-		FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-		Side:          sideInt,
-		SignatureType: 0, // EOA signature
-	}
-
-	// Sign the order
-	signature, err := c.signer.SignOrder(orderData)
+	resp, err := submitSigned(salt, makerAmount, takerAmount, sideInt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign order: %w", err)
+		return nil, err
 	}
 
-	// Ensure tokenID is in hex format for JSON payload
-	tokenIDHex := req.TokenID
-	if !strings.HasPrefix(tokenIDHex, "0x") {
-		// Convert decimal string to hex
-		n := new(big.Int)
-		n.SetString(tokenIDHex, 10)
-		tokenIDHex = "0x" + n.Text(16)
+	// SELL fallback: some validator paths treat price orientation differently.
+	// If canonical SELL shape is rejected as invalid price, retry once with flipped amounts.
+	if req.Side == SideSell && resp != nil && !resp.Success && strings.Contains(strings.ToLower(resp.ErrorMsg), "invalid price") {
+		fmt.Printf("⚠️ SELL fallback: retrying with flipped maker/taker amounts for price validation\n")
+		altSalt := generateSalt()
+		altResp, altErr := submitSigned(altSalt, takerAmount, makerAmount, sideInt)
+		if altErr == nil && altResp != nil && altResp.Success {
+			return altResp, nil
+		}
 	}
 
-	// Build signed order
-	signedOrder := &SignedOrder{
-		Order: OrderPayload{
-			Salt:          salt, // MUST be Integer
-			Maker:         orderData.Maker,
-			Signer:        orderData.Signer,
-			Taker:         orderData.Taker,
-			TokenID:       req.TokenID,                  // MUST be Decimal String
-			MakerAmount:   orderData.MakerAmount,        // MUST be String
-			TakerAmount:   orderData.TakerAmount,        // MUST be String
-			Expiration:    orderData.Expiration,         // MUST be String
-			Nonce:         orderData.Nonce,              // MUST be String
-			FeeRateBps:    strconv.Itoa(req.FeeRateBps), // MUST be String
-			Side:          strconv.Itoa(orderData.Side), // MUST be string "0" or "1"
-			SignatureType: orderData.SignatureType,      // MUST be Integer
-			Signature:     signature,
-		},
-		Owner:     c.auth.APIKey, // MUST be API Key for CLOB
-		OrderType: string(req.OrderType),
-	}
-
-	// Submit order to API
-	return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, req.Side)
+	return resp, nil
 }
 
 // submitOrder sends the signed order to the CLOB API
