@@ -85,6 +85,7 @@ const (
 	TIFGoodTilCancelled  TimeInForce = "GTC"
 	TIFFillOrKill        TimeInForce = "FOK"
 	TIFImmediateOrCancel TimeInForce = "IOC"
+	TIFGoodTilDate       TimeInForce = "GTD"
 )
 
 // OrderRequest represents a new order request
@@ -156,7 +157,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		// SELL: Use original amounts (not swapped)
 		// The swap broke the signature. Let's try using LIMIT instead of MARKET for SELL.
 		// The issue might be that MARKET/FOK validates price differently than LIMIT.
-		
+
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
@@ -171,9 +172,9 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Polymarket rejects non-zero expiration for non-GTD orders.
-	// We only send a non-zero expiration when explicitly provided.
+	// Only GTD orders may carry a non-zero expiration.
 	expirationStr := "0"
-	if req.Expiration > 0 {
+	if req.TimeInForce == TIFGoodTilDate && req.Expiration > 0 {
 		expirationStr = strconv.FormatInt(req.Expiration, 10)
 	}
 

@@ -1463,8 +1463,42 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// MARKET EXECUTION: Force fill both sides with GTC to avoid FOK cancels
-						// Using $0.99 as worst-case to ensure enough USDC is provided for a guaranteed fill
+						// If we're already unbalanced in this market, prioritize closing the gap.
+						pos := engine.GetPositions()
+						pos1Qty := 0.0
+						pos2Qty := 0.0
+						if p, ok := pos[id+":"+outcomes[0]]; ok {
+							pos1Qty = p.Quantity
+						}
+						if p, ok := pos[id+":"+outcomes[1]]; ok {
+							pos2Qty = p.Quantity
+						}
+						const rebalanceEpsilon = 0.000001
+						onlyRebalance := math.Abs(pos1Qty-pos2Qty) > rebalanceEpsilon
+						onlyOutcome := ""
+						if onlyRebalance {
+							if pos1Qty < pos2Qty {
+								onlyOutcome = outcomes[0]
+							} else {
+								onlyOutcome = outcomes[1]
+							}
+							tui.LogEvent("[%s] ⚖️ Existing imbalance detected (%s=%.0f, %s=%.0f) → rebalancing only %s", id, outcomes[0], pos1Qty, outcomes[1], pos2Qty, onlyOutcome)
+						}
+
+						tradeShares := shares
+						if onlyRebalance {
+							gap := math.Abs(pos1Qty - pos2Qty)
+							if gap > rebalanceEpsilon && tradeShares > gap {
+								tradeShares = gap
+							}
+						}
+
+						if tradeShares < 1.0 {
+							tui.LogEvent("[%s] ℹ️ Rebalance gap %.4f too small for minimum order size, waiting", id, tradeShares)
+							continue
+						}
+
+						// MARKET EXECUTION: Force fill with cap price so CLOB can cross the book.
 						const worstCasePrice = 0.99
 
 						var wg sync.WaitGroup
@@ -1475,27 +1509,35 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						go func() {
 							defer wg.Done()
+							if onlyRebalance && onlyOutcome != outcomes[0] {
+								err1 = fmt.Errorf("rebalance mode: skipped heavy side %s", outcomes[0])
+								return
+							}
 							rate := tokenFeeRates[outcomes[0]]
 							if rate == 0 {
 								rate = 1000
 							}
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, tradeShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						go func() {
 							defer wg.Done()
+							if onlyRebalance && onlyOutcome != outcomes[1] {
+								err2 = fmt.Errorf("rebalance mode: skipped heavy side %s", outcomes[1])
+								return
+							}
 							rate := tokenFeeRates[outcomes[1]]
 							if rate == 0 {
 								rate = 1000
 							}
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, tradeShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						wg.Wait()
 
 						// Calculate costs using the original target price for reporting (actual will be better)
-						cost1 := shares * price1
-						cost2 := shares * price2
+						cost1 := tradeShares * price1
+						cost2 := tradeShares * price2
 
 						// Track success state - defer engine recording until final state is known
 						side1Success := err1 == nil && res1 != nil && res1.Success
@@ -1504,9 +1546,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// Log results (but don't record to engine yet)
 						if side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FILLED")
+							tui.RecordOrder(id, outcomes[0], "BUY", tradeShares, price1, cost1, margin, "FILLED")
 						} else {
-							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
 							} else if res1 != nil && res1.Message != "" {
@@ -1516,14 +1557,13 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							} else {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 							}
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FAILED")
+							tui.RecordOrder(id, outcomes[0], "BUY", tradeShares, price1, cost1, margin, "FAILED")
 						}
 
 						if side2Success {
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, "FILLED")
+							tui.RecordOrder(id, outcomes[1], "BUY", tradeShares, price2, cost2, margin, "FILLED")
 						} else {
-							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
 							} else if res2 != nil && res2.Message != "" {
@@ -1533,16 +1573,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							} else {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 							}
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, "FAILED")
+							tui.RecordOrder(id, outcomes[1], "BUY", tradeShares, price2, cost2, margin, "FAILED")
 						}
 
-						// ═══════════════════════════════════════════════════════════════
-						// UNBALANCED FILL RECOVERY: If one side succeeded and other failed,
-						// retry the failed side up to 3 times to prevent unbalanced position
-						// ═══════════════════════════════════════════════════════════════
 						recoverySuccess := false
-						if side1Success != side2Success {
-							// One succeeded, one failed - need to recover
+						if !onlyRebalance && side1Success != side2Success {
 							failedSide := 1
 							failedToken := token0
 							failedOutcome := outcomes[0]
@@ -1554,13 +1589,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: Side %d failed, starting bounded recovery...", id, failedSide)
 
-							// Retry failed side with a bounded loop to avoid infinite single-side spam.
 							retryCount := 0
 							const maxARBRecoveryAttempts = 40
 							for retryCount < maxARBRecoveryAttempts {
 								retryCount++
 
-								// Check context cancellation to allow graceful shutdown
 								select {
 								case <-ctx.Done():
 									tui.LogEvent("[%s] 🛑 ARB Recovery interrupted by shutdown after %d attempts", id, retryCount)
@@ -1568,28 +1601,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								default:
 								}
 
-								// Fast constant delay for balancing: 50ms
 								time.Sleep(50 * time.Millisecond)
-
-								// Force fill with ceiling price ($0.99) for arb recovery
-								// Since it's a MARKET order, it will fill at the BEST available ask price
-								// but providing $0.99 as the "price" gives enough room for any liquidity
 								retryPrice := 0.99
-
 								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $0.99 cap)", id, retryCount, failedOutcome)
 
 								rate := tokenFeeRates[failedOutcome]
 								if rate == 0 {
 									rate = 1000
 								}
-								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+
+								retryShares := tradeShares
+								if onlyRebalance {
+									gap := math.Abs(pos1Qty - pos2Qty)
+									if gap > rebalanceEpsilon && retryShares > gap {
+										retryShares = gap
+									}
+								}
+
+								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, retryShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 
 								if retryErr == nil && retryRes != nil && retryRes.Success {
 									tui.LogEvent("[%s] ✅ ARB Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
-									retryCost := shares * retryPrice
-									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, margin, "FILLED")
+									retryCost := retryShares * retryPrice
+									tui.RecordOrder(id, failedOutcome, "BUY", retryShares, retryPrice, retryCost, margin, "FILLED")
 									recoverySuccess = true
-									// Update the success flag and price for engine recording
 									if failedSide == 1 {
 										side1Success = true
 										price1 = retryPrice
@@ -1597,10 +1632,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										side2Success = true
 										price2 = retryPrice
 									}
+									tradeShares = retryShares
 									break
 								}
 
-								// Log failure with error details
 								if retryErr != nil {
 									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %v", id, retryCount, retryErr)
 								} else if retryRes != nil && !retryRes.Success {
@@ -1622,8 +1657,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// This ensures engine state matches reality for accurate drawdown calculation
 						if side1Success && side2Success {
 							// Both sides filled (either initially or via recovery) - record both
-							engine.BuyForMarket(id, outcomes[0], price1, shares)
-							engine.BuyForMarket(id, outcomes[1], price2, shares)
+							engine.BuyForMarket(id, outcomes[0], price1, tradeShares)
+							engine.BuyForMarket(id, outcomes[1], price2, tradeShares)
 
 							// INSTANT MERGE: Immediately merge tokens to capture arb profit
 							// This converts YES+NO tokens back to USDC without waiting for expiry
@@ -1663,16 +1698,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit", id, result.PnL)
 									}
 								}
-							}(market.ConditionID, shares, outcomes[0], outcomes[1], token0, token1)
+							}(market.ConditionID, tradeShares, outcomes[0], outcomes[1], token0, token1)
 						} else if side1Success || side2Success {
 							// Only one side filled and recovery failed - record the unbalanced position
 							// This is important so the risk manager can see the exposure
 							if side1Success {
-								engine.BuyForMarket(id, outcomes[0], price1, shares)
+								engine.BuyForMarket(id, outcomes[0], price1, tradeShares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
 							}
 							if side2Success {
-								engine.BuyForMarket(id, outcomes[1], price2, shares)
+								engine.BuyForMarket(id, outcomes[1], price2, tradeShares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
 						}
