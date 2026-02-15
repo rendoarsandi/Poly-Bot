@@ -210,7 +210,7 @@ func run() error {
 		} else if len(positions) > 0 {
 			// Map positions to their markets to find ConditionIDs
 			// We'll need a fresh list of markets for this
-			markets, err := restClient.Get5mMarkets(cleanupCtx, nil)
+			markets, err := restClient.Get15mMarkets(cleanupCtx, nil)
 			if err == nil {
 				// Group tokens by ConditionID
 				condToTokens := make(map[string][]string)
@@ -313,7 +313,7 @@ func run() error {
 				start := time.Now()
 				// Use a lightweight check for latency
 				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_, err := restClient.Get5mMarkets(pingCtx, []string{"btc"})
+				_, err := restClient.Get15mMarkets(pingCtx, []string{"btc", "eth"})
 				cancel()
 				if err == nil {
 					tui.UpdateLatency(time.Since(start))
@@ -368,7 +368,7 @@ func run() error {
 		tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
 
 		// Find markets
-		tui.LogEvent("🔍 Searching for active 5m markets...")
+		tui.LogEvent("🔍 Searching for active 15m markets...")
 		markets := findMarkets(ctx, restClient, tui)
 		if len(markets) == 0 {
 			tui.LogEvent("⏳ No active markets, waiting...")
@@ -460,7 +460,7 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 	fmt.Println()
 	fmt.Println("🔍 Searching for active markets...")
 
-	markets, err := restClient.Get5mMarkets(ctx, nil)
+	markets, err := restClient.Get15mMarkets(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to fetch markets: %w", err)
 	}
@@ -509,7 +509,7 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc"}
+	assets := []string{"btc", "eth"}
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
@@ -524,7 +524,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 		default:
 		}
 
-		markets, err := restClient.Get5mMarkets(ctx, nil)
+		markets, err := restClient.Get15mMarkets(ctx, nil)
 		if err != nil {
 			if attempts == 0 {
 				tui.LogEvent("⚠️ Market fetch error: %v, retrying...", err)
@@ -548,19 +548,19 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			}
 
 			slug := strings.ToLower(m.Slug)
-			is5m := strings.Contains(slug, "5m") || strings.Contains(slug, "updown")
+			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
 
 			for _, asset := range assets {
 				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is5m {
+				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
 					mCopy := m
 					found[key] = &mCopy
 				}
 			}
 		}
 
-		// Return as soon as at least one valid market is found (5m often has BTC only).
-		if len(found) > 0 {
+		// Return early only when all target assets are found.
+		if len(found) == len(assets) {
 			return found
 		}
 
@@ -583,7 +583,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 		}
 	}
 
-	tui.LogEvent("⚠️ No 5m markets found after polling")
+	tui.LogEvent("⚠️ No 15m markets found after polling")
 	return found
 }
 
@@ -653,14 +653,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 		if err == nil {
 			tokenFeeRates[outcome] = rate
-			// 5m markets require 1000 bps authorization even if endpoint returns 0
+			// 15m markets require 1000 bps authorization even if endpoint returns 0
 			if rate == 0 {
 				tokenFeeRates[outcome] = 1000
 			} else {
 				tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
 			}
 		} else {
-			// If API fails, use 1000 bps (10%) which is the standard taker fee for 5m markets
+			// If API fails, use 1000 bps (10%) which is the standard taker fee for 15m markets
 			tokenFeeRates[outcome] = 1000
 			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using default 1000 bps", id)
 		}
@@ -1734,7 +1734,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 func calculateTradeMetrics(shares, sum float64, feeRateBps int) (cost, overhead, gross, net float64) {
 	cost = shares * sum
 
-	// Polymarket 5m markets now have taker fees
+	// Polymarket 15m markets now have taker fees
 	// feeRateBps is in basis points (1000 = 10%)
 	// Fee is deducted from proceeds (bought tokens or sold USDC)
 	overhead = 0
