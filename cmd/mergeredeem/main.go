@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,14 @@ func main() {
 			break
 		}
 	}
+
+	maxResolveWait := 60 * time.Second
+	if v := os.Getenv("MERGEREDEEM_MAX_WAIT_SECONDS"); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+			maxResolveWait = time.Duration(sec) * time.Second
+		}
+	}
+	pollEvery := 5 * time.Second
 
 	var markets []api.Market
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
@@ -190,27 +199,35 @@ func main() {
 					if hasWinner {
 						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")
 
-						// Automatic wait for resolution
+						// Automatic wait for resolution (bounded and RPC-timeout protected)
 						fmt.Printf("   ⏳ Checking on-chain resolution status...")
 						resolved := false
-						for i := 0; i < 18; i++ { // Wait up to 3 minutes (18 * 10s)
-							isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
+						deadline := time.Now().Add(maxResolveWait)
+						for attempt := 1; time.Now().Before(deadline); attempt++ {
+							checkCtx, cancelCheck := context.WithTimeout(ctx, 4*time.Second)
+							isRes, err := polygon.IsMarketResolved(checkCtx, m.ConditionID)
+							cancelCheck()
 							if err == nil && isRes {
 								resolved = true
 								fmt.Println(" ✅ READY")
 								break
 							}
-							if i == 0 {
-								fmt.Print("\n   ⏳ Market not yet settled on-chain. Waiting for Polygon to sync...")
-							} else {
-								fmt.Print(".")
+							remaining := time.Until(deadline).Round(time.Second)
+							if attempt == 1 {
+								fmt.Printf("\n   ⏳ Market not settled yet. Waiting up to %v", maxResolveWait)
 							}
-							time.Sleep(10 * time.Second)
+							fmt.Printf("\n      • Poll #%d (remaining %v)", attempt, remaining)
+							time.Sleep(pollEvery)
 						}
 
 						if !resolved && !forceRedeem {
-							fmt.Println("\n   ⚠️  Market still not settled on-chain after 3 minutes.")
-							fmt.Print("   Do you want to FORCE the redemption attempt anyway? (y/n): ")
+							fmt.Printf("\n   ⚠️  Market still not settled on-chain after %v; skipping redeem for now.\n", maxResolveWait)
+							fmt.Println("   ℹ️  Re-run later, or pass -force to attempt redeem anyway.")
+							continue
+						}
+
+						if !resolved && forceRedeem {
+							fmt.Print("   ⚠️  Forcing redeem attempt (market may still be syncing). Confirm? (y/n): ")
 						} else {
 							fmt.Print("   Confirm On-Chain Redeem? (y/n): ")
 						}
