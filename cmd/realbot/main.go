@@ -1426,9 +1426,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 					}
 
+					// MARKET orders are submitted with a $0.99 cap per side.
+					// Budget check must use worst-case spend across BOTH sides to avoid recovery failures
+					// like "not enough balance / allowance" after one side fills first.
+					const worstCaseExecutionPrice = 0.99
+					worstCaseDualCost := shares * worstCaseExecutionPrice * 2.0
+					if worstCaseDualCost > currentCash {
+						maxAffordableWorstCase := math.Floor((currentCash * 0.98) / (worstCaseExecutionPrice * 2.0))
+						if maxAffordableWorstCase < 1.0 {
+							tui.LogEvent("[%s] ⚠️ Insufficient worst-case balance for dual market buy: Need $%.2f for 1x1 share, Have $%.2f", id, worstCaseExecutionPrice*2.0, currentCash)
+							continue
+						}
+						shares = maxAffordableWorstCase
+						cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
+					}
+
 					// FINAL SAFETY CHECK: If we still don't have enough for both sides, SKIP
-					if cost > currentCash {
-						tui.LogEvent("[%s] ⚠️ Insufficient balance for both sides: Need $%.2f, Have $%.2f", id, cost, currentCash)
+					if cost > currentCash || (shares*worstCaseExecutionPrice*2.0) > currentCash {
+						tui.LogEvent("[%s] ⚠️ Insufficient balance for both sides: Need est $%.2f (worst-case $%.2f), Have $%.2f", id, cost, shares*worstCaseExecutionPrice*2.0, currentCash)
 						continue
 					}
 
@@ -1615,6 +1630,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									gap := math.Abs(pos1Qty - pos2Qty)
 									if gap > rebalanceEpsilon && retryShares > gap {
 										retryShares = gap
+									}
+								}
+
+								// Cap retry size by currently available cash to avoid allowance/balance spam.
+								if latestBal, balErr := trader.GetBalance(ctx); balErr == nil {
+									maxRetryShares := math.Floor((latestBal * 0.98) / retryPrice)
+									if maxRetryShares < 1.0 {
+										tui.LogEvent("[%s] 🛑 ARB Recovery halted: insufficient balance for retry (bal=$%.2f)", id, latestBal)
+										break
+									}
+									if retryShares > maxRetryShares {
+										retryShares = maxRetryShares
 									}
 								}
 
