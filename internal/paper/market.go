@@ -2,6 +2,7 @@ package paper
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -190,7 +191,7 @@ func (mm *MarketMonitor) PrintStatus() {
 }
 
 // ParseEndTimeFromSlug extracts end time from market slug (e.g., btc-updown-15m-1767358800)
-// The slug contains the START timestamp, so we add 15 minutes to get END time
+// The slug contains the START timestamp, so we add the interval minutes to get END time.
 func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 	// The slug format ends with the window START timestamp
 	// e.g., btc-updown-15m-1767358800 -> starts at 1767358800, ends at 1767358800 + 900
@@ -220,7 +221,14 @@ func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("could not parse timestamp from slug: %s", slug)
 	}
 
-	// Add 15 minutes (900 seconds) to get the END time
-	endTimestamp := timestamp + 900
+	// Detect interval from slug (default to 15m for backward compatibility).
+	intervalMinutes := int64(15)
+	if strings.Contains(strings.ToLower(slug), "-5m-") {
+		intervalMinutes = 5
+	} else if strings.Contains(strings.ToLower(slug), "-15m-") {
+		intervalMinutes = 15
+	}
+
+	endTimestamp := timestamp + (intervalMinutes * 60)
 	return time.Unix(endTimestamp, 0), nil
 }

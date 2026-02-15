@@ -496,8 +496,8 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			}
 		}
 
-		// Return if we found at least one market
-		if len(found) > 0 {
+		// Return early only when all target assets are found.
+		if len(found) == len(assets) {
 			return found
 		}
 
