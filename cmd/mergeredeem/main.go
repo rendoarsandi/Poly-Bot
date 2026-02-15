@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -51,45 +52,49 @@ func main() {
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
 		specificSlug := os.Args[1]
 		fmt.Printf("🔍 Looking for specific slug: %s\n", specificSlug)
-		
+
 		// Attempt to get market by slug from Gamma
-		url := fmt.Sprintf("https://gamma-api.polymarket.com/events?slug=%s", specificSlug)
-		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			var events []api.GammaEvent
-			if err := json.NewDecoder(resp.Body).Decode(&events); err == nil && len(events) > 0 {
-				event := events[0]
-				if len(event.Markets) > 0 {
-					gm := event.Markets[0]
-					var tokenIds []string
-					if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err == nil && len(tokenIds) >= 2 {
-						var outcomes []string
-						if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
-							outcomes = []string{"Up", "Down"}
+		lookupURL := fmt.Sprintf("https://gamma-api.polymarket.com/events?slug=%s", url.QueryEscape(specificSlug))
+		req, reqErr := http.NewRequestWithContext(ctx, "GET", lookupURL, nil)
+		if reqErr != nil {
+			fmt.Printf("   ❌ Error creating slug lookup request: %v\n", reqErr)
+		} else {
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				var events []api.GammaEvent
+				if err := json.NewDecoder(resp.Body).Decode(&events); err == nil && len(events) > 0 {
+					event := events[0]
+					if len(event.Markets) > 0 {
+						gm := event.Markets[0]
+						var tokenIds []string
+						if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err == nil && len(tokenIds) >= 2 {
+							var outcomes []string
+							if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+								outcomes = []string{"Up", "Down"}
+							}
+
+							markets = append(markets, api.Market{
+								ConditionID: gm.ConditionID,
+								Slug:        core.SanitizeString(specificSlug),
+								Active:      gm.Active,
+								Closed:      gm.Closed,
+								Tokens: []api.Token{
+									{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
+									{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
+								},
+							})
+							fmt.Printf("   ✅ Found market: %s\n", gm.ConditionID)
 						}
-						
-						markets = append(markets, api.Market{
-							ConditionID: gm.ConditionID,
-							Slug:        core.SanitizeString(specificSlug),
-							Active:      gm.Active,
-							Closed:      gm.Closed,
-							Tokens: []api.Token{
-								{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
-								{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
-							},
-						})
-						fmt.Printf("   ✅ Found market: %s\n", gm.ConditionID)
 					}
 				}
-			}
-			resp.Body.Close()
-		} else {
-			if err != nil {
-				fmt.Printf("   ❌ Error looking up slug: %v\n", err)
-			} else {
-				fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
 				resp.Body.Close()
+			} else {
+				if err != nil {
+					fmt.Printf("   ❌ Error looking up slug: %v\n", err)
+				} else {
+					fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
+					resp.Body.Close()
+				}
 			}
 		}
 	}
@@ -116,7 +121,7 @@ func main() {
 			tid := new(big.Int)
 			tid.SetString(t.TokenID, 10)
 			tokenIDs = append(tokenIDs, tid)
-			
+
 			bal, err := polygon.GetCTFBalance(ctx, address, tid)
 			if err != nil {
 				balances = append(balances, 0)
@@ -173,12 +178,16 @@ func main() {
 				if winnerOutcome != "" {
 					fmt.Printf("   🏁 Market Resolved: %s Won\n", winnerOutcome)
 					hasWinner := false
-					if outcomes[0] == winnerOutcome && balances[0] > 0 { hasWinner = true }
-					if outcomes[1] == winnerOutcome && balances[1] > 0 { hasWinner = true }
+					if outcomes[0] == winnerOutcome && balances[0] > 0 {
+						hasWinner = true
+					}
+					if outcomes[1] == winnerOutcome && balances[1] > 0 {
+						hasWinner = true
+					}
 
 					if hasWinner {
 						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")
-						
+
 						// Automatic wait for resolution
 						fmt.Printf("   ⏳ Checking on-chain resolution status...")
 						resolved := false
@@ -216,7 +225,7 @@ func main() {
 							} else {
 								tx, err = trader.RedeemOnChain(ctx, m.ConditionID)
 							}
-							
+
 							if err != nil {
 								fmt.Printf("   ❌ Redeem failed: %v\n", err)
 							} else {
