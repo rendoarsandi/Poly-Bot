@@ -154,20 +154,20 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		takerAmount = strconv.FormatInt(sizeMicro, 10)
 		fmt.Printf("DEBUG: BUY Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.Size, req.Price, makerAmount, takerAmount)
 	} else {
-		// SELL: makerAmount = shares (what we sell), takerAmount = USDC (what we receive)
-		// Use 6-decimal precision for both shares and USDC, consistent with BUY
-		// We revert to standard 6-decimal math because the "invalid price" error likely
-		// stems from float precision issues in the top-level price field, not the signed amounts.
+		// SELL: keep maker/taker orientation consistent with BUY so makerAmount/takerAmount
+		// remains a valid 0..1 price ratio for Polymarket validation.
+		// Using shares as maker and USDC as taker can produce ratios > 1 and trigger
+		// "invalid price" on market sells.
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-		makerAmount = strconv.FormatInt(sizeMicro, 10)
-		takerAmount = usdcMicroBig.String()
+		makerAmount = usdcMicroBig.String()
+		takerAmount = strconv.FormatInt(sizeMicro, 10)
 
-		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n",
+		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n",
 			req.Size, req.Price, makerAmount, takerAmount)
 	}
 
