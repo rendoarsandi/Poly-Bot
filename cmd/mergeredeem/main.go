@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"Market-bot/internal/api"
@@ -88,14 +89,62 @@ func main() {
 					fmt.Printf("   ❌ Merge failed: %v\n", err)
 				} else {
 					fmt.Printf("   ✅ Merge successful! Tx: %s\n", tx)
-					// Update local balance for subsequent checks
+					// Update local balances
 					balances[0] -= minQty
 					balances[1] -= minQty
 				}
 			}
 		}
 
-		// Logic 2: REDEEM (Resolved market with winning shares)
+		// Logic 2: SELL UNBALANCED (Leftovers after merge)
+		for i, bal := range balances {
+			if bal >= 1.0 {
+				outcome := outcomes[i]
+				tokenID := m.Tokens[i].TokenID
+
+				// Fetch current bid price for liquidation
+				fmt.Printf("   🔍 Fetching bid for %s (%s)...\n", outcome, tokenID)
+				book, err := client.GetOrderBook(ctx, tokenID)
+				bestBid := 0.0
+				if err == nil {
+					for _, b := range book.Bids {
+						p, _ := strconv.ParseFloat(b.Price, 64)
+						if p > bestBid {
+							bestBid = p
+						}
+					}
+				}
+
+				if bestBid > 0 {
+					fmt.Printf("   👉 ACTION: Sell %.0f shares of %s at ~$%.2f market bid?\n", bal, outcome, bestBid)
+					fmt.Print("   Confirm Market Sell? (y/n): ")
+					var confirm string
+					fmt.Scanln(&confirm)
+					if strings.ToLower(confirm) == "y" {
+						// Use the actual best bid (minus a tiny 1% slippage) to stay above $1.00 minimum
+						sellPrice := bestBid * 0.99
+						
+						rate, _ := client.GetFeeRate(ctx, tokenID)
+						if rate == 0 { rate = 1000 }
+						res, err := trader.Sell(ctx, tokenID, outcome, sellPrice, bal, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+						if err != nil {
+							fmt.Printf("   ❌ Sell failed: %v\n", err)
+						} else if res != nil && res.Success {
+							fmt.Printf("   ✅ Sell successful! Sold %.0f %s at ~$%.2f\n", bal, outcome, bestBid)
+							balances[i] = 0
+						} else {
+							msg := "Unknown error"
+							if res != nil { msg = res.Message }
+							fmt.Printf("   ❌ Sell rejected: %s\n", msg)
+						}
+					}
+				} else {
+					fmt.Printf("   ⚠️ No buy orders found for %s, cannot liquidate.\n", outcome)
+				}
+			}
+		}
+
+		// Logic 3: REDEEM (Resolved market with winning shares)
 		if balances[0] > 0 || balances[1] > 0 {
 			// Check if market is resolved
 			info, err := trader.GetMarketInfo(ctx, m.ConditionID)
