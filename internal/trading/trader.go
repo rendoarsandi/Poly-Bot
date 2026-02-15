@@ -228,6 +228,11 @@ func (t *RealTrader) SetTestMode(enabled bool) {
 	t.clob.SetTestMode(enabled)
 }
 
+// GetSigner returns the internal signer
+func (t *RealTrader) GetSigner() *api.Signer {
+	return t.clob.GetSigner()
+}
+
 func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	// Check safety limits
 	cost := price * size
@@ -426,7 +431,7 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (str
 	}
 
 	if !resolved {
-		return "", fmt.Errorf("market not yet resolved on-chain")
+		return "", fmt.Errorf("market not yet resolved on-chain (payouts not reported)")
 	}
 
 	// Get signer from clob (we need to export it or add a helper)

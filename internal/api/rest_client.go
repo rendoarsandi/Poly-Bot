@@ -103,12 +103,15 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 	// - Current window (most likely)
 	// - Next window (might be pre-created near end of current window)
 	// - Window after next (for early creation)
-	// - Previous window (might still be resolving)
+	// - Previous 4 windows (to support redemption of recently closed markets)
 	windowsToCheck := []int64{
 		currentWindowStart,        // Current window
 		currentWindowStart + 900,  // Next window (might be pre-created)
 		currentWindowStart + 1800, // Window after next (early creation)
-		currentWindowStart - 900,  // Previous window (might still be active)
+		currentWindowStart - 900,  // Previous window
+		currentWindowStart - 1800, // 30m ago
+		currentWindowStart - 2700, // 45m ago
+		currentWindowStart - 3600, // 1h ago
 	}
 
 	for _, asset := range assets {
@@ -149,11 +152,6 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 
 			event := events[0]
 			gm := event.Markets[0]
-
-			// Skip if market is closed
-			if gm.Closed {
-				continue
-			}
 
 			// Parse clobTokenIds (it's a JSON-encoded string array)
 			var tokenIds []string

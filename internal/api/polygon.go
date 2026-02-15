@@ -36,6 +36,9 @@ func NewPolygonClient(rpcURL string) *PolygonClient {
 func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string) (bool, error) {
 	// Function selector for payoutDenominator(bytes32): 0x1479831c
 	id := strings.TrimPrefix(conditionID, "0x")
+	if len(id) != 64 {
+		return false, fmt.Errorf("invalid condition ID length: %d", len(id))
+	}
 	data := "0x1479831c" + id
 
 	callParams := map[string]string{
@@ -45,6 +48,10 @@ func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string
 
 	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
 	if err != nil {
+		// If it reverts, it likely means the market is not resolved yet or payouts aren't reported
+		if strings.Contains(strings.ToLower(err.Error()), "revert") {
+			return false, nil
+		}
 		return false, err
 	}
 

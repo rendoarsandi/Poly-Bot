@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"math/big"
+	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
@@ -35,11 +39,70 @@ func main() {
 	fmt.Println("═══════════════════════════════════════════════════════")
 	fmt.Printf("🔑 Wallet: %s\n", address)
 
-	// 1. Scan for positions directly on-chain
-	fmt.Println("🔍 Scanning blockchain for tokens...")
-	markets, err := client.Get15mMarkets(ctx, nil)
-	if err != nil {
-		log.Fatalf("Failed to fetch markets: %v", err)
+	forceRedeem := false
+	for _, arg := range os.Args {
+		if arg == "-force" {
+			forceRedeem = true
+			break
+		}
+	}
+
+	var markets []api.Market
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		specificSlug := os.Args[1]
+		fmt.Printf("🔍 Looking for specific slug: %s\n", specificSlug)
+		
+		// Attempt to get market by slug from Gamma
+		url := fmt.Sprintf("https://gamma-api.polymarket.com/events?slug=%s", specificSlug)
+		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var events []api.GammaEvent
+			if err := json.NewDecoder(resp.Body).Decode(&events); err == nil && len(events) > 0 {
+				event := events[0]
+				if len(event.Markets) > 0 {
+					gm := event.Markets[0]
+					var tokenIds []string
+					if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err == nil && len(tokenIds) >= 2 {
+						var outcomes []string
+						if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+							outcomes = []string{"Up", "Down"}
+						}
+						
+						markets = append(markets, api.Market{
+							ConditionID: gm.ConditionID,
+							Slug:        core.SanitizeString(specificSlug),
+							Active:      gm.Active,
+							Closed:      gm.Closed,
+							Tokens: []api.Token{
+								{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
+								{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
+							},
+						})
+						fmt.Printf("   ✅ Found market: %s\n", gm.ConditionID)
+					}
+				}
+			}
+			resp.Body.Close()
+		} else {
+			if err != nil {
+				fmt.Printf("   ❌ Error looking up slug: %v\n", err)
+			} else {
+				fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
+				resp.Body.Close()
+			}
+		}
+	}
+
+	if len(markets) == 0 {
+		// 1. Scan for positions directly on-chain
+		fmt.Println("🔍 Scanning blockchain for tokens (BTC, ETH, SOL, XRP)...")
+		assets := []string{"btc", "eth", "sol", "xrp"}
+		foundMarkets, err := client.Get15mMarkets(ctx, assets)
+		if err != nil {
+			log.Fatalf("Failed to fetch markets: %v", err)
+		}
+		markets = foundMarkets
 	}
 
 	foundAny := false
@@ -115,11 +178,45 @@ func main() {
 
 					if hasWinner {
 						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")
-						fmt.Print("   Confirm On-Chain Redeem? (y/n): ")
+						
+						// Automatic wait for resolution
+						fmt.Printf("   ⏳ Checking on-chain resolution status...")
+						resolved := false
+						for i := 0; i < 18; i++ { // Wait up to 3 minutes (18 * 10s)
+							isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
+							if err == nil && isRes {
+								resolved = true
+								fmt.Println(" ✅ READY")
+								break
+							}
+							if i == 0 {
+								fmt.Print("\n   ⏳ Market not yet settled on-chain. Waiting for Polygon to sync...")
+							} else {
+								fmt.Print(".")
+							}
+							time.Sleep(10 * time.Second)
+						}
+
+						if !resolved && !forceRedeem {
+							fmt.Println("\n   ⚠️  Market still not settled on-chain after 3 minutes.")
+							fmt.Print("   Do you want to FORCE the redemption attempt anyway? (y/n): ")
+						} else {
+							fmt.Print("   Confirm On-Chain Redeem? (y/n): ")
+						}
+
 						var confirm string
 						fmt.Scanln(&confirm)
 						if strings.ToLower(confirm) == "y" {
-							tx, err := trader.RedeemOnChain(ctx, m.ConditionID)
+							var tx string
+							var err error
+							// If we're resolved OR user forced it, we call RedeemPositions
+							// Note: trader.RedeemOnChain has its own check, so we call polygon directly if we want to bypass it
+							if forceRedeem || !resolved {
+								tx, err = polygon.RedeemPositions(ctx, trader.GetSigner(), m.ConditionID)
+							} else {
+								tx, err = trader.RedeemOnChain(ctx, m.ConditionID)
+							}
+							
 							if err != nil {
 								fmt.Printf("   ❌ Redeem failed: %v\n", err)
 							} else {
