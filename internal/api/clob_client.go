@@ -137,38 +137,38 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	// Generate random salt
 	salt := generateSalt()
 
-	// Calculate amounts in base units (USDC and conditional tokens both use 6 decimals)
+	// Calculate amounts based on order side
+	// BUY and SELL have different decimal precision requirements per Polymarket API
 	var makerAmount, takerAmount string
+
 	if req.Side == SideBuy {
-		// BUY: makerAmount = USDC, takerAmount = shares
-		usdcAmount := req.Price * req.Size
+		// BUY: makerAmount = USDC (what we pay), takerAmount = shares (what we receive)
+		// Both use 6 decimals
+		sizeMicro := int64(req.Size*1e6 + 0.5)
+		priceMicro := int64(req.Price*1e6 + 0.5)
 
-		// USDC to 6 decimals
-		uAmt := new(big.Int)
-		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e6))
-		uFloat.Int(uAmt)
-		makerAmount = uAmt.String()
+		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-		// Shares to 6 decimals
-		sAmt := new(big.Int)
-		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e6))
-		sFloat.Int(sAmt)
-		takerAmount = sAmt.String()
+		makerAmount = usdcMicroBig.String()
+		takerAmount = strconv.FormatInt(sizeMicro, 10)
+		fmt.Printf("DEBUG: BUY Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.Size, req.Price, makerAmount, takerAmount)
 	} else {
-		// SELL: makerAmount = shares, takerAmount = USDC
-		usdcAmount := req.Price * req.Size
+		// SELL: makerAmount = shares (what we sell), takerAmount = USDC (what we receive)
+		// Use 6-decimal precision for both shares and USDC, consistent with BUY
+		// We revert to standard 6-decimal math because the "invalid price" error likely
+		// stems from float precision issues in the top-level price field, not the signed amounts.
+		sizeMicro := int64(req.Size*1e6 + 0.5)
+		priceMicro := int64(req.Price*1e6 + 0.5)
 
-		// Shares to 6 decimals
-		sAmt := new(big.Int)
-		sFloat := new(big.Float).Mul(big.NewFloat(req.Size), big.NewFloat(1e6))
-		sFloat.Int(sAmt)
-		makerAmount = sAmt.String()
+		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-		// USDC to 6 decimals
-		uAmt := new(big.Int)
-		uFloat := new(big.Float).Mul(big.NewFloat(usdcAmount), big.NewFloat(1e6))
-		uFloat.Int(uAmt)
-		takerAmount = uAmt.String()
+		makerAmount = strconv.FormatInt(sizeMicro, 10)
+		takerAmount = usdcMicroBig.String()
+		
+		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n", 
+			req.Size, req.Price, makerAmount, takerAmount)
 	}
 
 	// Default expiration: 24 hours from now
@@ -261,9 +261,12 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["side"] = side
 	}
 
-	// Some versions of the API require an explicit price field for validation
+	// ALWAYS include the price field as a STRING to avoid float precision issues.
+	// The API error "invalid price" often happens when the derived price from amounts
+	// doesn't match the market's tick size due to float representation (e.g. 0.100000001).
+	// By sending "0.1" explicitly, we force the validator to use our intended price.
 	if price > 0 {
-		payload["price"] = price
+		payload["price"] = strconv.FormatFloat(price, 'f', -1, 64)
 	}
 
 	body, err := json.Marshal(payload)

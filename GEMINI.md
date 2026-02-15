@@ -10,7 +10,8 @@ PolyArb-15m is a high-frequency volatility arbitrage bot designed for Polymarket
 - **Blockchain:** Polygon (for balance queries, EIP-712 signing, and on-chain Merge/Split).
 - **Execution:** Uses Market Orders with Fill-or-Kill (FOK) to guarantee price and atomic execution.
 - **Frontend/UI:** Custom Terminal UI (TUI) for real-time monitoring.
-- **Utilities:** Node.js (for API key derivation from private keys).
+- **Utilities:** Node.js (for API key derivation from private keys) and Go (for manual market execution and testing).
+- **Util Bot Role:** The `cmd/util` tool serves as a testing ground for the `realbot`. It allows for manual execution of panic buy/sell strategies, making it easier to debug logic and API interactions before deploying them in the automated bot.
 
 ### Architecture
 - **Concurrent Traders:** The bot monitors multiple assets (BTC, ETH, SOL, XRP) simultaneously using separate goroutines.

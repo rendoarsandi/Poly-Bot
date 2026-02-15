@@ -392,8 +392,10 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				price := prices[o]
 				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
-				price := prices[o]
-				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				// SELL FOK: Use floor price (0.10) not best bid, to guarantee fill
+				// This ensures the order matches against any available liquidity
+				floorPrice := 0.10
+				results[i], errs[i] = trader.Sell(ctx, tid, o, floorPrice, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
@@ -426,8 +428,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				// Use $0.99 cap for buy recovery to guarantee fill
 				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 			} else {
-				// Use $0.01 floor for sell recovery to guarantee fill
-				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, 0.01, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+					// Use $0.10 floor for sell recovery to guarantee fill
+				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, 0.10, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 			}
 
 			if retryErr == nil && retryRes != nil && retryRes.Success {

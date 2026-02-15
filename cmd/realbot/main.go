@@ -656,7 +656,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			// 15m markets require 1000 bps authorization even if endpoint returns 0
 			if rate == 0 {
 				tokenFeeRates[outcome] = 1000
-				tui.LogEvent("[%s] ℹ️ Fee rate returned 0, forcing 1000 bps (required)", id)
 			} else {
 				tui.LogEvent("[%s] ℹ️ Fee rate: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
 			}
