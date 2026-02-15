@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"Market-bot/internal/core"
@@ -248,16 +247,8 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["orderType"] = signedOrder.OrderType
 	}
 
-	// Include top-level price/side for MARKET/FOK submissions so server-side validators
-	// can evaluate market intent consistently with signed order fields.
-	if price > 0 {
-		payload["price"] = price
-	}
-	if side == SideBuy {
-		payload["side"] = "0"
-	} else if side == SideSell {
-		payload["side"] = "1"
-	}
+	// Match official CLOB client payload shape: signed order + owner + orderType.
+	// (No top-level side/price fields.)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -312,7 +303,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		}, nil
 	}
 
-	// Real submission helper (used for fallback payload variants too)
+	// Real submission helper
 	doSubmit := func(body []byte) (int, []byte, error) {
 		timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
 		req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
@@ -339,38 +330,6 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	statusCode, bodyBytes, err := doSubmit(body)
 	if err != nil {
 		return nil, err
-	}
-
-	// Fallback for SELL price-validation quirks across CLOB validator paths.
-	if statusCode != http.StatusOK && statusCode != http.StatusCreated && side == SideSell && strings.Contains(strings.ToLower(string(bodyBytes)), "invalid price") {
-		fmt.Printf("⚠️ SELL fallback: retrying with alternate payload encoding after invalid price\n")
-
-		altPayload := map[string]interface{}{
-			"order":     signedOrder.Order,
-			"owner":     c.auth.APIKey,
-			"orderType": payload["orderType"],
-			"price":     strconv.FormatFloat(price, 'f', -1, 64),
-			"side":      "1",
-		}
-		if altBody, mErr := json.Marshal(altPayload); mErr == nil {
-			if altStatus, altResp, sErr := doSubmit(altBody); sErr == nil {
-				if altStatus == http.StatusOK || altStatus == http.StatusCreated {
-					statusCode, bodyBytes, body = altStatus, altResp, altBody
-				} else {
-					// Last fallback: signed-order only + orderType
-					minimalPayload := map[string]interface{}{
-						"order":     signedOrder.Order,
-						"owner":     c.auth.APIKey,
-						"orderType": payload["orderType"],
-					}
-					if minBody, minErr := json.Marshal(minimalPayload); minErr == nil {
-						if minStatus, minResp, submitErr := doSubmit(minBody); submitErr == nil {
-							statusCode, bodyBytes, body = minStatus, minResp, minBody
-						}
-					}
-				}
-			}
-		}
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
