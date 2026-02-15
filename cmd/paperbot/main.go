@@ -180,7 +180,7 @@ func run() error {
 
 	// Clear screen at startup
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("🎰 POLYARB-15M Starting (Multi-Asset: BTC, ETH, SOL, XRP)...")
+	fmt.Println("🎰 POLYARB-5M Starting (Multi-Asset: BTC, ETH, SOL, XRP)...")
 	fmt.Printf("⏰ Started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 
 	// Initialize persistent components (survive market rotation)
@@ -235,7 +235,7 @@ func run() error {
 				start := time.Now()
 				// Use a lightweight check for latency
 				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_, err := restClient.Get15mMarkets(pingCtx, []string{"btc"})
+				_, err := restClient.Get5mMarkets(pingCtx, []string{"btc"})
 				cancel()
 				if err == nil {
 					tui.UpdateLatency(time.Since(start))
@@ -308,7 +308,7 @@ func run() error {
 		}
 
 		// Find all available markets (BTC, ETH, SOL, XRP)
-		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active 15m markets...")
+		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active 5m markets...")
 		markets := findMarkets(ctx, restClient, tui)
 		if len(markets) == 0 {
 			logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "NO_MARKETS", "No active markets found, retrying...")
@@ -457,7 +457,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 		default:
 		}
 
-		markets, err := restClient.Get15mMarkets(ctx, nil)
+		markets, err := restClient.Get5mMarkets(ctx, nil)
 		if err != nil {
 			if attempts == 0 {
 				tui.LogEvent("⚠️ Market fetch error: %v, retrying...", err)
@@ -485,11 +485,11 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			}
 
 			slug := strings.ToLower(m.Slug)
-			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
+			is5m := strings.Contains(slug, "5m") || strings.Contains(slug, "updown")
 
 			for _, asset := range assets {
 				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
+				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is5m {
 					mCopy := m
 					found[key] = &mCopy
 				}
@@ -520,7 +520,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 		}
 	}
 
-	tui.LogEvent("⚠️ No 15m markets found after polling")
+	tui.LogEvent("⚠️ No 5m markets found after polling")
 	return found
 }
 
@@ -1404,7 +1404,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					remainingShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 					if remainingShares >= 1.0 {
 						merged := t.SplitInventory.RecordMerge(t.ID, t.Outcomes[0], t.Outcomes[1], remainingShares)
-						t.Engine.AddBalance(merged) // $1 per merged pair
+						t.Engine.AddBalance(merged)    // $1 per merged pair
 						t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 						t.TUI.LogEvent("[%s] 💰 SPLIT MERGE (sim): Merged %.0f shares → $%.2f", t.ID, merged, merged)
 					}

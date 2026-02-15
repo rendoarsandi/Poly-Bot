@@ -87,6 +87,14 @@ type GammaMarket struct {
 }
 
 func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Market, error) {
+	return c.getMarketsByInterval(ctx, assets, 15)
+}
+
+func (c *RestClient) Get5mMarkets(ctx context.Context, assets []string) ([]Market, error) {
+	return c.getMarketsByInterval(ctx, assets, 5)
+}
+
+func (c *RestClient) getMarketsByInterval(ctx context.Context, assets []string, intervalMinutes int64) ([]Market, error) {
 	if len(assets) == 0 {
 		assets = []string{"btc", "eth"}
 	}
@@ -94,24 +102,23 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 	now := time.Now().UTC()
 	currentTs := now.Unix()
 
-	// Calculate the current 15m window START
-	currentWindowStart := (currentTs / 900) * 900
+	windowSizeSeconds := intervalMinutes * 60
+	currentWindowStart := (currentTs / windowSizeSeconds) * windowSizeSeconds
 
 	var markets []Market
 
 	// Check multiple windows to handle edge cases:
 	// - Current window (most likely)
-	// - Next window (might be pre-created near end of current window)
-	// - Window after next (for early creation)
-	// - Previous 4 windows (to support redemption of recently closed markets)
+	// - Next windows (might be pre-created)
+	// - Previous windows (to support redemption of recently closed markets)
 	windowsToCheck := []int64{
-		currentWindowStart,        // Current window
-		currentWindowStart + 900,  // Next window (might be pre-created)
-		currentWindowStart + 1800, // Window after next (early creation)
-		currentWindowStart - 900,  // Previous window
-		currentWindowStart - 1800, // 30m ago
-		currentWindowStart - 2700, // 45m ago
-		currentWindowStart - 3600, // 1h ago
+		currentWindowStart,                       // Current window
+		currentWindowStart + windowSizeSeconds,   // Next window
+		currentWindowStart + 2*windowSizeSeconds, // Window after next
+		currentWindowStart - windowSizeSeconds,   // Previous window
+		currentWindowStart - 2*windowSizeSeconds,
+		currentWindowStart - 3*windowSizeSeconds,
+		currentWindowStart - 4*windowSizeSeconds,
 	}
 
 	for _, asset := range assets {
@@ -123,7 +130,7 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 				return nil, ctx.Err()
 			}
 
-			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
+			slug := fmt.Sprintf("%s-updown-%dm-%d", asset, intervalMinutes, windowStart)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
 			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
