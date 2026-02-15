@@ -1478,7 +1478,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// If we're already unbalanced in this market, prioritize closing the gap.
+						// If we're already unbalanced, prioritize closing the lighter side.
+						// Prefer ON-CHAIN balances (source of truth), fallback to engine state.
 						pos := engine.GetPositions()
 						pos1Qty := 0.0
 						pos2Qty := 0.0
@@ -1488,6 +1489,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						if p, ok := pos[id+":"+outcomes[1]]; ok {
 							pos2Qty = p.Quantity
 						}
+
+						onChainRebalance := false
+						balCtx, balCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+						bal0, balErr0 := trader.GetCTFBalanceFloat(balCtx, token0)
+						bal1, balErr1 := trader.GetCTFBalanceFloat(balCtx, token1)
+						balCancel()
+						if balErr0 == nil && balErr1 == nil {
+							pos1Qty = bal0
+							pos2Qty = bal1
+							onChainRebalance = true
+						}
+
 						const rebalanceEpsilon = 0.000001
 						onlyRebalance := math.Abs(pos1Qty-pos2Qty) > rebalanceEpsilon
 						onlyOutcome := ""
@@ -1497,7 +1510,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							} else {
 								onlyOutcome = outcomes[1]
 							}
-							tui.LogEvent("[%s] ⚖️ Existing imbalance detected (%s=%.0f, %s=%.0f) → rebalancing only %s", id, outcomes[0], pos1Qty, outcomes[1], pos2Qty, onlyOutcome)
+							if onChainRebalance {
+								tui.LogEvent("[%s] ⚖️ On-chain imbalance detected (%s=%.2f, %s=%.2f) → rebalancing only %s", id, outcomes[0], pos1Qty, outcomes[1], pos2Qty, onlyOutcome)
+							} else {
+								tui.LogEvent("[%s] ⚖️ Engine imbalance detected (%s=%.2f, %s=%.2f) → rebalancing only %s", id, outcomes[0], pos1Qty, outcomes[1], pos2Qty, onlyOutcome)
+							}
 						}
 
 						tradeShares := shares
