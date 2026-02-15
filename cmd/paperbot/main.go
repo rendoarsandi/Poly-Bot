@@ -442,7 +442,7 @@ func run() error {
 // findMarkets searches for BTC, ETH markets
 func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth"}
+	assets := []string{"btc"}
 
 	// Fast polling for new markets - check every 500ms for first 30 seconds
 	// Then slow down to every 2 seconds
@@ -496,8 +496,8 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI
 			}
 		}
 
-		// Return early only when all target assets are found.
-		if len(found) == len(assets) {
+		// Return as soon as at least one valid market is found (5m often has BTC only).
+		if len(found) > 0 {
 			return found
 		}
 

@@ -96,7 +96,11 @@ func (c *RestClient) Get5mMarkets(ctx context.Context, assets []string) ([]Marke
 
 func (c *RestClient) getMarketsByInterval(ctx context.Context, assets []string, intervalMinutes int64) ([]Market, error) {
 	if len(assets) == 0 {
-		assets = []string{"btc", "eth"}
+		if intervalMinutes == 5 {
+			assets = []string{"btc"}
+		} else {
+			assets = []string{"btc", "eth"}
+		}
 	}
 
 	now := time.Now().UTC()
