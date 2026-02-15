@@ -35,20 +35,11 @@ func main() {
 	fmt.Println("═══════════════════════════════════════════════════════")
 	fmt.Printf("🔑 Wallet: %s\n", address)
 
-	// 1. Target Discovery
-	var markets []api.Market
-	
-	fmt.Println("🔍 Checking target market: eth-updown-15m-1771125300...")
-	targetSlug := "eth-updown-15m-1771125300"
-	targetMarket, err := rest.GetMarket(ctx, targetSlug)
-	if err == nil && targetMarket != nil {
-		markets = append(markets, *targetMarket)
-	}
-
-	fmt.Println("🔍 Scanning for other recent 15m markets...")
-	tagMarkets, err := rest.Get15mMarkets(ctx, nil)
-	if err == nil {
-		markets = append(markets, tagMarkets...)
+	// 1. Smart Discovery: Find all recent 15m markets
+	fmt.Println("🔍 Scanning for all recent 15m markets (including closed)...")
+	markets, err := rest.Get15mMarkets(ctx, nil)
+	if err != nil {
+		log.Fatalf("Failed to fetch markets: %v", err)
 	}
 
 	foundAny := false
