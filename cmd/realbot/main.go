@@ -657,7 +657,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			if rate == 0 {
 				tokenFeeRates[outcome] = 1000
 			} else {
-				tui.LogEvent("[%s] ℹ️ Fee rate: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
+				tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
 			}
 		} else {
 			// If API fails, use 1000 bps (10%) which is the standard taker fee for 15m markets
@@ -674,7 +674,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	lastUpdate := time.Now()
 	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
-	lastSplitSell := time.Time{} // Track last split sell to avoid rapid-fire
+	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 
 	// Initial balance tracking
@@ -900,7 +900,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 			if !isSplit && time.Now().After(nextSplitAttempt) && replenishCtrl.MarkInProgress() {
 				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
-				
+
 				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
 				initialBuffer := baseTradeSize * 2.0
 				if initialBuffer < 2.0 {
@@ -922,7 +922,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// Increase timeout to 120s to be more resilient to Polygon congestion
 						splitCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 						defer cancel()
-						
+
 						txHash, err := trader.SplitOnChain(splitCtx, condID, amt)
 						if err != nil {
 							tui.LogEvent("[%s] ⚠️ SPLIT: Background initial split failed: %v (will retry in 60s)", mID, err)
@@ -933,13 +933,13 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							splitInventory.RecordSplit(mID, out0, out1, amt)
 							engine.DeductBalance(amt)
 							engine.RecalculateDrawdown()
-							
+
 							if txHash != "" && len(txHash) >= 10 {
 								tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares | Tx: %s...", mID, amt, txHash[:10])
 							} else {
 								tui.LogEvent("[%s] ✅ SPLIT: Created %.0f shares", mID, amt)
 							}
-							
+
 							// Only mark as initialized on SUCCESS (globally)
 							splitMu.Lock()
 							globalSplitStatus[condID] = true
@@ -1051,12 +1051,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						if sharesToSell > minBidLiq*0.85 {
 							sharesToSell = minBidLiq * 0.85
 						}
-						
+
 						// Ensure min order size 1 share
 						if sharesToSell < 1.0 {
 							sharesToSell = 1.0
 						}
-						
+
 						sharesToSell = math.Floor(sharesToSell)
 
 						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
@@ -1161,12 +1161,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									failedOutcome = outcomes[1]
 								}
 
-								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, retrying AGGRESSIVELY until success...", id, failedSide)
+								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, starting bounded recovery...", id, failedSide)
 
-								// Retry failed side AGGRESSIVELY until success (off-chain CLOB orders are fast)
-								// This ensures we NEVER leave split inventory unbalanced
+								// Retry failed side with a bounded loop to avoid infinite single-side spam.
 								retryCount := 0
-								for {
+								const maxSplitRecoveryAttempts = 40
+								for retryCount < maxSplitRecoveryAttempts {
 									retryCount++
 
 									// Check context cancellation to allow graceful shutdown
@@ -1191,7 +1191,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									if rate == 0 {
 										rate = 1000
 									}
-									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 
 									if retryErr == nil && retryRes != nil && retryRes.Success {
 										tui.LogEvent("[%s] ✅ SPLIT Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
@@ -1210,7 +1210,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										tui.LogEvent("[%s] ⚠️ SPLIT Recovery #%d failed: %v", id, retryCount, retryErr)
 									} else if retryRes != nil && !retryRes.Success {
 										tui.LogEvent("[%s] ⚠️ SPLIT Recovery #%d failed: %s", id, retryCount, retryRes.Message)
+										if strings.Contains(strings.ToLower(retryRes.Message), "invalid expiration value") {
+											tui.LogEvent("[%s] 🛑 SPLIT Recovery halted early due to CLOB expiration validation error", id)
+											break
+										}
 									}
+								}
+
+								if side1Success != side2Success {
+									tui.LogEvent("[%s] 🛑 SPLIT Recovery exhausted (%d attempts), stopping retries to avoid spam", id, retryCount)
 								}
 							splitRecoveryDone:
 							}
@@ -1300,7 +1308,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Round to whole shares
 					shares = math.Floor(shares)
-					
+
 					// Ensure min order size $1.00 at worstCasePrice 0.99
 					if shares*0.99 < 1.0 {
 						shares = math.Ceil(1.0 / 0.99)
@@ -1411,7 +1419,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							maxAffordableShares := (currentCash * 0.98) / sum // Use 98% of cash for safety
 							if maxAffordableShares < 1.0 {
 								tui.LogEvent("[%s] ⚠️ Insufficient funds: Need $%.2f for 1 share, have $%.2f", id, sum, currentCash)
-								continue 
+								continue
 							}
 							shares = math.Floor(maxAffordableShares)
 							cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
@@ -1544,12 +1552,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								failedOutcome = outcomes[1]
 							}
 
-							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: Side %d failed, retrying AGGRESSIVELY until success...", id, failedSide)
+							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: Side %d failed, starting bounded recovery...", id, failedSide)
 
-							// Retry failed side AGGRESSIVELY until success (off-chain CLOB orders are fast)
-							// This ensures we NEVER leave arb positions unbalanced
+							// Retry failed side with a bounded loop to avoid infinite single-side spam.
 							retryCount := 0
-							for {
+							const maxARBRecoveryAttempts = 40
+							for retryCount < maxARBRecoveryAttempts {
 								retryCount++
 
 								// Check context cancellation to allow graceful shutdown
@@ -1574,7 +1582,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								if rate == 0 {
 									rate = 1000
 								}
-								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 
 								if retryErr == nil && retryRes != nil && retryRes.Success {
 									tui.LogEvent("[%s] ✅ ARB Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
@@ -1597,7 +1605,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %v", id, retryCount, retryErr)
 								} else if retryRes != nil && !retryRes.Success {
 									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %s", id, retryCount, retryRes.Message)
+									if strings.Contains(strings.ToLower(retryRes.Message), "invalid expiration value") {
+										tui.LogEvent("[%s] 🛑 ARB Recovery halted early due to CLOB expiration validation error", id)
+										break
+									}
 								}
+							}
+
+							if !recoverySuccess {
+								tui.LogEvent("[%s] 🛑 ARB Recovery exhausted (%d attempts), stopping retries to avoid single-side spam", id, retryCount)
 							}
 						arbRecoveryDone:
 						}

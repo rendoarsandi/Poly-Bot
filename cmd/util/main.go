@@ -329,7 +329,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	}
 
 	shares := targetShares
-	
+
 	if side == "BUY" {
 		totalLiq := estimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...),
@@ -410,7 +410,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		}
 		failedOutcome := outcomes[failedIdx]
 		tid := getTokenIDForOutcome(market, failedOutcome)
-		
+
 		rate := tokenFeeRates[failedOutcome]
 		if rate == 0 {
 			rate = 1000
@@ -420,15 +420,15 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		for retryCount < 10 { // Max 10 retries
 			retryCount++
 			fmt.Printf("🔄 Recovery attempt #%d for %s...\n", retryCount, failedOutcome)
-			
+
 			var retryRes *trading.TradeResult
 			var retryErr error
-			
+
 			if side == "BUY" {
 				// Use $0.99 cap for buy recovery to guarantee fill
 				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 			} else {
-					// Use $0.10 floor for sell recovery to guarantee fill
+				// Use $0.10 floor for sell recovery to guarantee fill
 				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, 0.10, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 			}
 
@@ -438,7 +438,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				errs[failedIdx] = nil
 				break
 			}
-			
+
 			msg := "Unknown error"
 			if retryErr != nil {
 				msg = retryErr.Error()
@@ -457,15 +457,14 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	if (errs[0] == nil && results[0].Success) && (errs[1] == nil && results[1].Success) {
 		if side == "BUY" {
 			fmt.Println("💰 Buy success! Querying on-chain balances for merge...")
-			time.Sleep(3 * time.Second) // Wait for on-chain state to settle
+			time.Sleep(3 * time.Second) // Initial wait for on-chain state to settle
 
 			// Query actual on-chain CTF balances to merge the correct amount
 			token0 := getTokenIDForOutcome(market, outcomes[0])
 			token1 := getTokenIDForOutcome(market, outcomes[1])
 			fmt.Printf("🔍 Querying balances for tokens: %s (%s), %s (%s)\n", outcomes[0], token0, outcomes[1], token1)
-			
-			bal0, err0 := trader.GetCTFBalanceFloat(context.Background(), token0)
-			bal1, err1 := trader.GetCTFBalanceFloat(context.Background(), token1)
+
+			bal0, bal1, err0, err1 := queryBalancedCTFBalances(context.Background(), trader, token0, token1, shares)
 			if err0 != nil || err1 != nil {
 				fmt.Printf("⚠️ Failed to query balances (err0=%v, err1=%v), falling back to requested shares\n", err0, err1)
 				bal0, bal1 = shares, shares
@@ -475,7 +474,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			// Don't floor the merge quantity! CTF supports 6 decimals.
 			// Use the minimum available balance directly to merge everything.
 			minQty := math.Min(math.Min(bal0, bal1), shares)
-			
+
 			// Only filter out tiny dust (< 0.000001)
 			if minQty >= 0.000001 {
 				fmt.Printf("🔄 Merging %.6f pairs...\n", minQty)
@@ -490,6 +489,34 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 		}
 	}
+}
+
+func queryBalancedCTFBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, expectedShares float64) (float64, float64, error, error) {
+	const maxAttempts = 8
+	const settleDelay = 500 * time.Millisecond
+
+	var bal0, bal1 float64
+	var err0, err1 error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		bal0, err0 = trader.GetCTFBalanceFloat(ctx, token0)
+		bal1, err1 = trader.GetCTFBalanceFloat(ctx, token1)
+
+		if err0 == nil && err1 == nil {
+			minBal := math.Min(bal0, bal1)
+			if minBal >= 0.000001 {
+				if math.Abs(bal0-bal1) <= 0.000001 || minBal >= expectedShares-0.05 {
+					return bal0, bal1, nil, nil
+				}
+			}
+		}
+
+		if attempt < maxAttempts {
+			time.Sleep(settleDelay)
+		}
+	}
+
+	return bal0, bal1, err0, err1
 }
 
 func estimateMatchedLiquidity(levels1, levels2 []paper.MarketLevel, less func(i, j int, levels []paper.MarketLevel) bool, priceCheck func(p1, p2 float64) bool) float64 {

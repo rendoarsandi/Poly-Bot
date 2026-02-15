@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -166,18 +167,16 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 
 		makerAmount = strconv.FormatInt(sizeMicro, 10)
 		takerAmount = usdcMicroBig.String()
-		
-		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n", 
+
+		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n",
 			req.Size, req.Price, makerAmount, takerAmount)
 	}
 
-	// Default expiration: 24 hours from now
-	// For FOK, Polymarket API expects 0
-	expirationStr := strconv.FormatInt(req.Expiration, 10)
-	if req.TimeInForce == "FOK" {
-		expirationStr = "0"
-	} else if req.Expiration == 0 {
-		expirationStr = strconv.FormatInt(time.Now().Add(24*time.Hour).Unix(), 10)
+	// Polymarket rejects non-zero expiration for non-GTD orders.
+	// We only send a non-zero expiration when explicitly provided.
+	expirationStr := "0"
+	if req.Expiration > 0 {
+		expirationStr = strconv.FormatInt(req.Expiration, 10)
 	}
 
 	// Build order data
@@ -223,14 +222,14 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			Maker:         orderData.Maker,
 			Signer:        orderData.Signer,
 			Taker:         orderData.Taker,
-			TokenID:       req.TokenID, // MUST be Decimal String
-			MakerAmount:   orderData.MakerAmount, // MUST be String
-			TakerAmount:   orderData.TakerAmount, // MUST be String
-			Expiration:    orderData.Expiration, // MUST be String
-			Nonce:         orderData.Nonce, // MUST be String
+			TokenID:       req.TokenID,                  // MUST be Decimal String
+			MakerAmount:   orderData.MakerAmount,        // MUST be String
+			TakerAmount:   orderData.TakerAmount,        // MUST be String
+			Expiration:    orderData.Expiration,         // MUST be String
+			Nonce:         orderData.Nonce,              // MUST be String
 			FeeRateBps:    strconv.Itoa(req.FeeRateBps), // MUST be String
 			Side:          strconv.Itoa(orderData.Side), // MUST be string "0" or "1"
-			SignatureType: orderData.SignatureType, // MUST be Integer
+			SignatureType: orderData.SignatureType,      // MUST be Integer
 			Signature:     signature,
 		},
 		Owner:     c.auth.APIKey, // MUST be API Key for CLOB
@@ -248,7 +247,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	payload["order"] = signedOrder.Order
 	payload["owner"] = c.auth.APIKey
-	
+
 	// Polymarket's orderType field at the top level
 	if tif != "" {
 		payload["orderType"] = string(tif)
@@ -256,9 +255,11 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["orderType"] = signedOrder.OrderType
 	}
 
-	// Top-level side field for validation
-	if side != "" {
-		payload["side"] = side
+	// Top-level side field should be numeric string ("0"/"1") to match API schema.
+	if side == string(SideBuy) {
+		payload["side"] = "0"
+	} else if side == string(SideSell) {
+		payload["side"] = "1"
 	}
 
 	// ALWAYS include the price field as a STRING to avoid float precision issues.
@@ -266,7 +267,14 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	// doesn't match the market's tick size due to float representation (e.g. 0.100000001).
 	// By sending "0.1" explicitly, we force the validator to use our intended price.
 	if price > 0 {
-		payload["price"] = strconv.FormatFloat(price, 'f', -1, 64)
+		normalizedPrice := math.Round(price*1e6) / 1e6
+		if normalizedPrice >= 1 {
+			normalizedPrice = 0.999999
+		}
+		if normalizedPrice <= 0 {
+			normalizedPrice = 0.000001
+		}
+		payload["price"] = strconv.FormatFloat(normalizedPrice, 'f', -1, 64)
 	}
 
 	body, err := json.Marshal(payload)
@@ -343,7 +351,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	// Read full body for error reporting
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		// Log the failed request and response for debugging
 		fmt.Printf("\n--- API ERROR DEBUG ---\n")
