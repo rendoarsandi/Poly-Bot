@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -237,11 +236,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Submit order to API
-	return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, string(req.Side))
+	return c.submitOrder(ctx, signedOrder, req.TimeInForce)
 }
 
 // submitOrder sends the signed order to the CLOB API
-func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce, price float64, side string) (*OrderResponse, error) {
+func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce) (*OrderResponse, error) {
 	// Build the payload (needed for both test mode validation and real submission)
 	payload := make(map[string]interface{})
 
@@ -255,27 +254,8 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["orderType"] = signedOrder.OrderType
 	}
 
-	// Top-level side field should be numeric string ("0"/"1") to match API schema.
-	if side == string(SideBuy) {
-		payload["side"] = "0"
-	} else if side == string(SideSell) {
-		payload["side"] = "1"
-	}
-
-	// ALWAYS include the price field as a STRING to avoid float precision issues.
-	// The API error "invalid price" often happens when the derived price from amounts
-	// doesn't match the market's tick size due to float representation (e.g. 0.100000001).
-	// By sending "0.1" explicitly, we force the validator to use our intended price.
-	if price > 0 {
-		normalizedPrice := math.Round(price*1e6) / 1e6
-		if normalizedPrice >= 1 {
-			normalizedPrice = 0.999999
-		}
-		if normalizedPrice <= 0 {
-			normalizedPrice = 0.000001
-		}
-		payload["price"] = strconv.FormatFloat(normalizedPrice, 'f', -1, 64)
-	}
+	// Do not send top-level side/price. Polymarket derives validation from signed order fields;
+	// extra top-level fields can trigger inconsistent validation errors for market sells.
 
 	body, err := json.Marshal(payload)
 	if err != nil {
