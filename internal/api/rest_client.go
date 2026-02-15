@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -92,6 +93,120 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 
 func (c *RestClient) Get5mMarkets(ctx context.Context, assets []string) ([]Market, error) {
 	return c.getMarketsByInterval(ctx, assets, 5)
+}
+
+func (c *RestClient) GetRecentUpDownMarkets(ctx context.Context, assets []string, pageSize, maxPages int) ([]Market, error) {
+	if len(assets) == 0 {
+		assets = []string{"btc", "eth", "sol", "xrp"}
+	}
+	if pageSize <= 0 {
+		pageSize = 500
+	}
+	if maxPages <= 0 {
+		maxPages = 3
+	}
+
+	assetPrefixes := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		assetPrefixes = append(assetPrefixes, strings.ToLower(asset)+"-updown-")
+	}
+
+	type gammaMarketListItem struct {
+		ConditionID  string `json:"conditionId"`
+		Slug         string `json:"slug"`
+		ClobTokenIds string `json:"clobTokenIds"`
+		Outcomes     string `json:"outcomes"`
+		Active       bool   `json:"active"`
+		Closed       bool   `json:"closed"`
+	}
+
+	seen := make(map[string]struct{})
+	var markets []Market
+
+	for page := 0; page < maxPages; page++ {
+		select {
+		case <-c.limiter:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+
+		offset := page * pageSize
+		q := url.Values{}
+		q.Set("limit", strconv.Itoa(pageSize))
+		q.Set("offset", strconv.Itoa(offset))
+		endpoint := fmt.Sprintf("%s/markets?%s", c.GammaURL, q.Encode())
+
+		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err != nil {
+			continue
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+
+		var items []gammaMarketListItem
+		if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		if len(items) == 0 {
+			break
+		}
+
+		for _, gm := range items {
+			slug := strings.ToLower(gm.Slug)
+			matched := false
+			for _, prefix := range assetPrefixes {
+				if strings.HasPrefix(slug, prefix) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+
+			if _, ok := seen[gm.ConditionID]; ok || gm.ConditionID == "" {
+				continue
+			}
+
+			var tokenIDs []string
+			if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
+				continue
+			}
+
+			var outcomes []string
+			if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+				outcomes = []string{"Up", "Down"}
+			}
+
+			seen[gm.ConditionID] = struct{}{}
+			markets = append(markets, Market{
+				ConditionID: gm.ConditionID,
+				Slug:        core.SanitizeString(slug),
+				Active:      gm.Active,
+				Closed:      gm.Closed,
+				Tokens: []Token{
+					{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0])},
+					{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1])},
+				},
+			})
+		}
+
+		if len(items) < pageSize {
+			break
+		}
+	}
+
+	return markets, nil
 }
 
 func (c *RestClient) getMarketsByInterval(ctx context.Context, assets []string, intervalMinutes int64) ([]Market, error) {

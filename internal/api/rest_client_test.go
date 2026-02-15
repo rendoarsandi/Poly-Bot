@@ -59,3 +59,36 @@ func TestListMarkets(t *testing.T) {
 		t.Errorf("Expected 2 markets, got %d", len(markets))
 	}
 }
+
+func TestGetRecentUpDownMarketsFiltersAndParses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/markets" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[
+			{"conditionId":"cond-1","slug":"eth-updown-15m-123","clobTokenIds":"[\"1\",\"2\"]","outcomes":"[\"Up\",\"Down\"]","active":false,"closed":true},
+			{"conditionId":"cond-2","slug":"btc-updown-15m-456","clobTokenIds":"[\"3\",\"4\"]","outcomes":"[\"Up\",\"Down\"]","active":true,"closed":false},
+			{"conditionId":"cond-3","slug":"other-market","clobTokenIds":"[\"5\",\"6\"]","outcomes":"[\"Yes\",\"No\"]","active":true,"closed":false}
+		]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("https://clob.polymarket.com")
+	client.GammaURL = server.URL
+
+	markets, err := client.GetRecentUpDownMarkets(context.Background(), []string{"eth"}, 100, 1)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(markets) != 1 {
+		t.Fatalf("Expected 1 market, got %d", len(markets))
+	}
+	if markets[0].ConditionID != "cond-1" {
+		t.Fatalf("Expected condition cond-1, got %s", markets[0].ConditionID)
+	}
+	if len(markets[0].Tokens) != 2 || markets[0].Tokens[0].TokenID != "1" {
+		t.Fatalf("Expected parsed token IDs, got %+v", markets[0].Tokens)
+	}
+}

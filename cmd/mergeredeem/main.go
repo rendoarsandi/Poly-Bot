@@ -112,9 +112,20 @@ func main() {
 		// 1. Scan for positions directly on-chain
 		fmt.Println("🔍 Scanning blockchain for tokens (BTC, ETH, SOL, XRP)...")
 		assets := []string{"btc", "eth", "sol", "xrp"}
-		foundMarkets, err := client.Get15mMarkets(ctx, assets)
+
+		// Use recent Gamma markets first; this avoids missing just-resolved windows that
+		// are outside the narrow rolling timestamp probes used by interval discovery.
+		foundMarkets, err := client.GetRecentUpDownMarkets(ctx, assets, 500, 3)
 		if err != nil {
 			log.Fatalf("Failed to fetch markets: %v", err)
+		}
+
+		// Fallback for compatibility if recent listing returns nothing.
+		if len(foundMarkets) == 0 {
+			foundMarkets, err = client.Get15mMarkets(ctx, assets)
+			if err != nil {
+				log.Fatalf("Failed to fetch markets: %v", err)
+			}
 		}
 		markets = foundMarkets
 	}
