@@ -154,20 +154,18 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		takerAmount = strconv.FormatInt(sizeMicro, 10)
 		fmt.Printf("DEBUG: BUY Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.Size, req.Price, makerAmount, takerAmount)
 	} else {
-		// SELL: keep maker/taker orientation consistent with BUY so makerAmount/takerAmount
-		// remains a valid 0..1 price ratio for Polymarket validation.
-		// Using shares as maker and USDC as taker can produce ratios > 1 and trigger
-		// "invalid price" on market sells.
+		// SELL: makerAmount = shares (what we sell), takerAmount = USDC (what we receive)
+		// This is the canonical orientation for side=SELL when signing CLOB orders.
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-		makerAmount = usdcMicroBig.String()
-		takerAmount = strconv.FormatInt(sizeMicro, 10)
+		makerAmount = strconv.FormatInt(sizeMicro, 10)
+		takerAmount = usdcMicroBig.String()
 
-		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n",
+		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n",
 			req.Size, req.Price, makerAmount, takerAmount)
 	}
 
@@ -236,11 +234,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 	}
 
 	// Submit order to API
-	return c.submitOrder(ctx, signedOrder, req.TimeInForce)
+	return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, req.Side)
 }
 
 // submitOrder sends the signed order to the CLOB API
-func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce) (*OrderResponse, error) {
+func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce, price float64, side Side) (*OrderResponse, error) {
 	// Build the payload (needed for both test mode validation and real submission)
 	payload := make(map[string]interface{})
 
@@ -254,8 +252,16 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["orderType"] = signedOrder.OrderType
 	}
 
-	// Do not send top-level side/price. Polymarket derives validation from signed order fields;
-	// extra top-level fields can trigger inconsistent validation errors for market sells.
+	// Include top-level price/side for MARKET/FOK submissions so server-side validators
+	// can evaluate market intent consistently with signed order fields.
+	if price > 0 {
+		payload["price"] = price
+	}
+	if side == SideBuy {
+		payload["side"] = 0
+	} else if side == SideSell {
+		payload["side"] = 1
+	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
