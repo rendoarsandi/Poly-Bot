@@ -366,7 +366,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	if side == "SELL" {
 		splitAmount := shares // 1 USDC per split → 1 YES + 1 NO
 		fmt.Printf("🔄 Splitting $%.0f USDC into token pairs...\n", splitAmount)
-		tx, err := trader.SplitOnChain(ctx, market.ConditionID, splitAmount)
+		splitCtx, cancelSplit := context.WithTimeout(ctx, 90*time.Second)
+		defer cancelSplit()
+		tx, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount)
 		if err != nil {
 			log.Fatalf("❌ Split failed: %v", err)
 		}
@@ -478,7 +480,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			// Only filter out tiny dust (< 0.000001)
 			if minQty >= 0.000001 {
 				fmt.Printf("🔄 Merging %.6f pairs...\n", minQty)
-				tx, mergeErr := trader.MergeOnChain(context.Background(), market.ConditionID, minQty)
+				mergeCtx, cancelMerge := context.WithTimeout(context.Background(), 90*time.Second)
+				tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty)
+				cancelMerge()
 				if mergeErr != nil {
 					fmt.Printf("❌ Merge failed: %v\n", mergeErr)
 				} else {

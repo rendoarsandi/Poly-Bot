@@ -151,7 +151,9 @@ func main() {
 			var confirm string
 			fmt.Scanln(&confirm)
 			if strings.ToLower(confirm) == "y" {
-				tx, err := trader.MergeOnChain(ctx, m.ConditionID, minQty)
+				mergeCtx, cancelMerge := context.WithTimeout(ctx, 90*time.Second)
+				tx, err := trader.MergeOnChain(mergeCtx, m.ConditionID, minQty)
+				cancelMerge()
 				if err != nil {
 					fmt.Printf("   ❌ Merge failed: %v\n", err)
 				} else {
@@ -220,11 +222,13 @@ func main() {
 							var err error
 							// If we're resolved OR user forced it, we call RedeemPositions
 							// Note: trader.RedeemOnChain has its own check, so we call polygon directly if we want to bypass it
+							redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
 							if forceRedeem || !resolved {
-								tx, err = polygon.RedeemPositions(ctx, trader.GetSigner(), m.ConditionID)
+								tx, err = polygon.RedeemPositions(redeemCtx, trader.GetSigner(), m.ConditionID)
 							} else {
-								tx, err = trader.RedeemOnChain(ctx, m.ConditionID)
+								tx, err = trader.RedeemOnChain(redeemCtx, m.ConditionID)
 							}
+							cancelRedeem()
 
 							if err != nil {
 								fmt.Printf("   ❌ Redeem failed: %v\n", err)

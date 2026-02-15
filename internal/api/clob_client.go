@@ -258,9 +258,9 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		payload["price"] = price
 	}
 	if side == SideBuy {
-		payload["side"] = 0
+		payload["side"] = "0"
 	} else if side == SideSell {
-		payload["side"] = 1
+		payload["side"] = "1"
 	}
 
 	body, err := json.Marshal(payload)
@@ -316,33 +316,72 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		}, nil
 	}
 
-	// Real submission
-	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
+	// Real submission helper (used for fallback payload variants too)
+	doSubmit := func(body []byte) (int, []byte, error) {
+		timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, err
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+		req.Header.Set("POLY_ADDRESS", c.signer.Address())
+		req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+		req.Header.Set("POLY_TIMESTAMP", timestamp)
+		req.Header.Set("POLY_SIGNATURE", signature)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to submit order: %w", err)
+		}
+		defer resp.Body.Close()
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, bodyBytes, nil
+	}
+
+	statusCode, bodyBytes, err := doSubmit(body)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
-	req.Header.Set("POLY_ADDRESS", c.signer.Address())
-	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
-	req.Header.Set("POLY_TIMESTAMP", timestamp)
-	req.Header.Set("POLY_SIGNATURE", signature)
+	// Fallback for SELL price-validation quirks across CLOB validator paths.
+	if statusCode != http.StatusOK && statusCode != http.StatusCreated && side == SideSell && strings.Contains(strings.ToLower(string(bodyBytes)), "invalid price") {
+		fmt.Printf("⚠️ SELL fallback: retrying with alternate payload encoding after invalid price\n")
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to submit order: %w", err)
+		altPayload := map[string]interface{}{
+			"order":     signedOrder.Order,
+			"owner":     c.auth.APIKey,
+			"orderType": payload["orderType"],
+			"price":     strconv.FormatFloat(price, 'f', -1, 64),
+			"side":      "1",
+		}
+		if altBody, mErr := json.Marshal(altPayload); mErr == nil {
+			if altStatus, altResp, sErr := doSubmit(altBody); sErr == nil {
+				if altStatus == http.StatusOK || altStatus == http.StatusCreated {
+					statusCode, bodyBytes, body = altStatus, altResp, altBody
+				} else {
+					// Last fallback: signed-order only + orderType
+					minimalPayload := map[string]interface{}{
+						"order":     signedOrder.Order,
+						"owner":     c.auth.APIKey,
+						"orderType": payload["orderType"],
+					}
+					if minBody, minErr := json.Marshal(minimalPayload); minErr == nil {
+						if minStatus, minResp, submitErr := doSubmit(minBody); submitErr == nil {
+							statusCode, bodyBytes, body = minStatus, minResp, minBody
+						}
+					}
+				}
+			}
+		}
 	}
-	defer resp.Body.Close()
 
-	// Read full body for error reporting
-	bodyBytes, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
 		// Log the failed request and response for debugging
 		fmt.Printf("\n--- API ERROR DEBUG ---\n")
 		fmt.Printf("Request Body: %s\n", string(body))
-		fmt.Printf("Response Status: %d\n", resp.StatusCode)
+		fmt.Printf("Response Status: %d\n", statusCode)
 		fmt.Printf("Response Body: %s\n", string(bodyBytes))
 		fmt.Printf("-----------------------\n\n")
 
@@ -350,7 +389,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		if err := json.Unmarshal(bodyBytes, &result); err != nil {
 			return &OrderResponse{
 				Success:  false,
-				ErrorMsg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
+				ErrorMsg: fmt.Sprintf("HTTP %d: %s", statusCode, string(bodyBytes)),
 			}, nil
 		}
 		result.Success = false
