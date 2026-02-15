@@ -394,10 +394,11 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				price := prices[o]
 				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
-				// SELL FOK: Use floor price (0.10) not best bid, to guarantee fill
-				// This ensures the order matches against any available liquidity
-				floorPrice := 0.10
-				results[i], errs[i] = trader.Sell(ctx, tid, o, floorPrice, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				// SELL FOK: use latest bid-driven price for this outcome.
+				// This mirrors BUY behavior (book-driven market execution) and avoids
+				// pathological low fixed prices rejected by CLOB validators.
+				price := prices[o]
+				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
@@ -428,10 +429,14 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 
 			if side == "BUY" {
 				// Use $0.99 cap for buy recovery to guarantee fill
-				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
-				// Use $0.10 floor for sell recovery to guarantee fill
-				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, 0.10, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+				// Use latest bid-driven price for sell recovery.
+				retryPrice := prices[failedOutcome]
+				if retryPrice <= 0 || retryPrice >= 1 {
+					retryPrice = 0.5
+				}
+				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			}
 
 			if retryErr == nil && retryRes != nil && retryRes.Success {

@@ -230,17 +230,6 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		return nil, err
 	}
 
-	// SELL fallback: some validator paths treat price orientation differently.
-	// If canonical SELL shape is rejected as invalid price, retry once with flipped amounts.
-	if req.Side == SideSell && resp != nil && !resp.Success && strings.Contains(strings.ToLower(resp.ErrorMsg), "invalid price") {
-		fmt.Printf("⚠️ SELL fallback: retrying with flipped maker/taker amounts for price validation\n")
-		altSalt := generateSalt()
-		altResp, altErr := submitSigned(altSalt, takerAmount, makerAmount, sideInt)
-		if altErr == nil && altResp != nil && altResp.Success {
-			return altResp, nil
-		}
-	}
-
 	return resp, nil
 }
 
