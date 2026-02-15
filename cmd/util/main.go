@@ -390,16 +390,13 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
 				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
 			}
-			if side == "BUY" {
-				price := prices[o]
-				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-			} else {
-				// SELL FOK: use latest bid-driven price for this outcome.
-				// This mirrors BUY behavior (book-driven market execution) and avoids
-				// pathological low fixed prices rejected by CLOB validators.
-				price := prices[o]
-				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-			}
+		if side == "BUY" {
+			price := prices[o]
+			results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+		} else {
+			price := prices[o]
+			results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
+		}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
 	}
@@ -436,7 +433,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				if retryPrice <= 0 || retryPrice >= 1 {
 					retryPrice = 0.5
 				}
-				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFGoodTilCancelled, rate)
 			}
 
 			if retryErr == nil && retryRes != nil && retryRes.Success {

@@ -153,8 +153,10 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		takerAmount = strconv.FormatInt(sizeMicro, 10)
 		fmt.Printf("DEBUG: BUY Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.Size, req.Price, makerAmount, takerAmount)
 	} else {
-		// SELL: makerAmount = shares (what we sell), takerAmount = USDC (what we receive)
-		// This is the canonical orientation for side=SELL when signing CLOB orders.
+		// SELL: Use original amounts (not swapped)
+		// The swap broke the signature. Let's try using LIMIT instead of MARKET for SELL.
+		// The issue might be that MARKET/FOK validates price differently than LIMIT.
+		
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
