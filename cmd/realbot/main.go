@@ -1466,15 +1466,38 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						wg.Wait()
 
+						// ROBUSTNESS: Immediately verify actual positions from CLOB
+						// This handles "Fake Errors" (timeout but filled) and prevents double-buys
+						// It also acts as passive rebalancing: if we already have shares, we count them as success
+						var side1Success, side2Success bool
+						verifyPositions, verifyErr := trader.GetPositions(ctx)
+						if verifyErr == nil {
+							var bal0, bal1 float64
+							for _, pos := range verifyPositions {
+								if pos.TokenID == token0 {
+									bal0 = pos.Size
+								} else if pos.TokenID == token1 {
+									bal1 = pos.Size
+								}
+							}
+							
+							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
+
+							// Override success flags based on actual inventory
+							// If we have the shares, we consider the side "filled" regardless of API error
+							side1Success = bal0 >= shares
+							side2Success = bal1 >= shares
+						} else {
+							tui.LogEvent("[%s] ⚠️ Failed to verify positions: %v (relying on API response)", id, verifyErr)
+							side1Success = err1 == nil && res1 != nil && res1.Success
+							side2Success = err2 == nil && res2 != nil && res2.Success
+						}
+
 						// Calculate costs using the original target price for reporting (actual will be better)
 						cost1 := shares * price1
 						cost2 := shares * price2
 
-						// Track success state - defer engine recording until final state is known
-						side1Success := err1 == nil && res1 != nil && res1.Success
-						side2Success := err2 == nil && res2 != nil && res2.Success
-
-						// Log results (but don't record to engine yet)
+						// Log results based on VERIFIED state
 						if side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
 							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FILLED")
@@ -1586,6 +1609,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 										break
 									}
 								}
+
+								// ROBUSTNESS CHECK: Verify if it was a "Fake Failure" (e.g. timeout but filled)
+								// Query positions to see if we actually have the shares now
+								chkPositions, checkErr := trader.GetPositions(ctx)
+								if checkErr == nil {
+									for _, pos := range chkPositions {
+										if pos.TokenID == failedToken && pos.Size >= shares {
+											tui.LogEvent("[%s] ✅ ARB Recovery: Detected fill via position check (Fake Error protection)!", id)
+											// Manually construct success result
+											retryRes = &trading.TradeResult{Success: true, Price: retryPrice, OrderID: "detected-on-chain"}
+											retryErr = nil
+											
+											if failedSide == 1 {
+												side1Success = true
+												price1 = retryPrice
+											} else {
+												side2Success = true
+												price2 = retryPrice
+											}
+											recoverySuccess = true
+											goto arbRecoveryDone // Break outer loop
+										}
+									}
+								}
 							}
 
 							if !recoverySuccess {
@@ -1604,8 +1651,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							// INSTANT MERGE: Immediately merge tokens to capture arb profit
 							// This converts YES+NO tokens back to USDC without waiting for expiry
 							go func(cid string, qty float64, o1, o2, tid0, tid1 string) {
-								// Small delay to ensure CLOB has processed the fills
-								time.Sleep(1 * time.Second)
+								// Delay to ensure CLOB has fully processed the fills and updated the read API
+								time.Sleep(5 * time.Second)
 
 								mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 								defer cancel()
