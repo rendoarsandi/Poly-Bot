@@ -1290,29 +1290,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// Simplification: use cash balance as proxy for sizing, or fetch equity
 					currentEquity := currentBalance // In realbot we use cash as conservative equity
 					tradeSize := cfg.CalculateTradeSize(currentEquity)
-					// Scale shares based on margin
-					shares := tradeSize / sum
-
-					// Apply aggression scaling based on margin (e.g., 2% = 2x, 3% = 3x)
-					// Higher margin = better opportunity = more aggressive sizing
-					if cfg.EnableMarginAggression && riskAction != paper.RiskActionReduceSize {
-						multiplier := math.Floor(margin)
-						if multiplier > cfg.MaxAggressionMultiplier {
-							multiplier = cfg.MaxAggressionMultiplier
-						}
-						if multiplier < 1 {
-							multiplier = 1
-						}
-						shares *= multiplier
-					}
-
-					// Round to whole shares
-					shares = math.Floor(shares)
-
-					// Ensure min order size $1.00 at worstCasePrice 0.99
-					if shares*0.99 < 1.0 {
-						shares = math.Ceil(1.0 / 0.99)
-					}
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -1322,6 +1299,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					if rate2, ok := tokenFeeRates[outcomes[1]]; ok && rate2 > maxFeeRateBps {
 						maxFeeRateBps = rate2
 					}
+
+					// Scale shares based on margin (User requested NO fee buffer deduction)
+					shares := tradeSize / sum
+					
+					// Log the requirement check so user can see why it might fail
+					estFee := (shares * sum) * (float64(maxFeeRateBps)/10000.0)
+					reqBal := (shares * sum) + estFee
+					tui.LogEvent("[%s] ℹ️ Balance Check: Have $%.2f, Need $%.2f (Cost $%.2f + Fee $%.2f)", 
+						id, currentCash, reqBal, shares*sum, estFee)
 
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
 					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
@@ -1412,25 +1398,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						currentCash = latestBalance
 					}
 
-					// Scale down if cost exceeds cash (add 2% buffer for price movements)
-					costWithBuffer := cost * 1.02
-					if !riskMgr.CanPlaceOrder(cost) || costWithBuffer > currentCash {
-						if cost > currentCash {
-							maxAffordableShares := (currentCash * 0.98) / sum // Use 98% of cash for safety
-							if maxAffordableShares < 1.0 {
-								tui.LogEvent("[%s] ⚠️ Insufficient funds: Need $%.2f for 1 share, have $%.2f", id, sum, currentCash)
-								continue
-							}
-							shares = math.Floor(maxAffordableShares)
-							cost, _, _, _ = calculateTradeMetrics(shares, sum, maxFeeRateBps)
-						}
-					}
-
-					// FINAL SAFETY CHECK: If we still don't have enough for both sides, SKIP
-					if cost > currentCash {
-						tui.LogEvent("[%s] ⚠️ Insufficient balance for both sides: Need $%.2f, Have $%.2f", id, cost, currentCash)
+					// Check risk limits only (Balance check disabled per user request to match utilbot behavior)
+					if !riskMgr.CanPlaceOrder(cost) {
+						tui.LogEvent("[%s] ⚠️ Risk limit exceeded for cost $%.2f", id, cost)
 						continue
 					}
+					
+					// Skipping conservative balance checks (costWithBuffer > currentCash) to allow max execution.
+					// If balance is insufficient, the API call will fail naturally.
 
 					// Check why we might skip trading
 					if shares < 1.0 {
