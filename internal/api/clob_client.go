@@ -363,11 +363,23 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	var result OrderResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return &OrderResponse{
-			Success:  true,
+			Success:  false, // Decode failed, assume failure
 			ErrorMsg: fmt.Sprintf("Success but decode failed: %v", err),
 		}, nil
 	}
-	result.Success = true
+
+	// CRITICAL: Trust the API's success field initially, but override if Status indicates failure.
+	// FOK/IOC orders can return success=true (request accepted) but status="KILLED" (execution failed).
+	if result.Success {
+		switch result.Status {
+		case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
+			result.Success = false
+			if result.ErrorMsg == "" {
+				result.ErrorMsg = fmt.Sprintf("Order was %s", result.Status)
+			}
+		}
+	}
+
 	return &result, nil
 }
 
