@@ -380,8 +380,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	var wg sync.WaitGroup
 	wg.Add(2)
 	results, errs := make([]*trading.TradeResult, 2), make([]error, 2)
-
-	// Execute both sides in parallel
 	for idx, out := range outcomes {
 		go func(o string, i int) {
 			defer wg.Done()
@@ -389,32 +387,26 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			execShares := shares
 			rate := tokenFeeRates[o]
 			if rate == -1 {
-				rate = 0 // Default to 0 (fee-free) if fetch failed
+				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
+				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
 			}
-
-			if side == "BUY" {
-				price := prices[o]
-				// Use FOK for atomic execution
-				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-			} else {
-				price := prices[o]
-				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-			}
+		if side == "BUY" {
+			price := prices[o]
+			results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+		} else {
+			price := prices[o]
+			// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
+			results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+		}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
 	}
 	wg.Wait()
 
-	// Check for unbalanced fill
-	side1Success := errs[0] == nil && results[0].Success
-	side2Success := errs[1] == nil && results[1].Success
-
-	if side1Success != side2Success {
+	if (errs[0] == nil && results[0].Success) != (errs[1] == nil && results[1].Success) {
 		fmt.Println("⚠️  UNBALANCED FILL! Attempting aggressive recovery...")
-		
-		// Identify failed side
 		failedIdx := 0
-		if side1Success {
+		if errs[0] == nil && results[0].Success {
 			failedIdx = 1
 		}
 		failedOutcome := outcomes[failedIdx]
@@ -425,25 +417,19 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			rate = 1000
 		}
 
-		// Robust recovery loop: 40 attempts, 50ms interval (matches realbot)
 		retryCount := 0
-		const maxRetries = 40
-		
-		for retryCount < maxRetries {
+		for retryCount < 10 { // Max 10 retries
 			retryCount++
 			fmt.Printf("🔄 Recovery attempt #%d for %s...\n", retryCount, failedOutcome)
 
 			var retryRes *trading.TradeResult
 			var retryErr error
 
-			// Short delay to allow API/Nonce to settle
-			time.Sleep(50 * time.Millisecond)
-
 			if side == "BUY" {
 				// Use $0.99 cap for buy recovery to guarantee fill
 				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 			} else {
-				// Use latest bid-driven price for sell recovery
+				// Use latest bid-driven price for sell recovery with FOK
 				retryPrice := prices[failedOutcome]
 				if retryPrice <= 0 || retryPrice >= 1 {
 					retryPrice = 0.5
@@ -455,8 +441,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				fmt.Printf("✅ Recovery SUCCESS for %s after %d retries!\n", failedOutcome, retryCount)
 				results[failedIdx] = retryRes
 				errs[failedIdx] = nil
-				side1Success = true // Mark as success to proceed to merge
-				side2Success = true
 				break
 			}
 
@@ -467,6 +451,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				msg = retryRes.Message
 			}
 			fmt.Printf("❌ Recovery attempt #%d failed: %s\n", retryCount, msg)
+			time.Sleep(500 * time.Millisecond)
 		}
 
 		if (errs[0] == nil && results[0].Success) != (errs[1] == nil && results[1].Success) {

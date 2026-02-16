@@ -679,7 +679,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 	// Initial balance tracking
 	currentBalance := startingBalance
-	currentCash := startingBalance
+	// currentCash := startingBalance // Unused after removing balance checks
 
 	// Helper to get token ID from outcome
 	getTokenID := func(outcome string) string {
@@ -1282,7 +1282,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					// This ensures consistent sizing regardless of how much is in positions
 					latestBalance, _ := trader.GetBalance(ctx)
 					if latestBalance > 0 {
-						currentCash = latestBalance
+						// currentCash = latestBalance // Unused
 						currentBalance = latestBalance
 					}
 
@@ -1302,12 +1302,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Scale shares based on margin (User requested NO fee buffer deduction)
 					shares := tradeSize / sum
-					
-					// Log the requirement check so user can see why it might fail
-					estFee := (shares * sum) * (float64(maxFeeRateBps)/10000.0)
-					reqBal := (shares * sum) + estFee
-					tui.LogEvent("[%s] ℹ️ Balance Check: Have $%.2f, Need $%.2f (Cost $%.2f + Fee $%.2f)", 
-						id, currentCash, reqBal, shares*sum, estFee)
+					shares = math.Floor(shares) // Round down to integer shares for cleaner execution matching utilbot
+
+					// Fee estimation and balance check logging removed per user request
 
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
 					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
@@ -1395,7 +1392,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					latestBalance, balErr := trader.GetBalance(ctx)
 					if balErr == nil {
 						currentBalance = latestBalance
-						currentCash = latestBalance
+						// currentCash = latestBalance // Unused
 					}
 
 					// Check risk limits only (Balance check disabled per user request to match utilbot behavior)
@@ -1439,8 +1436,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 
 						// MARKET EXECUTION: Force fill both sides with GTC to avoid FOK cancels
-						// Using $0.99 as worst-case to ensure enough USDC is provided for a guaranteed fill
-						const worstCasePrice = 0.99
+						// Using dynamic limit price (Target + $0.05) to ensure fill while preventing "insufficient balance" errors
+						limitPrice1 := math.Min(0.99, price1+0.05)
+						limitPrice2 := math.Min(0.99, price2+0.05)
 
 						var wg sync.WaitGroup
 						wg.Add(2)
@@ -1454,7 +1452,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							if rate == 0 {
 								rate = 1000
 							}
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						go func() {
@@ -1463,7 +1461,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							if rate == 0 {
 								rate = 1000
 							}
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], worstCasePrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
 						}()
 
 						wg.Wait()
@@ -1546,12 +1544,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								// Fast constant delay for balancing: 50ms
 								time.Sleep(50 * time.Millisecond)
 
-								// Force fill with ceiling price ($0.99) for arb recovery
-								// Since it's a MARKET order, it will fill at the BEST available ask price
-								// but providing $0.99 as the "price" gives enough room for any liquidity
-								retryPrice := 0.99
+								// Force fill with aggressive cap (Target + $0.10) for arb recovery
+								// This is safer than $0.99 for balance, but aggressive enough to fill
+								basePrice := price1
+								if failedSide == 2 {
+									basePrice = price2
+								}
+								retryPrice := math.Min(0.99, basePrice+0.10)
 
-								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $0.99 cap)", id, retryCount, failedOutcome)
+								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $%.2f cap)", id, retryCount, failedOutcome, retryPrice)
 
 								rate := tokenFeeRates[failedOutcome]
 								if rate == 0 {
@@ -1603,23 +1604,40 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							// INSTANT MERGE: Immediately merge tokens to capture arb profit
 							// This converts YES+NO tokens back to USDC without waiting for expiry
 							go func(cid string, qty float64, o1, o2, tid0, tid1 string) {
-								// Small delay to let on-chain state settle after fills
-								time.Sleep(3 * time.Second)
+								// Small delay to ensure CLOB has processed the fills
+								time.Sleep(1 * time.Second)
 
 								mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 								defer cancel()
 
-								// Query actual on-chain balances to merge the correct amount
-								mergeQty := qty
-								bal0, err0 := trader.GetCTFBalanceFloat(mergeCtx, tid0)
-								bal1, err1 := trader.GetCTFBalanceFloat(mergeCtx, tid1)
-								if err0 == nil && err1 == nil {
-									// Don't floor! Merge exact fractional amount available
+								// Query OFF-CHAIN positions from CLOB (faster than blockchain)
+								mergeQty := 0.0
+								positions, err := trader.GetPositions(mergeCtx)
+								
+								if err != nil {
+									tui.LogEvent("[%s] ⚠️ Could not fetch off-chain positions: %v", id, err)
+									// Fallback: try to merge what we *thought* we bought
+									mergeQty = qty 
+								} else {
+									var bal0, bal1 float64
+									for _, pos := range positions {
+										if pos.TokenID == tid0 {
+											bal0 = pos.Size
+										} else if pos.TokenID == tid1 {
+											bal1 = pos.Size
+										}
+									}
+									
+									// Calculate matched pairs based on actual CLOB inventory
 									actualMin := math.Min(bal0, bal1)
-									// Filter dust
+									
+									tui.LogEvent("[%s] 📊 CLOB Positions: %s=%.4f, %s=%.4f (Matched: %.4f)", id, o1, bal0, o2, bal1, actualMin)
+									
 									if actualMin >= 0.000001 {
 										mergeQty = actualMin
-										tui.LogEvent("[%s] 📊 On-chain balances: %s=%.2f, %s=%.2f → merging %.6f", id, o1, bal0, o2, bal1, mergeQty)
+									} else {
+										tui.LogEvent("[%s] ⚠️ No balanced positions to merge", id)
+										return
 									}
 								}
 
@@ -1657,7 +1675,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// Force refresh balance after trade to ensure accurate tracking
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 							currentBalance = newBal
-							currentCash = newBal
+							// currentCash = newBal // Unused
 						}
 
 						lastTrade = time.Now()
