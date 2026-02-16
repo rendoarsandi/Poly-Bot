@@ -32,11 +32,11 @@ func main() {
 	}
 
 	ctx := context.Background()
-	client := api.NewRestClient("")
+	rest := api.NewRestClient("")
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 	address := trader.Address()
 
-	fmt.Println("🚀 POLYARB UNIFIED MERGE & REDEEM TOOL")
+	fmt.Println("🚀 POLYARB SMART SCANNER (Merge & Redeem Only)")
 	fmt.Println("═══════════════════════════════════════════════════════")
 	fmt.Printf("🔑 Wallet: %s\n", address)
 
@@ -93,17 +93,18 @@ func main() {
 					fmt.Printf("   ❌ Error looking up slug: %v\n", err)
 				} else {
 					fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
-					resp.Body.Close()
+					if resp != nil {
+						resp.Body.Close()
+					}
 				}
 			}
 		}
 	}
 
 	if len(markets) == 0 {
-		// 1. Scan for positions directly on-chain
-		fmt.Println("🔍 Scanning blockchain for tokens (BTC, ETH, SOL, XRP)...")
-		assets := []string{"btc", "eth", "sol", "xrp"}
-		foundMarkets, err := client.Get15mMarkets(ctx, assets)
+		// Smart Discovery: Scan for active/closed 15m markets via Gamma tag
+		fmt.Println("🔍 Scanning for all recent 15m markets (including closed)...")
+		foundMarkets, err := rest.Get15mMarkets(ctx, nil)
 		if err != nil {
 			log.Fatalf("Failed to fetch markets: %v", err)
 		}
@@ -111,18 +112,23 @@ func main() {
 	}
 
 	foundAny := false
+	processed := make(map[string]bool)
+
 	for _, m := range markets {
+		if processed[m.ConditionID] {
+			continue
+		}
+		processed[m.ConditionID] = true
+
 		// Fetch balances for both tokens in this market
 		var balances []float64
 		var outcomes []string
-		var tokenIDs []*big.Int
-
+		
 		for _, t := range m.Tokens {
-			tid := new(big.Int)
-			tid.SetString(t.TokenID, 10)
-			tokenIDs = append(tokenIDs, tid)
-
-			bal, err := polygon.GetCTFBalance(ctx, address, tid)
+			tokenBig := new(big.Int)
+			tokenBig.SetString(t.TokenID, 10)
+			
+			bal, err := polygon.GetCTFBalance(ctx, address, tokenBig)
 			if err != nil {
 				balances = append(balances, 0)
 			} else {
@@ -135,10 +141,11 @@ func main() {
 		}
 
 		// Skip if no tokens found in this market
-		if balances[0] == 0 && balances[1] == 0 {
+		if len(balances) < 2 || (balances[0] < 0.01 && balances[1] < 0.01) {
 			continue
 		}
 		foundAny = true
+
 		fmt.Printf("\n📈 Market: %s\n", m.Slug)
 		fmt.Printf("   • %s: %.2f shares\n", outcomes[0], balances[0])
 		fmt.Printf("   • %s: %.2f shares\n", outcomes[1], balances[1])
@@ -158,18 +165,21 @@ func main() {
 					fmt.Printf("   ❌ Merge failed: %v\n", err)
 				} else {
 					fmt.Printf("   ✅ Merge successful! Tx: %s\n", tx)
-					// Update local balance for subsequent checks
 					balances[0] -= minQty
 					balances[1] -= minQty
 				}
 			}
 		}
 
-		// Logic 2: REDEEM (Resolved market with winning shares)
-		if balances[0] > 0 || balances[1] > 0 {
-			// Check if market is resolved
+		// Logic 2: REDEEM
+		if balances[0] >= 0.01 || balances[1] >= 0.01 {
 			info, err := trader.GetMarketInfo(ctx, m.ConditionID)
-			if err == nil && info.Closed {
+			if err != nil {
+				fmt.Printf("   ⚠️ Resolution status pending or unavailable.\n")
+				continue
+			}
+
+			if info.Closed {
 				winnerOutcome := ""
 				for _, t := range info.Tokens {
 					if t.Winner {
@@ -178,14 +188,10 @@ func main() {
 				}
 
 				if winnerOutcome != "" {
-					fmt.Printf("   🏁 Market Resolved: %s Won\n", winnerOutcome)
+					fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
 					hasWinner := false
-					if outcomes[0] == winnerOutcome && balances[0] > 0 {
-						hasWinner = true
-					}
-					if outcomes[1] == winnerOutcome && balances[1] > 0 {
-						hasWinner = true
-					}
+					if outcomes[0] == winnerOutcome && balances[0] >= 0.01 { hasWinner = true }
+					if outcomes[1] == winnerOutcome && balances[1] >= 0.01 { hasWinner = true }
 
 					if hasWinner {
 						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")
@@ -220,8 +226,6 @@ func main() {
 						if strings.ToLower(confirm) == "y" {
 							var tx string
 							var err error
-							// If we're resolved OR user forced it, we call RedeemPositions
-							// Note: trader.RedeemOnChain has its own check, so we call polygon directly if we want to bypass it
 							redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
 							if forceRedeem || !resolved {
 								tx, err = polygon.RedeemPositions(redeemCtx, trader.GetSigner(), m.ConditionID)
@@ -237,17 +241,30 @@ func main() {
 							}
 						}
 					} else {
-						fmt.Printf("   💀 Market ended. Remaining shares are losers ($0.00).\n")
+						fmt.Printf("   💀 Market ended. Shares are losers.\n")
+					}
+				} else {
+					fmt.Printf("   ⏳ Market closed, resolution pending.\n")
+				}
+			} else {
+				fmt.Printf("   ⏳ Market still active in API. If resolution is ready on-chain, you can force redeem.\n")
+				fmt.Print("   Try Force Redeem? (y/n): ")
+				var confirm string
+				fmt.Scanln(&confirm)
+				if strings.ToLower(confirm) == "y" {
+					tx, err := trader.RedeemOnChain(ctx, m.ConditionID)
+					if err != nil {
+						fmt.Printf("   ❌ Force Redeem failed: %v\n", err)
+					} else {
+						fmt.Printf("   ✅ Force Redeem successful! Tx: %s\n", tx)
 					}
 				}
-			} else if err == nil && !info.Closed {
-				fmt.Printf("   ⏳ Market still active. Sell shares or wait for expiry.\n")
 			}
 		}
 	}
 
 	if !foundAny {
-		fmt.Println("✅ No positions found on-chain.")
+		fmt.Println("✅ No positions found in scanned markets.")
 	}
 	fmt.Println("\n═══════════════════════════════════════════════════════")
 }

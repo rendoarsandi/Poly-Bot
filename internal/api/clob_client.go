@@ -147,19 +147,25 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
+		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6)) // BUY: Round DOWN (truncated) for makerAmount (USDC)
 
 		makerAmount = usdcMicroBig.String()
 		takerAmount = strconv.FormatInt(sizeMicro, 10)
 		fmt.Printf("DEBUG: BUY Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.Size, req.Price, makerAmount, takerAmount)
 	} else {
-		// SELL: makerAmount = shares (what we give), takerAmount = USDC (what we receive)
-		// This ensures the API computes price correctly as takerAmount/makerAmount = USDC/shares = Price
+		// SELL: makerAmount = shares (what we sell), takerAmount = USDC (what we receive)
+		// Use 6-decimal precision for both shares and USDC, consistent with BUY
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
-		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
+		// SELL: To avoid 'invalid price' where taker/maker < price, we must ROUND UP takerAmount
+		// usdcMicro = ceil(sizeMicro * priceMicro / 1e6)
+		prod := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+		divisor := big.NewInt(1e6)
+		
+		// Ceiling division: (a + b - 1) / b
+		usdcMicroBig := new(big.Int).Add(prod, new(big.Int).Sub(divisor, big.NewInt(1)))
+		usdcMicroBig.Div(usdcMicroBig, divisor)
 
 		// Correct assignment: makerAmount = shares, takerAmount = USDC
 		makerAmount = strconv.FormatInt(sizeMicro, 10)
@@ -209,7 +215,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 				Expiration:    orderData.Expiration,
 				Nonce:         orderData.Nonce,
 				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-				Side:          string(req.Side), // Send "BUY" or "SELL"
+				Side:          strconv.Itoa(orderData.Side),
 				SignatureType: orderData.SignatureType,
 				Signature:     signature,
 			},
@@ -240,9 +246,11 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	payload["order"] = signedOrder.Order
 	payload["owner"] = c.auth.APIKey
-
-	// Polymarket's orderType field at the top level
-	if tif != "" {
+	
+	// Polymarket CLOB expects orderType to be GTD if expiration is set, or GTC/FOK/IOC
+	if signedOrder.Order.Expiration != "0" {
+		payload["orderType"] = "GTD"
+	} else if tif != "" {
 		payload["orderType"] = string(tif)
 	} else {
 		payload["orderType"] = signedOrder.OrderType

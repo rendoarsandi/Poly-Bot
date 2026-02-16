@@ -80,6 +80,7 @@ type GammaEvent struct {
 
 type GammaMarket struct {
 	ConditionID  string `json:"conditionId"`
+	Slug         string `json:"slug"`
 	ClobTokenIds string `json:"clobTokenIds"` // JSON-encoded string array
 	Outcomes     string `json:"outcomes"`
 	Active       bool   `json:"active"`
@@ -87,98 +88,117 @@ type GammaMarket struct {
 }
 
 func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Market, error) {
-	if len(assets) == 0 {
-		assets = []string{"btc", "eth"}
-	}
-
-	now := time.Now().UTC()
-	currentTs := now.Unix()
-
-	// Calculate the current 15m window START
-	currentWindowStart := (currentTs / 900) * 900
-
 	var markets []Market
 
-	// Check multiple windows to handle edge cases:
-	// - Current window (most likely)
-	// - Next window (might be pre-created near end of current window)
-	// - Window after next (for early creation)
-	// - Previous 4 windows (to support redemption of recently closed markets)
-	windowsToCheck := []int64{
-		currentWindowStart,        // Current window
-		currentWindowStart + 900,  // Next window (might be pre-created)
-		currentWindowStart + 1800, // Window after next (early creation)
-		currentWindowStart - 900,  // Previous window
-		currentWindowStart - 1800, // 30m ago
-		currentWindowStart - 2700, // 45m ago
-		currentWindowStart - 3600, // 1h ago
+	// 1. Tag-based discovery (Discovery of all active/closed 15m markets)
+	url := fmt.Sprintf("%s/events?limit=100&tag_id=102467", c.GammaURL)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, asset := range assets {
-		for _, windowStart := range windowsToCheck {
-			// Rate limit check
-			select {
-			case <-c.limiter:
-			case <-ctx.Done():
-				return nil, ctx.Err()
+	resp, err := httpClient.Do(req)
+	if err == nil {
+		defer resp.Body.Close()
+		var events []GammaEvent
+		if err := json.NewDecoder(resp.Body).Decode(&events); err == nil {
+			for _, event := range events {
+				for _, gm := range event.Markets {
+					var tokenIds []string
+					if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err != nil || len(tokenIds) < 2 {
+						continue
+					}
+					var outcomes []string
+					if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+						outcomes = []string{"Up", "Down"}
+					}
+					markets = append(markets, Market{
+						ConditionID: gm.ConditionID,
+						Slug:        gm.Slug,
+						Active:      gm.Active,
+						Closed:      gm.Closed,
+						Tokens: []Token{
+							{TokenID: tokenIds[0], Outcome: outcomes[0]},
+							{TokenID: tokenIds[1], Outcome: outcomes[1]},
+						},
+					})
+				}
 			}
+		}
+	}
 
-			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
+	// 2. Window-based discovery (Fallback/Specific for provided assets)
+	if len(assets) > 0 {
+		now := time.Now().Unix()
+		currentWindowStart := now - (now % 900)
+		windowsToCheck := []int64{
+			currentWindowStart,
+			currentWindowStart + 900,
+			currentWindowStart - 900,
+			currentWindowStart - 1800,
+		}
 
-			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
-			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-			if err != nil {
-				continue
-			}
+		for _, asset := range assets {
+			for _, windowStart := range windowsToCheck {
+				select {
+				case <-c.limiter:
+				case <-ctx.Done():
+					return markets, ctx.Err()
+				}
 
-			resp, err := httpClient.Do(req)
-			if err != nil || resp.StatusCode != http.StatusOK {
+				slug := fmt.Sprintf("%s-updown-15m-%d", strings.ToLower(asset), windowStart)
+				url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
+				req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+				if err != nil {
+					continue
+				}
+
+				resp, err := httpClient.Do(req)
+				if err != nil || resp.StatusCode != http.StatusOK {
+					if resp != nil {
+						resp.Body.Close()
+					}
+					continue
+				}
+
+				var events []GammaEvent
+				if err := json.NewDecoder(resp.Body).Decode(&events); err == nil && len(events) > 0 && len(events[0].Markets) > 0 {
+					gm := events[0].Markets[0]
+					var tokenIds []string
+					if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err == nil && len(tokenIds) >= 2 {
+						var outcomes []string
+						if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+							outcomes = []string{"Up", "Down"}
+						}
+						
+						// Check if already found via tag
+						exists := false
+						for _, existing := range markets {
+							if existing.ConditionID == gm.ConditionID {
+								exists = true
+								break
+							}
+						}
+						
+						if !exists {
+							markets = append(markets, Market{
+								ConditionID: gm.ConditionID,
+								Slug:        gm.Slug,
+								Active:      gm.Active,
+								Closed:      gm.Closed,
+								Tokens: []Token{
+									{TokenID: tokenIds[0], Outcome: outcomes[0]},
+									{TokenID: tokenIds[1], Outcome: outcomes[1]},
+								},
+							})
+						}
+					}
+				}
 				if resp != nil {
 					resp.Body.Close()
 				}
-				continue
 			}
-
-			var events []GammaEvent
-			if err := json.NewDecoder(resp.Body).Decode(&events); err != nil || len(events) == 0 {
-				resp.Body.Close()
-				continue
-			}
-			resp.Body.Close()
-
-			if len(events) == 0 || len(events[0].Markets) == 0 {
-				continue
-			}
-
-			event := events[0]
-			gm := event.Markets[0]
-
-			// Parse clobTokenIds (it's a JSON-encoded string array)
-			var tokenIds []string
-			if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err != nil || len(tokenIds) < 2 {
-				continue
-			}
-
-			// Parse outcomes (also JSON-encoded string array)
-			var outcomes []string
-			if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
-				// Fallback to default
-				outcomes = []string{"Up", "Down"}
-			}
-
-			// Build Market from Gamma data
-			market := &Market{
-				ConditionID: gm.ConditionID,
-				Slug:        core.SanitizeString(slug),
-				Active:      gm.Active,
-				Closed:      gm.Closed,
-				Tokens: []Token{
-					{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
-					{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
-				},
-			}
-
-			markets = append(markets, *market)
 		}
 	}
 
@@ -219,34 +239,61 @@ func (c *RestClient) ListMarkets(ctx context.Context) ([]Market, error) {
 }
 
 func (c *RestClient) GetMarket(ctx context.Context, slug string) (*Market, error) {
+	// Try CLOB API first
 	url := fmt.Sprintf("%s/markets/%s", c.BaseURL, slug)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err == nil {
+		resp, err := httpClient.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var market Market
+			if err := json.NewDecoder(resp.Body).Decode(&market); err == nil {
+				market.Slug = core.SanitizeString(market.Slug)
+				market.MarketSlug = core.SanitizeString(market.MarketSlug)
+				for i := range market.Tokens {
+					market.Tokens[i].Outcome = core.SanitizeString(market.Tokens[i].Outcome)
+				}
+				return &market, nil
+			}
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+	}
+
+	// Fallback to Gamma API for closed markets
+	url = fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
+	req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch market: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch market: status %d", resp.StatusCode)
+	var events []GammaEvent
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil || len(events) == 0 {
+		return nil, fmt.Errorf("market not found in CLOB or Gamma: %s", slug)
 	}
 
-	var market Market
-	if err := json.NewDecoder(resp.Body).Decode(&market); err != nil {
-		return nil, fmt.Errorf("failed to decode market response: %w", err)
-	}
+	gm := events[0].Markets[0]
+	var tokenIds []string
+	json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds)
+	var outcomes []string
+	json.Unmarshal([]byte(gm.Outcomes), &outcomes)
 
-	market.Slug = core.SanitizeString(market.Slug)
-	market.MarketSlug = core.SanitizeString(market.MarketSlug)
-	for i := range market.Tokens {
-		market.Tokens[i].Outcome = core.SanitizeString(market.Tokens[i].Outcome)
-	}
-
-	return &market, nil
+	return &Market{
+		ConditionID: gm.ConditionID,
+		Slug:        slug,
+		Active:      gm.Active,
+		Closed:      gm.Closed,
+		Tokens: []Token{
+			{TokenID: tokenIds[0], Outcome: outcomes[0]},
+			{TokenID: tokenIds[1], Outcome: outcomes[1]},
+		},
+	}, nil
 }
 
 // OrderBookResponse represents the CLOB order book
