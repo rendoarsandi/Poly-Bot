@@ -153,16 +153,15 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		takerAmount = strconv.FormatInt(sizeMicro, 10)
 		fmt.Printf("DEBUG: BUY Side - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.Size, req.Price, makerAmount, takerAmount)
 	} else {
-		// SELL: Use original amounts (not swapped)
-		// The swap broke the signature. Let's try using LIMIT instead of MARKET for SELL.
-		// The issue might be that MARKET/FOK validates price differently than LIMIT.
-		
+		// SELL: makerAmount = shares (what we give), takerAmount = USDC (what we receive)
+		// This ensures the API computes price correctly as takerAmount/makerAmount = USDC/shares = Price
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
+		// Correct assignment: makerAmount = shares, takerAmount = USDC
 		makerAmount = strconv.FormatInt(sizeMicro, 10)
 		takerAmount = usdcMicroBig.String()
 
@@ -210,7 +209,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 				Expiration:    orderData.Expiration,
 				Nonce:         orderData.Nonce,
 				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-				Side:          strconv.Itoa(orderData.Side),
+				Side:          string(req.Side), // Send "BUY" or "SELL"
 				SignatureType: orderData.SignatureType,
 				Signature:     signature,
 			},
