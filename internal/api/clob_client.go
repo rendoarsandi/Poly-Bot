@@ -182,7 +182,15 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-		usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
+		
+		// Use Ceiling division for SELL orders to ensure implied price >= limit price.
+		// Truncation (floor) can result in implied price < limit price, causing API rejection.
+		divisor := big.NewInt(1e6)
+		remainder := new(big.Int).Mod(usdcMicroBig, divisor)
+		usdcMicroBig.Div(usdcMicroBig, divisor)
+		if remainder.Sign() > 0 {
+			usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
+		}
 
 		// Correct assignment: makerAmount = shares, takerAmount = USDC
 		makerAmount = strconv.FormatInt(sizeMicro, 10)
@@ -382,7 +390,18 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 			ErrorMsg: fmt.Sprintf("Success but decode failed: %v", err),
 		}, nil
 	}
-	result.Success = true
+	// CRITICAL: Trust the API's success field initially, but override if Status indicates failure.
+	// FOK/IOC orders can return success=true (request accepted) but status="KILLED" (execution failed).
+	if result.Success {
+		switch result.Status {
+		case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
+			result.Success = false
+			if result.ErrorMsg == "" {
+				result.ErrorMsg = fmt.Sprintf("Order was %s", result.Status)
+			}
+		}
+	}
+
 	return &result, nil
 }
 
