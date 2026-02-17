@@ -122,7 +122,7 @@ func main() {
 
 	// Check Market Status
 	fmt.Println("🔍 Checking market status...")
-	marketInfo, err := client.GetMarketInfo(ctx, selectedPos.ConditionID)
+	marketInfo, err := trader.GetMarketInfo(ctx, selectedPos.ConditionID)
 	
 	isResolved := false
 	var winnerOutcome string
