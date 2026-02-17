@@ -120,6 +120,96 @@ func main() {
 	selectedPos := positions[choice-1]
 	fmt.Printf("\nSelected: %s - %s (Size: %.1f)\n", selectedPos.Slug, selectedPos.Outcome, selectedPos.Size)
 
+	// Check Market Status
+	fmt.Println("🔍 Checking market status...")
+	marketInfo, err := client.GetMarketInfo(ctx, selectedPos.ConditionID)
+	
+	isResolved := false
+	var winnerOutcome string
+
+	if err == nil {
+		isResolved = marketInfo.Closed
+		if !isResolved {
+			// Check date
+			// (Omitting complex date parse for brevity, relying on Closed flag primarily)
+		}
+
+		if isResolved {
+			for _, t := range marketInfo.Tokens {
+				if t.Winner {
+					winnerOutcome = t.Outcome
+					break
+				}
+			}
+		}
+	} else {
+		fmt.Printf("⚠️ Failed to fetch market info: %v\n", err)
+	}
+
+	// Double-check on-chain resolution if API says closed or we failed to check
+	onChainResolved, _ := polygon.IsMarketResolved(ctx, selectedPos.ConditionID)
+	if onChainResolved {
+		isResolved = true
+		fmt.Println("✅ Market confirmed RESOLVED on-chain.")
+	}
+
+	if isResolved {
+		fmt.Println("\n⚠️  MARKET IS RESOLVED/CLOSED")
+		fmt.Println("   Trading is disabled. Checking redemption status...")
+
+		if winnerOutcome != "" {
+			fmt.Printf("   🏆 Winner: %s\n", winnerOutcome)
+			
+			// Check if selected position is winner
+			cleanSelected := core.SanitizeString(selectedPos.Outcome)
+			cleanWinner := core.SanitizeString(winnerOutcome)
+			
+			if strings.EqualFold(cleanSelected, cleanWinner) {
+				fmt.Println("\n🎉 YOU HAVE A WINNING POSITION!")
+				fmt.Println("   1. REDEEM on-chain (Claim USDC)")
+				fmt.Println("   0. Exit")
+				fmt.Print("Choice: ")
+				
+				text, _ := reader.ReadString('\n')
+				choice := strings.TrimSpace(text)
+				
+				if choice == "1" {
+					fmt.Println("🚀 Sending redemption tx...")
+					tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID)
+					if err != nil {
+						fmt.Printf("❌ Redeem failed: %v\n", err)
+					} else {
+						fmt.Printf("✅ Redeem Sent! Tx: %s\n", tx)
+					}
+				}
+				return
+			} else {
+				fmt.Printf("\n💀 This position (%s) lost against %s. Value is $0.00.\n", selectedPos.Outcome, winnerOutcome)
+				return
+			}
+		} else {
+			fmt.Println("   ❓ Winner not reported by API yet.")
+			fmt.Println("   Try again later or check Polymarket directly.")
+			
+			fmt.Println("\nActions:")
+			fmt.Println("   1. Force REDEEM (If you are sure you won)")
+			fmt.Println("   0. Exit")
+			fmt.Print("Choice: ")
+			
+			text, _ := reader.ReadString('\n')
+			if strings.TrimSpace(text) == "1" {
+				fmt.Println("🚀 Sending force redemption tx...")
+				tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID)
+				if err != nil {
+					fmt.Printf("❌ Redeem failed: %v\n", err)
+				} else {
+					fmt.Printf("✅ Redeem Sent! Tx: %s\n", tx)
+				}
+			}
+			return
+		}
+	}
+
 	// 3. Choose Action
 	fmt.Println("\nActions:")
 	fmt.Println("  1. SELL current position (Dump stuck shares)")

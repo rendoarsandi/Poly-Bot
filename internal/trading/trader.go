@@ -3,7 +3,9 @@ package trading
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +42,9 @@ type Trader interface {
 
 	// GetMarketInfo retrieves market info including resolution status
 	GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error)
+
+	// GetTradingAllowance returns the currently authorized trading allowance (USDC)
+	GetTradingAllowance(ctx context.Context) (float64, error)
 }
 
 // TradeResult represents the result of a trade attempt
@@ -182,6 +187,10 @@ func (t *PaperTrader) IsTestMode() bool {
 func (t *PaperTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
 	// Paper trader doesn't have real market info access
 	return nil, fmt.Errorf("not implemented for paper trader")
+}
+
+func (t *PaperTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
+	return math.MaxFloat64, nil
 }
 
 // RealTrader implements Trader for real Polymarket trading
@@ -422,6 +431,14 @@ func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*ap
 	return t.clob.GetMarketInfo(ctx, conditionID)
 }
 
+func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
+	res, err := t.clob.GetBalanceAllowance(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return res.Allowance, nil
+}
+
 // RedeemOnChain performs the on-chain redemption of winning tokens
 func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (string, error) {
 	// First check if resolved on-chain (FREE READ)
@@ -542,6 +559,135 @@ func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcA
 		return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount)
 	})
 }
+
+// retryRPC retries a function that returns (T, error) upon rate limit errors
+func retryRPC[T any](ctx context.Context, op func() (T, error)) (T, error) {
+	var zero T
+	for i := 0; i < 5; i++ {
+		res, err := op()
+		if err == nil {
+			return res, nil
+		}
+		// Check for rate limit errors
+		errStr := err.Error()
+		if strings.Contains(errStr, "429") || strings.Contains(errStr, "limit") || strings.Contains(errStr, "exhausted") {
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(time.Duration(2*(i+1)) * time.Second): // Exponential backoff: 2s, 4s, 6s...
+				continue
+			}
+		}
+		return zero, err
+	}
+	return zero, fmt.Errorf("max retries exceeded")
+}
+
+// ApproveTrading checks and approves all necessary contracts for trading
+// Returns true if any approval transaction was sent
+func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
+	t.onChainMu.Lock()
+	defer t.onChainMu.Unlock()
+
+	signer := t.clob.GetSigner()
+	address := signer.Address()
+	sentTx := false
+
+	// Helper to check allowance with retry
+	checkAllowance := func(spender string) (*big.Int, error) {
+		return retryRPC(ctx, func() (*big.Int, error) {
+			return t.polygon.GetUSDCAllowance(ctx, address, spender)
+		})
+	}
+
+	// Helper to check CTF approval with retry
+	checkApproval := func(operator string) (bool, error) {
+		return retryRPC(ctx, func() (bool, error) {
+			return t.polygon.IsCTFApproved(ctx, address, operator)
+		})
+	}
+
+	// 1. Approve USDC for Legacy Exchange (Binary Markets)
+	allowanceLegacy, err := checkAllowance(api.CTFExchange)
+	if err != nil {
+		return false, fmt.Errorf("failed to check legacy allowance: %w", err)
+	}
+	if allowanceLegacy.Cmp(big.NewInt(0)) == 0 {
+		fmt.Println("🔓 Approving USDC for Legacy Exchange...")
+		// Approve max uint256
+		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
+		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.CTFExchange, maxUint256)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve legacy exchange: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+		time.Sleep(2 * time.Second) // Rate limit buffer
+	}
+
+	// 2. Approve CTF Operator for Legacy Exchange
+	isApprovedLegacy, err := checkApproval(api.CTFExchange)
+	if err != nil {
+		return false, fmt.Errorf("failed to check legacy CTF approval: %w", err)
+	}
+	if !isApprovedLegacy {
+		fmt.Println("🔓 Approving CTF Operator for Legacy Exchange...")
+		tx, err := t.polygon.ApproveCTF(ctx, signer, api.CTFExchange, true)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve legacy CTF operator: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+		time.Sleep(2 * time.Second)
+	}
+
+	// 3. Approve USDC for NegRisk Exchange (Multi-Outcome)
+	allowanceNegRisk, err := checkAllowance(api.NegRiskExchange)
+	if err != nil {
+		return false, fmt.Errorf("failed to check NegRisk allowance: %w", err)
+	}
+	if allowanceNegRisk.Cmp(big.NewInt(0)) == 0 {
+		fmt.Println("🔓 Approving USDC for NegRisk Exchange...")
+		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
+		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.NegRiskExchange, maxUint256)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve NegRisk exchange: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+		time.Sleep(2 * time.Second)
+	}
+
+	// 4. Approve CTF Operator for NegRisk Exchange
+	isApprovedNegRisk, err := checkApproval(api.NegRiskExchange)
+	if err != nil {
+		return false, fmt.Errorf("failed to check NegRisk CTF approval: %w", err)
+	}
+	if !isApprovedNegRisk {
+		fmt.Println("🔓 Approving CTF Operator for NegRisk Exchange...")
+		tx, err := t.polygon.ApproveCTF(ctx, signer, api.NegRiskExchange, true)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve NegRisk CTF operator: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+	}
+	
+	return sentTx, nil
+}
+
 
 // checkSafetyLimits verifies the trade doesn't exceed safety limits
 func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {

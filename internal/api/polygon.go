@@ -18,6 +18,12 @@ const USDCContract = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 // Polygon CTF (Conditional Tokens Framework) contract address
 const CTFContract = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
+// Polygon CTF Exchange (Legacy/Binary) contract address
+const CTFExchange = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
+// Polygon Negative Risk Exchange (Multi-outcome) contract address
+const NegRiskExchange = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
 // PolygonClient handles Polygon RPC calls
 type PolygonClient struct {
 	RPCURL string

@@ -100,6 +100,29 @@ func run() error {
 		fmt.Println("✅ CLOB balance allowance synced")
 	}
 
+	// Check allowance explicitly and warn if missing
+	allowance, err := realTrader.GetTradingAllowance(ctx)
+	if err == nil && allowance == 0 {
+		// Try refreshing one more time in case of cache lag
+		time.Sleep(1 * time.Second)
+		_ = realTrader.UpdateBalanceAllowance(ctx)
+		allowance, err = realTrader.GetTradingAllowance(ctx)
+	}
+
+	if err != nil {
+		fmt.Printf("⚠️  Could not fetch trading allowance: %v\n", err)
+	} else {
+		// Just log it, don't block or auto-approve
+		fmt.Printf("🔓 Trading Allowance: $%.2f USDC\n", allowance)
+		if allowance < 100.0 {
+			// Less aggressive warning
+			fmt.Println("\n⚠️  Note: Trading Allowance seems low ($0).")
+			fmt.Println("   If you already ran 'diagnose' and saw green checks, ignore this.")
+			fmt.Println("   The API might just be slow to update.")
+			fmt.Println()
+		}
+	}
+
 	// Display wallet info
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════")
