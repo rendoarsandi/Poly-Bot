@@ -203,13 +203,15 @@ type TUISettings struct {
 	MinMarginPercent     float64 // e.g. 2.0 = require 2% arb margin
 	SplitMinMarginSell   float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled bool    // toggle split strategy on/off
+	MinAskPrice          float64 // e.g. 0.10 = minimum ask price filter
+	MaxAskPrice          float64 // e.g. 0.90 = maximum ask price filter
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0}
-	SettingsModerate     = TUISettings{TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0}
-	SettingsAggressive   = TUISettings{TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0}
+	SettingsConservative = TUISettings{TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -242,6 +244,7 @@ type TUI struct {
 	startTime       time.Time
 	width           int
 	height          int
+	mode            string // "Paper" or "Real" - for footer display
 
 	restLatency    time.Duration
 	restLatencyAvg time.Duration
@@ -615,6 +618,12 @@ func (t *TUI) SetTradeFactor(factor float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tradeFactor = factor
+}
+
+func (t *TUI) SetMode(mode string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.mode = mode
 }
 
 func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.Time) {
@@ -1609,9 +1618,20 @@ func (m tuiModel) renderEventLog(w int) string {
 
 // renderFooter: slim status bar.
 func (m tuiModel) renderFooter(w int) string {
-	left := styleMuted.Render("  Polyarb-15m  ·  Paper Trading Mode")
+	m.tui.mu.Lock()
+	mode := m.tui.mode
+	m.tui.mu.Unlock()
+	
+	if mode == "" {
+		mode = "Paper"
+	}
+	
+	modeText := mode + " Trading Mode"
+	left := styleMuted.Render("  Polyarb-15m  ·  " + modeText)
 	right := styleMuted.Render("Press [q] to quit  ")
-	gap := w - 2 - len("  Polyarb-15m  ·  Paper Trading Mode") - len("Press [q] to quit  ")
+	leftLen := len("  Polyarb-15m  ·  ") + len(modeText)
+	rightLen := len("Press [q] to quit  ")
+	gap := w - 2 - leftLen - rightLen
 	if gap < 1 {
 		gap = 1
 	}
