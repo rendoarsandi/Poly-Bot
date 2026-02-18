@@ -314,103 +314,128 @@ func run() error {
 		}
 	}()
 
-	// Main trading loop - Execute only once for a single round of trading
+	// Main trading loop - Keep running: after each round of markets ends, search for new ones.
 	globalSplitStatus := make(map[string]bool)
 	var splitMu sync.Mutex
+	currentBalance := balance // Seed with the pre-fetched balance
 
-	// Get fresh balance at start of each round for compounding
-	balCtx, balFn := context.WithTimeout(ctx, 10*time.Second)
-	currentBalance, err := realTrader.GetBalance(balCtx)
-	balFn()
-	if err != nil {
-		tui.LogEvent("⚠️ Could not refresh balance: %v", err)
-		currentBalance = balance // Use last known balance
-	} else {
-		balance = currentBalance          // Update stored balance
-		engine.SetBalance(currentBalance) // Sync engine with on-chain balance
-		engine.RecalculateDrawdown()      // Check drawdown after sync
-	}
-
-	// Track starting equity for compounding calculation
-	startingEquity := engine.GetEquity()
-	compoundMultiplier := engine.GetCompoundMultiplier()
-	tui.LogEvent("📊 Execution starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
-
-	// Find markets
-	tui.LogEvent("🔍 Searching for active 15m markets...")
-	markets := mkt.FindMarkets(ctx, restClient, func(format string, args ...interface{}) {
-		tui.LogEvent(format, args...)
-	})
-	if len(markets) == 0 {
-		tui.LogEvent("⏳ No active markets found, exiting.")
-		return nil
-	}
-
-	// Trade each market
-	var wg sync.WaitGroup
-	for assetID, market := range markets {
-		endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
-		outcomes := mkt.GetOutcomes(market)
-		tui.AddMarket(assetID, market.Slug, outcomes, endTime)
-		tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
-
-		// Create per-market Risk Manager
-		riskConfig := paper.RiskConfig{
-			MaxExposure:        math.MaxFloat64, // Unlimited exposure (rely on kill switch for safety)
-			MaxUnmatchedRatio:  0.20,            // 20% max unmatched
-			MaxUnmatchedShares: 500.0,           // 500 shares max on one side
-			SkewThreshold:      0.10,            // 10% skew triggers rebalance
-			KillSwitchDrawdown: 0.10,            // 10% drawdown triggers kill switch (real money protection)
+	for {
+		// Check for shutdown signal before starting a new round
+		select {
+		case <-ctx.Done():
+			goto shutdown
+		default:
 		}
-		marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
-		wg.Add(1)
-		go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					core.RestoreTerminal()
-					stack := make([]byte, 4096)
-					length := runtime.Stack(stack, false)
-					fmt.Printf("\n🚨 TRADER PANIC [%s]: %v\n%s\n", id, r, stack[:length])
-					emergencyCleanup()
+		// Refresh balance at the start of each round for compounding
+		{
+			balCtx, balFn := context.WithTimeout(ctx, 10*time.Second)
+			newBal, balErr := realTrader.GetBalance(balCtx)
+			balFn()
+			if balErr != nil {
+				tui.LogEvent("⚠️ Could not refresh balance: %v", balErr)
+				// keep currentBalance from last known value
+			} else {
+				currentBalance = newBal
+				balance = currentBalance
+				engine.SetBalance(currentBalance)
+				engine.RecalculateDrawdown()
+			}
+		}
+
+		// Track starting equity for this round's PnL calculation
+		startingEquity := engine.GetEquity()
+		compoundMultiplier := engine.GetCompoundMultiplier()
+		tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
+
+		// Find markets
+		tui.LogEvent("🔍 Searching for active 15m markets...")
+		markets := mkt.FindMarkets(ctx, restClient, func(format string, args ...interface{}) {
+			tui.LogEvent(format, args...)
+		})
+		if len(markets) == 0 {
+			tui.LogEvent("⏳ No active markets found, waiting 30s before retry...")
+			select {
+			case <-time.After(30 * time.Second):
+				continue // loop back and search again
+			case <-ctx.Done():
+				goto shutdown
+			}
+		}
+
+		// Trade each market in parallel
+		var wg sync.WaitGroup
+		for assetID, market := range markets {
+			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
+			outcomes := mkt.GetOutcomes(market)
+			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
+			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
+
+			// Create per-market Risk Manager
+			riskConfig := paper.RiskConfig{
+				MaxExposure:        math.MaxFloat64, // Unlimited exposure (rely on kill switch for safety)
+				MaxUnmatchedRatio:  0.20,            // 20% max unmatched
+				MaxUnmatchedShares: 500.0,           // 500 shares max on one side
+				SkewThreshold:      0.10,            // 10% skew triggers rebalance
+				KillSwitchDrawdown: 0.10,            // 10% drawdown triggers kill switch (real money protection)
+			}
+			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
+
+			wg.Add(1)
+			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64) {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						core.RestoreTerminal()
+						stack := make([]byte, 4096)
+						length := runtime.Stack(stack, false)
+						fmt.Printf("\n🚨 TRADER PANIC [%s]: %v\n%s\n", id, r, stack[:length])
+						emergencyCleanup()
+					}
+				}()
+				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, &splitMu)
+			}(assetID, market, endTime, marketRiskMgr, currentBalance)
+		}
+
+		// Wait for all markets in this round to finish
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Sync engine with on-chain balance before calculating round PnL
+			{
+				endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
+				if endBal, endBalErr := realTrader.GetBalance(endBalCtx); endBalErr == nil {
+					engine.SetBalance(endBal)
+					engine.RecalculateDrawdown()
 				}
-			}()
-			tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, &splitMu)
-		}(assetID, market, endTime, marketRiskMgr, currentBalance)
+				endBalFn()
+			}
+
+			// Calculate round PnL
+			roundPnL := engine.GetEquity() - startingEquity
+			if roundPnL > 0 {
+				tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)
+			} else if roundPnL < 0 {
+				tui.LogEvent("📉 Loss. Round PnL: $%.2f", roundPnL)
+			} else {
+				tui.LogEvent("✅ Round complete, no change")
+			}
+			tui.LogEvent("🔄 All markets closed — searching for next round...")
+			// Loop back to search for new markets
+
+		case <-ctx.Done():
+			goto shutdown
+		}
 	}
 
-	// Wait for markets to complete
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Sync engine with on-chain balance before calculating round PnL
-		endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
-		if endBal, err := realTrader.GetBalance(endBalCtx); err == nil {
-			engine.SetBalance(endBal)
-			engine.RecalculateDrawdown()
-		}
-		endBalFn()
-
-		// Calculate round PnL
-		roundPnL := engine.GetEquity() - startingEquity
-		if roundPnL > 0 {
-			tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)
-		} else if roundPnL < 0 {
-			tui.LogEvent("📉 Loss. Round PnL: $%.2f", roundPnL)
-		} else {
-			tui.LogEvent("✅ Execution complete, no change")
-		}
-	case <-ctx.Done():
-	}
-
+shutdown:
 	tui.Stop()
-	fmt.Println("\n👋 Execution finished.")
+	fmt.Println("\n👋 Bot stopped.")
 	emergencyCleanup()
 	return nil
 }
@@ -549,6 +574,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
+	leggedPanicBuy := false         // Set true if a legged position couldn't be recovered — blocks further buys
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -1076,6 +1102,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		if skipPanicBuy {
 			continue
 		}
+		// If we have an irrecoverable legged position, stop buying to prevent
+		// accumulating more exposure on the already-filled side.
+		if leggedPanicBuy {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
@@ -1251,10 +1283,39 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// MARKET EXECUTION: Force fill both sides with GTC to avoid FOK cancels
-						// Using dynamic limit price (Target + $0.05) to ensure fill while preventing "insufficient balance" errors
-						limitPrice1 := math.Min(0.99, price1+0.05)
-						limitPrice2 := math.Min(0.99, price2+0.05)
+						// MARKET EXECUTION: Use a small +$0.01 buffer above the ask to ensure
+						// fill while keeping the maker amount as low as possible.
+						// utilbot uses ask price directly; +$0.01 mirrors that closely while
+						// still providing a tiny slippage cushion for fast-moving markets.
+						// Keeping this small also reduces the chance of hitting the CLOB $1/side
+						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.25 limit instead
+						// of the old $0.29, requiring fewer shares to clear the minimum).
+						limitPrice1 := math.Min(0.99, price1+0.01)
+						limitPrice2 := math.Min(0.99, price2+0.01)
+
+						// ═══════════════════════════════════════════════════════════════
+						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
+						// When one outcome has a very low price (e.g. $0.24), a small
+						// share count can produce a sub-$1 maker amount the CLOB rejects
+						// with "invalid amount for a marketable BUY order, min size: $1".
+						// Solution: compute the minimum shares required so that
+						//   shares × limitPriceN >= $1 for BOTH sides, then either bump
+						//   up to that floor or skip if balance can't cover it.
+						// ═══════════════════════════════════════════════════════════════
+						const minOrderUSD = 1.0
+						minSharesCLOB := math.Ceil(math.Max(minOrderUSD/limitPrice1, minOrderUSD/limitPrice2))
+						if shares < minSharesCLOB {
+							totalMinCost := minSharesCLOB * (limitPrice1 + limitPrice2)
+							if totalMinCost > currentBalance {
+								tui.LogEvent("[%s] ⚠️ Skipping: min order %.0f shares ($%.2f) exceeds balance $%.2f (lim1=$%.2f lim2=$%.2f)",
+									id, minSharesCLOB, totalMinCost, currentBalance, limitPrice1, limitPrice2)
+								lastTrade = time.Now() // apply cooldown to avoid log spam
+								continue
+							}
+							tui.LogEvent("[%s] 📏 %.0f→%.0f shares to meet CLOB $1/side min (lim1=$%.2f lim2=$%.2f cost=$%.2f)",
+								id, shares, minSharesCLOB, limitPrice1, limitPrice2, totalMinCost)
+							shares = minSharesCLOB
+						}
 
 						// Sync CLOB allowance with on-chain state right before trading.
 						// Root cause of "insufficient balance/allowance" errors in realbot:
@@ -1290,9 +1351,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						wg.Wait()
 
-						// ROBUSTNESS: Immediately verify actual positions from CLOB
-						// This handles "Fake Errors" (timeout but filled) and prevents double-buys
-						// It also acts as passive rebalancing: if we already have shares, we count them as success
+						// Wait for CLOB to sync before verifying positions.
+						// The CLOB can return a 400/error response while the order actually
+						// went through (race between execution and response) — "fake error".
+						// Without this delay both positions show 0.0000 immediately, the bot
+						// thinks both sides failed, and we end up with a legged position
+						// (e.g. 2 Up filled silently, 0 Down). 1.5s is enough for CLOB sync.
+						time.Sleep(1500 * time.Millisecond)
+
+						// ROBUSTNESS: Verify actual positions from CLOB after sync delay.
+						// This catches "Fake Errors" (timeout/400 but actually filled) and
+						// prevents double-buys on retry.
 						var side1Success, side2Success bool
 						verifyPositions, verifyErr := trader.GetPositions(ctx)
 						if verifyErr == nil {
@@ -1357,16 +1426,93 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 
 						// ═══════════════════════════════════════════════════════════════
-						// ONE-SHOT: No recovery - if unbalanced, log and exit
+						// LEGGED SHARE RECOVERY: If one side filled and the other didn't,
+						// wait 2 seconds for late settlement, re-verify positions, then
+						// retry the missing side once to prevent a legged position.
 						// ═══════════════════════════════════════════════════════════════
 						if side1Success != side2Success {
-							// One succeeded, one failed - just log and move on
-							failedOutcome := outcomes[0]
-							if side1Success {
-								failedOutcome = outcomes[1]
+							tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then retrying missing side...",
+								id, outcomes[0], side1Success, outcomes[1], side2Success)
+							time.Sleep(2 * time.Second)
+
+							// Re-verify: the "failed" order may have settled during the delay
+							if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
+								var rbal0, rbal1 float64
+								for _, pos := range retryPos {
+									if pos.TokenID == token0 {
+										rbal0 = pos.Size
+									} else if pos.TokenID == token1 {
+										rbal1 = pos.Size
+									}
+								}
+								prevSide1, prevSide2 := side1Success, side2Success
+								side1Success = rbal0 >= shares
+								side2Success = rbal1 >= shares
+								tui.LogEvent("[%s] 🔍 Re-verify after delay: %s=%.4f (%v→%v), %s=%.4f (%v→%v)",
+									id, outcomes[0], rbal0, prevSide1, side1Success,
+									outcomes[1], rbal1, prevSide2, side2Success)
 							}
-							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: %s filled, %s failed. Skipping recovery (one-shot mode).", id,
-								map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome)
+
+							// If still unbalanced, retry the order for the missing side
+							if !side1Success {
+								rate := tokenFeeRates[outcomes[0]]
+								if rate == 0 {
+									rate = 1000
+								}
+								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
+								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+								if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
+									side1Success = true
+									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
+								} else {
+									// Final position check after retry
+									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
+										for _, pos := range retryPos {
+											if pos.TokenID == token0 && pos.Size >= shares {
+												side1Success = true
+											}
+										}
+									}
+									if !side1Success {
+										tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[0], retryErr1)
+									}
+								}
+							}
+							if !side2Success {
+								rate := tokenFeeRates[outcomes[1]]
+								if rate == 0 {
+									rate = 1000
+								}
+								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
+								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
+									side2Success = true
+									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])
+								} else {
+									// Final position check after retry
+									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
+										for _, pos := range retryPos {
+											if pos.TokenID == token1 && pos.Size >= shares {
+												side2Success = true
+											}
+										}
+									}
+									if !side2Success {
+										tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[1], retryErr2)
+									}
+								}
+							}
+
+							// Final status after recovery
+							if side1Success != side2Success {
+								failedSide := outcomes[1]
+								if !side1Success {
+									failedSide = outcomes[0]
+								}
+								tui.LogEvent("[%s] ⚠️ ARB UNBALANCED after retry: %s still not filled (legged position recorded)", id, failedSide)
+							} else if side1Success && side2Success {
+								tui.LogEvent("[%s] ✅ Legged position recovered — both sides now filled", id)
+							}
 						}
 
 						// NOW record to engine - only record positions that actually succeeded
@@ -1419,8 +1565,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.LogEvent("[%s] ✅ One-shot execution complete after successful buy and merge.", id)
 							return // Exit tradeMarket
 						} else if side1Success || side2Success {
-							// Only one side filled - record the unbalanced position for tracking
-							// This is important so the risk manager can see the exposure
+							// Only one side filled after retry — record the unbalanced position and
+							// permanently block further panic buys to prevent exposure accumulation.
 							if side1Success {
 								engine.BuyForMarket(id, outcomes[0], price1, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
@@ -1429,6 +1575,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								engine.BuyForMarket(id, outcomes[1], price2, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
+							// Block all future panic buys for this market — legged position is irrecoverable
+							leggedPanicBuy = true
+							tui.LogEvent("[%s] 🚫 Panic buy disabled for this market (legged position — holding until expiry)", id)
 						}
 						// If both failed, nothing to record
 
