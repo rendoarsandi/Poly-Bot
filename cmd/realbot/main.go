@@ -19,7 +19,9 @@ import (
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
+	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/strategy"
 	"Market-bot/internal/trading"
 )
 
@@ -31,16 +33,6 @@ func main() {
 	if err := run(); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
-}
-
-// restoreTerminal ensures terminal is in a usable state
-func restoreTerminal() {
-	restoreEcho := exec.Command("stty", "sane")
-	restoreEcho.Stdin = os.Stdin
-	_ = restoreEcho.Run()
-	fmt.Print("\033[?25h")
-	fmt.Print("\033[?1049l")
-	fmt.Println()
 }
 
 func run() error {
@@ -257,7 +249,7 @@ func run() error {
 	// Panic recovery
 	defer func() {
 		if r := recover(); r != nil {
-			restoreTerminal()
+			core.RestoreTerminal()
 			stack := make([]byte, 4096)
 			length := runtime.Stack(stack, false)
 			fmt.Printf("\n🚨 PANIC: %v\n%s\n", r, stack[:length])
@@ -273,13 +265,13 @@ func run() error {
 		// If we receive another interrupt during cleanup, force exit
 		go func() {
 			<-ctx.Done()
-			restoreTerminal()
+			core.RestoreTerminal()
 			fmt.Println("\n⚠️ Force exit requested")
 			os.Exit(1)
 		}()
 
 		time.Sleep(10 * time.Second) // Give cleanup more time
-		restoreTerminal()
+		core.RestoreTerminal()
 		fmt.Println("\n⚠️ Force exit: cleanup timed out")
 		os.Exit(1)
 	}()
@@ -288,7 +280,7 @@ func run() error {
 	disableEcho := exec.Command("stty", "-echo", "-icanon")
 	disableEcho.Stdin = os.Stdin
 	_ = disableEcho.Run()
-	defer restoreTerminal()
+	defer core.RestoreTerminal()
 
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
@@ -346,7 +338,9 @@ func run() error {
 
 	// Find markets
 	tui.LogEvent("🔍 Searching for active 15m markets...")
-	markets := findMarkets(ctx, restClient, tui)
+	markets := mkt.FindMarkets(ctx, restClient, func(format string, args ...interface{}) {
+		tui.LogEvent(format, args...)
+	})
 	if len(markets) == 0 {
 		tui.LogEvent("⏳ No active markets found, exiting.")
 		return nil
@@ -356,7 +350,7 @@ func run() error {
 	var wg sync.WaitGroup
 	for assetID, market := range markets {
 		endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
-		outcomes := getOutcomes(market)
+		outcomes := mkt.GetOutcomes(market)
 		tui.AddMarket(assetID, market.Slug, outcomes, endTime)
 		tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
 
@@ -375,7 +369,7 @@ func run() error {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					restoreTerminal()
+					core.RestoreTerminal()
 					stack := make([]byte, 4096)
 					length := runtime.Stack(stack, false)
 					fmt.Printf("\n🚨 TRADER PANIC [%s]: %v\n%s\n", id, r, stack[:length])
@@ -477,97 +471,6 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 	return nil
 }
 
-func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
-	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth"}
-
-	// Fast polling for new markets - check every 500ms for first 30 seconds
-	// Then slow down to every 2 seconds
-	maxFastAttempts := 60 // 30 seconds of fast polling
-	maxSlowAttempts := 60 // 2 more minutes of slow polling
-	lastLogTime := time.Now()
-
-	for attempts := 0; attempts < maxFastAttempts+maxSlowAttempts; attempts++ {
-		select {
-		case <-ctx.Done():
-			return found
-		default:
-		}
-
-		markets, err := restClient.Get15mMarkets(ctx, nil)
-		if err != nil {
-			if attempts == 0 {
-				tui.LogEvent("⚠️ Market fetch error: %v, retrying...", err)
-			}
-			// Short sleep on error
-			select {
-			case <-ctx.Done():
-				return found
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
-		}
-
-		for _, m := range markets {
-			endTime, err := paper.ParseEndTimeFromSlug(m.Slug)
-			if err == nil && time.Now().After(endTime) {
-				continue
-			}
-			if err == nil && time.Until(endTime) < 30*time.Second {
-				continue
-			}
-
-			slug := strings.ToLower(m.Slug)
-			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
-
-			for _, asset := range assets {
-				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
-					mCopy := m
-					found[key] = &mCopy
-				}
-			}
-		}
-
-		// Return if we found at least one market
-		if len(found) > 0 {
-			return found
-		}
-
-		// Log progress every 5 seconds
-		if time.Since(lastLogTime) >= 5*time.Second {
-			tui.LogEvent("🔍 Waiting for new markets... (%ds)", attempts/2)
-			lastLogTime = time.Now()
-		}
-
-		// Fast polling for first 30 seconds, then slow down
-		sleepDuration := 500 * time.Millisecond
-		if attempts >= maxFastAttempts {
-			sleepDuration = 2 * time.Second
-		}
-
-		select {
-		case <-ctx.Done():
-			return found
-		case <-time.After(sleepDuration):
-		}
-	}
-
-	tui.LogEvent("⚠️ No 15m markets found after polling")
-	return found
-}
-
-func getOutcomes(market *api.Market) []string {
-	outcomes := make([]string, 0, len(market.Tokens))
-	for _, token := range market.Tokens {
-		outcomes = append(outcomes, token.Outcome)
-	}
-	// Sort outcomes for consistent ordering across API calls
-	// This prevents token-to-price mapping bugs if API returns tokens in different order
-	sort.Strings(outcomes)
-	return outcomes
-}
-
 func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
@@ -580,7 +483,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		tokenToOutcome[token.TokenID] = token.Outcome
 	}
 
-	outcomes := getOutcomes(market)
+	outcomes := mkt.GetOutcomes(market)
 
 	// Setup WebSocket
 	wsMgr := api.NewWSManager("")
@@ -764,8 +667,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						tokenAsks[outcome] = ask
 
 						// Track full depth for liquidity checks
-						tokenFullBids[outcome] = toMarketLevels(tui, id, b.Bids)
-						tokenFullAsks[outcome] = toMarketLevels(tui, id, b.Asks)
+						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
+						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
 
 						if bid > 0 && ask > 0 && ask < 1.0 {
 							mid := (bid + ask) / 2
@@ -1299,7 +1202,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					}
 
 					// Calculate metrics for reporting
-					cost, _, _, _ := calculateTradeMetrics(shares, sum, maxFeeRateBps)
+					cost := strategy.CalculateTradeMetricsFlat(shares, sum, maxFeeRateBps).Cost
 
 					// REFRESH BALANCE RIGHT BEFORE TRADING to prevent unbalanced fills
 					// This is the "Zero Excuse" check to ensure we have enough for BOTH sides
@@ -1334,7 +1237,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						price2 := ask2 + slippageBuffer
 
 						// Calculate trade metrics with buffered prices
-						_, _, _, _ = calculateTradeMetrics(shares, bufferedSum, maxFeeRateBps)
 
 						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin, %.1f%% after slippage) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
 							id, outcomes[0], ask1, outcomes[1], ask2, sum, (1.0-sum)*100, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
@@ -1486,7 +1388,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							// physically present in the CTF contract on-chain. Using on-chain balance with
 							// settle-delay retries is the only way to guarantee the merge quantity is correct.
 							mergeQty := 0.0
-							bal0, bal1, balErr0, balErr1 := queryOnChainCTFBalances(mergeCtx, trader, token0, token1, shares)
+							bal0, bal1, balErr0, balErr1 := trader.QueryBalancedCTFBalances(mergeCtx, token0, token1, shares)
 							if balErr0 != nil || balErr1 != nil {
 								tui.LogEvent("[%s] ⚠️ On-chain balance query failed (err0=%v, err1=%v), falling back to %.0f shares", id, balErr0, balErr1, shares)
 								bal0, bal1 = shares, shares
@@ -1544,34 +1446,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 		time.Sleep(10 * time.Millisecond)
 	}
-}
-
-// Helper to match bot's toMarketLevels
-func calculateTradeMetrics(shares, sum float64, feeRateBps int) (cost, overhead, gross, net float64) {
-	cost = shares * sum
-
-	// Polymarket 15m markets now have taker fees
-	// feeRateBps is in basis points (1000 = 10%)
-	// Fee is deducted from proceeds (bought tokens or sold USDC)
-	overhead = 0
-	if feeRateBps > 0 {
-		// Effective fee on the total arbitrage cost
-		overhead = cost * (float64(feeRateBps) / 10000.0)
-	}
-
-	gross = shares * (1.0 - sum)
-	net = gross - overhead
-	return
-}
-
-func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.MarketLevel {
-	result := make([]paper.MarketLevel, len(levels))
-	for i, l := range levels {
-		p, _ := strconv.ParseFloat(l.Price, 64)
-		s, _ := strconv.ParseFloat(l.Size, 64)
-		result[i] = paper.MarketLevel{Price: p, Size: s}
-	}
-	return result
 }
 
 func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, lastUpdateTs map[string]int64, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
@@ -1634,8 +1508,8 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 
 		// ALWAYS update full depth (liquidity), as REST is our primary source for this
 		// and stale liquidity is better than no liquidity for safety checks
-		fullBids[outcome] = toMarketLevels(tui, id, book.Bids)
-		fullAsks[outcome] = toMarketLevels(tui, id, book.Asks)
+		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
+		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
@@ -1725,41 +1599,4 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 	}
 
 	tui.LogEvent("[%s] ⚠️ Could not get resolution after %d attempts", id, len(retryDelays))
-}
-
-// queryOnChainCTFBalances polls the on-chain CTF contract for token balances with retries,
-// waiting for settlement after a buy. Mirrors utilbot's queryBalancedCTFBalances exactly.
-// Using on-chain balance (not CLOB positions) is required because MergeOnChain operates on
-// the actual blockchain state — CLOB positions are off-chain records that may lead or lag.
-func queryOnChainCTFBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, expectedShares float64) (float64, float64, error, error) {
-	const maxAttempts = 8
-	const settleDelay = 500 * time.Millisecond
-
-	var bal0, bal1 float64
-	var err0, err1 error
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		bal0, err0 = trader.GetCTFBalanceFloat(ctx, token0)
-		bal1, err1 = trader.GetCTFBalanceFloat(ctx, token1)
-
-		if err0 == nil && err1 == nil {
-			minBal := math.Min(bal0, bal1)
-			if minBal >= 0.000001 {
-				// Accept if balanced (within dust) or if min balance meets expected shares
-				if math.Abs(bal0-bal1) <= 0.000001 || minBal >= expectedShares-0.05 {
-					return bal0, bal1, nil, nil
-				}
-			}
-		}
-
-		if attempt < maxAttempts {
-			select {
-			case <-ctx.Done():
-				return bal0, bal1, ctx.Err(), ctx.Err()
-			case <-time.After(settleDelay):
-			}
-		}
-	}
-
-	return bal0, bal1, err0, err1
 }

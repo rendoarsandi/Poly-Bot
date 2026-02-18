@@ -17,6 +17,7 @@ import (
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
+	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 	"github.com/joho/godotenv"
@@ -174,8 +175,8 @@ func main() {
 					if ask > 0 {
 						tokenAsks[out] = ask
 					}
-					tokenFullBids[out] = toMarketLevels(b.Bids)
-					tokenFullAsks[out] = toMarketLevels(b.Asks)
+					tokenFullBids[out] = mkt.LevelsToPriceDepth(b.Bids)
+					tokenFullAsks[out] = mkt.LevelsToPriceDepth(b.Asks)
 				}
 			}
 		case <-ticker.C:
@@ -204,8 +205,8 @@ func main() {
 					if ask > 0 {
 						tokenAsks[out] = ask
 					}
-					tokenFullBids[out] = toMarketLevels(book.Bids)
-					tokenFullAsks[out] = toMarketLevels(book.Asks)
+					tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids)
+					tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks)
 				}
 			}
 
@@ -331,7 +332,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	shares := targetShares
 
 	if side == "BUY" {
-		totalLiq := estimateMatchedLiquidity(
+		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[1]]...),
 			func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price < levels[j].Price },
@@ -342,7 +343,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			shares = math.Floor(totalLiq)
 		}
 	} else {
-		totalLiq := estimateMatchedLiquidity(
+		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...),
 			func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price > levels[j].Price },
@@ -383,7 +384,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	for idx, out := range outcomes {
 		go func(o string, i int) {
 			defer wg.Done()
-			tid := getTokenIDForOutcome(market, o)
+			tid := mkt.GetTokenIDForOutcome(market, o)
 			execShares := shares
 			rate := tokenFeeRates[o]
 			if rate == -1 {
@@ -410,7 +411,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			failedIdx = 1
 		}
 		failedOutcome := outcomes[failedIdx]
-		tid := getTokenIDForOutcome(market, failedOutcome)
+		tid := mkt.GetTokenIDForOutcome(market, failedOutcome)
 
 		rate := tokenFeeRates[failedOutcome]
 		if rate == 0 {
@@ -465,11 +466,11 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			time.Sleep(3 * time.Second) // Initial wait for on-chain state to settle
 
 			// Query actual on-chain CTF balances to merge the correct amount
-			token0 := getTokenIDForOutcome(market, outcomes[0])
-			token1 := getTokenIDForOutcome(market, outcomes[1])
+			token0 := mkt.GetTokenIDForOutcome(market, outcomes[0])
+			token1 := mkt.GetTokenIDForOutcome(market, outcomes[1])
 			fmt.Printf("🔍 Querying balances for tokens: %s (%s), %s (%s)\n", outcomes[0], token0, outcomes[1], token1)
 
-			bal0, bal1, err0, err1 := queryBalancedCTFBalances(context.Background(), trader, token0, token1, shares)
+			bal0, bal1, err0, err1 := trader.QueryBalancedCTFBalances(context.Background(), token0, token1, shares)
 			if err0 != nil || err1 != nil {
 				fmt.Printf("⚠️ Failed to query balances (err0=%v, err1=%v), falling back to requested shares\n", err0, err1)
 				bal0, bal1 = shares, shares
@@ -496,78 +497,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 		}
 	}
-}
-
-func queryBalancedCTFBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, expectedShares float64) (float64, float64, error, error) {
-	const maxAttempts = 8
-	const settleDelay = 500 * time.Millisecond
-
-	var bal0, bal1 float64
-	var err0, err1 error
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		bal0, err0 = trader.GetCTFBalanceFloat(ctx, token0)
-		bal1, err1 = trader.GetCTFBalanceFloat(ctx, token1)
-
-		if err0 == nil && err1 == nil {
-			minBal := math.Min(bal0, bal1)
-			if minBal >= 0.000001 {
-				if math.Abs(bal0-bal1) <= 0.000001 || minBal >= expectedShares-0.05 {
-					return bal0, bal1, nil, nil
-				}
-			}
-		}
-
-		if attempt < maxAttempts {
-			time.Sleep(settleDelay)
-		}
-	}
-
-	return bal0, bal1, err0, err1
-}
-
-func estimateMatchedLiquidity(levels1, levels2 []paper.MarketLevel, less func(i, j int, levels []paper.MarketLevel) bool, priceCheck func(p1, p2 float64) bool) float64 {
-	sort.Slice(levels1, func(i, j int) bool { return less(i, j, levels1) })
-	sort.Slice(levels2, func(i, j int) bool { return less(i, j, levels2) })
-
-	totalLiq := 0.0
-	i, j := 0, 0
-	for i < len(levels1) && j < len(levels2) {
-		if !priceCheck(levels1[i].Price, levels2[j].Price) {
-			break
-		}
-
-		matched := math.Min(levels1[i].Size, levels2[j].Size)
-		totalLiq += matched
-		if levels1[i].Size <= levels2[j].Size {
-			levels2[j].Size -= levels1[i].Size
-			i++
-		} else {
-			levels1[i].Size -= levels2[j].Size
-			j++
-		}
-	}
-
-	return totalLiq
-}
-
-func toMarketLevels(levels []api.PriceLevel) []paper.MarketLevel {
-	res := make([]paper.MarketLevel, len(levels))
-	for i, l := range levels {
-		p, _ := strconv.ParseFloat(l.Price, 64)
-		s, _ := strconv.ParseFloat(l.Size, 64)
-		res[i] = paper.MarketLevel{Price: p, Size: s}
-	}
-	return res
-}
-
-func getTokenIDForOutcome(m *api.Market, outcome string) string {
-	for _, t := range m.Tokens {
-		if strings.EqualFold(t.Outcome, outcome) {
-			return t.TokenID
-		}
-	}
-	return ""
 }
 
 func printTradeResult(act string, res *trading.TradeResult, err error) {

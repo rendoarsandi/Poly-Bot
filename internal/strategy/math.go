@@ -19,3 +19,66 @@ func CalculateDiscountSum(priceYes, priceNo string) (float64, error) {
 
 	return pYes + pNo, nil
 }
+
+// TradeMetrics holds computed financial metrics for one arbitrage trade leg.
+type TradeMetrics struct {
+	Cost     float64 // Total cost to enter: shares × (price1 + price2)
+	Overhead float64 // Estimated fee cost
+	Gross    float64 // Gross profit ignoring fees: shares × (1 − sum)
+	Net      float64 // Net profit after fees: Gross − Overhead
+}
+
+// CalculateTradeMetricsCurve computes trade metrics using Polymarket's
+// price-curve fee formula:
+//
+//	fee_per_side = shares × (feeRateBps/10000) × 2 × p × (1−p)
+//
+// This accurately models the actual on-chain fee for binary prediction markets
+// where the fee curve is lowest near 0/1 and highest at 0.5.
+// Use this for paper-trading simulation.
+func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) TradeMetrics {
+	sum := price1 + price2
+	cost := shares * sum
+	gross := shares * (1.0 - sum)
+
+	overhead := 0.0
+	if feeRateBps > 0 {
+		baseRate := float64(feeRateBps) / 10000.0
+		curve1 := 2.0 * price1 * (1.0 - price1)
+		fee1 := shares * baseRate * curve1
+		curve2 := 2.0 * price2 * (1.0 - price2)
+		fee2 := shares * baseRate * curve2
+		overhead = fee1 + fee2
+	}
+
+	return TradeMetrics{
+		Cost:     cost,
+		Overhead: overhead,
+		Gross:    gross,
+		Net:      gross - overhead,
+	}
+}
+
+// CalculateTradeMetricsFlat computes trade metrics using a simple flat fee rate
+// applied to the total cost:
+//
+//	overhead = cost × (feeRateBps/10000)
+//
+// This is a conservative approximation used in real-bot order sizing where the
+// per-side curve fee is not known precisely at order time.
+func CalculateTradeMetricsFlat(shares, sum float64, feeRateBps int) TradeMetrics {
+	cost := shares * sum
+	gross := shares * (1.0 - sum)
+
+	overhead := 0.0
+	if feeRateBps > 0 {
+		overhead = cost * (float64(feeRateBps) / 10000.0)
+	}
+
+	return TradeMetrics{
+		Cost:     cost,
+		Overhead: overhead,
+		Gross:    gross,
+		Net:      gross - overhead,
+	}
+}

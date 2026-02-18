@@ -5,21 +5,21 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
+	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/strategy"
 )
 
 const (
@@ -89,16 +89,6 @@ func main() {
 	}
 }
 
-// restoreTerminal ensures terminal is in a usable state
-func restoreTerminal() {
-	restoreEcho := exec.Command("stty", "sane") // sane resets to safe defaults
-	restoreEcho.Stdin = os.Stdin
-	_ = restoreEcho.Run()
-	fmt.Print("\033[?25h")   // Show cursor
-	fmt.Print("\033[?1049l") // Exit alternate screen buffer if active
-	fmt.Println()
-}
-
 // logEvent is a helper to log to both TUI and CSV logger safely
 func logEvent(tui *paper.TUI, csv *core.CSVLogger, engine *paper.Engine, level, asset, event, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
@@ -125,7 +115,7 @@ func run() error {
 
 	// emergencyCleanup ensures terminal is restored and positions are handled on crash/exit
 	emergencyCleanup := func() {
-		restoreTerminal()
+		core.RestoreTerminal()
 		if engine != nil {
 			positions := engine.GetPositions()
 			if len(positions) > 0 {
@@ -162,7 +152,7 @@ func run() error {
 		<-ctx.Done()
 		// Give graceful shutdown 10 seconds, then force exit
 		time.Sleep(10 * time.Second)
-		restoreTerminal()
+		core.RestoreTerminal()
 		fmt.Println("\n⚠️ Force exit: graceful shutdown timed out")
 		os.Exit(1)
 	}()
@@ -174,7 +164,7 @@ func run() error {
 	_ = disableEcho.Run() // Ignore errors if stty not available
 
 	// Ensure terminal is restored on any exit
-	defer restoreTerminal()
+	defer core.RestoreTerminal()
 
 	startTime := time.Now()
 
@@ -248,7 +238,6 @@ func run() error {
 
 	// Goroutine monitor and memory cleanup
 	go func() {
-		lastCount := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -263,8 +252,6 @@ func run() error {
 					}
 					runtime.GC()
 				}
-				lastCount = count
-				_ = lastCount // Silence unused warning
 
 				// Periodic memory cleanup - remove old filled/cancelled orders
 				orderBook.CleanupOldOrders(5 * time.Minute)
@@ -309,7 +296,9 @@ func run() error {
 
 		// Find all available markets (BTC, ETH, SOL, XRP)
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active 15m markets...")
-		markets := findMarkets(ctx, restClient, tui)
+		markets := mkt.FindMarkets(ctx, restClient, func(format string, args ...interface{}) {
+			tui.LogEvent(format, args...)
+		})
 		if len(markets) == 0 {
 			logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "NO_MARKETS", "No active markets found, retrying...")
 			select {
@@ -343,7 +332,7 @@ func run() error {
 			if err != nil {
 				endTime = time.Now().Add(15 * time.Minute)
 			}
-			outcomes := getOutcomes(market)
+			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
 			// Reduced logging: Only TUI for startup info
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
@@ -437,102 +426,6 @@ func run() error {
 		tui.ClearMarkets()
 		orderBook.CancelAllOrders()
 	}
-}
-
-// findMarkets searches for BTC, ETH markets
-func findMarkets(ctx context.Context, restClient *api.RestClient, tui *paper.TUI) map[string]*api.Market {
-	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth"}
-
-	// Fast polling for new markets - check every 500ms for first 30 seconds
-	// Then slow down to every 2 seconds
-	maxFastAttempts := 60 // 30 seconds of fast polling
-	maxSlowAttempts := 60 // 2 more minutes of slow polling
-	lastLogTime := time.Now()
-
-	for attempts := 0; attempts < maxFastAttempts+maxSlowAttempts; attempts++ {
-		select {
-		case <-ctx.Done():
-			return found
-		default:
-		}
-
-		markets, err := restClient.Get15mMarkets(ctx, nil)
-		if err != nil {
-			if attempts == 0 {
-				tui.LogEvent("⚠️ Market fetch error: %v, retrying...", err)
-			}
-			// Short sleep on error
-			select {
-			case <-ctx.Done():
-				return found
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
-		}
-
-		for _, m := range markets {
-			// Parse end time and skip if market already expired
-			endTime, err := paper.ParseEndTimeFromSlug(m.Slug)
-			if err == nil && time.Now().After(endTime) {
-				// Market already expired, skip it
-				continue
-			}
-
-			// Also skip markets that are about to expire (less than 30 seconds)
-			if err == nil && time.Until(endTime) < 30*time.Second {
-				continue
-			}
-
-			slug := strings.ToLower(m.Slug)
-			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
-
-			for _, asset := range assets {
-				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
-					mCopy := m
-					found[key] = &mCopy
-				}
-			}
-		}
-
-		// Return if we found at least one market
-		if len(found) > 0 {
-			return found
-		}
-
-		// Log progress every 5 seconds
-		if time.Since(lastLogTime) >= 5*time.Second {
-			tui.LogEvent("🔍 Waiting for new markets... (%ds)", attempts/2)
-			lastLogTime = time.Now()
-		}
-
-		// Fast polling for first 30 seconds, then slow down
-		sleepDuration := 500 * time.Millisecond
-		if attempts >= maxFastAttempts {
-			sleepDuration = 2 * time.Second
-		}
-
-		select {
-		case <-ctx.Done():
-			return found
-		case <-time.After(sleepDuration):
-		}
-	}
-
-	tui.LogEvent("⚠️ No 15m markets found after polling")
-	return found
-}
-
-func getOutcomes(market *api.Market) []string {
-	outcomes := make([]string, 0, len(market.Tokens))
-	for _, token := range market.Tokens {
-		outcomes = append(outcomes, token.Outcome)
-	}
-	// Sort outcomes for consistent ordering across API calls
-	// This prevents token-to-price mapping bugs if API returns tokens in different order
-	sort.Strings(outcomes)
-	return outcomes
 }
 
 func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook *paper.OrderBook, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config) *MarketTrader {
@@ -839,8 +732,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									// Use batch update for better performance
 									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 								}
-								t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, b.Bids)
-								t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, b.Asks)
+								t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
+								t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
 								t.mu.Unlock()
 							}
 						}
@@ -879,9 +772,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								// Use batch update for better performance
 								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
-							t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
-							t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
-							t.mu.Unlock()
+		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
+						t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
+						t.mu.Unlock()
 						}
 					}
 				default:
@@ -1149,7 +1042,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if shares > maxSafeShares {
 							shares = maxSafeShares
 						}
-						cost, _, _, netProfit := calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
+						tm := strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
+						cost, netProfit := tm.Cost, tm.Net
 
 						// Skip if net profit is not positive after order cost
 						if netProfit <= 0 {
@@ -1169,7 +1063,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								continue // Not enough cash/liquidity for even 1 share
 							}
 							shares = maxAffordableShares
-							cost, _, _, netProfit = calculateTradeMetrics(shares, ask1, ask2, feeRateBps)
+							tm = strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
+							cost, netProfit = tm.Cost, tm.Net
 
 							// If still over risk limit or not profitable after cost, don't trade
 							if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
@@ -1447,71 +1342,6 @@ func (t *MarketTrader) determineWinner() string {
 	return t.Outcomes[0]
 }
 
-// simulateResolution determines winner based on final prices (for paper trading)
-func simulateResolution(outcomes []string, prices map[string]string) string {
-	if len(outcomes) != 2 {
-		return outcomes[0]
-	}
-
-	p1, _ := strconv.ParseFloat(prices[outcomes[0]], 64)
-	p2, _ := strconv.ParseFloat(prices[outcomes[1]], 64)
-
-	if p1 > p2 {
-		return outcomes[0]
-	} else if p2 > p1 {
-		return outcomes[1]
-	}
-
-	if rand.Float64() > 0.5 {
-		return outcomes[0]
-	}
-	return outcomes[1]
-}
-
-func calculateTradeMetrics(shares, price1, price2 float64, feeRateBps int) (cost, overhead, gross, net float64) {
-	sum := price1 + price2
-	cost = shares * sum
-	gross = shares * (1.0 - sum)
-
-	// Polymarket fees are price-curve based, NOT flat rate
-	// Formula: fee = shares * (fee_rate_bps/10000) * 2 * p * (1-p) for each side
-	// Fee is deducted from proceeds (shares received when buying)
-	// At p=0.50: curve = 2*0.5*0.5 = 0.5, so 1000bps base → ~1.6% effective on cost
-	// At p=0.10: curve = 2*0.1*0.9 = 0.18, so much lower fee
-	overhead = 0
-	if feeRateBps > 0 {
-		baseRate := float64(feeRateBps) / 10000.0
-		// Fee for side 1 (buying at price1)
-		curve1 := 2.0 * price1 * (1.0 - price1)
-		fee1 := shares * baseRate * curve1
-		// Fee for side 2 (buying at price2)
-		curve2 := 2.0 * price2 * (1.0 - price2)
-		fee2 := shares * baseRate * curve2
-		overhead = fee1 + fee2
-	}
-
-	net = gross - overhead
-	return
-}
-
-func toMarketLevels(tui *paper.TUI, id string, levels []api.PriceLevel) []paper.MarketLevel {
-	result := make([]paper.MarketLevel, len(levels))
-	for i, l := range levels {
-		p, err := strconv.ParseFloat(l.Price, 64)
-		if err != nil {
-			tui.LogEvent("[%s] Warning: failed to parse price '%s': %v", id, l.Price, err)
-			continue
-		}
-		s, err := strconv.ParseFloat(l.Size, 64)
-		if err != nil {
-			tui.LogEvent("[%s] Warning: failed to parse size '%s': %v", id, l.Size, err)
-			continue
-		}
-		result[i] = paper.MarketLevel{Price: p, Size: s}
-	}
-	return result
-}
-
 // handleRestFallback polls REST API for fresh liquidity data
 // REST is now the PRIMARY source for liquidity (WS only sends price changes)
 // Returns true if any data was successfully retrieved
@@ -1583,8 +1413,8 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 			tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 		}
-		t.TokenFullBids[outcome] = toMarketLevels(t.TUI, t.ID, book.Bids)
-		t.TokenFullAsks[outcome] = toMarketLevels(t.TUI, t.ID, book.Asks)
+		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
+		t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
 		t.mu.Unlock()
 
 		// Count as success if we got any valid data

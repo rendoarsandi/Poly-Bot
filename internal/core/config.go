@@ -227,12 +227,3 @@ func parseEnvInt(key string, defaultVal int) int {
 	return i
 }
 
-// SanitizeString removes control characters from a string to prevent terminal manipulation.
-func SanitizeString(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 32 {
-			return -1
-		}
-		return r
-	}, s)
-}

@@ -783,6 +783,47 @@ func (t *RealTrader) BuyWithConfirmation(ctx context.Context, tokenID, outcome s
 	return result, filled, nil
 }
 
+// QueryBalancedCTFBalances polls the on-chain CTF contract for the balances of
+// two complementary tokens, retrying until both sides are settled and balanced
+// (within dust tolerance) or expectedShares are available on each side.
+//
+// This mirrors the queryBalancedCTFBalances helper that previously existed in
+// both cmd/realbot and cmd/util, consolidated here so both binaries share the
+// same logic.
+func (t *RealTrader) QueryBalancedCTFBalances(
+	ctx context.Context,
+	token0, token1 string,
+	expectedShares float64,
+) (bal0, bal1 float64, err0, err1 error) {
+	const maxAttempts = 8
+	const settleDelay = 500 * time.Millisecond
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		bal0, err0 = t.GetCTFBalanceFloat(ctx, token0)
+		bal1, err1 = t.GetCTFBalanceFloat(ctx, token1)
+
+		if err0 == nil && err1 == nil {
+			minBal := math.Min(bal0, bal1)
+			if minBal >= 0.000001 {
+				// Accept if balanced within dust, or if min balance meets expected shares.
+				if math.Abs(bal0-bal1) <= 0.000001 || minBal >= expectedShares-0.05 {
+					return
+				}
+			}
+		}
+
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return bal0, bal1, ctx.Err(), ctx.Err()
+			case <-time.After(settleDelay):
+			}
+		}
+	}
+
+	return
+}
+
 // NewTrader creates the appropriate trader based on config
 func NewTrader(cfg *core.Config, engine *paper.Engine, orderBook *paper.OrderBook) (Trader, error) {
 	if cfg.IsPaperMode() {
