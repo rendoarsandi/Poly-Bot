@@ -333,7 +333,7 @@ type RPCRequest struct {
 type RPCResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Result  json.RawMessage `json:"result"`
-	Error   *RPCError       `json:"error,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
 	ID      int             `json:"id"`
 }
 
@@ -341,6 +341,26 @@ type RPCResponse struct {
 type RPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// rpcError extracts an RPCError from the raw error field, handling both
+// object format {"code":...,"message":...} and plain string format.
+func rpcError(raw json.RawMessage) *RPCError {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	// Try object first
+	var obj RPCError
+	if err := json.Unmarshal(raw, &obj); err == nil && (obj.Code != 0 || obj.Message != "") {
+		return &obj
+	}
+	// Fall back to plain string
+	var msg string
+	if err := json.Unmarshal(raw, &msg); err == nil && msg != "" {
+		return &RPCError{Code: -1, Message: msg}
+	}
+	// Last resort: treat raw bytes as message
+	return &RPCError{Code: -1, Message: string(raw)}
 }
 
 // GetUSDCBalance returns the USDC balance for an address in human-readable format (6 decimals)
@@ -621,8 +641,8 @@ func (c *PolygonClient) call(ctx context.Context, method string, params []interf
 		return nil, fmt.Errorf("failed to decode RPC response: %w", err)
 	}
 
-	if rpcResp.Error != nil {
-		return nil, fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	if rpcErr := rpcError(rpcResp.Error); rpcErr != nil {
+		return nil, fmt.Errorf("RPC error %d: %s", rpcErr.Code, rpcErr.Message)
 	}
 
 	return rpcResp.Result, nil
