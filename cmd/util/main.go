@@ -20,10 +20,23 @@ import (
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
 )
 
 func main() {
+	// Styled startup banner
+	titleSt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
+	dimSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+	warnSt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EF4444"))
+	fmt.Println(lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7C3AED")).
+		Padding(0, 2).
+		Render(titleSt.Render("🛠  UTILBOT  —  Panic Buy / Sell") + "\n" +
+			warnSt.Render("⚠  Executes REAL trades with on-chain merge") + "\n" +
+			dimSt.Render("Live order book  ·  Liquidity-capped execution")))
+
 	godotenv.Load()
 	cfg, err := core.LoadConfig()
 	if err != nil {

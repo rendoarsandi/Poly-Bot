@@ -12,6 +12,7 @@ import (
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
 	"Market-bot/internal/trading"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
 )
 
@@ -32,9 +33,15 @@ func main() {
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 	address := trader.Address()
 
-	fmt.Println("🩺 POLYARB WALLET DIAGNOSTIC")
-	fmt.Println("═══════════════════════════════════════════════════════")
-	fmt.Printf("🔑 Wallet:  %s\n", address)
+	titleSt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
+	dimSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+	fmt.Println(lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7C3AED")).
+		Padding(0, 2).
+		Render(titleSt.Render("🩺  POLYARB WALLET DIAGNOSTIC") + "\n" +
+			dimSt.Render("Checks balances, permissions, and on-chain token holdings")))
+	fmt.Println(dimSt.Render("  🔑 Wallet:  " + address))
 
 	// 1. Check Native & Collateral Balances
 	matic, _ := polygon.GetMATICBalance(ctx, address)

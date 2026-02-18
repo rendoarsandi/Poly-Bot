@@ -196,6 +196,22 @@ type OrderHistoryEntry struct {
 	Status    string // "FILLED", "PARTIAL", "FAILED"
 }
 
+// TUISettings holds runtime-adjustable trading parameters.
+// These can be changed live from the settings panel (press 's').
+type TUISettings struct {
+	TradeScaleFactor     float64 // e.g. 0.05 = 5% of equity per trade
+	MinMarginPercent     float64 // e.g. 2.0 = require 2% arb margin
+	SplitMinMarginSell   float64 // e.g. 3.0 = sell splits at 3% margin
+	SplitStrategyEnabled bool    // toggle split strategy on/off
+}
+
+// Preset quick-select settings.
+var (
+	SettingsConservative = TUISettings{TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0}
+	SettingsModerate     = TUISettings{TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0}
+	SettingsAggressive   = TUISettings{TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0}
+)
+
 // ─── TUI struct ───────────────────────────────────────────────────────────────
 
 // TUI provides a live bubbletea-driven terminal user interface.
@@ -235,6 +251,9 @@ type TUI struct {
 	latencySource  string
 
 	splitInventories []*SplitInventory
+
+	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
+	settings TUISettings
 
 	program *tea.Program
 }
@@ -283,6 +302,11 @@ type tuiModel struct {
 	tui      *TUI
 	interval time.Duration
 	snap     tuiSnapshot
+	// Quit callback — called before tea.Quit so parent context is cancelled first
+	onQuit func()
+	// Settings overlay state (immediate, not snapshotted)
+	showSettings   bool
+	settingsCursor int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
 }
 
 type tickMsg time.Time
@@ -360,8 +384,105 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd(m.interval)
 
 	case tea.KeyMsg:
-		switch msg.String() {
+		key := msg.String()
+
+		// ── Settings overlay key handling ────────────────────────────────────
+		if m.showSettings {
+			switch key {
+			case "s", "S", "esc", "enter":
+				m.showSettings = false
+				return m, nil
+			case "up", "k":
+				m.settingsCursor--
+				if m.settingsCursor < 0 {
+					m.settingsCursor = 3
+				}
+				return m, nil
+			case "down", "j":
+				m.settingsCursor = (m.settingsCursor + 1) % 4
+				return m, nil
+			case "left", "-", "h":
+				m.tui.mu.Lock()
+				switch m.settingsCursor {
+				case 0:
+					m.tui.settings.TradeScaleFactor -= 0.01
+					if m.tui.settings.TradeScaleFactor < 0.01 {
+						m.tui.settings.TradeScaleFactor = 0.01
+					}
+				case 1:
+					m.tui.settings.MinMarginPercent -= 0.5
+					if m.tui.settings.MinMarginPercent < 0.5 {
+						m.tui.settings.MinMarginPercent = 0.5
+					}
+				case 2:
+					m.tui.settings.SplitMinMarginSell -= 0.5
+					if m.tui.settings.SplitMinMarginSell < 1.0 {
+						m.tui.settings.SplitMinMarginSell = 1.0
+					}
+				case 3:
+					m.tui.settings.SplitStrategyEnabled = false
+				}
+				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+				m.tui.mu.Unlock()
+				return m, nil
+			case "right", "+", "l":
+				m.tui.mu.Lock()
+				switch m.settingsCursor {
+				case 0:
+					m.tui.settings.TradeScaleFactor += 0.01
+					if m.tui.settings.TradeScaleFactor > 0.50 {
+						m.tui.settings.TradeScaleFactor = 0.50
+					}
+				case 1:
+					m.tui.settings.MinMarginPercent += 0.5
+					if m.tui.settings.MinMarginPercent > 20.0 {
+						m.tui.settings.MinMarginPercent = 20.0
+					}
+				case 2:
+					m.tui.settings.SplitMinMarginSell += 0.5
+					if m.tui.settings.SplitMinMarginSell > 20.0 {
+						m.tui.settings.SplitMinMarginSell = 20.0
+					}
+				case 3:
+					m.tui.settings.SplitStrategyEnabled = true
+				}
+				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+				m.tui.mu.Unlock()
+				return m, nil
+			// Quick presets
+			case "1":
+				m.tui.mu.Lock()
+				m.tui.settings = SettingsConservative
+				m.tui.tradeFactor = SettingsConservative.TradeScaleFactor
+				m.tui.mu.Unlock()
+				return m, nil
+			case "2":
+				m.tui.mu.Lock()
+				m.tui.settings = SettingsModerate
+				m.tui.tradeFactor = SettingsModerate.TradeScaleFactor
+				m.tui.mu.Unlock()
+				return m, nil
+			case "3":
+				m.tui.mu.Lock()
+				m.tui.settings = SettingsAggressive
+				m.tui.tradeFactor = SettingsAggressive.TradeScaleFactor
+				m.tui.mu.Unlock()
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// ── Normal key handling ──────────────────────────────────────────────
+		switch key {
+		case "s", "S":
+			m.showSettings = true
+			return m, nil
 		case "q", "Q", "ctrl+c":
+			// Call the parent cancel func FIRST so the trading loop shuts down
+			// immediately (fixes double Ctrl+C requirement).
+			if m.onQuit != nil {
+				m.onQuit()
+			}
 			return m, tea.Quit
 		}
 	}
@@ -374,6 +495,11 @@ func (m tuiModel) View() string {
 	w := s.width
 	if w < 60 {
 		w = 80
+	}
+
+	// Settings overlay: replace entire view while open.
+	if m.showSettings {
+		return m.renderSettings(w)
 	}
 
 	var rows []string
@@ -428,8 +554,15 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 	}
 }
 
-func (t *TUI) StartRenderLoop(interval time.Duration) {
-	model := tuiModel{tui: t, interval: interval}
+// StartRenderLoop creates the bubbletea program and begins rendering.
+// cancelFunc (optional) is called when the user presses q/Q/Ctrl+C so the
+// parent context is cancelled immediately — fixing the double Ctrl+C requirement.
+func (t *TUI) StartRenderLoop(interval time.Duration, cancelFuncs ...func()) {
+	onQuit := func() {}
+	if len(cancelFuncs) > 0 && cancelFuncs[0] != nil {
+		onQuit = cancelFuncs[0]
+	}
+	model := tuiModel{tui: t, interval: interval, onQuit: onQuit}
 	t.program = tea.NewProgram(model, tea.WithAltScreen())
 	go func() {
 		if _, err := t.program.Run(); err != nil {
@@ -709,9 +842,10 @@ func (m tuiModel) renderHeader(w int) string {
 	uptime := time.Since(s.startTime).Round(time.Second)
 	uptimePart := styleDimmed.Render("⏱ " + uptime.String())
 	quitPart := styleMuted.Render("[q] quit")
+	settingsPart := lipgloss.NewStyle().Foreground(clrBrand).Render("[s] settings")
 
 	sep := styleMuted.Render("  ·  ")
-	info := "  " + restPart + sep + wsPart + sep + uptimePart + sep + quitPart
+	info := "  " + restPart + sep + wsPart + sep + uptimePart + sep + settingsPart + sep + quitPart
 
 	content := title + "\n" + info
 	return makePanel(inner, clrBrand, content)
@@ -1512,4 +1646,153 @@ func (m tuiModel) renderKillBanner(w int) string {
 	l4 := styleBgRedBold.Width(bannerInner).Render(pad(bannerInner))
 
 	return makePanel(bannerInner, clrRose, l1+"\n"+l2+"\n"+l3+"\n"+l4)
+}
+
+// renderSettings: full-screen settings overlay.
+//
+//	╭─ ⚙  SETTINGS ──────────────────────────────────────────────────╮
+//	│  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [s] Close │
+//	│                                                                  │
+//	│  > Trade Scale Factor  [ 5.0%]  ████████░░░░░░░░░░░░  5%       │
+//	│    Min Margin %        [ 2.0%]                                  │
+//	│    Split Min Margin    [ 3.0%]                                  │
+//	│    Split Strategy      [  ON ]                                  │
+//	│                                                                  │
+//	│  ─── Presets ─────────────────────────────────────────────────  │
+//	│  [1] Conservative  scale=1%  margin=3%  (low risk, $1/trade)   │
+//	│  [2] Moderate      scale=5%  margin=2%  (balanced)             │
+//	│  [3] Aggressive    scale=10% margin=1%  (max frequency)        │
+//	╰──────────────────────────────────────────────────────────────────╯
+func (m tuiModel) renderSettings(w int) string {
+	inner := w - 4
+	if inner < 40 {
+		inner = 40
+	}
+
+	// Read current settings (under lock for safety)
+	m.tui.mu.Lock()
+	cfg := m.tui.settings
+	m.tui.mu.Unlock()
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
+	title := titleStyle.Render("⚙  LIVE SETTINGS")
+
+	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [s/Esc] Close")
+
+	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
+
+	type row struct {
+		label string
+		value string
+		bar   string
+	}
+
+	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
+
+	rows := []row{
+		{
+			label: "Trade Scale Factor",
+			value: fmtPct(cfg.TradeScaleFactor),
+			bar:   renderBar(cfg.TradeScaleFactor/0.5, 20),
+		},
+		{
+			label: "Min Margin %",
+			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
+			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
+		},
+		{
+			label: "Split Min Margin",
+			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
+			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
+		},
+		{
+			label: "Split Strategy",
+			value: func() string {
+				if cfg.SplitStrategyEnabled {
+					return styleGreen.Render("  ON ")
+				}
+				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+	}
+
+	cursorStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
+	labelStyle := lipgloss.NewStyle().Foreground(clrDim)
+	valueStyle := lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
+
+	var rowLines []string
+	for i, r := range rows {
+		cursor := "  "
+		lSt := labelStyle
+		vSt := valueStyle
+		if i == m.settingsCursor {
+			cursor = cursorStyle.Render("> ")
+			lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
+			vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
+		}
+		val := "[" + vSt.Render(r.value) + "]"
+		line := fmt.Sprintf("%s%-20s  %s  %s",
+			cursor,
+			lSt.Render(r.label),
+			val,
+			r.bar,
+		)
+		rowLines = append(rowLines, line)
+	}
+
+	// Preset descriptions
+	presetDivider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
+	presetTitle := styleDimmed.Render("  Quick Presets:")
+	p1 := fmt.Sprintf("  %s Conservative  scale=1%%   margin=3%%  (%s)",
+		lipgloss.NewStyle().Foreground(clrAmber).Render("[1]"),
+		styleDimmed.Render("$1/trade on $100 balance"))
+	p2 := fmt.Sprintf("  %s Moderate      scale=5%%   margin=2%%  (%s)",
+		lipgloss.NewStyle().Foreground(clrTeal).Render("[2]"),
+		styleDimmed.Render("$5/trade on $100 balance"))
+	p3 := fmt.Sprintf("  %s Aggressive    scale=10%%  margin=1%%  (%s)",
+		lipgloss.NewStyle().Foreground(clrEmerald).Render("[3]"),
+		styleDimmed.Render("$10/trade on $100 balance"))
+
+	// Trade size preview
+	balanceNote := styleDimmed.Render(fmt.Sprintf(
+		"  At $100 balance → $%.0f/trade  ·  At $500 → $%.0f/trade",
+		100*cfg.TradeScaleFactor,
+		500*cfg.TradeScaleFactor,
+	))
+
+	content := title + "\n" +
+		keysLine + "\n\n" +
+		strings.Join(rowLines, "\n") + "\n\n" +
+		presetDivider + "\n" +
+		presetTitle + "\n" +
+		p1 + "\n" +
+		p2 + "\n" +
+		p3 + "\n\n" +
+		divider + "\n" +
+		balanceNote
+
+	return makePanel(inner, clrBrand, content)
+}
+
+// ─── Settings Public API ──────────────────────────────────────────────────────
+
+// GetSettings returns a snapshot of the current runtime settings.
+// The trading loop should call this every iteration to pick up live changes.
+func (t *TUI) GetSettings() TUISettings {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.settings
+}
+
+// InitSettings seeds the settings panel with values from config (e.g., from .env).
+// Call this once after NewTUI and before StartRenderLoop.
+func (t *TUI) InitSettings(s TUISettings) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.settings = s
+	// Keep tradeFactor in sync so the account panel shows the right value.
+	if s.TradeScaleFactor > 0 {
+		t.tradeFactor = s.TradeScaleFactor
+	}
 }

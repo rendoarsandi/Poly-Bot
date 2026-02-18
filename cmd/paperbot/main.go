@@ -195,6 +195,14 @@ func run() error {
 	// Create shared order book and TUI (persistent across market rotations)
 	orderBook = paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
+
+	// Seed settings panel from config (.env), so the live panel reflects initial values
+	tui.InitSettings(paper.TUISettings{
+		TradeScaleFactor:     cfg.TradeScaleFactor,
+		MinMarginPercent:     cfg.MinMarginPercent,
+		SplitMinMarginSell:   cfg.SplitMinMarginSell,
+		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
+	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
 	// Initialize CSV Logger if enabled in config
@@ -207,9 +215,9 @@ func run() error {
 		}
 	}
 
-	// Start TUI render loop
+	// Start TUI render loop — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
-		tui.StartRenderLoop(250 * time.Millisecond) // Fast refresh for live updates
+		tui.StartRenderLoop(250*time.Millisecond, stop)
 		defer tui.Stop()
 	}
 

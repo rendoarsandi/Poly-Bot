@@ -285,11 +285,19 @@ func run() error {
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
+
+	// Seed settings panel with values from config (.env)
+	tui.InitSettings(paper.TUISettings{
+		TradeScaleFactor:     cfg.TradeScaleFactor,
+		MinMarginPercent:     cfg.MinMarginPercent,
+		SplitMinMarginSell:   cfg.SplitMinMarginSell,
+		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
+	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
-	// Start TUI
+	// Start TUI — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
-		tui.StartRenderLoop(250 * time.Millisecond)
+		tui.StartRenderLoop(250*time.Millisecond, stop)
 		defer tui.Stop()
 	}
 
