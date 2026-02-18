@@ -5,35 +5,81 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"Market-bot/internal/core"
 )
 
-// ANSI escape codes for terminal control
-const (
-	ClearScreen  = "\033[2J"
-	MoveCursor   = "\033[%d;%dH" // row, col
-	ClearLine    = "\033[2K"
-	ClearToEOL   = "\033[K"
-	HideCursor   = "\033[?25l"
-	ShowCursor   = "\033[?25h"
-	AltScreenOn  = "\033[?1049h"
-	AltScreenOff = "\033[?1049l"
-	Bold         = "\033[1m"
-	Reset        = "\033[0m"
-	ColorRed     = "\033[31m"
-	ColorGreen   = "\033[32m"
-	ColorYellow  = "\033[33m"
-	ColorBlue    = "\033[34m"
-	ColorMagenta = "\033[35m"
-	ColorCyan    = "\033[36m"
-	ColorWhite   = "\033[37m"
-	BgRed        = "\033[41m"
-	BgGreen      = "\033[42m"
-	BgYellow     = "\033[43m"
+// ─── Lipgloss styles (replace raw ANSI codes) ─────────────────────────────────
+// Colors map to standard ANSI basic palette — compatible with all terminals.
+var (
+	styleRed     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	styleGreen   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	styleYellow  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	styleMagenta = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	styleCyan    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styleWhite   = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	styleBold    = lipgloss.NewStyle().Bold(true)
+
+	// Background red + bold (kill banner)
+	styleBgRedBold = lipgloss.NewStyle().
+			Background(lipgloss.Color("1")).
+			Foreground(lipgloss.Color("15")).
+			Bold(true)
+
+	// Bold + colored — used for section/asset headers
+	styleBoldYellow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	styleBoldCyan    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	styleBoldMagenta = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	styleBoldGreen   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 )
+
+// getAssetStyle returns the foreground style for a given asset ID.
+func getAssetStyle(id string) lipgloss.Style {
+	switch id {
+	case "BTC":
+		return styleYellow
+	case "ETH":
+		return styleCyan
+	case "SOL":
+		return styleMagenta
+	case "XRP":
+		return styleGreen
+	default:
+		return styleWhite
+	}
+}
+
+// getBoldAssetStyle returns the bold+colored style for asset section headers.
+func getBoldAssetStyle(id string) lipgloss.Style {
+	switch id {
+	case "BTC":
+		return styleBoldYellow
+	case "ETH":
+		return styleBoldCyan
+	case "SOL":
+		return styleBoldMagenta
+	case "XRP":
+		return styleBoldGreen
+	default:
+		return styleBold
+	}
+}
+
+// marginStyle returns a color style based on a percentage margin value.
+func marginStyle(pct float64) lipgloss.Style {
+	if pct >= 3 {
+		return styleGreen
+	} else if pct >= 2 {
+		return styleYellow
+	} else if pct < 1 {
+		return styleRed
+	}
+	return styleWhite
+}
 
 // MarketData holds data for a single market in the TUI
 type MarketData struct {
@@ -46,72 +92,6 @@ type MarketData struct {
 	RealAsks   map[string]float64
 	LastUpdate time.Time // When prices were last updated
 	DataSource string    // "WS" or "REST" - which source provided latest data
-}
-
-// TUI provides a live terminal user interface
-type TUI struct {
-	mu sync.Mutex
-
-	// References
-	engine    *Engine
-	orderBook *OrderBook
-
-	// State - now supports multiple markets
-	markets    map[string]*MarketData // key = market identifier (e.g., "ETH", "SOL")
-	marketSlug string                 // Legacy - primary market
-	outcomes   []string               // Legacy - primary market outcomes
-	endTime    time.Time              // Legacy - primary market end time
-	lastPrices map[string]float64
-	lastBids   map[string]float64
-	lastAsks   map[string]float64
-	eventLog   []string
-	maxEvents  int
-	running    bool
-	stopped    atomic.Bool // Atomic flag for fast shutdown detection without lock
-	killReason string
-	isKilled   bool
-
-	// Order history - persists across market rotations
-	orderHistory    []OrderHistoryEntry
-	maxOrderHistory int // Max entries to keep
-
-	// Real market data (for comparison)
-	realBids map[string]float64
-	realAsks map[string]float64
-
-	// Bot's intended orders (before placement)
-	pendingOrders map[string][]PendingOrder
-
-	// Order book depth per market
-	orderBookDepth map[string]map[string][]MarketLevel // marketID -> outcome -> levels
-
-	// Network Health - Real-time latency tracking
-	latency        time.Duration
-	latencySource  string
-	restLatency    time.Duration   // Latest REST /book latency
-	wsLatency      time.Duration   // Time since last WS message
-	wsPingLatency  time.Duration   // WS ping round-trip time
-	restLatencyAvg time.Duration   // Rolling average REST latency
-	restSamples    []time.Duration // Recent REST latency samples for averaging
-
-	// Display dimensions
-	width int
-
-	// Startup time
-	startTime time.Time
-
-	// Trading settings for display
-	tradeFactor float64
-
-	// Stop channel for clean shutdown
-	stopCh   chan struct{}
-	stopOnce sync.Once // Ensure Stop() only runs once
-
-	// Non-blocking output channel
-	frameCh chan string
-
-	// Split inventory references for display
-	splitInventories []*SplitInventory
 }
 
 // PendingOrder represents an order the bot intends to place
@@ -135,6 +115,213 @@ type OrderHistoryEntry struct {
 	Status    string  // "FILLED", "PARTIAL", "FAILED"
 }
 
+// TUI provides a live terminal user interface.
+// All public methods are identical to the original; bubbletea handles
+// rendering, alt-screen, cursor management, and the event loop internally.
+type TUI struct {
+	mu sync.Mutex
+
+	// References for engine data fetching on each tick
+	engine    *Engine
+	orderBook *OrderBook
+
+	// Display state (all mutex-protected)
+	markets         map[string]*MarketData
+	marketSlug      string // Legacy single-market
+	outcomes        []string
+	endTime         time.Time
+	lastPrices      map[string]float64
+	lastBids        map[string]float64
+	lastAsks        map[string]float64
+	realBids        map[string]float64
+	realAsks        map[string]float64
+	pendingOrders   map[string][]PendingOrder
+	orderBookDepth  map[string]map[string][]MarketLevel // marketID -> outcome+_bids/_asks -> levels
+	eventLog        []string
+	maxEvents       int
+	orderHistory    []OrderHistoryEntry
+	maxOrderHistory int
+	isKilled        bool
+	killReason      string
+	tradeFactor     float64
+	startTime       time.Time
+	width           int
+
+	// Network latency tracking
+	restLatency    time.Duration
+	restLatencyAvg time.Duration
+	restSamples    []time.Duration
+	wsLatency      time.Duration
+	wsPingLatency  time.Duration
+	latencySource  string
+
+	// Split inventories — field accessed directly by package tests, so kept on TUI.
+	splitInventories []*SplitInventory
+
+	// Bubbletea program (created lazily in StartRenderLoop)
+	program *tea.Program
+}
+
+// ─── Bubbletea internals ──────────────────────────────────────────────────────
+
+// tuiSnapshot is a lock-free, point-in-time copy of all state needed to render
+// one frame. Update() takes the snapshot under mu; View() renders it without locks.
+type tuiSnapshot struct {
+	// TUI display state
+	markets        map[string]*MarketData
+	marketSlug     string
+	outcomes       []string
+	endTime        time.Time
+	lastPrices     map[string]float64
+	lastBids       map[string]float64
+	lastAsks       map[string]float64
+	realBids       map[string]float64
+	realAsks       map[string]float64
+	pendingOrders  map[string][]PendingOrder
+	orderBookDepth map[string]map[string][]MarketLevel
+	eventLog       []string
+	orderHistory   []OrderHistoryEntry
+	isKilled       bool
+	killReason     string
+	tradeFactor    float64
+	startTime      time.Time
+	width          int
+	restLatency    time.Duration
+	restLatencyAvg time.Duration
+	wsLatency      time.Duration
+	wsPingLatency  time.Duration
+	latencySource  string
+	splitPositions []SplitPosition
+
+	// Engine data fetched on each tick (engine has its own lock)
+	stats           Stats
+	exposure        float64
+	equity          float64
+	positions       map[string]PositionPnL
+	orders          []*LimitOrder
+	multiplier      float64
+	rounds          int
+	profitable      int
+	enginePositions map[string]Position
+}
+
+// tuiModel implements tea.Model. It holds a reference to the TUI adapter and
+// a cached snapshot of all state for lock-free rendering in View().
+type tuiModel struct {
+	tui      *TUI
+	interval time.Duration
+	snap     tuiSnapshot
+}
+
+type tickMsg time.Time
+
+func tickCmd(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+// Init kicks off the first tick.
+func (m tuiModel) Init() tea.Cmd {
+	return tickCmd(m.interval)
+}
+
+// Update handles messages. On each tickMsg it snapshots all state for rendering.
+func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		_ = msg
+
+		// Fetch engine/orderbook data OUTSIDE tui.mu — they have their own locks.
+		stats := m.tui.engine.GetStats()
+		exposure, _ := m.tui.engine.GetExposure()
+		equity := m.tui.engine.GetEquity()
+		positions := m.tui.engine.GetPositionsWithPnL()
+		orders := m.tui.orderBook.GetOpenOrders()
+		multiplier, rounds, profitable := m.tui.engine.GetCompoundStats()
+		enginePositions := m.tui.engine.GetPositions()
+		// getSplitPositions must be called WITHOUT tui.mu
+		// (split inventories have their own locks — avoid lock ordering deadlock).
+		splitPositions := m.tui.getSplitPositions()
+
+		// Snapshot TUI display state under its lock.
+		m.tui.mu.Lock()
+		m.snap = tuiSnapshot{
+			markets:         m.tui.markets,
+			marketSlug:      m.tui.marketSlug,
+			outcomes:        m.tui.outcomes,
+			endTime:         m.tui.endTime,
+			lastPrices:      m.tui.lastPrices,
+			lastBids:        m.tui.lastBids,
+			lastAsks:        m.tui.lastAsks,
+			realBids:        m.tui.realBids,
+			realAsks:        m.tui.realAsks,
+			pendingOrders:   m.tui.pendingOrders,
+			orderBookDepth:  m.tui.orderBookDepth,
+			eventLog:        append([]string(nil), m.tui.eventLog...),
+			orderHistory:    append([]OrderHistoryEntry(nil), m.tui.orderHistory...),
+			isKilled:        m.tui.isKilled,
+			killReason:      m.tui.killReason,
+			tradeFactor:     m.tui.tradeFactor,
+			startTime:       m.tui.startTime,
+			width:           m.tui.width,
+			restLatency:     m.tui.restLatency,
+			restLatencyAvg:  m.tui.restLatencyAvg,
+			wsLatency:       m.tui.wsLatency,
+			wsPingLatency:   m.tui.wsPingLatency,
+			latencySource:   m.tui.latencySource,
+			splitPositions:  splitPositions,
+			stats:           stats,
+			exposure:        exposure,
+			equity:          equity,
+			positions:       positions,
+			orders:          orders,
+			multiplier:      multiplier,
+			rounds:          rounds,
+			profitable:      profitable,
+			enginePositions: enginePositions,
+		}
+		m.tui.mu.Unlock()
+
+		return m, tickCmd(m.interval)
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "Q", "ctrl+c":
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+// View renders the current snapshot. Pure and lock-free — safe to call any time.
+func (m tuiModel) View() string {
+	s := m.snap
+	var sb strings.Builder
+
+	sb.WriteString(m.renderHeader())
+	sb.WriteString("\n")
+	sb.WriteString(m.renderMarketInfo())
+	sb.WriteString("\n")
+	sb.WriteString(m.renderAccountStatus(s.stats, s.exposure, s.equity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
+	sb.WriteString("\n")
+	sb.WriteString(m.renderPositions(s.positions))
+	sb.WriteString("\n")
+	sb.WriteString(m.renderOrders(s.orders))
+	sb.WriteString("\n")
+	sb.WriteString(m.renderOrderHistory())
+	sb.WriteString("\n")
+	sb.WriteString(m.renderEventLog())
+
+	if s.isKilled {
+		sb.WriteString(m.renderKillBanner())
+	}
+
+	return sb.String()
+}
+
+// ─── TUI public API (all signatures unchanged) ────────────────────────────────
+
 // NewTUI creates a new terminal UI
 func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 	return &TUI{
@@ -150,70 +337,82 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		orderBookDepth:  make(map[string]map[string][]MarketLevel),
 		latencySource:   "London API",
 		orderHistory:    make([]OrderHistoryEntry, 0),
-		maxOrderHistory: 20, // Keep last 20 orders
+		maxOrderHistory: 20,
 		eventLog:        make([]string, 0),
 		maxEvents:       10,
 		width:           80,
 		startTime:       time.Now(),
-		running:         true,
-		stopCh:          make(chan struct{}),
-		frameCh:         make(chan string, 3), // Buffer 3 frames to prevent blocking
 	}
 }
 
-// UpdateLatency updates the network health display (legacy - use UpdateRestLatency for real-time)
+// StartRenderLoop creates the bubbletea program and begins rendering.
+// Replaces the previous manual goroutine + frameCh + frameWriter approach.
+func (t *TUI) StartRenderLoop(interval time.Duration) {
+	model := tuiModel{tui: t, interval: interval}
+	t.program = tea.NewProgram(model, tea.WithAltScreen())
+	go func() {
+		if _, err := t.program.Run(); err != nil {
+			// Program exited (normal or error) — nothing to do.
+			_ = err
+		}
+	}()
+}
+
+// Stop quits the bubbletea program and restores the terminal.
+// Safe to call multiple times (bubbletea's Quit is idempotent).
+func (t *TUI) Stop() {
+	if t.program != nil {
+		t.program.Quit()
+	}
+}
+
+// UpdateLatency updates the network health display (legacy entry point).
 func (t *TUI) UpdateLatency(d time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.latency = d
+	t.restLatency = d
 }
 
-// UpdateRestLatency updates REST API latency with rolling average
+// UpdateRestLatency updates REST API latency with a rolling average.
 func (t *TUI) UpdateRestLatency(d time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.restLatency = d
 
-	// Keep last 20 samples for rolling average
 	t.restSamples = append(t.restSamples, d)
 	if len(t.restSamples) > 20 {
 		t.restSamples = t.restSamples[1:]
 	}
-
-	// Calculate rolling average
 	var total time.Duration
 	for _, s := range t.restSamples {
 		total += s
 	}
 	t.restLatencyAvg = total / time.Duration(len(t.restSamples))
-
-	// Also update main latency display
-	t.latency = t.restLatencyAvg
 	t.latencySource = "REST /book"
 }
 
-// UpdateWSLatency updates WebSocket staleness
+// UpdateWSLatency updates WebSocket staleness.
 func (t *TUI) UpdateWSLatency(timeSinceLastMsg time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.wsLatency = timeSinceLastMsg
 }
 
-// UpdateWSPingLatency updates WebSocket ping round-trip time
+// UpdateWSPingLatency updates WebSocket ping round-trip time.
 func (t *TUI) UpdateWSPingLatency(pingLatency time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.wsPingLatency = pingLatency
 }
 
-// SetTradeFactor updates the trade factor for display
+// SetTradeFactor updates the trade factor for display.
 func (t *TUI) SetTradeFactor(factor float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tradeFactor = factor
 }
 
-// AddMarket adds a market to the multi-market display
+// AddMarket adds a market to the multi-market display.
 func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -228,7 +427,7 @@ func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.
 	}
 }
 
-// ClearMarkets clears all market data for rotation to new markets
+// ClearMarkets clears all market data for rotation to new markets.
 func (t *TUI) ClearMarkets() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -240,12 +439,12 @@ func (t *TUI) ClearMarkets() {
 	t.pendingOrders = make(map[string][]PendingOrder)
 }
 
-// UpdateMarketPrices updates prices for a specific market
+// UpdateMarketPrices updates prices for a specific market.
 func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {
 	t.UpdateMarketPricesWithSource(marketID, bids, asks, "WS")
 }
 
-// UpdateMarketPricesWithSource updates prices and tracks the data source
+// UpdateMarketPricesWithSource updates prices and tracks the data source.
 func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[string]float64, source string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -263,8 +462,7 @@ func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[strin
 	}
 }
 
-// TouchMarket updates the LastUpdate timestamp without changing prices
-// Use this when connection is healthy but no new data to report
+// TouchMarket updates the LastUpdate timestamp without changing prices.
 func (t *TUI) TouchMarket(marketID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -273,7 +471,7 @@ func (t *TUI) TouchMarket(marketID string) {
 	}
 }
 
-// UpdateOrderBookDepth updates the full order book depth for a market
+// UpdateOrderBookDepth updates the full order book depth for a market.
 func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]MarketLevel) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -282,9 +480,7 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 		t.orderBookDepth[marketID] = make(map[string][]MarketLevel)
 	}
 
-	// Store bids (sorted by price descending - highest first)
 	for outcome, levels := range bids {
-		// Make a copy and keep top 5 levels
 		copied := make([]MarketLevel, 0, 5)
 		for i := 0; i < len(levels) && i < 5; i++ {
 			copied = append(copied, levels[i])
@@ -292,7 +488,6 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 		t.orderBookDepth[marketID][outcome+"_bids"] = copied
 	}
 
-	// Store asks (sorted by price ascending - lowest first)
 	for outcome, levels := range asks {
 		copied := make([]MarketLevel, 0, 5)
 		for i := 0; i < len(levels) && i < 5; i++ {
@@ -302,7 +497,7 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 	}
 }
 
-// SetMarket sets the current market info
+// SetMarket sets the current market info (legacy single-market API).
 func (t *TUI) SetMarket(slug string, outcomes []string, endTime time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -311,7 +506,7 @@ func (t *TUI) SetMarket(slug string, outcomes []string, endTime time.Time) {
 	t.endTime = endTime
 }
 
-// UpdatePrices updates the current prices (bot's reading from API)
+// UpdatePrices updates the current prices (legacy single-market API).
 func (t *TUI) UpdatePrices(prices map[string]float64, bids, asks map[string]float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -326,7 +521,7 @@ func (t *TUI) UpdatePrices(prices map[string]float64, bids, asks map[string]floa
 	}
 }
 
-// UpdateRealMarket updates the real market prices (from external verification)
+// UpdateRealMarket updates the real market prices (from external verification).
 func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -338,22 +533,20 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	}
 }
 
-// SetPendingOrders sets the orders the bot intends to place
+// SetPendingOrders sets the orders the bot intends to place.
 func (t *TUI) SetPendingOrders(orders map[string][]PendingOrder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pendingOrders = orders
 }
 
-// LogEvent adds an event to the log
+// LogEvent adds an event to the log.
 func (t *TUI) LogEvent(format string, args ...interface{}) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	timestamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf("[%s] %s", timestamp, fmt.Sprintf(format, args...))
-
-	// Sanitize to prevent terminal injection
 	msg = core.SanitizeString(msg)
 
 	t.eventLog = append(t.eventLog, msg)
@@ -362,7 +555,7 @@ func (t *TUI) LogEvent(format string, args ...interface{}) {
 	}
 }
 
-// SetKillSwitch marks the UI as killed
+// SetKillSwitch marks the UI as killed.
 func (t *TUI) SetKillSwitch(reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -370,7 +563,7 @@ func (t *TUI) SetKillSwitch(reason string) {
 	t.killReason = reason
 }
 
-// RecordOrder adds a trade to the order history
+// RecordOrder adds a trade to the order history.
 func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, margin float64, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -386,34 +579,30 @@ func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, m
 		Margin:    margin,
 		Status:    status,
 	}
-
 	t.orderHistory = append(t.orderHistory, entry)
-
-	// Keep only the last maxOrderHistory entries
 	if len(t.orderHistory) > t.maxOrderHistory {
 		t.orderHistory = t.orderHistory[len(t.orderHistory)-t.maxOrderHistory:]
 	}
 }
 
-// GetOrderHistory returns a copy of the order history
+// GetOrderHistory returns a copy of the order history.
 func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	result := make([]OrderHistoryEntry, len(t.orderHistory))
 	copy(result, t.orderHistory)
 	return result
 }
 
-// RegisterSplitInventory adds a split inventory for display in the positions section
+// RegisterSplitInventory adds a split inventory for display in the positions section.
 func (t *TUI) RegisterSplitInventory(inv *SplitInventory) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.splitInventories = append(t.splitInventories, inv)
 }
 
-// getSplitPositions collects all split positions from registered inventories
-// Must be called WITHOUT holding t.mu lock (inventories have their own locks)
+// getSplitPositions collects all split positions from registered inventories.
+// Must be called WITHOUT holding t.mu (split inventories have their own locks).
 func (t *TUI) getSplitPositions() []SplitPosition {
 	var all []SplitPosition
 	for _, inv := range t.splitInventories {
@@ -422,240 +611,118 @@ func (t *TUI) getSplitPositions() []SplitPosition {
 	return all
 }
 
-// Stop stops the UI - safe to call multiple times
-func (t *TUI) Stop() {
-	// Use sync.Once to ensure we only stop once
-	t.stopOnce.Do(func() {
-		// Set atomic flag first for instant detection by render loop
-		t.stopped.Store(true)
+// ─── Render methods (on tuiModel, all read from m.snap) ──────────────────────
 
-		// Then update the mutex-protected state
-		t.mu.Lock()
-		t.running = false
-		t.mu.Unlock()
-
-		// Close the stop channel to signal the render loop
-		close(t.stopCh)
-
-		// Restore cursor - this is safe to do outside the lock
-		fmt.Print(ShowCursor)
-		fmt.Println() // Move to new line for clean exit
-	})
-}
-
-// Render draws the entire UI
-func (t *TUI) Render() {
-	// Fast path: check atomic flag without lock
-	if t.stopped.Load() {
-		return
-	}
-
-	// 1. Fetch data from other components BEFORE taking TUI lock
-	// This breaks the circular dependency: TUI.mu -> Engine.mu/OrderBook.mu
-	stats := t.engine.GetStats()
-	exposure, _ := t.engine.GetExposure()
-	equity := t.engine.GetEquity()
-	positions := t.engine.GetPositionsWithPnL()
-	orders := t.orderBook.GetOpenOrders()
-	multiplier, rounds, profitable := t.engine.GetCompoundStats()
-	enginePositions := t.engine.GetPositions()
-
-	// 2. Build the frame while holding the TUI lock
-	t.mu.Lock()
-
-	if !t.running {
-		t.mu.Unlock()
-		return
-	}
-
-	var sb strings.Builder
-
-	// Move cursor to top-left (alternate buffer handles the rest)
-	sb.WriteString(fmt.Sprintf(MoveCursor, 1, 1))
-
-	// Helper to write lines with clear-to-end-of-line
-	writeLine := func(s string) {
-		lines := strings.Split(s, "\n")
-		for i, line := range lines {
-			sb.WriteString(line)
-			sb.WriteString(ClearToEOL)
-			if i < len(lines)-1 {
-				sb.WriteString("\n")
-			}
-		}
-	}
-
-	// Header
-	writeLine(t.renderHeader())
-	sb.WriteString("\n")
-
-	// Market Info
-	writeLine(t.renderMarketInfo())
-	sb.WriteString("\n")
-
-	// Account Status
-	writeLine(t.renderAccountStatus(stats, exposure, equity, multiplier, rounds, profitable, enginePositions))
-	sb.WriteString("\n")
-
-	// Positions
-	writeLine(t.renderPositions(positions))
-	sb.WriteString("\n")
-
-	// Open Orders
-	writeLine(t.renderOrders(orders))
-	sb.WriteString("\n")
-
-	// Order History (persists across market rotations)
-	writeLine(t.renderOrderHistory())
-	sb.WriteString("\n")
-
-	// Event Log
-	writeLine(t.renderEventLog())
-
-	// Kill switch banner if triggered
-	if t.isKilled {
-		writeLine(t.renderKillBanner())
-	}
-
-	// Clear from cursor to end of screen
-	sb.WriteString("\033[J")
-
-	// Get the complete frame as a string
-	frame := sb.String()
-
-	// Release the lock BEFORE doing I/O
-	t.mu.Unlock()
-
-	// Non-blocking send to frame channel
-	select {
-	case t.frameCh <- frame:
-		// Frame queued
-	default:
-		// Channel full, skip frame
-	}
-}
-
-func (t *TUI) renderHeader() string {
-	line := strings.Repeat("═", t.width)
+func (m tuiModel) renderHeader() string {
+	s := m.snap
+	line := strings.Repeat("═", s.width)
 	title := " 🎰 POLYARB-15M MULTI-ASSET TRADING "
-	padding := (t.width - len(title)) / 2
+	padding := (s.width - len(title)) / 2
 	if padding < 0 {
 		padding = 0
 	}
 
-	uptime := time.Since(t.startTime).Round(time.Second)
+	uptime := time.Since(s.startTime).Round(time.Second)
 
-	// REST latency health (actual network round-trip)
-	restColor := ColorGreen
-	if t.restLatency > 200*time.Millisecond {
-		restColor = ColorRed
-	} else if t.restLatency > 100*time.Millisecond {
-		restColor = ColorYellow
+	restStyle := styleGreen
+	if s.restLatency > 200*time.Millisecond {
+		restStyle = styleRed
+	} else if s.restLatency > 100*time.Millisecond {
+		restStyle = styleYellow
 	}
-
 	restStr := "..."
-	if t.restLatency > 0 {
-		restStr = fmt.Sprintf("%v", t.restLatency.Round(time.Millisecond))
+	if s.restLatency > 0 {
+		restStr = s.restLatency.Round(time.Millisecond).String()
 	}
 
-	// WS ping latency health (actual network round-trip)
-	wsColor := ColorGreen
+	wsStyle := styleGreen
 	wsStatus := "✓"
-	if t.wsPingLatency == 0 {
-		wsColor = ColorYellow
+	if s.wsPingLatency == 0 {
+		wsStyle = styleYellow
 		wsStatus = "?"
-	} else if t.wsPingLatency > 500*time.Millisecond {
-		wsColor = ColorRed
+	} else if s.wsPingLatency > 500*time.Millisecond {
+		wsStyle = styleRed
 		wsStatus = "⚠"
-	} else if t.wsPingLatency > 200*time.Millisecond {
-		wsColor = ColorYellow
+	} else if s.wsPingLatency > 200*time.Millisecond {
+		wsStyle = styleYellow
 	}
 
-	// WS data freshness indicator
-	freshColor := ColorGreen
-	if t.wsLatency > 10*time.Second {
-		freshColor = ColorRed
+	freshStyle := styleGreen
+	if s.wsLatency > 10*time.Second {
+		freshStyle = styleRed
 		wsStatus = "✗"
-	} else if t.wsLatency > 5*time.Second {
-		freshColor = ColorYellow
+	} else if s.wsLatency > 5*time.Second {
+		freshStyle = styleYellow
 	}
 
 	wsStr := "..."
-	if t.wsPingLatency > 0 {
-		wsStr = fmt.Sprintf("%v", t.wsPingLatency.Round(time.Millisecond))
+	if s.wsPingLatency > 0 {
+		wsStr = s.wsPingLatency.Round(time.Millisecond).String()
 	}
-
 	freshStr := "..."
-	if t.wsLatency > 0 {
-		freshStr = fmt.Sprintf("%.1fs", t.wsLatency.Seconds())
+	if s.wsLatency > 0 {
+		freshStr = fmt.Sprintf("%.1fs", s.wsLatency.Seconds())
 	}
 
-	// Health line showing uptime, REST and WS latency
-	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s%s%s | 🔌 WS: %s%s%s (%s%s%s %s)",
-		uptime, restColor, restStr, Reset, wsColor, wsStr, Reset, freshColor, freshStr, Reset, wsStatus)
+	healthLine := fmt.Sprintf("  ⏱️  Uptime: %v | 📡 REST: %s | 🔌 WS: %s (%s %s)",
+		uptime,
+		restStyle.Render(restStr),
+		wsStyle.Render(wsStr),
+		freshStyle.Render(freshStr),
+		wsStatus)
 
-	// Calculate display width (excluding ANSI codes and accounting for emoji width)
-	healthDisplayWidth := len(uptime.String()) + len(restStr) + len(wsStr) + len(freshStr) + 50 // fixed text + emojis
-	healthPadding := t.width - healthDisplayWidth
+	healthDisplayWidth := len(uptime.String()) + len(restStr) + len(wsStr) + len(freshStr) + 50
+	healthPadding := s.width - healthDisplayWidth
 	if healthPadding < 0 {
 		healthPadding = 0
 	}
 
-	return fmt.Sprintf("%s%s\n%s%s%s\n%s%s\n%s",
-		Bold, line,
-		strings.Repeat(" ", padding), title, Reset,
-		healthLine, strings.Repeat(" ", healthPadding),
-		line)
+	boldLine := styleBold.Render(line)
+	boldTitle := styleBold.Render(strings.Repeat(" ", padding) + title)
+	return boldLine + "\n" + boldTitle + "\n" +
+		healthLine + strings.Repeat(" ", healthPadding) + "\n" +
+		line
 }
 
-func (t *TUI) renderMarketInfo() string {
+func (m tuiModel) renderMarketInfo() string {
+	s := m.snap
 	var sb strings.Builder
 
-	// If we have multiple markets, render them all
-	if len(t.markets) > 0 {
-		return t.renderMultiMarketInfo()
+	if len(s.markets) > 0 {
+		return m.renderMultiMarketInfo()
 	}
 
-	// Legacy single market rendering
-	remaining := time.Until(t.endTime)
+	// Legacy single-market rendering
+	remaining := time.Until(s.endTime)
 	if remaining < 0 {
 		remaining = 0
 	}
-
-	// Color based on time remaining
-	timeColor := ColorGreen
+	timeStyle := styleGreen
 	if remaining < 2*time.Minute {
-		timeColor = ColorRed
+		timeStyle = styleRed
 	} else if remaining < 5*time.Minute {
-		timeColor = ColorYellow
+		timeStyle = styleYellow
 	}
 
-	sb.WriteString(fmt.Sprintf("%s📊 MARKET:%s %s\n", Bold, Reset, t.marketSlug))
-	sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s remaining\n", timeColor, remaining.Round(time.Second), Reset))
+	sb.WriteString(styleBold.Render("📊 MARKET:") + " " + s.marketSlug + "\n")
+	sb.WriteString("   ⏱️  Time: " + timeStyle.Render(remaining.Round(time.Second).String()) + " remaining\n")
 
-	if len(t.outcomes) == 2 {
+	if len(s.outcomes) == 2 {
 		sb.WriteString("\n")
-		sb.WriteString(t.renderSingleMarketPrices(t.outcomes, t.lastBids, t.lastAsks, t.realBids, t.realAsks))
+		sb.WriteString(m.renderSingleMarketPrices(s.outcomes, s.lastBids, s.lastAsks, s.realBids, s.realAsks))
 	}
 
 	return sb.String()
 }
 
-// renderMultiMarketInfo renders info for multiple markets
-func (t *TUI) renderMultiMarketInfo() string {
+func (m tuiModel) renderMultiMarketInfo() string {
+	s := m.snap
 	var sb strings.Builder
 
 	totalMargin := 0.0
 	marketCount := 0
 
-	// Define asset order and colors for consistent display
 	assetOrder := []string{"BTC", "ETH", "SOL", "XRP"}
-	assetColors := map[string]string{
-		"BTC": ColorYellow,  // Bitcoin - gold/yellow
-		"ETH": ColorCyan,    // Ethereum - cyan/blue
-		"SOL": ColorMagenta, // Solana - purple
-		"XRP": ColorGreen,   // XRP - green
-	}
 	assetEmojis := map[string]string{
 		"BTC": "₿",
 		"ETH": "Ξ",
@@ -664,74 +731,66 @@ func (t *TUI) renderMultiMarketInfo() string {
 	}
 
 	for _, id := range assetOrder {
-		m, ok := t.markets[id]
+		mkt, ok := s.markets[id]
 		if !ok {
 			continue
 		}
 
-		remaining := time.Until(m.EndTime)
+		remaining := time.Until(mkt.EndTime)
 		if remaining < 0 {
 			remaining = 0
 		}
-
-		// Color based on time remaining
-		timeColor := ColorGreen
+		timeStyle := styleGreen
 		if remaining < 2*time.Minute {
-			timeColor = ColorRed
+			timeStyle = styleRed
 		} else if remaining < 5*time.Minute {
-			timeColor = ColorYellow
+			timeStyle = styleYellow
 		}
 
-		// Get asset-specific color
-		headerColor := assetColors[id]
-		if headerColor == "" {
-			headerColor = ColorWhite
-		}
+		hdrStyle := getBoldAssetStyle(id)
 		emoji := assetEmojis[id]
 		if emoji == "" {
 			emoji = "•"
 		}
 
-		sb.WriteString(fmt.Sprintf("%s%s═══ %s %s ══════════════════════════════════════════════%s\n", Bold, headerColor, emoji, id, Reset))
-		sb.WriteString(fmt.Sprintf("   📊 %s\n", core.SanitizeString(m.Slug)))
+		sb.WriteString(hdrStyle.Render(fmt.Sprintf("═══ %s %s ══════════════════════════════════════════════", emoji, id)) + "\n")
+		sb.WriteString(fmt.Sprintf("   📊 %s\n", core.SanitizeString(mkt.Slug)))
 
-		// Show time remaining and last price update
-		updateAge := time.Since(m.LastUpdate)
-		updateColor := ColorGreen
+		updateAge := time.Since(mkt.LastUpdate)
+		updateStyle := styleGreen
 		updateWarning := ""
 		if updateAge > 10*time.Second {
-			updateColor = ColorRed
+			updateStyle = styleRed
 			updateWarning = " ⚠️ STALE!"
 		} else if updateAge > 5*time.Second {
-			updateColor = ColorYellow
+			updateStyle = styleYellow
 			updateWarning = " (slow)"
 		} else if updateAge > 2*time.Second {
-			updateColor = ColorYellow
+			updateStyle = styleYellow
 		}
 
-		// Show data source (WS or REST)
-		sourceColor := ColorGreen
-		sourceStr := m.DataSource
+		sourceStyle := styleGreen
+		sourceStr := mkt.DataSource
 		if sourceStr == "" {
 			sourceStr = "?"
-			sourceColor = ColorYellow
+			sourceStyle = styleYellow
 		} else if sourceStr == "REST" {
-			sourceColor = ColorCyan
+			sourceStyle = styleCyan
 		}
 
-		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s%v%s | %s%.1fs ago%s [%s%s%s]%s\n",
-			timeColor, remaining.Round(time.Second), Reset,
-			updateColor, updateAge.Seconds(), Reset,
-			sourceColor, sourceStr, Reset, updateWarning))
+		sb.WriteString(fmt.Sprintf("   ⏱️  Time: %s | %s [%s]%s\n",
+			timeStyle.Render(remaining.Round(time.Second).String()),
+			updateStyle.Render(fmt.Sprintf("%.1fs ago", updateAge.Seconds())),
+			sourceStyle.Render(sourceStr),
+			updateWarning))
 
-		if len(m.Outcomes) == 2 {
-			bid1 := m.Bids[m.Outcomes[0]]
-			ask1 := m.Asks[m.Outcomes[0]]
-			bid2 := m.Bids[m.Outcomes[1]]
-			ask2 := m.Asks[m.Outcomes[1]]
+		if len(mkt.Outcomes) == 2 {
+			bid1 := mkt.Bids[mkt.Outcomes[0]]
+			ask1 := mkt.Asks[mkt.Outcomes[0]]
+			bid2 := mkt.Bids[mkt.Outcomes[1]]
+			ask2 := mkt.Asks[mkt.Outcomes[1]]
 
 			// For binary markets, infer missing prices from complement
-			// Up bid ≈ 1 - Down ask, Up ask ≈ 1 - Down bid
 			if bid1 == 0 && ask2 > 0 {
 				bid1 = 1.0 - ask2
 			}
@@ -745,71 +804,44 @@ func (t *TUI) renderMultiMarketInfo() string {
 				ask2 = 1.0 - bid1
 			}
 
-			// Display order book depth for each outcome
-			sb.WriteString(t.renderOrderBookForMarket(id, m.Outcomes[0], bid1, ask1))
-			sb.WriteString(t.renderOrderBookForMarket(id, m.Outcomes[1], bid2, ask2))
+			sb.WriteString(m.renderOrderBookForMarket(id, mkt.Outcomes[0], bid1, ask1))
+			sb.WriteString(m.renderOrderBookForMarket(id, mkt.Outcomes[1], bid2, ask2))
 
-			// Calculate margin - only show valid data
 			if ask1 > 0 && ask2 > 0 && bid1 > 0 && bid2 > 0 {
 				askSum := ask1 + ask2
 				buyMargin := (1.0 - askSum) * 100
-				buyMarginColor := ColorWhite
-				if buyMargin >= 3 {
-					buyMarginColor = ColorGreen
-				} else if buyMargin >= 2 {
-					buyMarginColor = ColorYellow
-				} else if buyMargin < 1 {
-					buyMarginColor = ColorRed
-				}
-
 				bidSum := bid1 + bid2
 				sellMargin := (bidSum - 1.0) * 100
-				sellMarginColor := ColorWhite
-				if sellMargin >= 3 {
-					sellMarginColor = ColorGreen
-				} else if sellMargin >= 2 {
-					sellMarginColor = ColorYellow
-				} else if sellMargin < 1 {
-					sellMarginColor = ColorRed
-				}
 
-				sb.WriteString(fmt.Sprintf("   📉 BUY: $%.2f | %s%+.1f%%%s  📈 SELL: $%.2f | %s%+.1f%%%s\n",
-					askSum, buyMarginColor, buyMargin, Reset,
-					bidSum, sellMarginColor, sellMargin, Reset))
+				sb.WriteString(fmt.Sprintf("   📉 BUY: $%.2f | %s  📈 SELL: $%.2f | %s\n",
+					askSum, marginStyle(buyMargin).Render(fmt.Sprintf("%+.1f%%", buyMargin)),
+					bidSum, marginStyle(sellMargin).Render(fmt.Sprintf("%+.1f%%", sellMargin))))
 				totalMargin += buyMargin
 				marketCount++
 			} else {
-				sb.WriteString(fmt.Sprintf("   📈 %s(waiting for price data...)%s\n", ColorYellow, Reset))
+				sb.WriteString("   📈 " + styleYellow.Render("(waiting for price data...)") + "\n")
 			}
 		}
 		sb.WriteString("\n")
 	}
 
-	// Summary line
 	if marketCount > 0 {
 		avgMargin := totalMargin / float64(marketCount)
-		avgColor := ColorWhite
-		if avgMargin >= 2 {
-			avgColor = ColorGreen
-		} else if avgMargin < 1 {
-			avgColor = ColorRed
-		}
-		sb.WriteString(fmt.Sprintf("%s📊 COMBINED: %d markets | Avg Margin: %s%.1f%%%s%s\n", Bold, marketCount, avgColor, avgMargin, Reset, Reset))
+		sb.WriteString(styleBold.Render(fmt.Sprintf("📊 COMBINED: %d markets | Avg Margin: %s",
+			marketCount, marginStyle(avgMargin).Render(fmt.Sprintf("%.1f%%", avgMargin)))) + "\n")
 	}
 
 	return sb.String()
 }
 
-// renderOrderBookForMarket renders a simple bid/ask display for a single outcome
-func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAsk float64) string {
+func (m tuiModel) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAsk float64) string {
+	s := m.snap
 	var sb strings.Builder
 
-	// Get best bid/ask from depth if available
-	depth := t.orderBookDepth[marketID]
+	depth := s.orderBookDepth[marketID]
 	bids := depth[outcome+"_bids"]
 	asks := depth[outcome+"_asks"]
 
-	// Use depth data for best prices if available
 	if len(bids) > 0 && bids[0].Price > bestBid {
 		bestBid = bids[0].Price
 	}
@@ -817,31 +849,24 @@ func (t *TUI) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAs
 		bestAsk = asks[0].Price
 	}
 
-	// Format outcome name (truncate if too long)
 	displayOutcome := core.SanitizeString(outcome)
 	if len(displayOutcome) > 6 {
 		displayOutcome = displayOutcome[:6]
 	}
 
-	// Simple format: Outcome  Bid | Ask
 	sb.WriteString(fmt.Sprintf("   %-6s  ", displayOutcome))
 
-	// Show bid (green)
 	if bestBid > 0 {
-		sb.WriteString(fmt.Sprintf("%sBid: $%.2f%s", ColorGreen, bestBid, Reset))
+		sb.WriteString(styleGreen.Render(fmt.Sprintf("Bid: $%.2f", bestBid)))
 	} else {
-		sb.WriteString(fmt.Sprintf("%sBid: --.---%s", ColorGreen, Reset))
+		sb.WriteString(styleGreen.Render("Bid: --.---"))
 	}
-
 	sb.WriteString("  │  ")
-
-	// Show ask (red)
 	if bestAsk > 0 {
-		sb.WriteString(fmt.Sprintf("%sAsk: $%.2f%s", ColorRed, bestAsk, Reset))
+		sb.WriteString(styleRed.Render(fmt.Sprintf("Ask: $%.2f", bestAsk)))
 	} else {
-		sb.WriteString(fmt.Sprintf("%sAsk: --.---%s", ColorRed, Reset))
+		sb.WriteString(styleRed.Render("Ask: --.---"))
 	}
-
 	sb.WriteString("\n")
 	return sb.String()
 }
@@ -854,14 +879,11 @@ func min(a, b int) int {
 	return b
 }
 
-// renderSingleMarketPrices renders price panels for a single market (legacy)
-func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, realAsks map[string]float64) string {
+func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, realAsks map[string]float64) string {
+	s := m.snap
 	var sb strings.Builder
 
-	// ══════════════════════════════════════════════════════════════
-	// PANEL 1: REAL MARKET (what we see on Polymarket website)
-	// ══════════════════════════════════════════════════════════════
-	sb.WriteString(fmt.Sprintf("%s┌─ 🌐 REAL MARKET (Polymarket Website) ─────────────────────┐%s\n", ColorCyan, Reset))
+	sb.WriteString(styleCyan.Render("┌─ 🌐 REAL MARKET (Polymarket Website) ─────────────────────┐") + "\n")
 	realBid1 := realBids[outcomes[0]]
 	realAsk1 := realAsks[outcomes[0]]
 	realBid2 := realBids[outcomes[1]]
@@ -873,82 +895,43 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	} else {
 		sb.WriteString("│  (waiting for real market data...)\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorCyan, Reset))
+	sb.WriteString(styleCyan.Render("└────────────────────────────────────────────────────────────┘") + "\n")
 
-	// ══════════════════════════════════════════════════════════════
-	// PANEL 2: BOT READING (what our bot receives from API)
-	// ══════════════════════════════════════════════════════════════
-	sb.WriteString(fmt.Sprintf("%s┌─ 🤖 BOT READING (REST API Response) ──────────────────────┐%s\n", ColorYellow, Reset))
+	sb.WriteString(styleYellow.Render("┌─ 🤖 BOT READING (REST API Response) ──────────────────────┐") + "\n")
 	bid1 := bids[outcomes[0]]
 	ask1 := asks[outcomes[0]]
 	bid2 := bids[outcomes[1]]
 	ask2 := asks[outcomes[1]]
 
-	// Check for mismatch with real market
-	mismatch1 := false
-	mismatch2 := false
-	if realAsk1 > 0 && (abs(ask1-realAsk1) > 0.05 || abs(bid1-realBid1) > 0.05) {
-		mismatch1 = true
-	}
-	if realAsk2 > 0 && (abs(ask2-realAsk2) > 0.05 || abs(bid2-realBid2) > 0.05) {
-		mismatch2 = true
-	}
+	mismatch1 := realAsk1 > 0 && (abs(ask1-realAsk1) > 0.05 || abs(bid1-realBid1) > 0.05)
+	mismatch2 := realAsk2 > 0 && (abs(ask2-realAsk2) > 0.05 || abs(bid2-realBid2) > 0.05)
 
-	color1 := ""
-	color2 := ""
+	line1 := fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f", core.SanitizeString(outcomes[0]), bid1, ask1)
 	if mismatch1 {
-		color1 = ColorRed
+		line1 = styleRed.Render(line1) + " " + styleRed.Render("⚠️ MISMATCH!")
 	}
+	sb.WriteString(line1 + "\n")
+
+	line2 := fmt.Sprintf("│  %s: bid $%.2f / ask $%.2f", core.SanitizeString(outcomes[1]), bid2, ask2)
 	if mismatch2 {
-		color2 = ColorRed
+		line2 = styleRed.Render(line2) + " " + styleRed.Render("⚠️ MISMATCH!")
 	}
+	sb.WriteString(line2 + "\n")
 
-	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color1, core.SanitizeString(outcomes[0]), bid1, ask1, Reset))
-	if mismatch1 {
-		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
-	}
-	sb.WriteString("\n")
-
-	sb.WriteString(fmt.Sprintf("│  %s%s: bid $%.2f / ask $%.2f%s", color2, core.SanitizeString(outcomes[1]), bid2, ask2, Reset))
-	if mismatch2 {
-		sb.WriteString(fmt.Sprintf(" %s⚠️ MISMATCH!%s", ColorRed, Reset))
-	}
-	sb.WriteString("\n")
-
-	// Calculate BUY margin (panic buy: when ask_sum < $0.98)
 	askSum := ask1 + ask2
 	buyMargin := (1.0 - askSum) * 100
-	buyMarginColor := ColorWhite
-	if buyMargin >= 3 {
-		buyMarginColor = ColorGreen
-	} else if buyMargin >= 2 {
-		buyMarginColor = ColorYellow
-	} else if buyMargin < 1 {
-		buyMarginColor = ColorRed
-	}
-
-	// Calculate SELL margin (panic sell: when bid_sum > $1.03)
 	bidSum := bid1 + bid2
 	sellMargin := (bidSum - 1.0) * 100
-	sellMarginColor := ColorWhite
-	if sellMargin >= 3 {
-		sellMarginColor = ColorGreen
-	} else if sellMargin >= 2 {
-		sellMarginColor = ColorYellow
-	} else if sellMargin < 1 {
-		sellMarginColor = ColorRed
-	}
 
-	sb.WriteString(fmt.Sprintf("│  📉 BUY:  ask_sum=$%.2f | %sMargin: %+.1f%%%s\n", askSum, buyMarginColor, buyMargin, Reset))
-	sb.WriteString(fmt.Sprintf("│  📈 SELL: bid_sum=$%.2f | %sMargin: %+.1f%%%s\n", bidSum, sellMarginColor, sellMargin, Reset))
-	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorYellow, Reset))
+	sb.WriteString(fmt.Sprintf("│  📉 BUY:  ask_sum=$%.2f | %s\n", askSum,
+		marginStyle(buyMargin).Render(fmt.Sprintf("Margin: %+.1f%%", buyMargin))))
+	sb.WriteString(fmt.Sprintf("│  📈 SELL: bid_sum=$%.2f | %s\n", bidSum,
+		marginStyle(sellMargin).Render(fmt.Sprintf("Margin: %+.1f%%", sellMargin))))
+	sb.WriteString(styleYellow.Render("└────────────────────────────────────────────────────────────┘") + "\n")
 
-	// ══════════════════════════════════════════════════════════════
-	// PANEL 3: BOT ORDERS (what orders the bot will place)
-	// ══════════════════════════════════════════════════════════════
-	sb.WriteString(fmt.Sprintf("%s┌─ 📋 BOT PLANNED ORDERS ───────────────────────────────────┐%s\n", ColorGreen, Reset))
-	if len(t.pendingOrders) > 0 {
-		for outcome, orders := range t.pendingOrders {
+	sb.WriteString(styleGreen.Render("┌─ 📋 BOT PLANNED ORDERS ───────────────────────────────────┐") + "\n")
+	if len(s.pendingOrders) > 0 {
+		for outcome, orders := range s.pendingOrders {
 			for _, o := range orders {
 				sb.WriteString(fmt.Sprintf("│  %s %s: %.0f shares @ $%.2f\n", o.Side, core.SanitizeString(outcome), o.Qty, o.Price))
 			}
@@ -956,7 +939,7 @@ func (t *TUI) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, 
 	} else {
 		sb.WriteString("│  (no pending orders)\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s└────────────────────────────────────────────────────────────┘%s\n", ColorGreen, Reset))
+	sb.WriteString(styleGreen.Render("└────────────────────────────────────────────────────────────┘") + "\n")
 
 	return sb.String()
 }
@@ -968,26 +951,25 @@ func abs(x float64) float64 {
 	return x
 }
 
-func (t *TUI) renderAccountStatus(stats Stats, totalExposure, equity, multiplier float64, rounds, profitable int, positions map[string]Position) string {
+func (m tuiModel) renderAccountStatus(stats Stats, totalExposure, equity, multiplier float64, rounds, profitable int, positions map[string]Position) string {
+	s := m.snap
 	var sb strings.Builder
 
 	netChange := equity - stats.StartingBalance
-	changeColor := ColorGreen
 	changeSign := "+"
+	changeStyle := styleGreen
 	if netChange < 0 {
-		changeColor = ColorRed
+		changeStyle = styleRed
 		changeSign = ""
 	}
 
-	multColor := ColorWhite
+	multStyle := styleWhite
 	if multiplier >= 1.5 {
-		multColor = ColorGreen
+		multStyle = styleGreen
 	} else if multiplier > 1.0 {
-		multColor = ColorYellow
+		multStyle = styleYellow
 	}
 
-	// Calculate guaranteed arbitrage profit across all markets
-	// Group positions by market
 	byMarket := make(map[string][]Position)
 	for _, pos := range positions {
 		marketID := pos.MarketID
@@ -1011,64 +993,59 @@ func (t *TUI) renderAccountStatus(stats Stats, totalExposure, equity, multiplier
 		}
 	}
 
-	// Format guaranteed profit
-	arbColor := ColorGreen
 	arbSign := "+"
+	arbStyle := styleGreen
 	if guaranteedProfit < 0 {
-		arbColor = ColorRed
+		arbStyle = styleRed
 		arbSign = ""
 	}
 
-	sb.WriteString(fmt.Sprintf("%s💼 ACCOUNT%s\n", Bold, Reset))
+	sb.WriteString(styleBold.Render("💼 ACCOUNT") + "\n")
 	sb.WriteString(fmt.Sprintf("   💵 Cash:     $%.2f\n", stats.CurrentBalance))
 	sb.WriteString(fmt.Sprintf("   📦 Exposure: $%.2f\n", totalExposure))
-	sb.WriteString(fmt.Sprintf("   💰 Equity:   $%.2f (%s%s$%.2f%s)\n",
-		equity, changeColor, changeSign, netChange, Reset))
-	
-	// Show trade factor and estimated cost
-	if t.tradeFactor > 0 {
-		tradeCost := equity * t.tradeFactor
+	sb.WriteString(fmt.Sprintf("   💰 Equity:   $%.2f (%s)\n",
+		equity, changeStyle.Render(fmt.Sprintf("%s$%.2f", changeSign, netChange))))
+
+	if s.tradeFactor > 0 {
+		tradeCost := equity * s.tradeFactor
 		if tradeCost < 1.0 {
 			tradeCost = 1.0
 		}
-		sb.WriteString(fmt.Sprintf("   🎯 Trade:    %.1f%% ($%.2f/trade)\n", t.tradeFactor*100, tradeCost))
+		sb.WriteString(fmt.Sprintf("   🎯 Trade:    %.1f%% ($%.2f/trade)\n", s.tradeFactor*100, tradeCost))
 	}
 
-	sb.WriteString(fmt.Sprintf("   📊 Realized: $%.2f | 🎯 Arb Profit: %s%s$%.2f%s\n",
-		stats.RealizedPnL, arbColor, arbSign, guaranteedProfit, Reset))
-	sb.WriteString(fmt.Sprintf("   📈 Compound: %s%.2fx%s | Rounds: %d (%d profitable)\n",
-		multColor, multiplier, Reset, rounds, profitable))
+	sb.WriteString(fmt.Sprintf("   📊 Realized: $%.2f | 🎯 Arb Profit: %s\n",
+		stats.RealizedPnL, arbStyle.Render(fmt.Sprintf("%s$%.2f", arbSign, guaranteedProfit))))
+	sb.WriteString(fmt.Sprintf("   📈 Compound: %s | Rounds: %d (%d profitable)\n",
+		multStyle.Render(fmt.Sprintf("%.2fx", multiplier)), rounds, profitable))
 
-	uptime := time.Since(t.startTime).Round(time.Second)
+	uptime := time.Since(s.startTime).Round(time.Second)
 	sb.WriteString(fmt.Sprintf("   ⏱️  Uptime:   %v\n", uptime))
 
 	return sb.String()
 }
 
-func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
+func (m tuiModel) renderPositions(positionsWithPnL map[string]PositionPnL) string {
+	s := m.snap
 	var sb strings.Builder
 
-	// Check if we have any positions or split inventory to show
-	splitPositions := t.getSplitPositions()
+	splitPositions := s.splitPositions
 	hasPositions := len(positionsWithPnL) > 0
 	hasSplitInventory := len(splitPositions) > 0
 
-	// If no positions and no split inventory, show minimal output
 	if !hasPositions && !hasSplitInventory {
-		sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s (none)\n", Bold, Reset))
+		sb.WriteString(styleBold.Render("📦 POSITIONS") + " (none)\n")
 		return sb.String()
 	}
 
-	// Show in-flight positions (awaiting merge)
 	if hasPositions {
-		sb.WriteString(fmt.Sprintf("%s📦 IN-FLIGHT%s", Bold, Reset))
-		sb.WriteString(fmt.Sprintf(" (%d) %s⏳ awaiting merge%s\n", len(positionsWithPnL), ColorYellow, Reset))
+		sb.WriteString(styleBold.Render("📦 IN-FLIGHT"))
+		sb.WriteString(fmt.Sprintf(" (%d) %s\n", len(positionsWithPnL),
+			styleYellow.Render("⏳ awaiting merge")))
 	} else if hasSplitInventory {
-		// Show header even when only split inventory exists
-		sb.WriteString(fmt.Sprintf("%s📦 POSITIONS%s\n", Bold, Reset))
+		sb.WriteString(styleBold.Render("📦 POSITIONS") + "\n")
 	}
 
-	// Group positions by market
 	byMarket := make(map[string][]PositionPnL)
 	for _, pos := range positionsWithPnL {
 		marketID := pos.MarketID
@@ -1078,15 +1055,7 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 		byMarket[marketID] = append(byMarket[marketID], pos)
 	}
 
-	// Define asset order and colors
 	assetOrder := []string{"BTC", "ETH", "SOL", "XRP", "UNKNOWN"}
-	assetColors := map[string]string{
-		"BTC":     ColorYellow,
-		"ETH":     ColorCyan,
-		"SOL":     ColorMagenta,
-		"XRP":     ColorGreen,
-		"UNKNOWN": ColorWhite,
-	}
 
 	totalMarketPnL := 0.0
 	totalLockedPnL := 0.0
@@ -1098,36 +1067,27 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 			continue
 		}
 
-		// Get color for this market
-		color := assetColors[marketID]
-		if color == "" {
-			color = ColorWhite
-		}
+		aStyle := getAssetStyle(marketID)
+		sb.WriteString("   " + aStyle.Render("["+marketID+"]") + " ")
 
-		sb.WriteString(fmt.Sprintf("   %s[%s]%s ", color, marketID, Reset))
-
-		// Sort positions: "Down" before "Up" for consistent display
 		sort.Slice(marketPositions, func(i, j int) bool {
 			return marketPositions[i].Outcome < marketPositions[j].Outcome
 		})
 
-		// Display each position for this market
 		positionStrs := make([]string, 0, len(marketPositions))
 		for _, pos := range marketPositions {
 			posStr := fmt.Sprintf("%s: %.0f@$%.2f", core.SanitizeString(pos.Outcome), pos.Quantity, pos.AvgPrice)
-			// Show current bid if available
 			if pos.CurrentBid > 0 {
-				bidColor := ColorGreen
+				bidStyle := styleGreen
 				if pos.CurrentBid < pos.AvgPrice {
-					bidColor = ColorRed
+					bidStyle = styleRed
 				}
-				posStr += fmt.Sprintf(" (%snow:$%.2f%s)", bidColor, pos.CurrentBid, Reset)
+				posStr += " (" + bidStyle.Render(fmt.Sprintf("now:$%.2f", pos.CurrentBid)) + ")"
 			}
 			positionStrs = append(positionStrs, posStr)
 		}
 		sb.WriteString(strings.Join(positionStrs, " | "))
 
-		// Calculate P&L for this market's matched pairs
 		if len(marketPositions) == 2 {
 			pos1 := marketPositions[0]
 			pos2 := marketPositions[1]
@@ -1136,76 +1096,63 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 				matchedQty = pos2.Quantity
 			}
 			if matchedQty > 0 {
-				// Locked P&L: guaranteed $1 payout at resolution
 				matchedCost := (pos1.AvgPrice + pos2.AvgPrice) * matchedQty
 				lockedProfit := (matchedQty * 1.0) - matchedCost
 				totalLockedPnL += lockedProfit
 
-				// Market P&L: what we'd get if we sold NOW at current bids
-				marketProfit := 0.0
+				pnlSign := func(v float64) (string, lipgloss.Style) {
+					if v < 0 {
+						return "", styleRed
+					}
+					return "+", styleGreen
+				}
+
 				if pos1.CurrentBid > 0 && pos2.CurrentBid > 0 {
 					marketValue := (pos1.CurrentBid + pos2.CurrentBid) * matchedQty
-					marketProfit = marketValue - matchedCost
+					marketProfit := marketValue - matchedCost
 					totalMarketPnL += marketProfit
 					hasMarketPrices = true
-
-					// Show market P&L (real-time)
-					mktColor := ColorGreen
-					mktSign := "+"
-					if marketProfit < 0 {
-						mktColor = ColorRed
-						mktSign = ""
-					}
-					sb.WriteString(fmt.Sprintf(" → %s%s$%.2f%s", mktColor, mktSign, marketProfit, Reset))
+					sign, pStyle := pnlSign(marketProfit)
+					sb.WriteString(" → " + pStyle.Render(fmt.Sprintf("%s$%.2f", sign, marketProfit)))
 				} else {
-					// Fallback to locked P&L
-					lckColor := ColorGreen
-					lckSign := "+"
-					if lockedProfit < 0 {
-						lckColor = ColorRed
-						lckSign = ""
-					}
-					sb.WriteString(fmt.Sprintf(" → 🔒%s%s$%.2f%s", lckColor, lckSign, lockedProfit, Reset))
+					sign, pStyle := pnlSign(lockedProfit)
+					sb.WriteString(" → 🔒" + pStyle.Render(fmt.Sprintf("%s$%.2f", sign, lockedProfit)))
 				}
 			}
 		}
 		sb.WriteString("\n")
 	}
 
-	// Show total P&L
 	if hasMarketPrices {
-		// Show both market and locked P&L
-		mktColor := ColorGreen
-		mktSign := "+"
-		if totalMarketPnL < 0 {
-			mktColor = ColorRed
-			mktSign = ""
-		}
-		lckColor := ColorGreen
-		lckSign := "+"
-		if totalLockedPnL < 0 {
-			lckColor = ColorRed
-			lckSign = ""
-		}
-		sb.WriteString(fmt.Sprintf("   %s📊 Now: %s%s$%.2f%s | 🔒 Locked: %s%s$%.2f%s%s\n",
-			Bold, mktColor, mktSign, totalMarketPnL, Reset,
-			lckColor, lckSign, totalLockedPnL, Reset, Reset))
+		mktSign, mktStyle := func() (string, lipgloss.Style) {
+			if totalMarketPnL < 0 {
+				return "", styleRed
+			}
+			return "+", styleGreen
+		}()
+		lckSign, lckStyle := func() (string, lipgloss.Style) {
+			if totalLockedPnL < 0 {
+				return "", styleRed
+			}
+			return "+", styleGreen
+		}()
+		sb.WriteString("   " + styleBold.Render(fmt.Sprintf("📊 Now: %s | 🔒 Locked: %s",
+			mktStyle.Render(fmt.Sprintf("%s$%.2f", mktSign, totalMarketPnL)),
+			lckStyle.Render(fmt.Sprintf("%s$%.2f", lckSign, totalLockedPnL)))) + "\n")
 	} else if totalLockedPnL != 0 {
-		lckColor := ColorGreen
-		lckSign := "+"
-		if totalLockedPnL < 0 {
-			lckColor = ColorRed
-			lckSign = ""
-		}
-		sb.WriteString(fmt.Sprintf("   %s🔒 Locked Profit: %s%s$%.2f%s%s\n",
-			Bold, lckColor, lckSign, totalLockedPnL, Reset, Reset))
+		sign, pStyle := func() (string, lipgloss.Style) {
+			if totalLockedPnL < 0 {
+				return "", styleRed
+			}
+			return "+", styleGreen
+		}()
+		sb.WriteString("   " + styleBold.Render("🔒 Locked Profit: "+
+			pStyle.Render(fmt.Sprintf("%s$%.2f", sign, totalLockedPnL))) + "\n")
 	}
 
-	// Show split inventory positions (for panic sell strategy)
 	if hasSplitInventory {
-		sb.WriteString(fmt.Sprintf("\n%s🔀 SPLIT INVENTORY%s (panic sell)\n", Bold, Reset))
+		sb.WriteString("\n" + styleBold.Render("🔀 SPLIT INVENTORY") + " (panic sell)\n")
 
-		// Group split positions by market
 		splitByMarket := make(map[string][]SplitPosition)
 		for _, sp := range splitPositions {
 			splitByMarket[sp.MarketID] = append(splitByMarket[sp.MarketID], sp)
@@ -1217,25 +1164,20 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 				continue
 			}
 
-			color := assetColors[marketID]
-			if color == "" {
-				color = ColorWhite
-			}
+			aStyle := getAssetStyle(marketID)
+			sb.WriteString("   " + aStyle.Render("["+marketID+"]") + " ")
 
-			sb.WriteString(fmt.Sprintf("   %s[%s]%s ", color, marketID, Reset))
-
-			// Sort positions: "Up" before "Down" for consistent display
 			sort.Slice(positions, func(i, j int) bool {
 				return positions[i].Outcome < positions[j].Outcome
 			})
 
 			posStrs := make([]string, 0, len(positions))
 			for _, sp := range positions {
-				posStrs = append(posStrs, fmt.Sprintf("%s: %.0f@$%.2f", core.SanitizeString(sp.Outcome), sp.Shares, sp.CostBasis))
+				posStrs = append(posStrs, fmt.Sprintf("%s: %.0f@$%.2f",
+					core.SanitizeString(sp.Outcome), sp.Shares, sp.CostBasis))
 			}
 			sb.WriteString(strings.Join(posStrs, " | "))
 
-			// Show min matched (sellable pairs)
 			if len(positions) >= 2 {
 				minShares := positions[0].Shares
 				for _, p := range positions[1:] {
@@ -1243,7 +1185,7 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 						minShares = p.Shares
 					}
 				}
-				sb.WriteString(fmt.Sprintf(" → %s%.0f pairs sellable%s", ColorGreen, minShares, Reset))
+				sb.WriteString(" → " + styleGreen.Render(fmt.Sprintf("%.0f pairs sellable", minShares)))
 			}
 			sb.WriteString("\n")
 		}
@@ -1252,19 +1194,15 @@ func (t *TUI) renderPositions(positionsWithPnL map[string]PositionPnL) string {
 	return sb.String()
 }
 
-func (t *TUI) renderOrders(orders []*LimitOrder) string {
-	// Only show this section if there are actually open orders
-	// The current strategy uses market orders, not limit orders,
-	// so this section is typically empty
+func (m tuiModel) renderOrders(orders []*LimitOrder) string {
 	if len(orders) == 0 {
-		return "" // Don't show empty section
+		return ""
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s📝 LIMIT ORDERS%s", Bold, Reset))
+	sb.WriteString(styleBold.Render("📝 LIMIT ORDERS"))
 	sb.WriteString(fmt.Sprintf(" (%d)\n", len(orders)))
 
-	// Group by outcome
 	byOutcome := make(map[string][]*LimitOrder)
 	for _, o := range orders {
 		byOutcome[o.Outcome] = append(byOutcome[o.Outcome], o)
@@ -1284,90 +1222,76 @@ func (t *TUI) renderOrders(orders []*LimitOrder) string {
 	return sb.String()
 }
 
-func (t *TUI) renderEventLog() string {
+func (m tuiModel) renderEventLog() string {
+	s := m.snap
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("%s📜 EVENTS%s\n", Bold, Reset))
+	sb.WriteString(styleBold.Render("📜 EVENTS") + "\n")
 
-	if len(t.eventLog) == 0 {
+	if len(s.eventLog) == 0 {
 		sb.WriteString("   (waiting for events...)\n")
 		return sb.String()
 	}
 
-	for _, event := range t.eventLog {
-		sb.WriteString(fmt.Sprintf("   %s\n", event))
+	for _, event := range s.eventLog {
+		sb.WriteString("   " + event + "\n")
 	}
 
 	return sb.String()
 }
 
-func (t *TUI) renderOrderHistory() string {
+func (m tuiModel) renderOrderHistory() string {
+	s := m.snap
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("%s📋 ORDER HISTORY%s", Bold, Reset))
+	sb.WriteString(styleBold.Render("📋 ORDER HISTORY"))
 
-	if len(t.orderHistory) == 0 {
+	if len(s.orderHistory) == 0 {
 		sb.WriteString(" (no trades yet)\n")
 		return sb.String()
 	}
 
-	sb.WriteString(fmt.Sprintf(" (last %d)\n", len(t.orderHistory)))
+	sb.WriteString(fmt.Sprintf(" (last %d)\n", len(s.orderHistory)))
 
-	// Show most recent orders first (reversed)
-	displayCount := len(t.orderHistory)
+	displayCount := len(s.orderHistory)
 	if displayCount > 8 {
-		displayCount = 8 // Show max 8 in UI
+		displayCount = 8
 	}
 
-	for i := len(t.orderHistory) - 1; i >= len(t.orderHistory)-displayCount && i >= 0; i-- {
-		o := t.orderHistory[i]
+	for i := len(s.orderHistory) - 1; i >= len(s.orderHistory)-displayCount && i >= 0; i-- {
+		o := s.orderHistory[i]
 
-		// Color based on status
-		statusColor := ColorGreen
+		statusStyle := styleGreen
 		statusIcon := "✅"
 		if o.Status == "FAILED" {
-			statusColor = ColorRed
+			statusStyle = styleRed
 			statusIcon = "❌"
 		} else if o.Status == "PARTIAL" {
-			statusColor = ColorYellow
+			statusStyle = styleYellow
 			statusIcon = "⚠️"
 		}
 
-		// Asset color
-		assetColor := ColorWhite
-		switch o.MarketID {
-		case "BTC":
-			assetColor = ColorYellow
-		case "ETH":
-			assetColor = ColorCyan
-		case "SOL":
-			assetColor = ColorMagenta
-		case "XRP":
-			assetColor = ColorGreen
-		}
-
-		// Format timestamp (just time, not date)
+		aStyle := getAssetStyle(o.MarketID)
 		timeStr := o.Timestamp.Format("15:04:05")
 
-		// Format the entry
-		sb.WriteString(fmt.Sprintf("   %s %s[%s]%s %s %-6s %.0f @ $%.2f ($%.1f) %s%.1f%%%s\n",
+		sb.WriteString(fmt.Sprintf("   %s %s %s %-6s %.0f @ $%.2f ($%.1f) %s\n",
 			timeStr,
-			assetColor, o.MarketID, Reset,
+			aStyle.Render("["+o.MarketID+"]"),
 			statusIcon,
 			core.SanitizeString(o.Outcome),
 			o.Shares,
 			o.Price,
 			o.Cost,
-			statusColor, o.Margin, Reset))
+			statusStyle.Render(fmt.Sprintf("%.1f%%", o.Margin))))
 	}
 
 	return sb.String()
 }
 
-func (t *TUI) renderKillBanner() string {
+func (m tuiModel) renderKillBanner() string {
+	s := m.snap
 	var sb strings.Builder
 
-	// Helper to clamp padding to non-negative
 	pad := func(n int) string {
 		if n < 0 {
 			n = 0
@@ -1376,82 +1300,13 @@ func (t *TUI) renderKillBanner() string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("%s%s", BgRed, Bold))
-	sb.WriteString(pad(t.width) + "\n")
-	// "   🚨 KILL SWITCH ACTIVATED 🚨" displays as ~31 chars (emojis = 2 each)
-	sb.WriteString("   🚨 KILL SWITCH ACTIVATED 🚨" + pad(t.width-31) + "\n")
-	// "   Reason: " = 12 chars display width
-	reasonPad := t.width - 12 - len(t.killReason)
-	sb.WriteString(fmt.Sprintf("   Reason: %s%s\n", t.killReason, pad(reasonPad)))
-	sb.WriteString(pad(t.width) + "\n")
-	sb.WriteString(Reset)
+	line1 := styleBgRedBold.Render(pad(s.width))
+	line2 := styleBgRedBold.Render("   🚨 KILL SWITCH ACTIVATED 🚨" + pad(s.width-31))
+	reasonPad := s.width - 12 - len(s.killReason)
+	line3 := styleBgRedBold.Render(fmt.Sprintf("   Reason: %s%s", s.killReason, pad(reasonPad)))
+	line4 := styleBgRedBold.Render(pad(s.width))
+
+	sb.WriteString(line1 + "\n" + line2 + "\n" + line3 + "\n" + line4 + "\n")
 
 	return sb.String()
-}
-
-// StartRenderLoop starts a goroutine that renders the UI periodically
-func (t *TUI) StartRenderLoop(interval time.Duration) {
-	// Start the dedicated frame writer goroutine
-	// This handles terminal output in a separate goroutine so blocking I/O
-	// doesn't affect the main application
-	go t.frameWriter()
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		// Hide cursor and clear screen once at start
-		fmt.Print(HideCursor)
-		fmt.Print(ClearScreen)
-		fmt.Print(fmt.Sprintf(MoveCursor, 1, 1))
-
-		for {
-			select {
-			case <-t.stopCh:
-				fmt.Print(ShowCursor)
-				fmt.Print(ClearScreen)
-				fmt.Print(fmt.Sprintf(MoveCursor, 1, 1))
-				return
-			case <-ticker.C:
-				t.mu.Lock()
-				running := t.running
-				t.mu.Unlock()
-
-				if !running {
-					fmt.Print(ShowCursor)
-					return
-				}
-				t.Render()
-			}
-		}
-	}()
-}
-
-// frameWriter is a dedicated goroutine that writes frames to the terminal
-// This isolates blocking terminal I/O from the rest of the application
-func (t *TUI) frameWriter() {
-	for {
-		select {
-		case <-t.stopCh:
-			// Drain any remaining frames quickly
-			for {
-				select {
-				case <-t.frameCh:
-				default:
-					return
-				}
-			}
-		case frame, ok := <-t.frameCh:
-			if !ok {
-				return
-			}
-			// Check if we should stop before writing
-			if t.stopped.Load() {
-				return
-			}
-			// Write frame to terminal - this may block if terminal is slow
-			// but only this goroutine is affected
-			fmt.Print(frame)
-		}
-	}
 }
