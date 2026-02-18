@@ -998,28 +998,63 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					}
 
 					if sharesToSell >= 1.0 {
-						// Risk limits and liquidity checks
+						// Hard safety cap
 						if sharesToSell > 250 {
-							sharesToSell = 250 // Hard safety cap
+							sharesToSell = 250
 						}
 
-						// Check bid depth liquidity
-						bidLiq1 := 0.0
-						bidLiq2 := 0.0
-						for _, lvl := range tokenFullBids[outcomes[0]] {
-							bidLiq1 += lvl.Size
-						}
-						for _, lvl := range tokenFullBids[outcomes[1]] {
-							bidLiq2 += lvl.Size
-						}
-						minBidLiq := bidLiq1
-						if bidLiq2 < minBidLiq {
-							minBidLiq = bidLiq2
+						// ═══════════════════════════════════════════════════════════════
+						// MATCHED BID LIQUIDITY: Walk bid levels (price descending) and
+						// only count pairs where bid1+bid2 >= minSum (the profitability
+						// threshold). This mirrors utilbot's estimateMatchedLiquidity and
+						// ensures we never order more than what can actually be filled at
+						// a profitable price. Used for BOTH sizing and display.
+						// ═══════════════════════════════════════════════════════════════
+						bids1 := tokenFullBids[outcomes[0]]
+						bids2 := tokenFullBids[outcomes[1]]
+						bookDepth1, bookDepth2 := len(bids1), len(bids2)
+						minSum := 1.0 + (cfg.SplitMinMarginSell / 100.0)
+
+						sortedBids1 := make([]paper.MarketLevel, len(bids1))
+						copy(sortedBids1, bids1)
+						sort.Slice(sortedBids1, func(a, b int) bool { return sortedBids1[a].Price > sortedBids1[b].Price })
+
+						sortedBids2 := make([]paper.MarketLevel, len(bids2))
+						copy(sortedBids2, bids2)
+						sort.Slice(sortedBids2, func(a, b int) bool { return sortedBids2[a].Price > sortedBids2[b].Price })
+
+						var rawLiq1, rawLiq2, matchedBidLiq float64
+						var maxValidI, maxValidJ int
+
+						for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
+							if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum {
+								break // below profitability threshold — stop
+							}
+							if bi+1 > maxValidI {
+								maxValidI = bi + 1
+								rawLiq1 += sortedBids1[bi].Size
+							}
+							if bj+1 > maxValidJ {
+								maxValidJ = bj + 1
+								rawLiq2 += sortedBids2[bj].Size
+							}
+							matched := sortedBids1[bi].Size
+							if sortedBids2[bj].Size < matched {
+								matched = sortedBids2[bj].Size
+							}
+							matchedBidLiq += matched
+							if sortedBids1[bi].Size <= sortedBids2[bj].Size {
+								sortedBids2[bj].Size -= sortedBids1[bi].Size
+								bi++
+							} else {
+								sortedBids1[bi].Size -= sortedBids2[bj].Size
+								bj++
+							}
 						}
 
-						// Only sell up to available liquidity
-						if sharesToSell > minBidLiq*0.85 {
-							sharesToSell = minBidLiq * 0.85
+						// Cap to matched bid liquidity (follows utilbot's approach exactly)
+						if sharesToSell > matchedBidLiq {
+							sharesToSell = matchedBidLiq
 						}
 
 						// Ensure min order size 1 share
@@ -1030,47 +1065,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						sharesToSell = math.Floor(sharesToSell)
 
 						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
-							// Calculate liquidity depth for display (same as paper bot)
-							bids1 := tokenFullBids[outcomes[0]]
-							bids2 := tokenFullBids[outcomes[1]]
-							bookDepth1, bookDepth2 := len(bids1), len(bids2)
-
-							// Calculate matched liquidity across valid bid levels
-							minSum := 1.0 + (cfg.SplitMinMarginSell / 100.0)
-							var rawLiq1, rawLiq2 float64
-							var maxValidI, maxValidJ int
-
-							// Sort bids by price descending (best bids first)
-							sortedBids1 := make([]paper.MarketLevel, len(bids1))
-							copy(sortedBids1, bids1)
-							sort.Slice(sortedBids1, func(a, b int) bool { return sortedBids1[a].Price > sortedBids1[b].Price })
-
-							sortedBids2 := make([]paper.MarketLevel, len(bids2))
-							copy(sortedBids2, bids2)
-							sort.Slice(sortedBids2, func(a, b int) bool { return sortedBids2[a].Price > sortedBids2[b].Price })
-
-							// Walk bid levels to find matched liquidity
-							for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
-								if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum {
-									break
-								}
-								if bi+1 > maxValidI {
-									maxValidI = bi + 1
-									rawLiq1 += sortedBids1[bi].Size
-								}
-								if bj+1 > maxValidJ {
-									maxValidJ = bj + 1
-									rawLiq2 += sortedBids2[bj].Size
-								}
-								if sortedBids1[bi].Size <= sortedBids2[bj].Size {
-									sortedBids2[bj].Size -= sortedBids1[bi].Size
-									bi++
-								} else {
-									sortedBids1[bi].Size -= sortedBids2[bj].Size
-									bj++
-								}
-							}
-
 							// Enhanced log with liquidity and depth info (same format as paper bot)
 							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell,
@@ -1084,6 +1078,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							if token0 == "" || token1 == "" {
 								tui.LogEvent("[%s] ⚠️ SPLIT: Token ID not found for %s/%s", id, outcomes[0], outcomes[1])
 								continue
+							}
+
+							// Sync CLOB allowance with on-chain state right before trading.
+							// This is the root cause of "insufficient balance/allowance" errors:
+							// the CLOB loses sync with on-chain state between startup and trade time.
+							// utilbot does this at startup right before execution — we do it here
+							// for every trade attempt so the CLOB is always current.
+							if syncErr := trader.UpdateBalanceAllowance(ctx); syncErr != nil {
+								tui.LogEvent("[%s] ⚠️ SPLIT: Allowance sync failed: %v (continuing)", id, syncErr)
 							}
 
 							var wg sync.WaitGroup
@@ -1118,79 +1121,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							side2Success := err2 == nil && res2 != nil && res2.Success
 
 							// ═══════════════════════════════════════════════════════════════
-							// UNBALANCED SELL RECOVERY: If one side succeeded and other failed,
-							// retry the failed side up to 3 times to prevent unbalanced inventory
+							// ONE-SHOT: No recovery - if unbalanced, log and exit
 							// ═══════════════════════════════════════════════════════════════
 							if side1Success != side2Success {
-								failedSide := 1
-								failedToken := token0
+								// One succeeded, one failed - just log and move on
 								failedOutcome := outcomes[0]
 								if side1Success {
-									failedSide = 2
-									failedToken = token1
 									failedOutcome = outcomes[1]
 								}
-
-								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: Side %d failed, starting bounded recovery...", id, failedSide)
-
-								// Retry failed side with a bounded loop to avoid infinite single-side spam.
-								retryCount := 0
-								const maxSplitRecoveryAttempts = 40
-								for retryCount < maxSplitRecoveryAttempts {
-									retryCount++
-
-									// Check context cancellation to allow graceful shutdown
-									select {
-									case <-ctx.Done():
-										tui.LogEvent("[%s] 🛑 SPLIT Recovery interrupted by shutdown after %d attempts", id, retryCount)
-										goto splitRecoveryDone
-									default:
-									}
-
-									// Fast constant delay for balancing: 50ms
-									time.Sleep(50 * time.Millisecond)
-
-									// Force fill with floor price ($0.10) for split selling
-									// Since it's a MARKET order, it will fill at the BEST available bid price
-									// but providing $0.10 as the "price" gives enough room for any liquidity
-									retryPrice := 0.10
-
-									tui.LogEvent("[%s] 🔄 SPLIT Recovery #%d for %s (MARKET @ $0.10 floor)", id, retryCount, failedOutcome)
-
-									rate := tokenFeeRates[failedOutcome]
-									if rate == 0 {
-										rate = 1000
-									}
-									retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, retryPrice, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-
-									if retryErr == nil && retryRes != nil && retryRes.Success {
-										tui.LogEvent("[%s] ✅ SPLIT Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
-										if failedSide == 1 {
-											side1Success = true
-											bid1 = retryPrice
-										} else {
-											side2Success = true
-											bid2 = retryPrice
-										}
-										break
-									}
-
-									// Log failure with error details
-									if retryErr != nil {
-										tui.LogEvent("[%s] ⚠️ SPLIT Recovery #%d failed: %v", id, retryCount, retryErr)
-									} else if retryRes != nil && !retryRes.Success {
-										tui.LogEvent("[%s] ⚠️ SPLIT Recovery #%d failed: %s", id, retryCount, retryRes.Message)
-										if strings.Contains(strings.ToLower(retryRes.Message), "invalid expiration value") {
-											tui.LogEvent("[%s] 🛑 SPLIT Recovery halted early due to CLOB expiration validation error", id)
-											break
-										}
-									}
-								}
-
-								if side1Success != side2Success {
-									tui.LogEvent("[%s] 🛑 SPLIT Recovery exhausted (%d attempts), stopping retries to avoid spam", id, retryCount)
-								}
-							splitRecoveryDone:
+								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: %s sold, %s failed. Skipping recovery (one-shot mode).", id,
+									map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome)
 							}
 
 						if side1Success && side2Success {
@@ -1209,16 +1149,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.LogEvent("[%s] ✅ One-shot execution complete after successful split sell.", id)
 							return
 						} else {
-								// Recovery failed - record partial success to keep inventory accurate
-								if side1Success {
-									splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold after recovery attempts", id, outcomes[0])
-								}
-								if side2Success {
-									splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold after recovery attempts", id, outcomes[1])
-								}
+							// Partial success - record to keep inventory accurate
+							if side1Success {
+								splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
+								tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[0])
 							}
+							if side2Success {
+								splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
+								tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[1])
+							}
+						}
 
 							lastSplitSell = time.Now()
 						}
@@ -1414,6 +1354,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						limitPrice1 := math.Min(0.99, price1+0.05)
 						limitPrice2 := math.Min(0.99, price2+0.05)
 
+						// Sync CLOB allowance with on-chain state right before trading.
+						// Root cause of "insufficient balance/allowance" errors in realbot:
+						// allowance synced once at startup can go stale by the time an arb opportunity arrives.
+						// utilbot syncs right before execution; we mirror that here.
+						if syncErr := trader.UpdateBalanceAllowance(ctx); syncErr != nil {
+							tui.LogEvent("[%s] ⚠️ ARB: Allowance sync failed: %v (continuing)", id, syncErr)
+						}
+
 						var wg sync.WaitGroup
 						wg.Add(2)
 
@@ -1507,112 +1455,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 
 						// ═══════════════════════════════════════════════════════════════
-						// UNBALANCED FILL RECOVERY: If one side succeeded and other failed,
-						// retry the failed side up to 3 times to prevent unbalanced position
+						// ONE-SHOT: No recovery - if unbalanced, log and exit
 						// ═══════════════════════════════════════════════════════════════
-						recoverySuccess := false
 						if side1Success != side2Success {
-							// One succeeded, one failed - need to recover
-							failedSide := 1
-							failedToken := token0
+							// One succeeded, one failed - just log and move on
 							failedOutcome := outcomes[0]
 							if side1Success {
-								failedSide = 2
-								failedToken = token1
 								failedOutcome = outcomes[1]
 							}
-
-							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: Side %d failed, starting bounded recovery...", id, failedSide)
-
-							// Retry failed side with a bounded loop to avoid infinite single-side spam.
-							retryCount := 0
-							const maxARBRecoveryAttempts = 40
-							for retryCount < maxARBRecoveryAttempts {
-								retryCount++
-
-								// Check context cancellation to allow graceful shutdown
-								select {
-								case <-ctx.Done():
-									tui.LogEvent("[%s] 🛑 ARB Recovery interrupted by shutdown after %d attempts", id, retryCount)
-									goto arbRecoveryDone
-								default:
-								}
-
-								// Fast constant delay for balancing: 50ms
-								time.Sleep(50 * time.Millisecond)
-
-								// Force fill with aggressive cap (Target + $0.10) for arb recovery
-								// This is safer than $0.99 for balance, but aggressive enough to fill
-								basePrice := price1
-								if failedSide == 2 {
-									basePrice = price2
-								}
-								retryPrice := math.Min(0.99, basePrice+0.10)
-
-								tui.LogEvent("[%s] 🔄 ARB Recovery #%d for %s (MARKET @ $%.2f cap)", id, retryCount, failedOutcome, retryPrice)
-
-								rate := tokenFeeRates[failedOutcome]
-								if rate == 0 {
-									rate = 1000
-								}
-								retryRes, retryErr := trader.Buy(ctx, failedToken, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-
-								if retryErr == nil && retryRes != nil && retryRes.Success {
-									tui.LogEvent("[%s] ✅ ARB Recovery SUCCESS for %s after %d attempts!", id, failedOutcome, retryCount)
-									retryCost := shares * retryPrice
-									tui.RecordOrder(id, failedOutcome, "BUY", shares, retryPrice, retryCost, margin, "FILLED")
-									recoverySuccess = true
-									// Update the success flag and price for engine recording
-									if failedSide == 1 {
-										side1Success = true
-										price1 = retryPrice
-									} else {
-										side2Success = true
-										price2 = retryPrice
-									}
-									break
-								}
-
-								// Log failure with error details
-								if retryErr != nil {
-									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %v", id, retryCount, retryErr)
-								} else if retryRes != nil && !retryRes.Success {
-									tui.LogEvent("[%s] ⚠️ ARB Recovery #%d failed: %s", id, retryCount, retryRes.Message)
-									if strings.Contains(strings.ToLower(retryRes.Message), "invalid expiration value") {
-										tui.LogEvent("[%s] 🛑 ARB Recovery halted early due to CLOB expiration validation error", id)
-										break
-									}
-								}
-
-								// ROBUSTNESS CHECK: Verify if it was a "Fake Failure" (e.g. timeout but filled)
-								// Query positions to see if we actually have the shares now
-								chkPositions, checkErr := trader.GetPositions(ctx)
-								if checkErr == nil {
-									for _, pos := range chkPositions {
-										if pos.TokenID == failedToken && pos.Size >= shares {
-											tui.LogEvent("[%s] ✅ ARB Recovery: Detected fill via position check (Fake Error protection)!", id)
-											// Manually construct success result
-											retryRes = &trading.TradeResult{Success: true, Price: retryPrice, OrderID: "detected-on-chain"}
-											retryErr = nil
-											
-											if failedSide == 1 {
-												side1Success = true
-												price1 = retryPrice
-											} else {
-												side2Success = true
-												price2 = retryPrice
-											}
-											recoverySuccess = true
-											goto arbRecoveryDone // Break outer loop
-										}
-									}
-								}
-							}
-
-							if !recoverySuccess {
-								tui.LogEvent("[%s] 🛑 ARB Recovery exhausted (%d attempts), stopping retries to avoid single-side spam", id, retryCount)
-							}
-						arbRecoveryDone:
+							tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: %s filled, %s failed. Skipping recovery (one-shot mode).", id,
+								map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome)
 						}
 
 						// NOW record to engine - only record positions that actually succeeded
@@ -1629,35 +1481,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 							defer cancel()
 
-							// Query OFF-CHAIN positions from CLOB (faster than blockchain)
+							// Query on-chain CTF balances with retries (mirrors utilbot's queryBalancedCTFBalances).
+							// CLOB positions are off-chain order records; for MergeOnChain the tokens must be
+							// physically present in the CTF contract on-chain. Using on-chain balance with
+							// settle-delay retries is the only way to guarantee the merge quantity is correct.
 							mergeQty := 0.0
-							positions, err := trader.GetPositions(mergeCtx)
-
-							if err != nil {
-								tui.LogEvent("[%s] ⚠️ Could not fetch off-chain positions: %v", id, err)
-								// Fallback: try to merge what we *thought* we bought
-								mergeQty = shares
+							bal0, bal1, balErr0, balErr1 := queryOnChainCTFBalances(mergeCtx, trader, token0, token1, shares)
+							if balErr0 != nil || balErr1 != nil {
+								tui.LogEvent("[%s] ⚠️ On-chain balance query failed (err0=%v, err1=%v), falling back to %.0f shares", id, balErr0, balErr1, shares)
+								bal0, bal1 = shares, shares
+							}
+							tui.LogEvent("[%s] 📊 On-chain Balances: %s=%.6f, %s=%.6f", id, outcomes[0], bal0, outcomes[1], bal1)
+							// Don't floor — CTF supports 6 decimals; merge exactly what's settled on-chain
+							actualMin := math.Min(math.Min(bal0, bal1), shares)
+							if actualMin >= 0.000001 {
+								mergeQty = actualMin
 							} else {
-								var bal0, bal1 float64
-								for _, pos := range positions {
-									if pos.TokenID == token0 {
-										bal0 = pos.Size
-									} else if pos.TokenID == token1 {
-										bal1 = pos.Size
-									}
-								}
-
-								// Calculate matched pairs based on actual CLOB inventory
-								actualMin := math.Min(bal0, bal1)
-
-								tui.LogEvent("[%s] 📊 CLOB Positions: %s=%.4f, %s=%.4f (Matched: %.4f)", id, outcomes[0], bal0, outcomes[1], bal1, actualMin)
-
-								if actualMin >= 0.000001 {
-									mergeQty = actualMin
-								} else {
-									tui.LogEvent("[%s] ⚠️ No balanced positions to merge", id)
-									return // Exit tradeMarket
-								}
+								tui.LogEvent("[%s] ⚠️ No balanced on-chain positions to merge", id)
+								return // Exit tradeMarket
 							}
 
 							txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, mergeQty)
@@ -1676,7 +1517,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.LogEvent("[%s] ✅ One-shot execution complete after successful buy and merge.", id)
 							return // Exit tradeMarket
 						} else if side1Success || side2Success {
-							// Only one side filled and recovery failed - record the unbalanced position
+							// Only one side filled - record the unbalanced position for tracking
 							// This is important so the risk manager can see the exposure
 							if side1Success {
 								engine.BuyForMarket(id, outcomes[0], price1, shares)
@@ -1688,7 +1529,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 						// If both failed, nothing to record
-						_ = recoverySuccess // Used above to update success flags
 
 						// Force refresh balance after trade to ensure accurate tracking
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
@@ -1885,4 +1725,41 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 	}
 
 	tui.LogEvent("[%s] ⚠️ Could not get resolution after %d attempts", id, len(retryDelays))
+}
+
+// queryOnChainCTFBalances polls the on-chain CTF contract for token balances with retries,
+// waiting for settlement after a buy. Mirrors utilbot's queryBalancedCTFBalances exactly.
+// Using on-chain balance (not CLOB positions) is required because MergeOnChain operates on
+// the actual blockchain state — CLOB positions are off-chain records that may lead or lag.
+func queryOnChainCTFBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, expectedShares float64) (float64, float64, error, error) {
+	const maxAttempts = 8
+	const settleDelay = 500 * time.Millisecond
+
+	var bal0, bal1 float64
+	var err0, err1 error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		bal0, err0 = trader.GetCTFBalanceFloat(ctx, token0)
+		bal1, err1 = trader.GetCTFBalanceFloat(ctx, token1)
+
+		if err0 == nil && err1 == nil {
+			minBal := math.Min(bal0, bal1)
+			if minBal >= 0.000001 {
+				// Accept if balanced (within dust) or if min balance meets expected shares
+				if math.Abs(bal0-bal1) <= 0.000001 || minBal >= expectedShares-0.05 {
+					return bal0, bal1, nil, nil
+				}
+			}
+		}
+
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return bal0, bal1, ctx.Err(), ctx.Err()
+			case <-time.After(settleDelay):
+			}
+		}
+	}
+
+	return bal0, bal1, err0, err1
 }

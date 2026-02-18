@@ -331,6 +331,16 @@ func main() {
 		rate = 1000 // Safe default for 15m
 	}
 
+	// Sync CLOB allowance with on-chain state right before trading.
+	// Manual bot never called this, causing "insufficient balance/allowance" errors.
+	// utilbot calls this at startup; we call it here so it's always fresh.
+	fmt.Println("🔄 Syncing CLOB allowance...")
+	if syncErr := trader.UpdateBalanceAllowance(ctx); syncErr != nil {
+		fmt.Printf("⚠️ Allowance sync failed: %v (continuing)\n", syncErr)
+	} else {
+		fmt.Println("✅ Allowance synced")
+	}
+
 	var res *trading.TradeResult
 	if executeSide == "BUY" {
 		res, err = trader.Buy(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFFillOrKill, rate)
