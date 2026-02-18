@@ -285,6 +285,7 @@ func run() error {
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
+	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
 
 	// Seed settings panel with values from config (.env)
 	tui.InitSettings(paper.TUISettings{
@@ -434,6 +435,8 @@ func run() error {
 				tui.LogEvent("✅ Round complete, no change")
 			}
 			tui.LogEvent("🔄 All markets closed — searching for next round...")
+			// Release stale keep-alive connections before the next search phase.
+			restClient.CloseIdleConnections()
 			// Loop back to search for new markets
 
 		case <-ctx.Done():
@@ -648,6 +651,21 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				}
 				messagesProcessed++
 
+				// Parse and process WebSocket message immediately.
+				//
+				// Polymarket CLOB WS sends two message shapes:
+				//   1. Book snapshot  – array of objects with "bids"/"asks" fields
+				//      (event_type:"book").  Sent on subscribe and after reconnect.
+				//   2. Price-change delta – single object with "price_changes" array
+				//      (event_type:"price_change").  Contains only changed levels
+				//      but NO size information, so we cannot update the full book
+				//      from them.  We apply the best-bid/ask update from the delta
+				//      and rely on the 4 ms REST poll for full-depth accuracy.
+				//
+				// IMPORTANT: only write to tokenBids/tokenAsks when the parsed
+				// value is strictly positive — a zero value means "no orders on
+				// that side in this message" and must NOT overwrite a previously
+				// valid price from REST or an earlier WS snapshot.
 				if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 {
 					for _, b := range books {
 						outcome := tokenToOutcome[b.AssetID]
@@ -674,7 +692,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							lastUpdateTs[outcome] = msgTs
 						}
 
-						bid, ask := 0.0, 1.0
+						bid, ask := 0.0, 0.0
 						for _, order := range b.Bids {
 							p, err := strconv.ParseFloat(order.Price, 64)
 							if err != nil {
@@ -689,27 +707,83 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							if err != nil {
 								continue
 							}
-							if p < ask && p > 0 {
+							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
 								ask = p
 							}
 						}
-						if ask >= 1.0 {
-							ask = 0
+
+						// Guard: only persist valid (non-zero) prices so we
+						// never overwrite a good REST value with a zero.
+						if bid > 0 {
+							tokenBids[outcome] = bid
+						}
+						if ask > 0 {
+							tokenAsks[outcome] = ask
 						}
 
-						tokenBids[outcome] = bid
-						tokenAsks[outcome] = ask
-
-						// Track full depth for liquidity checks
+						// Always update full depth from snapshots
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
 
-						if bid > 0 && ask > 0 && ask < 1.0 {
+						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
 							engine.UpdateMarketData(id, outcome, mid, bid, ask)
 						}
 					}
 					lastUpdate = time.Now()
+				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
+					// ── Price-change delta ─────────────────────────────────
+					// Deltas carry price-level changes but no sizes. Extract
+					// best bid/ask hints and rely on REST for full depth.
+					foundForThisMarket := false
+					type bidAskAccum struct{ bid, ask float64 }
+					accum := make(map[string]*bidAskAccum)
+
+					for _, pc := range update.PriceChanges {
+						outcome := tokenToOutcome[pc.AssetID]
+						if outcome == "" {
+							continue
+						}
+						foundForThisMarket = true
+						p, err := strconv.ParseFloat(pc.Price, 64)
+						if err != nil || p <= 0 {
+							continue
+						}
+						if accum[outcome] == nil {
+							accum[outcome] = &bidAskAccum{
+								bid: tokenBids[outcome],
+								ask: tokenAsks[outcome],
+							}
+						}
+						side := accum[outcome]
+						switch pc.Side {
+						case "BUY":
+							if p > side.bid {
+								side.bid = p
+							}
+						case "SELL":
+							if p > 0 && p < 1.0 && (side.ask == 0 || p < side.ask) {
+								side.ask = p
+							}
+						}
+					}
+
+					for outcome, side := range accum {
+						if side.bid > 0 {
+							tokenBids[outcome] = side.bid
+						}
+						if side.ask > 0 {
+							tokenAsks[outcome] = side.ask
+						}
+						if side.bid > 0 && side.ask > 0 {
+							mid := (side.bid + side.ask) / 2
+							engine.UpdateMarketData(id, outcome, mid, side.bid, side.ask)
+						}
+					}
+
+					if foundForThisMarket {
+						lastUpdate = time.Now()
+					}
 				}
 			default:
 				goto doneWS
@@ -1120,7 +1194,12 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
 
-			if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
+			// Read live price-range filter from settings panel (adjustable at runtime)
+			realbotCfg := tui.GetSettings()
+			rMinAsk := realbotCfg.MinAskPrice
+			rMaxAsk := realbotCfg.MaxAskPrice
+
+			if ask1 >= rMinAsk && ask1 <= rMaxAsk && ask2 >= rMinAsk && ask2 <= rMaxAsk {
 				// Slippage buffer: set to 0 to execute exactly at configured MinMarginPercent
 				const slippageBuffer = 0.0
 				sum := ask1 + ask2
@@ -1635,7 +1714,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			lastUpdateTs[outcome] = msgTs
 		}
 
-		bid, ask := 0.0, 1.0
+		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
 			p, _ := strconv.ParseFloat(b.Price, 64)
 			if p > bid {
@@ -1644,23 +1723,27 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		}
 		for _, a := range book.Asks {
 			p, _ := strconv.ParseFloat(a.Price, 64)
-			if p < ask && p > 0 {
+			if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
 				ask = p
 			}
 		}
-		if ask >= 1.0 {
-			ask = 0
-		}
 
-		// Update prices only if newer
-		if isNewer && (bid > 0 || (ask > 0 && ask < 1.0)) {
-			bids[outcome] = bid
-			asks[outcome] = ask
-			if bid > 0 && ask > 0 && ask < 1.0 {
+		// Update prices only if newer AND value is valid.
+		// Guard each side separately so a missing bid doesn't zero-out a
+		// previously valid ask and vice-versa.
+		if isNewer {
+			if bid > 0 {
+				bids[outcome] = bid
+				success = true
+			}
+			if ask > 0 {
+				asks[outcome] = ask
+				success = true
+			}
+			if bid > 0 && ask > 0 {
 				mid := (bid + ask) / 2
 				engine.UpdateMarketData(id, outcome, mid, bid, ask)
 			}
-			success = true
 		}
 
 		// ALWAYS update full depth (liquidity), as REST is our primary source for this

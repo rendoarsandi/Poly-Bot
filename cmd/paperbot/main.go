@@ -429,10 +429,14 @@ func run() error {
 		default:
 		}
 
-		// Clear old market data immediately and start searching
+		// Clear old market data and release stale HTTP connections before
+		// the next market-search phase.  Stale HTTP/1.1 keep-alive connections
+		// left over from heavy per-trader REST polling can trigger unexpected
+		// server responses on reuse; closing them here prevents that.
 		tui.LogEvent("🔄 Market round complete, searching for new markets...")
 		tui.ClearMarkets()
 		orderBook.CancelAllOrders()
+		restClient.CloseIdleConnections()
 	}
 }
 
@@ -707,84 +711,167 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 					messagesProcessed++
 
-					// Parse and process WebSocket message immediately
-					if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
-						foundForThisTrader := false
-						for _, b := range books {
-							bid, ask := 0.0, 1.0
-							for _, order := range b.Bids {
-								p, _ := strconv.ParseFloat(order.Price, 64)
-								if p > bid {
-									bid = p
-								}
-							}
-							for _, order := range b.Asks {
-								p, _ := strconv.ParseFloat(order.Price, 64)
-								if p < ask && p > 0 {
-									ask = p
-								}
-							}
-							if ask >= 1.0 {
-								ask = 0.0
-							}
-							outcome := t.TokenMap[b.AssetID]
-							if outcome != "" {
-								foundForThisTrader = true
-								t.mu.Lock()
-								t.TokenBids[outcome] = bid
-								t.TokenAsks[outcome] = ask
-								if bid > 0 && ask > 0 && ask < 1.0 {
-									mid := (bid + ask) / 2
-									t.FloatPrices[outcome] = mid
-									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-									// Use batch update for better performance
-									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
-								}
-								t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
-								t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
-								t.mu.Unlock()
-							}
-						}
-						if foundForThisTrader {
-							t.mu.Lock()
-							t.LastUpdate = time.Now()
-							t.mu.Unlock()
-						}
-					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
-						bid, ask := 0.0, 1.0
-						for _, order := range book.Bids {
+				// Parse and process WebSocket message immediately.
+				//
+				// Polymarket CLOB WS sends two message shapes:
+				//   1. Book snapshot  – array of objects with "bids"/"asks" fields
+				//      (event_type:"book").  Sent on subscribe and after reconnect.
+				//   2. Price-change delta – single object with "price_changes" array
+				//      (event_type:"price_change").  Contains only changed levels
+				//      but NO size information, so we cannot update the full book
+				//      from them.  We apply the best-bid/ask update from the delta
+				//      and rely on the 4 ms REST poll for full-depth accuracy.
+				//
+				// IMPORTANT: only write to TokenBids/TokenAsks when the parsed
+				// value is strictly positive — a zero value means "no orders on
+				// that side in this message" and must NOT overwrite a previously
+				// valid price from REST or an earlier WS snapshot.
+				if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
+					// ── Book snapshot (array) ──────────────────────────────
+					foundForThisTrader := false
+					for _, b := range books {
+						bid, ask := 0.0, 0.0
+						for _, order := range b.Bids {
 							p, _ := strconv.ParseFloat(order.Price, 64)
 							if p > bid {
 								bid = p
 							}
 						}
-						for _, order := range book.Asks {
+						for _, order := range b.Asks {
 							p, _ := strconv.ParseFloat(order.Price, 64)
-							if p < ask && p > 0 {
+							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
 								ask = p
 							}
 						}
-						if ask >= 1.0 {
-							ask = 0.0
-						}
-						outcome := t.TokenMap[book.AssetID]
+						outcome := t.TokenMap[b.AssetID]
 						if outcome != "" {
+							foundForThisTrader = true
 							t.mu.Lock()
-							t.LastUpdate = time.Now()
-							t.TokenBids[outcome] = bid
-							t.TokenAsks[outcome] = ask
-							if bid > 0 && ask > 0 && ask < 1.0 {
+							// Guard: only persist valid (non-zero) prices so we
+							// never overwrite a good REST value with a zero.
+							if bid > 0 {
+								t.TokenBids[outcome] = bid
+							}
+							if ask > 0 {
+								t.TokenAsks[outcome] = ask
+							}
+							if bid > 0 && ask > 0 {
 								mid := (bid + ask) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-								// Use batch update for better performance
 								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
-		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
-						t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
-						t.mu.Unlock()
+							// Always update full depth from snapshots — REST will
+							// keep this fresh on the 4 ms poll as well.
+							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
+							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
+							t.mu.Unlock()
 						}
 					}
+					if foundForThisTrader {
+						t.mu.Lock()
+						t.LastUpdate = time.Now()
+						t.mu.Unlock()
+					}
+				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
+					// ── Price-change delta ─────────────────────────────────
+					// Deltas tell us which price level changed but not the new
+					// size, so we only extract the best bid/ask hint and let
+					// the REST poll reconcile the full depth.
+					foundForThisTrader := false
+					type bidAskAccum struct{ bid, ask float64 }
+					accum := make(map[string]*bidAskAccum)
+
+					for _, pc := range update.PriceChanges {
+						outcome := t.TokenMap[pc.AssetID]
+						if outcome == "" {
+							continue
+						}
+						foundForThisTrader = true
+						p, err := strconv.ParseFloat(pc.Price, 64)
+						if err != nil || p <= 0 {
+							continue
+						}
+						if accum[outcome] == nil {
+							t.mu.Lock()
+							accum[outcome] = &bidAskAccum{
+								bid: t.TokenBids[outcome],
+								ask: t.TokenAsks[outcome],
+							}
+							t.mu.Unlock()
+						}
+						side := accum[outcome]
+						switch pc.Side {
+						case "BUY":
+							if p > side.bid {
+								side.bid = p
+							}
+						case "SELL":
+							if p > 0 && p < 1.0 && (side.ask == 0 || p < side.ask) {
+								side.ask = p
+							}
+						}
+					}
+
+					for outcome, side := range accum {
+						t.mu.Lock()
+						if side.bid > 0 {
+							t.TokenBids[outcome] = side.bid
+						}
+						if side.ask > 0 {
+							t.TokenAsks[outcome] = side.ask
+						}
+						if side.bid > 0 && side.ask > 0 {
+							mid := (side.bid + side.ask) / 2
+							t.FloatPrices[outcome] = mid
+							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+							t.Engine.UpdateMarketData(t.ID, outcome, mid, side.bid, side.ask)
+						}
+						t.mu.Unlock()
+					}
+
+					if foundForThisTrader {
+						t.mu.Lock()
+						t.LastUpdate = time.Now()
+						t.mu.Unlock()
+					}
+				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+					// ── Book snapshot (single object) ──────────────────────
+					bid, ask := 0.0, 0.0
+					for _, order := range book.Bids {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > bid {
+							bid = p
+						}
+					}
+					for _, order := range book.Asks {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+							ask = p
+						}
+					}
+					outcome := t.TokenMap[book.AssetID]
+					if outcome != "" {
+						t.mu.Lock()
+						t.LastUpdate = time.Now()
+						// Guard: only persist valid (non-zero) prices.
+						if bid > 0 {
+							t.TokenBids[outcome] = bid
+						}
+						if ask > 0 {
+							t.TokenAsks[outcome] = ask
+						}
+						if bid > 0 && ask > 0 {
+							mid := (bid + ask) / 2
+							t.FloatPrices[outcome] = mid
+							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+							t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+						}
+						t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
+						t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
+						t.mu.Unlock()
+					}
+				}
 				default:
 					// No more messages in channel, continue with rest of loop
 					goto doneProcessingWS
@@ -894,17 +981,22 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				ask1 := t.TokenAsks[t.Outcomes[0]]
 				ask2 := t.TokenAsks[t.Outcomes[1]]
 
-				if ask1 >= 0.10 && ask1 <= 0.90 && ask2 >= 0.10 && ask2 <= 0.90 {
-					sum := ask1 + ask2
-					margin := (1.0 - sum) * 100
+			// Read live price-range filter from settings panel (adjustable at runtime)
+			liveCfg := t.TUI.GetSettings()
+			minAsk := liveCfg.MinAskPrice
+			maxAsk := liveCfg.MaxAskPrice
 
-					// Skip trading if kill switch is active (but don't exit - wait for expiration)
-					if killSwitchActive {
-						continue
-					}
+			if ask1 >= minAsk && ask1 <= maxAsk && ask2 >= minAsk && ask2 <= maxAsk {
+				sum := ask1 + ask2
+				margin := (1.0 - sum) * 100
 
-					// Use config for minimum margin (default 2%)
-					minMarginPercent := t.Config.MinMarginPercent
+				// Skip trading if kill switch is active (but don't exit - wait for expiration)
+				if killSwitchActive {
+					continue
+				}
+
+				// Use config for minimum margin (default 2%)
+				minMarginPercent := t.Config.MinMarginPercent
 
 					// Calculate dynamic trade size based on EQUITY (not just cash)
 					// This ensures consistent sizing regardless of how much is in positions

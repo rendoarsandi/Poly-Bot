@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,23 +15,46 @@ import (
 	"Market-bot/internal/core"
 )
 
-// Optimized HTTP client with connection pooling and timeouts for ultra-low latency
+// maxResponseBodySize caps how many bytes we'll read from any API response.
+// This converts what would be an unrecoverable bytes.ErrTooLarge panic (in the
+// HTTP/2 read-loop goroutine) into an ordinary JSON decode error.
+const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
+
+// httpClient is the shared HTTP client for all REST calls.
+//
+// IMPORTANT: HTTP/2 is intentionally disabled here.
+// When ForceAttemptHTTP2 is true, Go's net/http creates a persistent
+// background goroutine (http2ClientConn.readLoop) per connection.  If that
+// goroutine encounters a bytes.ErrTooLarge panic (e.g. on memory pressure or
+// an unexpectedly large TLS record from the server), the panic is NOT
+// recoverable from user-land because it runs outside any defer/recover we
+// control — the whole process crashes.
+//
+// Forcing HTTP/1.1 eliminates that goroutine entirely.  All reads happen
+// inside the goroutine that issued the request, where our recover() works.
 var httpClient = &http.Client{
-	Timeout: 10 * time.Second, // Increased timeout for better stability on slower networks
+	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        200, // More idle connections
-		MaxIdleConnsPerHost: 50,  // More per-host connections
-		MaxConnsPerHost:     100, // Allow more concurrent connections
-		IdleConnTimeout:     120 * time.Second,
+		// Smaller pool: 4 concurrent traders × ~10 connections each is plenty.
+		MaxIdleConns:        50,
+		MaxIdleConnsPerHost: 10,
+		MaxConnsPerHost:     20,
+		IdleConnTimeout:     60 * time.Second,
 		DisableCompression:  true, // Skip compression for speed
 		DialContext: (&net.Dialer{
-			Timeout:   2 * time.Second,
-			KeepAlive: 60 * time.Second,
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSHandshakeTimeout:   2 * time.Second,
-		ResponseHeaderTimeout: 3 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true, // Use HTTP/2 for multiplexing
+		// Disable HTTP/2: ForceAttemptHTTP2=false alone is not enough because
+		// the server can still negotiate h2 via ALPN.  Setting TLSNextProto to
+		// a non-nil empty map tells Go's HTTP stack to skip h2 entirely.
+		// The client-side TLSNextProto signature is:
+		//   func(authority string, c *tls.Conn) http.RoundTripper
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
 	},
 }
 
@@ -140,7 +164,7 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 			}
 
 			var events []GammaEvent
-			if err := json.NewDecoder(resp.Body).Decode(&events); err != nil || len(events) == 0 {
+			if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&events); err != nil || len(events) == 0 {
 				resp.Body.Close()
 				continue
 			}
@@ -203,7 +227,7 @@ func (c *RestClient) ListMarkets(ctx context.Context) ([]Market, error) {
 	}
 
 	var result ListMarketsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode markets list: %w", err)
 	}
 
@@ -236,7 +260,7 @@ func (c *RestClient) GetMarket(ctx context.Context, slug string) (*Market, error
 	}
 
 	var market Market
-	if err := json.NewDecoder(resp.Body).Decode(&market); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&market); err != nil {
 		return nil, fmt.Errorf("failed to decode market response: %w", err)
 	}
 
@@ -284,7 +308,7 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 	}
 
 	var book OrderBookResponse
-	if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&book); err != nil {
 		return nil, fmt.Errorf("failed to decode order book: %w", err)
 	}
 
@@ -321,7 +345,7 @@ func (c *RestClient) GetFeeRate(ctx context.Context, tokenID string) (int, error
 		return 0, fmt.Errorf("failed to fetch fee rate: status %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		return 0, fmt.Errorf("failed to read fee rate response: %w", err)
 	}
@@ -385,7 +409,7 @@ func (c *RestClient) GetGammaBidAskBySlug(ctx context.Context, slug string) (map
 		BestAsk float64 `json:"bestAsk"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&results); err != nil {
 		return nil, fmt.Errorf("failed to decode gamma price: %w", err)
 	}
 
@@ -474,4 +498,12 @@ func (c *RestClient) GetCLOBBidAsk(ctx context.Context, tokenMap map[string]stri
 
 func parseFloat(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
+}
+
+// CloseIdleConnections closes any idle HTTP connections held in the pool.
+// Call this between market rounds to flush stale connections and free memory,
+// which reduces the risk of the transport reusing a connection that is in a
+// bad state after heavy polling.
+func (c *RestClient) CloseIdleConnections() {
+	httpClient.CloseIdleConnections()
 }
