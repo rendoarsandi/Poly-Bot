@@ -398,11 +398,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 3
+					m.settingsCursor = 5
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 4
+				m.settingsCursor = (m.settingsCursor + 1) % 6
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -424,6 +424,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				case 3:
 					m.tui.settings.SplitStrategyEnabled = false
+				case 4:
+					m.tui.settings.MinAskPrice -= 0.01
+					if m.tui.settings.MinAskPrice < 0.01 {
+						m.tui.settings.MinAskPrice = 0.01
+					}
+				case 5:
+					m.tui.settings.MaxAskPrice -= 0.01
+					if m.tui.settings.MaxAskPrice < 0.01 {
+						m.tui.settings.MaxAskPrice = 0.01
+					}
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				m.tui.mu.Unlock()
@@ -448,6 +458,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				case 3:
 					m.tui.settings.SplitStrategyEnabled = true
+				case 4:
+					m.tui.settings.MinAskPrice += 0.01
+					if m.tui.settings.MinAskPrice > 0.99 {
+						m.tui.settings.MinAskPrice = 0.99
+					}
+				case 5:
+					m.tui.settings.MaxAskPrice += 0.01
+					if m.tui.settings.MaxAskPrice > 0.99 {
+						m.tui.settings.MaxAskPrice = 0.99
+					}
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				m.tui.mu.Unlock()
@@ -1734,6 +1754,16 @@ func (m tuiModel) renderSettings(w int) string {
 				return styleMuted.Render(" OFF ")
 			}(),
 			bar: "",
+		},
+		{
+			label: "Min Ask Price",
+			value: fmt.Sprintf(" $%.2f ", cfg.MinAskPrice),
+			bar:   renderBar(cfg.MinAskPrice, 20),
+		},
+		{
+			label: "Max Ask Price",
+			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
+			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
 	}
 

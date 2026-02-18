@@ -60,6 +60,10 @@ type Config struct {
 	// API constraints
 	MinOrderSize float64 // Minimum shares per order enforced by CLOB API (default: 5.0)
 
+	// Price filters
+	MinAskPrice float64 // Minimum ask price to buy (default: 0.10)
+	MaxAskPrice float64 // Maximum ask price to buy (default: 0.90)
+
 	// ═══════════════════════════════════════════════════════════════════════════
 	// SPLIT STRATEGY SETTINGS (Panic Sell)
 	// Strategy: SPLIT USDC → YES+NO shares, SELL when bid_sum > $1.03
@@ -105,6 +109,9 @@ func LoadConfig() (*Config, error) {
 		// Aggression settings
 		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
 		MaxAggressionMultiplier: parseEnvFloat("MAX_AGGRESSION_MULTIPLIER", 5.0),
+		// Price filters
+		MinAskPrice: parseEnvFloat("MIN_ASK_PRICE", 0.10),
+		MaxAskPrice: parseEnvFloat("MAX_ASK_PRICE", 0.90),
 		// Split strategy settings (panic sell)
 		SplitStrategyEnabled:     os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
 		SplitMinMarginSell:       parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),

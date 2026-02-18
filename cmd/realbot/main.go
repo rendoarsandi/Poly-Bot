@@ -293,6 +293,8 @@ func run() error {
 		MinMarginPercent:     cfg.MinMarginPercent,
 		SplitMinMarginSell:   cfg.SplitMinMarginSell,
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
+		MinAskPrice:          cfg.MinAskPrice,
+		MaxAskPrice:          cfg.MaxAskPrice,
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
