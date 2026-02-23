@@ -202,7 +202,7 @@ func run() error {
 		} else if len(positions) > 0 {
 			// Map positions to their markets to find ConditionIDs
 			// We'll need a fresh list of markets for this
-			markets, err := restClient.Get15mMarkets(cleanupCtx, nil)
+			markets, err := restClient.GetMarketsByTimeframe(cleanupCtx, nil, "15m")
 			if err == nil {
 				// Group tokens by ConditionID
 				condToTokens := make(map[string][]string)
@@ -289,12 +289,26 @@ func run() error {
 
 	// Seed settings panel with values from config (.env)
 	tui.InitSettings(paper.TUISettings{
+		MarketSlug:           cfg.MarketSlug,
+		MaxMarkets:           cfg.MaxMarkets,
+		Timeframe:            cfg.Timeframe,
 		TradeScaleFactor:     cfg.TradeScaleFactor,
 		MinMarginPercent:     cfg.MinMarginPercent,
 		SplitMinMarginSell:   cfg.SplitMinMarginSell,
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
 		MinAskPrice:          cfg.MinAskPrice,
 		MaxAskPrice:          cfg.MaxAskPrice,
+	}, func(s paper.TUISettings) {
+		cfg.MarketSlug = s.MarketSlug
+		cfg.MaxMarkets = s.MaxMarkets
+		cfg.Timeframe = s.Timeframe
+		cfg.TradeScaleFactor = s.TradeScaleFactor
+		cfg.MinMarginPercent = s.MinMarginPercent
+		cfg.SplitMinMarginSell = s.SplitMinMarginSell
+		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
+		cfg.MinAskPrice = s.MinAskPrice
+		cfg.MaxAskPrice = s.MaxAskPrice
+		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
@@ -316,7 +330,7 @@ func run() error {
 				start := time.Now()
 				// Use a lightweight check for latency
 				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_, err := restClient.Get15mMarkets(pingCtx, []string{"btc"})
+				_, err := restClient.GetMarketsByTimeframe(pingCtx, []string{"btc"}, "15m")
 				cancel()
 				if err == nil {
 					tui.UpdateLatency(time.Since(start))
@@ -360,8 +374,8 @@ func run() error {
 		tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
 
 		// Find markets
-		tui.LogEvent("🔍 Searching for active 15m markets...")
-		markets := mkt.FindMarkets(ctx, restClient, func(format string, args ...interface{}) {
+		tui.LogEvent("🔍 Searching for active markets based on live settings...")
+		markets := mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
 			tui.LogEvent(format, args...)
 		})
 		if len(markets) == 0 {
@@ -462,7 +476,7 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 	fmt.Println()
 	fmt.Println("🔍 Searching for active markets...")
 
-	markets, err := restClient.Get15mMarkets(ctx, nil)
+	markets, err := restClient.GetMarketsByTimeframe(ctx, nil, "15m")
 	if err != nil {
 		return fmt.Errorf("failed to fetch markets: %w", err)
 	}
@@ -583,7 +597,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
 	lastUpdateTs := make(map[string]int64) // outcome -> unix nano timestamp
 	lastUpdate := time.Now()
-	lastRestPoll := time.Now()
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -735,11 +748,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					lastUpdate = time.Now()
 				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 					// ── Price-change delta ─────────────────────────────────
-					// Deltas carry price-level changes but no sizes. Extract
-					// best bid/ask hints and rely on REST for full depth.
 					foundForThisMarket := false
-					type bidAskAccum struct{ bid, ask float64 }
-					accum := make(map[string]*bidAskAccum)
 
 					for _, pc := range update.PriceChanges {
 						outcome := tokenToOutcome[pc.AssetID]
@@ -747,39 +756,39 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							continue
 						}
 						foundForThisMarket = true
-						p, err := strconv.ParseFloat(pc.Price, 64)
-						if err != nil || p <= 0 {
+						p, errP := strconv.ParseFloat(pc.Price, 64)
+						s, errS := strconv.ParseFloat(pc.Size, 64)
+						if errP != nil || errS != nil || p <= 0 {
 							continue
 						}
-						if accum[outcome] == nil {
-							accum[outcome] = &bidAskAccum{
-								bid: tokenBids[outcome],
-								ask: tokenAsks[outcome],
-							}
-						}
-						side := accum[outcome]
+
 						switch pc.Side {
 						case "BUY":
-							if p > side.bid {
-								side.bid = p
-							}
+							tokenFullBids[outcome] = mkt.ApplyDelta(tokenFullBids[outcome], p, s, true)
 						case "SELL":
-							if p > 0 && p < 1.0 && (side.ask == 0 || p < side.ask) {
-								side.ask = p
-							}
+							tokenFullAsks[outcome] = mkt.ApplyDelta(tokenFullAsks[outcome], p, s, false)
 						}
 					}
 
-					for outcome, side := range accum {
-						if side.bid > 0 {
-							tokenBids[outcome] = side.bid
+					// Update best bids/asks based on the new full depth
+					for outcome := range tokenToOutcome {
+						bids := tokenFullBids[outcome]
+						if len(bids) > 0 {
+							tokenBids[outcome] = bids[0].Price
+						} else {
+							tokenBids[outcome] = 0
 						}
-						if side.ask > 0 {
-							tokenAsks[outcome] = side.ask
+
+						asks := tokenFullAsks[outcome]
+						if len(asks) > 0 {
+							tokenAsks[outcome] = asks[0].Price
+						} else {
+							tokenAsks[outcome] = 0
 						}
-						if side.bid > 0 && side.ask > 0 {
-							mid := (side.bid + side.ask) / 2
-							engine.UpdateMarketData(id, outcome, mid, side.bid, side.ask)
+
+						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
+							mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
+							engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
 						}
 					}
 
@@ -797,27 +806,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}
 
-		// ============ REST PRIMARY FOR LIQUIDITY ============
-		// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-		// Poll REST every 4ms for high-frequency liquidity updates (~250 RPS per trader)
-		// Global rate limiter in RestClient caps total at 500 RPS across all traders
+		// ============ REST FALLBACK ============
+		// WS is primary for liquidity data via full depth updates and deltas.
+		// Only poll REST if WS is unhealthy or stale.
 		staleTime := time.Since(lastUpdate)
-		restPollInterval := 4 * time.Millisecond
-		needsRestPoll := time.Since(lastRestPoll) > restPollInterval
 
 		// Update WS staleness and ping latency in TUI
 		wsTimeSinceMsg := wsMgr.TimeSinceLastMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 
-		// Also force REST if WS is unhealthy
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		if wsUnhealthy && staleTime > 3*time.Second {
-			needsRestPoll = true
-		}
-
-		if needsRestPoll {
-			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
 			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastUpdateTs, engine, restClient, tui) {
 				lastUpdate = time.Now()
@@ -831,6 +831,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			continue
 		}
 
+		liveCfg := tui.GetSettings()
+
 		// ═══════════════════════════════════════════════════════════════════════════
 		// SPLIT STRATEGY: Sell to panic buyers when bid_sum > $1.03
 		// This is SEPARATE from the panic buy strategy (buy when ask_sum < $0.98)
@@ -838,7 +840,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		// ═══════════════════════════════════════════════════════════════════════════
 		skipPanicBuy := false // Flag to skip panic buy when nearing expiry
 
-		if cfg.SplitStrategyEnabled && len(tokenBids) >= 2 && len(outcomes) == 2 {
+		if liveCfg.SplitStrategyEnabled && len(tokenBids) >= 2 && len(outcomes) == 2 {
 			bid1 := tokenBids[outcomes[0]]
 			bid2 := tokenBids[outcomes[1]]
 
@@ -1648,6 +1650,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit | Tx: %s...", id, result.PnL, txHash[:10])
 								} else {
 									tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit", id, result.PnL)
+								}
+
+								// Phase 3: Auto-cleanup of unbalanced excess shares using Market Sell
+								excess0 := bal0 - actualMin
+								excess1 := bal1 - actualMin
+								if excess0 >= 0.01 {
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
+									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.10, excess0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+									if sellErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
+									}
+								}
+								if excess1 >= 0.01 {
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
+									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.10, excess1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+									if sellErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
+									}
 								}
 							}
 

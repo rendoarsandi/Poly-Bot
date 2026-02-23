@@ -198,12 +198,26 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
+		MarketSlug:           cfg.MarketSlug,
+		MaxMarkets:           cfg.MaxMarkets,
+		Timeframe:            cfg.Timeframe,
 		TradeScaleFactor:     cfg.TradeScaleFactor,
 		MinMarginPercent:     cfg.MinMarginPercent,
 		SplitMinMarginSell:   cfg.SplitMinMarginSell,
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
 		MinAskPrice:          cfg.MinAskPrice,
 		MaxAskPrice:          cfg.MaxAskPrice,
+	}, func(s paper.TUISettings) {
+		cfg.MarketSlug = s.MarketSlug
+		cfg.MaxMarkets = s.MaxMarkets
+		cfg.Timeframe = s.Timeframe
+		cfg.TradeScaleFactor = s.TradeScaleFactor
+		cfg.MinMarginPercent = s.MinMarginPercent
+		cfg.SplitMinMarginSell = s.SplitMinMarginSell
+		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
+		cfg.MinAskPrice = s.MinAskPrice
+		cfg.MaxAskPrice = s.MaxAskPrice
+		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 
@@ -235,7 +249,7 @@ func run() error {
 				start := time.Now()
 				// Use a lightweight check for latency
 				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_, err := restClient.Get15mMarkets(pingCtx, []string{"btc"})
+				_, err := restClient.GetMarketsByTimeframe(pingCtx, []string{"btc"}, "15m")
 				cancel()
 				if err == nil {
 					tui.UpdateLatency(time.Since(start))
@@ -305,8 +319,8 @@ func run() error {
 		}
 
 		// Find all available markets (BTC, ETH, SOL, XRP)
-		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active 15m markets...")
-		markets := mkt.FindMarkets(ctx, restClient, func(format string, args ...interface{}) {
+		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active markets based on live settings...")
+		markets := mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
 			tui.LogEvent(format, args...)
 		})
 		if len(markets) == 0 {
@@ -398,10 +412,17 @@ func run() error {
 			}
 		}
 
-		close(results)
-		close(errors)
+		// Close channels safely in a background goroutine AFTER wg.Wait()
+		// This prevents deadlocks and panics if traders take a long time to exit
+		go func() {
+			wg.Wait()
+			close(results)
+			close(errors)
+		}()
 
 		// Collect results
+		// range over the channel safely processes only successful returns and cleanly exits
+		// once the background goroutine closes the channel after wg.Wait() finishes.
 		totalPnL := 0.0
 		totalTrades := 0
 		for result := range results {
@@ -777,60 +798,52 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 					// ── Price-change delta ─────────────────────────────────
-					// Deltas tell us which price level changed but not the new
-					// size, so we only extract the best bid/ask hint and let
-					// the REST poll reconcile the full depth.
 					foundForThisTrader := false
-					type bidAskAccum struct{ bid, ask float64 }
-					accum := make(map[string]*bidAskAccum)
-
+					
+					t.mu.Lock()
 					for _, pc := range update.PriceChanges {
 						outcome := t.TokenMap[pc.AssetID]
 						if outcome == "" {
 							continue
 						}
 						foundForThisTrader = true
-						p, err := strconv.ParseFloat(pc.Price, 64)
-						if err != nil || p <= 0 {
+						p, errP := strconv.ParseFloat(pc.Price, 64)
+						s, errS := strconv.ParseFloat(pc.Size, 64)
+						if errP != nil || errS != nil || p <= 0 {
 							continue
 						}
-						if accum[outcome] == nil {
-							t.mu.Lock()
-							accum[outcome] = &bidAskAccum{
-								bid: t.TokenBids[outcome],
-								ask: t.TokenAsks[outcome],
-							}
-							t.mu.Unlock()
-						}
-						side := accum[outcome]
+
 						switch pc.Side {
 						case "BUY":
-							if p > side.bid {
-								side.bid = p
-							}
+							t.TokenFullBids[outcome] = mkt.ApplyDelta(t.TokenFullBids[outcome], p, s, true)
 						case "SELL":
-							if p > 0 && p < 1.0 && (side.ask == 0 || p < side.ask) {
-								side.ask = p
-							}
+							t.TokenFullAsks[outcome] = mkt.ApplyDelta(t.TokenFullAsks[outcome], p, s, false)
 						}
 					}
+					
+					for outcome := range t.TokenMap {
+						bids := t.TokenFullBids[outcome]
+						if len(bids) > 0 {
+							t.TokenBids[outcome] = bids[0].Price
+						} else {
+							t.TokenBids[outcome] = 0
+						}
 
-					for outcome, side := range accum {
-						t.mu.Lock()
-						if side.bid > 0 {
-							t.TokenBids[outcome] = side.bid
+						asks := t.TokenFullAsks[outcome]
+						if len(asks) > 0 {
+							t.TokenAsks[outcome] = asks[0].Price
+						} else {
+							t.TokenAsks[outcome] = 0
 						}
-						if side.ask > 0 {
-							t.TokenAsks[outcome] = side.ask
-						}
-						if side.bid > 0 && side.ask > 0 {
-							mid := (side.bid + side.ask) / 2
+
+						if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
+							mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
 							t.FloatPrices[outcome] = mid
 							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, side.bid, side.ask)
+							t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
 						}
-						t.mu.Unlock()
 					}
+					t.mu.Unlock()
 
 					if foundForThisTrader {
 						t.mu.Lock()
@@ -898,25 +911,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.TUI.UpdateWSLatency(wsLastMsg)
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
-			// REST is now PRIMARY for liquidity data (WS doesn't send liquidity updates)
-			// Poll REST every 4ms for high-frequency liquidity updates (~250 RPS per trader)
-			// Global rate limiter in RestClient caps total at 500 RPS across all traders
-			restPollInterval := 4 * time.Millisecond
-
-			// Individual trader staleness watchdog
+			// ============ REST FALLBACK ============
+			// WS is primary for liquidity data via full depth updates and deltas.
+			// Only poll REST if WS is unhealthy or stale.
 			staleTime := time.Since(t.LastUpdate)
+			
+			// Update WS staleness and ping latency in TUI
+			t.TUI.UpdateWSLatency(wsLastMsg)
+			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
-			// ALWAYS poll REST for liquidity - WS only gives price changes, not liquidity updates
-			// This ensures we have accurate liquidity data for trade sizing
-			needsRestPoll := time.Since(t.LastRestPoll) > restPollInterval
-
-			// Also force REST if WS is unhealthy
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
 			if wsUnhealthy && staleTime > 3*time.Second {
-				needsRestPoll = true
-			}
-
-			if needsRestPoll {
 				t.handleRestFallback(ctx, tokenPrices, staleTime)
 			}
 
@@ -979,12 +984,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// and that's normal market behavior, not a reason to exit
 
 			// Trading logic - check every tick for arbitrage opportunities
+			liveCfg := t.TUI.GetSettings()
 			if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
 				ask1 := t.TokenAsks[t.Outcomes[0]]
 				ask2 := t.TokenAsks[t.Outcomes[1]]
 
 			// Read live price-range filter from settings panel (adjustable at runtime)
-			liveCfg := t.TUI.GetSettings()
 			minAsk := liveCfg.MinAskPrice
 			maxAsk := liveCfg.MaxAskPrice
 
@@ -1245,7 +1250,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// SPLIT STRATEGY SIMULATION: Sell when bid_sum > $1.00 + margin
 			// This simulates the panic sell strategy without real blockchain calls
 			// ═══════════════════════════════════════════════════════════════════════════
-			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && t.Config.SplitStrategyEnabled {
+			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled {
 				bid1 := t.TokenBids[t.Outcomes[0]]
 				bid2 := t.TokenBids[t.Outcomes[1]]
 				currentEquity := t.Engine.GetEquity()

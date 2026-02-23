@@ -21,6 +21,7 @@ type OrderBook struct {
 type PriceChange struct {
 	AssetID string `json:"asset_id"`
 	Price   string `json:"price"`
+	Size    string `json:"size"`
 	Side    string `json:"side"`
 }
 

@@ -110,16 +110,24 @@ type GammaMarket struct {
 	Closed       bool   `json:"closed"`
 }
 
-func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Market, error) {
+func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
 	if len(assets) == 0 {
 		assets = []string{"btc", "eth"}
+	}
+	if timeframe == "" {
+		timeframe = "15m"
+	}
+
+	var interval int64 = 900 // 15 minutes by default
+	if timeframe == "5m" {
+		interval = 300 // 5 minutes
 	}
 
 	now := time.Now().UTC()
 	currentTs := now.Unix()
 
-	// Calculate the current 15m window START
-	currentWindowStart := (currentTs / 900) * 900
+	// Calculate the current window START
+	currentWindowStart := (currentTs / interval) * interval
 
 	var markets []Market
 
@@ -129,13 +137,13 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 	// - Window after next (for early creation)
 	// - Previous 4 windows (to support redemption of recently closed markets)
 	windowsToCheck := []int64{
-		currentWindowStart,        // Current window
-		currentWindowStart + 900,  // Next window (might be pre-created)
-		currentWindowStart + 1800, // Window after next (early creation)
-		currentWindowStart - 900,  // Previous window
-		currentWindowStart - 1800, // 30m ago
-		currentWindowStart - 2700, // 45m ago
-		currentWindowStart - 3600, // 1h ago
+		currentWindowStart,                 // Current window
+		currentWindowStart + interval,      // Next window (might be pre-created)
+		currentWindowStart + 2*interval,    // Window after next (early creation)
+		currentWindowStart - interval,      // Previous window
+		currentWindowStart - 2*interval,    // 2 windows ago
+		currentWindowStart - 3*interval,    // 3 windows ago
+		currentWindowStart - 4*interval,    // 4 windows ago
 	}
 
 	for _, asset := range assets {
@@ -147,7 +155,7 @@ func (c *RestClient) Get15mMarkets(ctx context.Context, assets []string) ([]Mark
 				return nil, ctx.Err()
 			}
 
-			slug := fmt.Sprintf("%s-updown-15m-%d", asset, windowStart)
+			slug := fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart)
 
 			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
 			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)

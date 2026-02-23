@@ -21,10 +21,10 @@ import (
 func FindMarkets(
 	ctx context.Context,
 	restClient *api.RestClient,
+	getConfig func() paper.TUISettings,
 	logFn func(format string, args ...interface{}),
 ) map[string]*api.Market {
 	found := make(map[string]*api.Market)
-	assets := []string{"btc", "eth"}
 
 	// Fast polling for new markets - check every 500 ms for first 30 seconds,
 	// then slow down to every 2 seconds.
@@ -39,7 +39,31 @@ func FindMarkets(
 		default:
 		}
 
-		markets, err := restClient.Get15mMarkets(ctx, nil)
+		cfg := getConfig()
+		var assets []string
+		if cfg.MarketSlug != "" && cfg.MarketSlug != "ALL" {
+			// User specified multiple markets separated by comma?
+			// Let's support split by comma, e.g. "BTC,ETH"
+			for _, p := range strings.Split(cfg.MarketSlug, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					assets = append(assets, p)
+				}
+			}
+		}
+		if len(assets) == 0 {
+			assets = []string{"btc", "eth", "sol", "xrp"}
+		}
+		timeframe := cfg.Timeframe
+		if timeframe == "" {
+			timeframe = "15m"
+		}
+		maxMarkets := cfg.MaxMarkets
+		if maxMarkets <= 0 {
+			maxMarkets = 4 // Default to 4
+		}
+
+		markets, err := restClient.GetMarketsByTimeframe(ctx, assets, timeframe)
 		if err != nil {
 			if attempts == 0 && logFn != nil {
 				logFn("⚠️ Market fetch error: %v, retrying...", err)
@@ -62,13 +86,16 @@ func FindMarkets(
 			}
 
 			slug := strings.ToLower(m.Slug)
-			is15m := strings.Contains(slug, "15m") || strings.Contains(slug, "updown")
+			isTargetTimeframe := strings.Contains(slug, timeframe) || strings.Contains(slug, "updown")
 
 			for _, asset := range assets {
 				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && is15m {
+				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && isTargetTimeframe {
 					mCopy := m
 					found[key] = &mCopy
+					if len(found) >= maxMarkets {
+						return found
+					}
 				}
 			}
 		}

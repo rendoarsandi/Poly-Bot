@@ -104,7 +104,7 @@ func main() {
 
 	// 3. Smart Scan for Tokens
 	fmt.Println("\n🔍 Scanning for tokens in recent 15m markets...")
-	markets, err := rest.Get15mMarkets(ctx, nil)
+	markets, err := rest.GetMarketsByTimeframe(ctx, nil, "15m")
 	if err != nil {
 		fmt.Printf("⚠️ Could not scan markets: %v\n", err)
 	}

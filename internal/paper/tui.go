@@ -199,6 +199,9 @@ type OrderHistoryEntry struct {
 // TUISettings holds runtime-adjustable trading parameters.
 // These can be changed live from the settings panel (press 's').
 type TUISettings struct {
+	MarketSlug           string  // Current selected market slug or ALL or BTC,ETH
+	MaxMarkets           int     // Max concurrent markets to trade
+	Timeframe            string  // "5m" or "15m"
 	TradeScaleFactor     float64 // e.g. 0.05 = 5% of equity per trade
 	MinMarginPercent     float64 // e.g. 2.0 = require 2% arb margin
 	SplitMinMarginSell   float64 // e.g. 3.0 = sell splits at 3% margin
@@ -209,9 +212,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -256,7 +259,8 @@ type TUI struct {
 	splitInventories []*SplitInventory
 
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
-	settings TUISettings
+	settings         TUISettings
+	onSettingsChange func(TUISettings)
 
 	program *tea.Program
 }
@@ -398,78 +402,151 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 5
+					m.settingsCursor = 8
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 6
+				m.settingsCursor = (m.settingsCursor + 1) % 9
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
+				changed := false
 				switch m.settingsCursor {
-				case 0:
+				case 0: // Market
+					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+					idx := 0
+					for i, mkt := range markets {
+						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
+							idx = i
+							break
+						}
+					}
+					idx--
+					if idx < 0 {
+						idx = len(markets) - 1
+					}
+					m.tui.settings.MarketSlug = markets[idx]
+					changed = true
+				case 1: // MaxMarkets
+					m.tui.settings.MaxMarkets--
+					if m.tui.settings.MaxMarkets < 1 {
+						m.tui.settings.MaxMarkets = 1
+					}
+					changed = true
+				case 2: // Timeframe
+					if m.tui.settings.Timeframe == "15m" {
+						m.tui.settings.Timeframe = "5m"
+					} else {
+						m.tui.settings.Timeframe = "15m"
+					}
+					changed = true
+				case 3:
 					m.tui.settings.TradeScaleFactor -= 0.01
 					if m.tui.settings.TradeScaleFactor < 0.01 {
 						m.tui.settings.TradeScaleFactor = 0.01
 					}
-				case 1:
+					changed = true
+				case 4:
 					m.tui.settings.MinMarginPercent -= 0.5
 					if m.tui.settings.MinMarginPercent < 0.5 {
 						m.tui.settings.MinMarginPercent = 0.5
 					}
-				case 2:
+					changed = true
+				case 5:
 					m.tui.settings.SplitMinMarginSell -= 0.5
 					if m.tui.settings.SplitMinMarginSell < 1.0 {
 						m.tui.settings.SplitMinMarginSell = 1.0
 					}
-				case 3:
+					changed = true
+				case 6:
 					m.tui.settings.SplitStrategyEnabled = false
-				case 4:
+					changed = true
+				case 7:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
 						m.tui.settings.MinAskPrice = 0.01
 					}
-				case 5:
+					changed = true
+				case 8:
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
 					}
+					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+				if changed && m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "right", "+", "l":
 				m.tui.mu.Lock()
+				changed := false
 				switch m.settingsCursor {
-				case 0:
+				case 0: // Market
+					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+					idx := 0
+					for i, mkt := range markets {
+						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
+							idx = i
+							break
+						}
+					}
+					idx = (idx + 1) % len(markets)
+					m.tui.settings.MarketSlug = markets[idx]
+					changed = true
+				case 1: // MaxMarkets
+					m.tui.settings.MaxMarkets++
+					if m.tui.settings.MaxMarkets > 4 {
+						m.tui.settings.MaxMarkets = 4
+					}
+					changed = true
+				case 2: // Timeframe
+					if m.tui.settings.Timeframe == "15m" {
+						m.tui.settings.Timeframe = "5m"
+					} else {
+						m.tui.settings.Timeframe = "15m"
+					}
+					changed = true
+				case 3:
 					m.tui.settings.TradeScaleFactor += 0.01
 					if m.tui.settings.TradeScaleFactor > 0.50 {
 						m.tui.settings.TradeScaleFactor = 0.50
 					}
-				case 1:
+					changed = true
+				case 4:
 					m.tui.settings.MinMarginPercent += 0.5
 					if m.tui.settings.MinMarginPercent > 20.0 {
 						m.tui.settings.MinMarginPercent = 20.0
 					}
-				case 2:
+					changed = true
+				case 5:
 					m.tui.settings.SplitMinMarginSell += 0.5
 					if m.tui.settings.SplitMinMarginSell > 20.0 {
 						m.tui.settings.SplitMinMarginSell = 20.0
 					}
-				case 3:
+					changed = true
+				case 6:
 					m.tui.settings.SplitStrategyEnabled = true
-				case 4:
+					changed = true
+				case 7:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
 						m.tui.settings.MinAskPrice = 0.99
 					}
-				case 5:
+					changed = true
+				case 8:
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
 					}
+					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+				if changed && m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			// Quick presets
@@ -1731,12 +1808,27 @@ func (m tuiModel) renderSettings(w int) string {
 
 	rows := []row{
 		{
+			label: "Market",
+			value: fmt.Sprintf(" %s ", cfg.MarketSlug),
+			bar:   "",
+		},
+		{
+			label: "Max Concurrent",
+			value: fmt.Sprintf(" %d ", cfg.MaxMarkets),
+			bar:   renderBar(float64(cfg.MaxMarkets)/4.0, 20),
+		},
+		{
+			label: "Timeframe",
+			value: fmt.Sprintf(" %s ", cfg.Timeframe),
+			bar:   "",
+		},
+		{
 			label: "Trade Scale Factor",
 			value: fmtPct(cfg.TradeScaleFactor),
 			bar:   renderBar(cfg.TradeScaleFactor/0.5, 20),
 		},
 		{
-			label: "Min Margin %",
+			label: "Buy Min Margin %",
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
@@ -1837,10 +1929,11 @@ func (t *TUI) GetSettings() TUISettings {
 
 // InitSettings seeds the settings panel with values from config (e.g., from .env).
 // Call this once after NewTUI and before StartRenderLoop.
-func (t *TUI) InitSettings(s TUISettings) {
+func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.settings = s
+	t.onSettingsChange = onChange
 	// Keep tradeFactor in sync so the account panel shows the right value.
 	if s.TradeScaleFactor > 0 {
 		t.tradeFactor = s.TradeScaleFactor

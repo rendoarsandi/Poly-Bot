@@ -279,7 +279,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*ap
 		case <-ctx.Done():
 			return found
 		default:
-			if ms, err := restClient.Get15mMarkets(ctx, nil); err == nil {
+			if ms, err := restClient.GetMarketsByTimeframe(ctx, nil, "15m"); err == nil {
 				for _, m := range ms {
 					et, _ := paper.ParseEndTimeFromSlug(m.Slug)
 					if time.Now().After(et) || time.Until(et) < 30*time.Second {

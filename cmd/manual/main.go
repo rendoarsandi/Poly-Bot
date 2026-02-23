@@ -59,7 +59,7 @@ func main() {
 	// 1. Scan for markets and On-Chain Positions
 	fmt.Println("🔄 Scanning blockchain for positions (BTC, ETH, SOL, XRP)...")
 	assets := []string{"btc", "eth", "sol", "xrp"}
-	markets, err := client.Get15mMarkets(ctx, assets)
+	markets, err := client.GetMarketsByTimeframe(ctx, assets, "15m")
 	if err != nil {
 		log.Fatalf("Failed to fetch markets: %v", err)
 	}

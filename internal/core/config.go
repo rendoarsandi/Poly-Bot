@@ -31,6 +31,8 @@ type Config struct {
 
 	// Market settings
 	MarketSlug string
+	Timeframe  string // 5m or 15m
+	MaxMarkets int    // Maximum concurrent markets to trade
 
 	// Position sizing settings
 	// Default: $1000 balance → $50 per trade (5% of balance)
@@ -92,7 +94,9 @@ func LoadConfig() (*Config, error) {
 		APISecret:     getEnvWithFallback("POLY_API_SECRET", "API_SECRET"),
 		APIPassphrase: getEnvWithFallback("POLY_PASSPHRASE", "API_PASSPHRASE"),
 		PolygonRPCURL: os.Getenv("POLYGON_RPC_URL"),
-		MarketSlug:    os.Getenv("MARKET_SLUG"),
+		MarketSlug:    getEnvWithFallback("MARKET_SLUG", "ALL"),
+		Timeframe:     getEnvWithFallback("TIMEFRAME", "15m"),
+		MaxMarkets:    parseEnvInt("MAX_MARKETS", 4),
 		// Position sizing defaults: $1000 balance → $50 per trade
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
@@ -232,5 +236,24 @@ func parseEnvInt(key string, defaultVal int) int {
 		return defaultVal
 	}
 	return i
+}
+
+// SaveSettings writes the mutable runtime settings back to the .env file.
+func (c *Config) SaveSettings() error {
+	envMap, err := godotenv.Read(".env")
+	if err != nil {
+		// If .env doesn't exist, create an empty map
+		envMap = make(map[string]string)
+	}
+
+	envMap["MARKET_SLUG"] = c.MarketSlug
+	envMap["TIMEFRAME"] = c.Timeframe
+	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
+	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
+	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
+	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
+	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)
+
+	return godotenv.Write(envMap, ".env")
 }
 

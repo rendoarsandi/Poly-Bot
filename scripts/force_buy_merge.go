@@ -44,7 +44,7 @@ func runForceBuyMerge() {
 	market, err := client.GetMarket(ctx, targetSlug)
 	if err != nil {
 		// Fallback: try list and find
-		markets, _ := client.Get15mMarkets(ctx, nil)
+		markets, _ := client.GetMarketsByTimeframe(ctx, nil, "15m")
 		for _, m := range markets {
 			if m.Slug == targetSlug {
 				market = &m
