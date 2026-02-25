@@ -137,6 +137,19 @@ func (e *Engine) UpdateMarketData(marketID, outcome string, price, bid, ask floa
 	e.recalculateDrawdown()
 }
 
+// ClearMarketData clears cached market prices to prevent memory growth across market rounds
+func (e *Engine) ClearMarketData() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.currentPrices = make(map[string]float64)
+	e.currentBids = make(map[string]float64)
+	e.currentAsks = make(map[string]float64)
+	e.marketBids = make(map[string]float64)
+	e.marketAsks = make(map[string]float64)
+	// Clear split inventory references since they are recreated per round
+	e.splitInventories = nil
+}
+
 // UpdateBidAsk updates bid/ask prices for realistic taker simulation
 func (e *Engine) UpdateBidAsk(outcome string, bid, ask float64) {
 	e.mu.Lock()

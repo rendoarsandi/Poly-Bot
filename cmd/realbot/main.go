@@ -453,6 +453,9 @@ func run() error {
 			tui.LogEvent("🔄 All markets closed — searching for next round...")
 			// Release stale keep-alive connections before the next search phase.
 			restClient.CloseIdleConnections()
+			tui.ClearMarkets()
+			orderBook.CancelAllOrders()
+			engine.ClearMarketData()
 			// Loop back to search for new markets
 
 		case <-ctx.Done():

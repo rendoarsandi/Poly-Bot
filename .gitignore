@@ -31,3 +31,11 @@ bot_activity.csv
 /util
 /utilbot
 /derivekey
+
+# Built binaries
+manual
+manualbot
+util
+utilbot
+paperbot
+realbot

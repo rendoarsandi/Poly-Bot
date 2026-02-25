@@ -459,6 +459,7 @@ func run() error {
 		tui.LogEvent("🔄 Market round complete, searching for new markets...")
 		tui.ClearMarkets()
 		orderBook.CancelAllOrders()
+		engine.ClearMarketData()
 		restClient.CloseIdleConnections()
 	}
 }
