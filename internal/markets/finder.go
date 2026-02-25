@@ -63,20 +63,32 @@ func FindMarkets(
 			maxMarkets = 4 // Default to 4
 		}
 
+		var exactMarkets []api.Market
 		markets, err := restClient.GetMarketsByTimeframe(ctx, assets, timeframe)
 		if err != nil {
 			if attempts == 0 && logFn != nil {
 				logFn("⚠️ Market fetch error: %v, retrying...", err)
 			}
-			select {
-			case <-ctx.Done():
-				return found
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
+			// Don't immediately continue, allow exact slug fallback
 		}
 
+		// Fallback: If no markets found via timeframe logic, and the user provided a specific slug
+		// that isn't a generic asset like "btc", try to fetch it as an exact slug.
+		if len(markets) == 0 && len(assets) > 0 {
+			for _, asset := range assets {
+				// Only treat as exact slug if it's longer than a typical ticker
+				if len(asset) > 5 {
+					if exactMkt, exactErr := restClient.GetMarket(ctx, asset); exactErr == nil && exactMkt != nil {
+						exactMarkets = append(exactMarkets, *exactMkt)
+					}
+				}
+			}
+		}
+
+		markets = append(markets, exactMarkets...)
+
 		for _, m := range markets {
+			// For exact markets, ParseEndTimeFromSlug might fail, which is fine, we just skip the expiration check
 			endTime, err := paper.ParseEndTimeFromSlug(m.Slug)
 			if err == nil && time.Now().After(endTime) {
 				continue // already expired
@@ -88,9 +100,29 @@ func FindMarkets(
 			slug := strings.ToLower(m.Slug)
 			isTargetTimeframe := strings.Contains(slug, timeframe) || strings.Contains(slug, "updown")
 
+			// If it's an exact market, bypass the strict name checks
+			isExactMatch := false
+			for _, exact := range exactMarkets {
+				if strings.ToLower(exact.Slug) == slug {
+					isExactMatch = true
+					break
+				}
+			}
+
 			for _, asset := range assets {
 				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
+				// If it's an exact match, register it directly using the slug as the key
+				if isExactMatch && strings.ToLower(asset) == slug {
+					mCopy := m
+					found[key] = &mCopy
+					if len(found) >= maxMarkets {
+						return found
+					}
+					break // Move to next market
+				}
+
+				// Otherwise, use the standard timeframe pattern matching
+				if _, exists := found[key]; !isExactMatch && !exists && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
 					mCopy := m
 					found[key] = &mCopy
 					if len(found) >= maxMarkets {
