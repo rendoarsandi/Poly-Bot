@@ -350,18 +350,73 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		splitPositions := m.tui.getSplitPositions()
 
 		m.tui.mu.Lock()
+
+		// Deep copy maps to prevent data races with background goroutines
+		snapMarkets := make(map[string]*MarketData)
+		for k, v := range m.tui.markets {
+			md := &MarketData{
+				Slug:       v.Slug,
+				Outcomes:   append([]string(nil), v.Outcomes...),
+				EndTime:    v.EndTime,
+				Bids:       make(map[string]float64),
+				Asks:       make(map[string]float64),
+				RealBids:   make(map[string]float64),
+				RealAsks:   make(map[string]float64),
+				LastUpdate: v.LastUpdate,
+				DataSource: v.DataSource,
+			}
+			for outcome, price := range v.Bids {
+				md.Bids[outcome] = price
+			}
+			for outcome, price := range v.Asks {
+				md.Asks[outcome] = price
+			}
+			for outcome, price := range v.RealBids {
+				md.RealBids[outcome] = price
+			}
+			for outcome, price := range v.RealAsks {
+				md.RealAsks[outcome] = price
+			}
+			snapMarkets[k] = md
+		}
+
+		snapLastPrices := make(map[string]float64)
+		for k, v := range m.tui.lastPrices { snapLastPrices[k] = v }
+		snapLastBids := make(map[string]float64)
+		for k, v := range m.tui.lastBids { snapLastBids[k] = v }
+		snapLastAsks := make(map[string]float64)
+		for k, v := range m.tui.lastAsks { snapLastAsks[k] = v }
+		snapRealBids := make(map[string]float64)
+		for k, v := range m.tui.realBids { snapRealBids[k] = v }
+		snapRealAsks := make(map[string]float64)
+		for k, v := range m.tui.realAsks { snapRealAsks[k] = v }
+
+		snapPendingOrders := make(map[string][]PendingOrder)
+		for k, v := range m.tui.pendingOrders {
+			snapPendingOrders[k] = append([]PendingOrder(nil), v...)
+		}
+
+		snapOrderBookDepth := make(map[string]map[string][]MarketLevel)
+		for mk, mv := range m.tui.orderBookDepth {
+			inner := make(map[string][]MarketLevel)
+			for ok, ov := range mv {
+				inner[ok] = append([]MarketLevel(nil), ov...)
+			}
+			snapOrderBookDepth[mk] = inner
+		}
+
 		m.snap = tuiSnapshot{
-			markets:         m.tui.markets,
+			markets:         snapMarkets,
 			marketSlug:      m.tui.marketSlug,
-			outcomes:        m.tui.outcomes,
+			outcomes:        append([]string(nil), m.tui.outcomes...),
 			endTime:         m.tui.endTime,
-			lastPrices:      m.tui.lastPrices,
-			lastBids:        m.tui.lastBids,
-			lastAsks:        m.tui.lastAsks,
-			realBids:        m.tui.realBids,
-			realAsks:        m.tui.realAsks,
-			pendingOrders:   m.tui.pendingOrders,
-			orderBookDepth:  m.tui.orderBookDepth,
+			lastPrices:      snapLastPrices,
+			lastBids:        snapLastBids,
+			lastAsks:        snapLastAsks,
+			realBids:        snapRealBids,
+			realAsks:        snapRealAsks,
+			pendingOrders:   snapPendingOrders,
+			orderBookDepth:  snapOrderBookDepth,
 			eventLog:        append([]string(nil), m.tui.eventLog...),
 			orderHistory:    append([]OrderHistoryEntry(nil), m.tui.orderHistory...),
 			isKilled:        m.tui.isKilled,
