@@ -601,6 +601,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 	leggedPanicBuy := false         // Set true if a legged position couldn't be recovered — blocks further buys
+	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -1194,6 +1195,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		if time.Now().Before(panicBuyCooldown) {
+			continue
+		}
 		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
@@ -1684,9 +1688,37 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								engine.BuyForMarket(id, outcomes[1], price2, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
-							// Block all future panic buys for this market — legged position is irrecoverable
-							leggedPanicBuy = true
-							tui.LogEvent("[%s] 🚫 Panic buy disabled for this market (legged position — holding until expiry)", id)
+
+							cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+							defer cancelCleanup()
+
+							bal0, bal1, balErr0, balErr1 := trader.QueryBalancedCTFBalances(cleanupCtx, token0, token1, shares)
+							if balErr0 != nil || balErr1 != nil {
+								tui.LogEvent("[%s] ⚠️ On-chain balance query failed (err0=%v, err1=%v), cannot safely cleanup", id, balErr0, balErr1)
+								leggedPanicBuy = true
+								tui.LogEvent("[%s] 🚫 Panic buy disabled for this market (legged position — holding until expiry)", id)
+							} else {
+								tui.LogEvent("[%s] 🧹 Legged trade detected! Balances: %s=%.6f, %s=%.6f", id, outcomes[0], bal0, outcomes[1], bal1)
+
+								var sell0Err, sell1Err error
+								if bal0 >= 0.01 {
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
+									_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.10, bal0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+								}
+								if bal1 >= 0.01 {
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
+									_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.10, bal1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+								}
+
+								if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
+									tui.LogEvent("[%s] ✅ Auto-cleanup successful! Applying 30s cooldown before unblocking.", id)
+									panicBuyCooldown = time.Now().Add(30 * time.Second)
+									leggedPanicBuy = false
+								} else {
+									leggedPanicBuy = true
+									tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Panic buy disabled for this market.", id)
+								}
+							}
 						}
 						// If both failed, nothing to record
 

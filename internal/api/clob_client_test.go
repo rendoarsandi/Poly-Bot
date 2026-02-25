@@ -111,3 +111,58 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 		t.Error("Expected Success=true for MATCHED order, got false")
 	}
 }
+
+func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
+	var makerAmount, takerAmount string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody struct {
+			Order OrderPayload `json:"order"`
+		}
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		makerAmount = reqBody.Order.MakerAmount
+		takerAmount = reqBody.Order.TakerAmount
+
+		resp := OrderResponse{
+			Success: true,
+			Status:  "MATCHED",
+			OrderID: "0x123",
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, _ := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	client.BaseURL = server.URL
+
+	// Unbalanced shares like 10.123456
+	req := &OrderRequest{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10.123456, // Market sell: size represents shares to sell
+		Side:        SideSell,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillOrKill,
+	}
+
+	_, err := client.PlaceOrder(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PlaceOrder failed: %v", err)
+	}
+
+	// Shares (Maker for SELL): 10.123456 -> 4 decimals -> 10.1234 -> 10123400 micro
+	if makerAmount != "10123400" {
+		t.Errorf("Expected makerAmount (shares) 10123400, got %s", makerAmount)
+	}
+
+	// USDC (Taker for SELL): 10.1234 * 0.5 = 5.0617 USDC
+	// Round up to nearest 2 decimals = 5.07 USDC -> 5070000 micro
+	if takerAmount != "5070000" {
+		t.Errorf("Expected takerAmount (USDC) 5070000, got %s", takerAmount)
+	}
+}

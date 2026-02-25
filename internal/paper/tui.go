@@ -892,6 +892,8 @@ func (t *TUI) RegisterSplitInventory(inv *SplitInventory) {
 }
 
 func (t *TUI) getSplitPositions() []SplitPosition {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	var all []SplitPosition
 	for _, inv := range t.splitInventories {
 		all = append(all, inv.GetAllPositions()...)

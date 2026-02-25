@@ -90,7 +90,7 @@ func FindMarkets(
 
 			for _, asset := range assets {
 				key := strings.ToUpper(asset)
-				if _, exists := found[key]; !exists && strings.Contains(slug, asset) && isTargetTimeframe {
+				if _, exists := found[key]; !exists && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
 					mCopy := m
 					found[key] = &mCopy
 					if len(found) >= maxMarkets {

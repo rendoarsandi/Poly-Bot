@@ -959,25 +959,32 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			bidDepth := make(map[string][]paper.MarketLevel)
 			askDepth := make(map[string][]paper.MarketLevel)
 
+			t.mu.Lock()
 			// Map current trader's depth data for TUI
 			for _, outcome := range t.Outcomes {
 				if bids, ok := t.TokenFullBids[outcome]; ok {
-					bidDepth[outcome] = bids
+					bidDepth[outcome] = append([]paper.MarketLevel(nil), bids...)
 				}
 				if asks, ok := t.TokenFullAsks[outcome]; ok {
-					askDepth[outcome] = asks
+					askDepth[outcome] = append([]paper.MarketLevel(nil), asks...)
 				}
 			}
+			t.mu.Unlock()
+
 			t.TUI.UpdateOrderBookDepth(t.ID, bidDepth, askDepth)
 
 			// Process order fills
+			t.mu.Lock()
 			for outcome := range tokenPrices {
 				bids := t.TokenFullBids[outcome]
 				asks := t.TokenFullAsks[outcome]
 				if len(bids) > 0 || len(asks) > 0 {
-					t.OrderBook.ProcessPriceUpdate(outcome, bids, asks)
+					bidsCopy := append([]paper.MarketLevel(nil), bids...)
+					asksCopy := append([]paper.MarketLevel(nil), asks...)
+					t.OrderBook.ProcessPriceUpdate(outcome, bidsCopy, asksCopy)
 				}
 			}
+			t.mu.Unlock()
 
 			// Check if market has ended (only exit condition that matters)
 			// DON'T exit on "liquidity dried up" - volatile markets can have extreme prices
@@ -1203,8 +1210,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						// Execute market orders that consume liquidity across multiple levels
 						// Force fill: walks the book to guarantee execution
-						trade1, avgPrice1, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
-						trade2, avgPrice2, _ := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
+						trade1, avgPrice1, err1 := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
+						trade2, avgPrice2, err2 := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
+
+						if err1 != nil || err2 != nil {
+							// Concurrency edge case: another market consumed the cash between our check and execution.
+							// Fail gracefully without recording bogus $0 trades.
+							t.TUI.LogEvent("[%s] ⚠️ Trade failed during execution (TOCTOU / Insufficient balance). err1: %v, err2: %v", t.ID, err1, err2)
+							
+							// If one legged (rare in paperbot since it's synchronous per market, but possible if cash ran out mid-way),
+							// we could theoretically unwind, but paperbot engine doesn't track legged paper trades strictly.
+							continue
+						}
 
 						// Get actual fill quantities
 						filled1, filled2 := shares, shares

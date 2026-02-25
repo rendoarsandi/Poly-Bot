@@ -181,23 +181,52 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
-		usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-		
-		// Use Ceiling division for SELL orders to ensure implied price >= limit price.
-		// Truncation (floor) can result in implied price < limit price, causing API rejection.
-		divisor := big.NewInt(1e6)
-		remainder := new(big.Int).Mod(usdcMicroBig, divisor)
-		usdcMicroBig.Div(usdcMicroBig, divisor)
-		if remainder.Sign() > 0 {
-			usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
+		if req.OrderType == OrderTypeMarket {
+			// Market Sell Restrictions:
+			// - Maker (Shares): Max 4 decimals (multiple of 100 units)
+			// - Taker (USDC): Max 2 decimals (multiple of 10,000 units)
+
+			// Truncate size to 4 decimals
+			sizeMicro = (sizeMicro / 100) * 100
+
+			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+			
+			divisor := big.NewInt(1e6)
+			remainder := new(big.Int).Mod(usdcMicroBig, divisor)
+			usdcMicroBig.Div(usdcMicroBig, divisor)
+			if remainder.Sign() > 0 {
+				usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
+			}
+
+			// Round USDC up to nearest 2 decimals (multiple of 10000 units)
+			// to ensure implied price remains >= limit price
+			usdcVal := usdcMicroBig.Int64()
+			if usdcVal%10000 != 0 {
+				usdcVal = ((usdcVal / 10000) + 1) * 10000
+			}
+			usdcMicroBig.SetInt64(usdcVal)
+
+			makerAmount = strconv.FormatInt(sizeMicro, 10)
+			takerAmount = usdcMicroBig.String()
+		} else {
+			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+			
+			// Use Ceiling division for SELL orders to ensure implied price >= limit price.
+			// Truncation (floor) can result in implied price < limit price, causing API rejection.
+			divisor := big.NewInt(1e6)
+			remainder := new(big.Int).Mod(usdcMicroBig, divisor)
+			usdcMicroBig.Div(usdcMicroBig, divisor)
+			if remainder.Sign() > 0 {
+				usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
+			}
+
+			// Correct assignment: makerAmount = shares, takerAmount = USDC
+			makerAmount = strconv.FormatInt(sizeMicro, 10)
+			takerAmount = usdcMicroBig.String()
 		}
 
-		// Correct assignment: makerAmount = shares, takerAmount = USDC
-		makerAmount = strconv.FormatInt(sizeMicro, 10)
-		takerAmount = usdcMicroBig.String()
-
-		fmt.Printf("DEBUG: SELL Side - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n",
-			req.Size, req.Price, makerAmount, takerAmount)
+		fmt.Printf("DEBUG: SELL Side (%s) - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n",
+			req.OrderType, req.Size, req.Price, makerAmount, takerAmount)
 	}
 
 	// Polymarket rejects non-zero expiration for non-GTD orders.
