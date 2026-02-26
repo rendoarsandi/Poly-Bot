@@ -509,6 +509,29 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 	}
 }
 
+// flushSplitInventory merges all remaining split shares back to cash before a
+// trader exits.  This is the simulation of the on-chain merge that would
+// happen in realbot: any unsold YES+NO pairs are worth $1.00 each and can
+// always be redeemed at full face value, so we must credit them back to the
+// balance.  Without this call the deducted USDC is simply lost every round,
+// causing the cumulative "$-25 per round" leak.
+func flushSplitInventory(t *MarketTrader) {
+	if !t.SplitInitialized || len(t.Outcomes) != 2 {
+		return
+	}
+	remaining := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
+	if remaining < 1.0 {
+		return
+	}
+	merged := t.SplitInventory.RecordMerge(t.ID, t.Outcomes[0], t.Outcomes[1], remaining)
+	if merged > 0 {
+		t.Engine.AddBalance(merged) // $1.00 per merged pair, recovered at par
+		t.Engine.RecalculateDrawdown()
+		t.TUI.LogEvent("[%s] 🔃 SPLIT MERGE (end-of-round): %.0f shares → +$%.2f restored",
+			t.ID, merged, merged)
+	}
+}
+
 func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	// Setup WebSocket with retry
 	wsMgr := api.NewWSManager("")
@@ -600,6 +623,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		select {
 		case <-ctx.Done():
 			t.LadderMgr.CancelAllLadders()
+			// Merge any unsold split inventory back to cash before exit
+			flushSplitInventory(t)
 			positions := t.Engine.GetPositions()
 			if len(positions) > 0 {
 				t.TUI.LogEvent("[%s] 🔴 EMERGENCY EXIT: Liquidating...", t.ID)
@@ -612,6 +637,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			if time.Now().After(traderDeadline) {
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "WARN", t.ID, "TIMEOUT", "SAFETY TIMEOUT - Forcing market exit")
 				t.LadderMgr.CancelAllLadders()
+				// Merge unsold split inventory back to cash before resolving
+				flushSplitInventory(t)
 
 				// Use more robust resolution simulation
 				winner := t.determineWinner()
@@ -739,32 +766,31 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
 					// ── Book snapshot (array) ──────────────────────────────
 					foundForThisTrader := false
-					for _, b := range books {
-						bid, ask := 0.0, 0.0
-						for _, order := range b.Bids {
-							p, _ := strconv.ParseFloat(order.Price, 64)
-							if p > bid {
-								bid = p
-							}
+				for _, b := range books {
+					bid, ask := 0.0, 0.0
+					for _, order := range b.Bids {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > 0 && p < 1.0 && p > bid {
+							bid = p
 						}
-						for _, order := range b.Asks {
-							p, _ := strconv.ParseFloat(order.Price, 64)
-							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
-								ask = p
-							}
+					}
+					for _, order := range b.Asks {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+							ask = p
 						}
-						outcome := t.TokenMap[b.AssetID]
-						if outcome != "" {
-							foundForThisTrader = true
-							t.mu.Lock()
-							// Guard: only persist valid (non-zero) prices so we
-							// never overwrite a good REST value with a zero.
-							if bid > 0 {
-								t.TokenBids[outcome] = bid
-							}
-							if ask > 0 {
-								t.TokenAsks[outcome] = ask
-							}
+					}
+					outcome := t.TokenMap[b.AssetID]
+					if outcome != "" {
+						foundForThisTrader = true
+						t.mu.Lock()
+						// Guard: only persist valid (0,1) prices.
+						if bid > 0 && bid < 1.0 {
+							t.TokenBids[outcome] = bid
+						}
+						if ask > 0 && ask < 1.0 {
+							t.TokenAsks[outcome] = ask
+						}
 							if bid > 0 && ask > 0 {
 								mid := (bid + ask) / 2
 								t.FloatPrices[outcome] = mid
@@ -844,33 +870,33 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						t.LastUpdate = time.Now()
 						t.mu.Unlock()
 					}
-				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
-					// ── Book snapshot (single object) ──────────────────────
-					bid, ask := 0.0, 0.0
-					for _, order := range book.Bids {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > bid {
-							bid = p
-						}
+			} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+				// ── Book snapshot (single object) ──────────────────────
+				bid, ask := 0.0, 0.0
+				for _, order := range book.Bids {
+					p, _ := strconv.ParseFloat(order.Price, 64)
+					if p > 0 && p < 1.0 && p > bid {
+						bid = p
 					}
-					for _, order := range book.Asks {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
-							ask = p
-						}
+				}
+				for _, order := range book.Asks {
+					p, _ := strconv.ParseFloat(order.Price, 64)
+					if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+						ask = p
 					}
-					outcome := t.TokenMap[book.AssetID]
-					if outcome != "" {
-						t.mu.Lock()
-						t.LastUpdate = time.Now()
-						// Guard: only persist valid (non-zero) prices.
-						if bid > 0 {
-							t.TokenBids[outcome] = bid
-						}
-						if ask > 0 {
-							t.TokenAsks[outcome] = ask
-						}
-						if bid > 0 && ask > 0 {
+				}
+				outcome := t.TokenMap[book.AssetID]
+				if outcome != "" {
+					t.mu.Lock()
+					t.LastUpdate = time.Now()
+					// Guard: only persist valid (0,1) prices.
+					if bid > 0 && bid < 1.0 {
+						t.TokenBids[outcome] = bid
+					}
+					if ask > 0 && ask < 1.0 {
+						t.TokenAsks[outcome] = ask
+					}
+					if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
 							t.FloatPrices[outcome] = mid
 							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)

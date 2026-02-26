@@ -697,34 +697,33 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							lastUpdateTs[outcome] = msgTs
 						}
 
-						bid, ask := 0.0, 0.0
-						for _, order := range b.Bids {
-							p, err := strconv.ParseFloat(order.Price, 64)
-							if err != nil {
-								continue
-							}
-							if p > bid {
-								bid = p
-							}
+					bid, ask := 0.0, 0.0
+					for _, order := range b.Bids {
+						p, err := strconv.ParseFloat(order.Price, 64)
+						if err != nil {
+							continue
 						}
-						for _, order := range b.Asks {
-							p, err := strconv.ParseFloat(order.Price, 64)
-							if err != nil {
-								continue
-							}
-							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
-								ask = p
-							}
+						if p > 0 && p < 1.0 && p > bid {
+							bid = p
 						}
+					}
+					for _, order := range b.Asks {
+						p, err := strconv.ParseFloat(order.Price, 64)
+						if err != nil {
+							continue
+						}
+						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+							ask = p
+						}
+					}
 
-						// Guard: only persist valid (non-zero) prices so we
-						// never overwrite a good REST value with a zero.
-						if bid > 0 {
-							tokenBids[outcome] = bid
-						}
-						if ask > 0 {
-							tokenAsks[outcome] = ask
-						}
+					// Guard: only persist valid (0,1) prices.
+					if bid > 0 && bid < 1.0 {
+						tokenBids[outcome] = bid
+					}
+					if ask > 0 && ask < 1.0 {
+						tokenAsks[outcome] = ask
+					}
 
 						// Always update full depth from snapshots
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
@@ -1806,7 +1805,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
 			p, _ := strconv.ParseFloat(b.Price, 64)
-			if p > bid {
+			if p > 0 && p < 1.0 && p > bid {
 				bid = p
 			}
 		}
@@ -1817,15 +1816,13 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			}
 		}
 
-		// Update prices only if newer AND value is valid.
-		// Guard each side separately so a missing bid doesn't zero-out a
-		// previously valid ask and vice-versa.
+		// Update prices only if newer AND value is valid (0,1).
 		if isNewer {
-			if bid > 0 {
+			if bid > 0 && bid < 1.0 {
 				bids[outcome] = bid
 				success = true
 			}
-			if ask > 0 {
+			if ask > 0 && ask < 1.0 {
 				asks[outcome] = ask
 				success = true
 			}

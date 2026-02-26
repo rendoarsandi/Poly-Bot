@@ -842,12 +842,18 @@ func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[strin
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
 		for k, v := range bids {
-			m.Bids[k] = v
-			m.RealBids[k] = v
+			// Only store valid binary-market prices (0, 1) — never write 0 or
+			// garbage values that would spike the display to $0.00/$0.01.
+			if v > 0 && v < 1.0 {
+				m.Bids[k] = v
+				m.RealBids[k] = v
+			}
 		}
 		for k, v := range asks {
-			m.Asks[k] = v
-			m.RealAsks[k] = v
+			if v > 0 && v < 1.0 {
+				m.Asks[k] = v
+				m.RealAsks[k] = v
+			}
 		}
 		m.LastUpdate = time.Now()
 		m.DataSource = source
@@ -1230,33 +1236,26 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		bid2 := mkt.Bids[mkt.Outcomes[1]]
 		ask2 := mkt.Asks[mkt.Outcomes[1]]
 
-		// Supplement from order-book depth
-		if d := depth[id]; d != nil {
-			if bids := d[mkt.Outcomes[0]+"_bids"]; len(bids) > 0 && bids[0].Price > bid1 {
-				bid1 = bids[0].Price
-			}
-			if asks := d[mkt.Outcomes[0]+"_asks"]; len(asks) > 0 && (ask1 == 0 || asks[0].Price < ask1) {
-				ask1 = asks[0].Price
-			}
-			if bids := d[mkt.Outcomes[1]+"_bids"]; len(bids) > 0 && bids[0].Price > bid2 {
-				bid2 = bids[0].Price
-			}
-			if asks := d[mkt.Outcomes[1]+"_asks"]; len(asks) > 0 && (ask2 == 0 || asks[0].Price < ask2) {
-				ask2 = asks[0].Price
-			}
-		}
+		// NOTE: depth supplement block intentionally removed.
+		// mkt.Bids/mkt.Asks are already derived from the live WS stream as
+		// the best bid/ask level; overriding them with TUI-cached depth values
+		// causes price spikes because the cached depth can be a tick stale and
+		// a low-price level (e.g. $0.01) in that stale depth overwrites the
+		// correct live price (e.g. $0.61).  depth[] is still stored and used
+		// for liquidity-size display in the order-book panel.
 
-		// Infer from complement
-		if bid1 == 0 && ask2 > 0 {
+		// Infer from complement only when one side is completely missing.
+		// Guard: only infer if the complement is a sane price (>0.02, <0.98).
+		if bid1 <= 0 && ask2 > 0.02 && ask2 < 0.98 {
 			bid1 = 1.0 - ask2
 		}
-		if ask1 == 0 && bid2 > 0 {
+		if ask1 <= 0 && bid2 > 0.02 && bid2 < 0.98 {
 			ask1 = 1.0 - bid2
 		}
-		if bid2 == 0 && ask1 > 0 {
+		if bid2 <= 0 && ask1 > 0.02 && ask1 < 0.98 {
 			bid2 = 1.0 - ask1
 		}
-		if ask2 == 0 && bid1 > 0 {
+		if ask2 <= 0 && bid1 > 0.02 && bid1 < 0.98 {
 			ask2 = 1.0 - bid1
 		}
 
