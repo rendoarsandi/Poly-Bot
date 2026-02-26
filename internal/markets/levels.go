@@ -9,7 +9,8 @@ import (
 
 // LevelsToPriceDepth converts a slice of API PriceLevels (string fields) into
 // the float64-typed MarketLevel slice used throughout the paper and trading
-// packages. Entries that fail to parse are skipped silently.
+// packages. Entries that fail to parse or have out-of-range prices are
+// skipped silently. Valid Polymarket binary-market prices are in (0, 1).
 func LevelsToPriceDepth(levels []api.PriceLevel) []paper.MarketLevel {
 	result := make([]paper.MarketLevel, 0, len(levels))
 	for _, l := range levels {
@@ -17,8 +18,18 @@ func LevelsToPriceDepth(levels []api.PriceLevel) []paper.MarketLevel {
 		if err != nil {
 			continue
 		}
+		// Reject prices outside the valid binary-market range (0, 1).
+		// Prices of exactly 0 or ≥ 1 are garbage levels that can enter the
+		// book during settlement or via stale WS snapshots and would cause
+		// the "best ask" to appear as $1.00 or the "best bid" as $0.00.
+		if p <= 0 || p >= 1.0 {
+			continue
+		}
 		s, err := strconv.ParseFloat(l.Size, 64)
 		if err != nil {
+			continue
+		}
+		if s <= 0 {
 			continue
 		}
 		result = append(result, paper.MarketLevel{Price: p, Size: s})
@@ -34,6 +45,11 @@ func LevelsToPriceDepth(levels []api.PriceLevel) []paper.MarketLevel {
 // For simplicity, we just insert, sort, and return.
 // isBid determines the sort order.
 func ApplyDelta(book []paper.MarketLevel, price, size float64, isBid bool) []paper.MarketLevel {
+	// Reject out-of-range prices immediately — a price of 0 or ≥ 1.0 is
+	// never a valid binary-market resting order level.
+	if price <= 0 || price >= 1.0 {
+		return book
+	}
 	// Find if level exists
 	found := false
 	for i, level := range book {

@@ -322,26 +322,8 @@ func run() error {
 		defer tui.Stop()
 	}
 
-	// Network health monitor
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				start := time.Now()
-				// Use a lightweight check for latency
-				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_, err := restClient.GetMarketsByTimeframe(pingCtx, []string{"btc"}, "15m")
-				cancel()
-				if err == nil {
-					tui.UpdateLatency(time.Since(start))
-				}
-			}
-		}
-	}()
+	// REST API connectivity is not measured separately — the header now shows
+	// WS feed freshness instead. REST is only used for order execution, not pricing.
 
 	// Main trading loop - Keep running: after each round of markets ends, search for new ones.
 	globalSplitStatus := make(map[string]bool)
@@ -782,20 +764,24 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				// tokenToOutcome is keyed by tokenID; we range over it to get
 				// the canonical outcome name for each token, then look up depth
 				// by that outcome name (which is how tokenFullBids/Asks are keyed).
+				//
+				// IMPORTANT: only overwrite the stored best price when the depth has
+				// a valid level available. If a price_change delta removed the last
+				// level on one side, leave the previous best price in place rather
+				// than writing 0 — a momentarily empty side is a transient book
+				// state, not a real price of $0.
 				for _, outcome := range tokenToOutcome {
 					bids := tokenFullBids[outcome]
-					if len(bids) > 0 {
+					if len(bids) > 0 && bids[0].Price > 0 {
 						tokenBids[outcome] = bids[0].Price
-					} else {
-						tokenBids[outcome] = 0
 					}
+					// else: keep previous best bid — do NOT zero it out
 
 					asks := tokenFullAsks[outcome]
-					if len(asks) > 0 {
+					if len(asks) > 0 && asks[0].Price > 0 && asks[0].Price < 1.0 {
 						tokenAsks[outcome] = asks[0].Price
-					} else {
-						tokenAsks[outcome] = 0
 					}
+					// else: keep previous best ask — do NOT zero it out
 
 					if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
 						mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2

@@ -241,26 +241,8 @@ func run() error {
 		defer tui.Stop()
 	}
 
-	// Network health monitor
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				start := time.Now()
-				// Use a lightweight check for latency
-				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_, err := restClient.GetMarketsByTimeframe(pingCtx, []string{"btc"}, "15m")
-				cancel()
-				if err == nil {
-					tui.UpdateLatency(time.Since(start))
-				}
-			}
-		}
-	}()
+	// REST API connectivity is not measured separately — the header now shows
+	// WS feed freshness instead. REST is only used for order execution, not pricing.
 
 	logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "STARTUP", "Bot starting with multi-asset support")
 
@@ -829,20 +811,24 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				// Range over map values (outcome names), not keys (tokenIDs).
 				// t.TokenMap is tokenID→outcome; we want the outcome name to look
 				// up depth in TokenFullBids/TokenFullAsks which are keyed by outcome.
+				//
+				// IMPORTANT: only overwrite the stored best price when the depth has
+				// a valid level available. If a price_change delta removed the last
+				// level on one side, leave the previous best price in place rather
+				// than writing 0 — a momentarily empty side is a transient book
+				// state, not a real price of $0.
 				for _, outcome := range t.TokenMap {
 					bids := t.TokenFullBids[outcome]
-					if len(bids) > 0 {
+					if len(bids) > 0 && bids[0].Price > 0 {
 						t.TokenBids[outcome] = bids[0].Price
-					} else {
-						t.TokenBids[outcome] = 0
 					}
+					// else: keep previous best bid — do NOT zero it out
 
 					asks := t.TokenFullAsks[outcome]
-					if len(asks) > 0 {
+					if len(asks) > 0 && asks[0].Price > 0 && asks[0].Price < 1.0 {
 						t.TokenAsks[outcome] = asks[0].Price
-					} else {
-						t.TokenAsks[outcome] = 0
 					}
+					// else: keep previous best ask — do NOT zero it out
 
 					if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
 						mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2

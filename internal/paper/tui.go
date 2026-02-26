@@ -991,8 +991,18 @@ func (t *TUI) getSplitPositions() []SplitPosition {
 // renderHeader: branded title bar + network health row.
 //
 //	╭─ ◆ POLYARB-15M TRADING TERMINAL ◆ ──────────────────────────────╮
-//	│          ● REST 45ms  ● WS 12ms (2.1s)  ⏱ 1h23m  ·  [q] quit   │
+//	│   ● FEED live 0.3s  ● WS ping 12ms  ⏱ 1h23m  ·  [s] settings   │
 //	╰───────────────────────────────────────────────────────────────────╯
+//
+// The header shows what actually matters:
+//   - FEED: time since the last data message arrived over WebSocket.
+//     Green ≤2s, Yellow ≤5s, Red >5s. "REST" label shown when the bot
+//     has fallen back to polling (WS stale / disconnected).
+//   - WS ping: round-trip latency of the WebSocket keepalive ping.
+//     Green <200ms, Yellow <500ms, Red ≥500ms.
+//   - The old "● REST Xms" indicator has been removed — REST is only
+//     used for order execution (Buy/Sell), not for pricing, so showing
+//     its latency in the header was misleading.
 func (m tuiModel) renderHeader(w int) string {
 	s := m.snap
 	inner := w - 4
@@ -1004,33 +1014,44 @@ func (m tuiModel) renderHeader(w int) string {
 		Align(lipgloss.Center).
 		Render("◆  POLYARB-15M TRADING TERMINAL  ◆")
 
-	// REST latency
-	_, restSt := latencyDot(s.restLatency, 100, 200)
-	restStr := "…"
-	if s.restLatency > 0 {
-		restStr = s.restLatency.Round(time.Millisecond).String()
-	}
-	restPart := restSt.Render("● REST ") + restSt.Render(restStr)
+	// ── FEED freshness ────────────────────────────────────────────────
+	// wsLatency = time.Since(last WS data message) — the single most
+	// important health indicator. Shows the data source label too.
+	feedAge := s.wsLatency
+	feedSt := styleGreen
+	feedAgeStr := "…"
+	feedSrcLabel := "FEED"
 
-	// WS ping
+	// Determine data source from the most recently updated market.
+	for _, md := range s.markets {
+		if md.DataSource == "REST" {
+			feedSrcLabel = "REST↑" // actively using REST fallback
+		}
+		break
+	}
+
+	if feedAge > 0 {
+		if feedAge < time.Second {
+			feedAgeStr = fmt.Sprintf("%.0fms", float64(feedAge.Milliseconds()))
+		} else {
+			feedAgeStr = fmt.Sprintf("%.1fs", feedAge.Seconds())
+		}
+		if feedAge > 5*time.Second {
+			feedSt = styleRed
+		} else if feedAge > 2*time.Second {
+			feedSt = styleYellow
+		}
+	}
+	feedDot := feedSt.Render("●")
+	feedPart := feedDot + " " + feedSt.Render(feedSrcLabel) + " " + feedSt.Render(feedAgeStr)
+
+	// ── WS ping RTT ───────────────────────────────────────────────────
 	_, wsSt := latencyDot(s.wsPingLatency, 200, 500)
 	wsStr := "…"
 	if s.wsPingLatency > 0 {
 		wsStr = s.wsPingLatency.Round(time.Millisecond).String()
 	}
-	// WS freshness
-	freshSt := styleGreen
-	freshStr := "…"
-	if s.wsLatency > 0 {
-		freshStr = fmt.Sprintf("%.0fs", s.wsLatency.Seconds())
-		if s.wsLatency > 10*time.Second {
-			freshSt = styleRed
-		} else if s.wsLatency > 5*time.Second {
-			freshSt = styleYellow
-		}
-	}
-	wsPart := wsSt.Render("● WS ") + wsSt.Render(wsStr) +
-		styleMuted.Render(" (") + freshSt.Render(freshStr) + styleMuted.Render(")")
+	wsPart := wsSt.Render("● WS ping ") + wsSt.Render(wsStr)
 
 	uptime := time.Since(s.startTime).Round(time.Second)
 	uptimePart := styleDimmed.Render("⏱ " + uptime.String())
@@ -1038,7 +1059,7 @@ func (m tuiModel) renderHeader(w int) string {
 	settingsPart := lipgloss.NewStyle().Foreground(clrBrand).Render("[s] settings")
 
 	sep := styleMuted.Render("  ·  ")
-	info := "  " + restPart + sep + wsPart + sep + uptimePart + sep + settingsPart + sep + quitPart
+	info := "  " + feedPart + sep + wsPart + sep + uptimePart + sep + settingsPart + sep + quitPart
 
 	content := title + "\n" + info
 	return makePanel(inner, clrBrand, content)
@@ -1159,31 +1180,45 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		timeSt = styleYellow
 	}
 
-	// ── Staleness
+	// ── Data freshness + source
 	age := time.Since(mkt.LastUpdate)
 	ageSt := styleGreen
 	ageWarn := ""
 	if age > 10*time.Second {
 		ageSt = styleRed
-		ageWarn = " ⚠"
-	} else if age > 5*time.Second {
+		ageWarn = " ⚠ STALE"
+	} else if age > 3*time.Second {
 		ageSt = styleYellow
 	}
 
-	srcSt := styleCyan
-	src := mkt.DataSource
-	if src == "" {
-		src = "?"
-		srcSt = styleMuted
-	} else if src == "REST" {
-		srcSt = styleYellow
+	// Format age: show milliseconds when fresh (<1s), seconds otherwise.
+	var ageStr string
+	if age < time.Second {
+		ageStr = fmt.Sprintf("%dms", age.Milliseconds())
+	} else {
+		ageStr = fmt.Sprintf("%.1fs", age.Seconds())
 	}
 
-	timeLine := fmt.Sprintf("⏱ %s  ·  %s [%s]%s",
+	// Data source: "WS" = live websocket (primary), "REST" = fallback polling.
+	srcSt := styleCyan
+	src := mkt.DataSource
+	switch src {
+	case "WS":
+		srcSt = styleCyan
+	case "REST":
+		// REST fallback active — price is valid but from polling, not streaming.
+		srcSt = styleYellow
+		src = "REST↑"
+	default:
+		src = "…"
+		srcSt = styleMuted
+	}
+
+	timeLine := fmt.Sprintf("⏱ %s  ·  %s %s%s",
 		timeSt.Render(remaining.Round(time.Second).String()),
-		ageSt.Render(fmt.Sprintf("%.1fs", age.Seconds())),
-		srcSt.Render(src),
-		ageWarn,
+		srcSt.Render("["+src+"]"),
+		ageSt.Render(ageStr),
+		ageSt.Render(ageWarn),
 	)
 
 	var priceLinesB strings.Builder
