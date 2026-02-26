@@ -499,24 +499,26 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 			m.lastMessage.Store(time.Now().Unix())
 			m.messageCount.Add(1)
 
-			// Send to channel - prioritize newest message
-			// Uses labeled loop for clarity (avoids goto)
-		sendLoop:
-			for {
-				select {
-				case msgChan <- p:
-					// Successfully sent
-					break sendLoop
-				default:
-					// Channel full - drain oldest message to make room
-					select {
-					case <-msgChan:
-						// Drained, loop will try to send again
-					default:
-						// Channel was drained by consumer, loop will try to send again
-					}
-				}
+		// Send to channel - drop oldest message when full rather than blocking.
+		// We prefer the freshest data, so we drain one stale entry and place
+		// the new one. Limit drain attempts to avoid a busy-spin when the
+		// consumer is completely stalled (e.g. during kill-switch sleep).
+		select {
+		case msgChan <- p:
+			// fast path: channel has space
+		default:
+			// Channel full — drain one stale entry then force-insert.
+			select {
+			case <-msgChan:
+			default:
 			}
+			select {
+			case msgChan <- p:
+			default:
+				// Consumer is not draining at all; drop this message to
+				// avoid blocking the streaming goroutine.
+			}
+		}
 		}
 	}()
 

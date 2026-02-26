@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 )
 
 type PriceLevel struct {
@@ -44,12 +45,26 @@ func ParseOrderBook(data []byte) (*OrderBook, error) {
 	return &book, nil
 }
 
+// ParseOrderBooks parses WS order-book snapshots.
+// Polymarket sends either a JSON array "[{...},{...}]" (multi-token batch)
+// or a single JSON object "{...}" (single-token snapshot).  We handle both
+// so no snapshot is silently dropped.
 func ParseOrderBooks(data []byte) ([]OrderBook, error) {
+	// Fast path: array form (most common for subscribed multi-asset streams).
 	var books []OrderBook
-	if err := json.Unmarshal(data, &books); err != nil {
+	if err := json.Unmarshal(data, &books); err == nil && len(books) > 0 {
+		return books, nil
+	}
+	// Fallback: single-object form.
+	var single OrderBook
+	if err := json.Unmarshal(data, &single); err != nil {
 		return nil, err
 	}
-	return books, nil
+	// Only return it as a real book snapshot if it has an asset_id or bids/asks.
+	if single.AssetID != "" || len(single.Bids) > 0 || len(single.Asks) > 0 {
+		return []OrderBook{single}, nil
+	}
+	return nil, fmt.Errorf("no orderbook data in message")
 }
 
 func ParsePriceUpdate(data []byte) (*PriceUpdate, error) {

@@ -76,6 +76,8 @@ type Config struct {
 	SplitTargetMarginReserve float64 // Maintain inventory for this margin level (default: 6%)
 	SplitReplenishThreshold  float64 // Trigger new split when shares fall below this (default: 50)
 	SplitMergeBufferSeconds  int     // Seconds before expiry to merge unsold shares (default: 30)
+	SplitInitialCapPct       float64 // Max fraction of balance used for initial split (default: 0.25 = 25%)
+	SplitReplenishCapPct     float64 // Max fraction of balance held in split inventory (default: 0.50 = 50%)
 }
 
 func LoadConfig() (*Config, error) {
@@ -122,6 +124,8 @@ func LoadConfig() (*Config, error) {
 		SplitTargetMarginReserve: parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
 		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
 		SplitMergeBufferSeconds:  parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
+		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),   // 25% of balance
+		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50), // 50% of balance
 	}
 
 	return cfg, nil
@@ -253,6 +257,8 @@ func (c *Config) SaveSettings() error {
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)
+	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
+	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
 
 	return godotenv.Write(envMap, ".env")
 }

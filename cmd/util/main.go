@@ -132,16 +132,16 @@ func main() {
 
 		if err == nil {
 			tokenFeeRates[out] = rate
-			// 15m markets require 1000 bps authorization even if endpoint returns 0
+			// Use 200 bps (2%) as the fallback matching current 15m market requirements
 			if rate == 0 {
-				tokenFeeRates[out] = 1000
-				fmt.Printf("ℹ️  Fee rate for %s returned 0, forcing 1000 bps (required for 15m)\n", out)
+				tokenFeeRates[out] = 200
+				fmt.Printf("ℹ️  Fee rate for %s returned 0, using 200 bps (current 15m default)\n", out)
 			} else {
 				fmt.Printf("ℹ️  Fee rate for %s: %d bps\n", out, rate)
 			}
 		} else {
-			tokenFeeRates[out] = 1000 // Fallback to 1000 bps (10%) as required by API
-			fmt.Printf("⚠️  Fee fetch failed for %s, using 1000 bps fallback\n", out)
+			tokenFeeRates[out] = 200 // Fallback to 200 bps (2%) matching current 15m market requirements
+			fmt.Printf("⚠️  Fee fetch failed for %s, using 200 bps fallback\n", out)
 		}
 	}
 
@@ -428,7 +428,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 
 		rate := tokenFeeRates[failedOutcome]
 		if rate == 0 {
-			rate = 1000
+			rate = 200
 		}
 
 		retryCount := 0

@@ -2,6 +2,7 @@ package paper
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -220,7 +221,11 @@ func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("could not parse timestamp from slug: %s", slug)
 	}
 
-	// Add 15 minutes (900 seconds) to get the END time
-	endTimestamp := timestamp + 900
+	// Determine interval from slug: "5m" slugs use 300s windows, everything else 900s.
+	interval := int64(900) // default: 15 minutes
+	if strings.Contains(slug, "-5m-") || strings.HasPrefix(slug, "5m-") {
+		interval = 300 // 5 minutes
+	}
+	endTimestamp := timestamp + interval
 	return time.Unix(endTimestamp, 0), nil
 }

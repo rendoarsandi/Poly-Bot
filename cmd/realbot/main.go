@@ -298,6 +298,8 @@ func run() error {
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
 		MinAskPrice:          cfg.MinAskPrice,
 		MaxAskPrice:          cfg.MaxAskPrice,
+		SplitInitialCapPct:   cfg.SplitInitialCapPct,
+		SplitReplenishCapPct: cfg.SplitReplenishCapPct,
 	}, func(s paper.TUISettings) {
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
@@ -308,6 +310,8 @@ func run() error {
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
+		cfg.SplitInitialCapPct = s.SplitInitialCapPct
+		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
@@ -581,16 +585,16 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 		if err == nil {
 			tokenFeeRates[outcome] = rate
-			// 15m markets require 1000 bps authorization even if endpoint returns 0
+			// Use 200 bps (2%) as the fallback matching current 15m market requirements
 			if rate == 0 {
-				tokenFeeRates[outcome] = 1000
+				tokenFeeRates[outcome] = 200
 			} else {
 				tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
 			}
 		} else {
-			// If API fails, use 1000 bps (10%) which is the standard taker fee for 15m markets
-			tokenFeeRates[outcome] = 1000
-			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using default 1000 bps", id)
+			// If API fails, use 200 bps (2%) matching current 15m market requirements
+			tokenFeeRates[outcome] = 200
+			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using default 200 bps", id)
 		}
 	}
 
@@ -774,27 +778,30 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 					}
 
-					// Update best bids/asks based on the new full depth
-					for outcome := range tokenToOutcome {
-						bids := tokenFullBids[outcome]
-						if len(bids) > 0 {
-							tokenBids[outcome] = bids[0].Price
-						} else {
-							tokenBids[outcome] = 0
-						}
-
-						asks := tokenFullAsks[outcome]
-						if len(asks) > 0 {
-							tokenAsks[outcome] = asks[0].Price
-						} else {
-							tokenAsks[outcome] = 0
-						}
-
-						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
-							mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
-							engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
-						}
+				// Update best bids/asks based on the new full depth.
+				// tokenToOutcome is keyed by tokenID; we range over it to get
+				// the canonical outcome name for each token, then look up depth
+				// by that outcome name (which is how tokenFullBids/Asks are keyed).
+				for _, outcome := range tokenToOutcome {
+					bids := tokenFullBids[outcome]
+					if len(bids) > 0 {
+						tokenBids[outcome] = bids[0].Price
+					} else {
+						tokenBids[outcome] = 0
 					}
+
+					asks := tokenFullAsks[outcome]
+					if len(asks) > 0 {
+						tokenAsks[outcome] = asks[0].Price
+					} else {
+						tokenAsks[outcome] = 0
+					}
+
+					if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
+						mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
+						engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
+					}
+				}
 
 					if foundForThisMarket {
 						lastUpdate = time.Now()
@@ -808,6 +815,23 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 		if messagesProcessed > 0 {
 			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
+			// Push full depth to TUI so the order-book panel and depth-based
+			// margin calculations reflect live WS liquidity, not just best prices.
+			if len(tokenFullBids) > 0 || len(tokenFullAsks) > 0 {
+				bidDepth := make(map[string][]paper.MarketLevel, len(tokenFullBids))
+				askDepth := make(map[string][]paper.MarketLevel, len(tokenFullAsks))
+				for outcome, levels := range tokenFullBids {
+					cp := make([]paper.MarketLevel, len(levels))
+					copy(cp, levels)
+					bidDepth[outcome] = cp
+				}
+				for outcome, levels := range tokenFullAsks {
+					cp := make([]paper.MarketLevel, len(levels))
+					copy(cp, levels)
+					askDepth[outcome] = cp
+				}
+				tui.UpdateOrderBookDepth(id, bidDepth, askDepth)
+			}
 		}
 
 		// ============ REST FALLBACK ============
@@ -825,6 +849,22 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			// Note: REST fallback updated to also capture full depth
 			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastUpdateTs, engine, restClient, tui) {
 				lastUpdate = time.Now()
+				// Push REST depth to TUI after fallback refresh
+				if len(tokenFullBids) > 0 || len(tokenFullAsks) > 0 {
+					bidDepth := make(map[string][]paper.MarketLevel, len(tokenFullBids))
+					askDepth := make(map[string][]paper.MarketLevel, len(tokenFullAsks))
+					for outcome, levels := range tokenFullBids {
+						cp := make([]paper.MarketLevel, len(levels))
+						copy(cp, levels)
+						bidDepth[outcome] = cp
+					}
+					for outcome, levels := range tokenFullAsks {
+						cp := make([]paper.MarketLevel, len(levels))
+						copy(cp, levels)
+						askDepth[outcome] = cp
+					}
+					tui.UpdateOrderBookDepth(id, bidDepth, askDepth)
+				}
 			}
 		}
 
@@ -890,13 +930,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			if !isSplit && time.Now().After(nextSplitAttempt) && replenishCtrl.MarkInProgress() {
 				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
 
-				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
+				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most SplitInitialCapPct of balance
 				initialBuffer := baseTradeSize * 2.0
 				if initialBuffer < 2.0 {
 					initialBuffer = 2.0
 				}
 
-				maxInitial := currentBalance * 0.25
+				initialCapPct := liveCfg.SplitInitialCapPct
+				if initialCapPct <= 0 {
+					initialCapPct = 0.25 // fallback default
+				}
+				maxInitial := currentBalance * initialCapPct
 				splitAmount := initialBuffer
 				if splitAmount > maxInitial {
 					splitAmount = maxInitial
@@ -959,16 +1003,20 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
 
-				decision := replenishCtrl.CheckReplenish(paper.ReplenishParams{
-					CurrentShares:      currentShares,
-					TargetBuffer:       targetBuffer,
-					InitialShares:      initialSplitAmount, // Replenish back to initial amount
-					SellMargin:         sellMargin,
-					MinMarginThreshold: cfg.SplitMinMarginSell - 1.0,
-					CurrentBalance:     currentBalance,
-					ReplenishAmount:    replenishAmount,
-					MaxBalancePercent:  0.50,
-				})
+			replenishCapPct := liveCfg.SplitReplenishCapPct
+			if replenishCapPct <= 0 {
+				replenishCapPct = 0.50 // fallback default
+			}
+			decision := replenishCtrl.CheckReplenish(paper.ReplenishParams{
+				CurrentShares:      currentShares,
+				TargetBuffer:       targetBuffer,
+				InitialShares:      initialSplitAmount, // Replenish back to initial amount
+				SellMargin:         sellMargin,
+				MinMarginThreshold: cfg.SplitMinMarginSell - 1.0,
+				CurrentBalance:     currentBalance,
+				ReplenishAmount:    replenishAmount,
+				MaxBalancePercent:  replenishCapPct,
+			})
 
 				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {
 					tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f/%.0f), replenishing +%.0f shares...", id, currentShares, initialSplitAmount, decision.Amount)
@@ -1116,23 +1164,23 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 							// Use market orders for split selling with aggressive $0.10 floor
 							// This ensures immediate fill against any available liquidity
-							go func() {
-								defer wg.Done()
-								rate := tokenFeeRates[outcomes[0]]
-								if rate == 0 {
-									rate = 1000
-								}
-								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-							}()
+						go func() {
+							defer wg.Done()
+							rate := tokenFeeRates[outcomes[0]]
+							if rate == 0 {
+								rate = 200
+							}
+							res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+						}()
 
-							go func() {
-								defer wg.Done()
-								rate := tokenFeeRates[outcomes[1]]
-								if rate == 0 {
-									rate = 1000
-								}
-								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-							}()
+						go func() {
+							defer wg.Done()
+							rate := tokenFeeRates[outcomes[1]]
+							if rate == 0 {
+								rate = 200
+							}
+							res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+						}()
 
 							wg.Wait()
 
@@ -1381,15 +1429,13 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							}
 						}
 
-						// MARKET EXECUTION: Use a small +$0.01 buffer above the ask to ensure
-						// fill while keeping the maker amount as low as possible.
-						// utilbot uses ask price directly; +$0.01 mirrors that closely while
-						// still providing a tiny slippage cushion for fast-moving markets.
-						// Keeping this small also reduces the chance of hitting the CLOB $1/side
-						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.25 limit instead
-						// of the old $0.29, requiring fewer shares to clear the minimum).
-						limitPrice1 := math.Min(0.99, price1+0.01)
-						limitPrice2 := math.Min(0.99, price2+0.01)
+						// TRUE MARKET EXECUTION: Set limit price to the absolute exchange
+						// maximum (0.99) for BUY orders so the order behaves as a "true market"
+						// order with maximum slippage tolerance. This guarantees X shares are
+						// filled regardless of price movement, prioritizing execution volume
+						// over price protection.
+						limitPrice1 := 0.99
+						limitPrice2 := 0.99
 
 						// ═══════════════════════════════════════════════════════════════
 						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
@@ -1429,23 +1475,23 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
 
-						go func() {
-							defer wg.Done()
-							rate := tokenFeeRates[outcomes[0]]
-							if rate == 0 {
-								rate = 1000
-							}
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-						}()
+					go func() {
+						defer wg.Done()
+						rate := tokenFeeRates[outcomes[0]]
+						if rate == 0 {
+							rate = 200
+						}
+						res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+					}()
 
-						go func() {
-							defer wg.Done()
-							rate := tokenFeeRates[outcomes[1]]
-							if rate == 0 {
-								rate = 1000
-							}
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-						}()
+					go func() {
+						defer wg.Done()
+						rate := tokenFeeRates[outcomes[1]]
+						if rate == 0 {
+							rate = 200
+						}
+						res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+					}()
 
 						wg.Wait()
 
@@ -1551,55 +1597,55 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									outcomes[1], rbal1, prevSide2, side2Success)
 							}
 
-							// If still unbalanced, retry the order for the missing side
-							if !side1Success {
-								rate := tokenFeeRates[outcomes[0]]
-								if rate == 0 {
-									rate = 1000
-								}
-								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
-								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-								if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
-									side1Success = true
-									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
-								} else {
-									// Final position check after retry
-									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
-										for _, pos := range retryPos {
-											if pos.TokenID == token0 && pos.Size >= shares {
-												side1Success = true
-											}
+						// If still unbalanced, retry the order for the missing side
+						if !side1Success {
+							rate := tokenFeeRates[outcomes[0]]
+							if rate == 0 {
+								rate = 200
+							}
+							tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
+							retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
+								side1Success = true
+								tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
+							} else {
+								// Final position check after retry
+								if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
+									for _, pos := range retryPos {
+										if pos.TokenID == token0 && pos.Size >= shares {
+											side1Success = true
 										}
 									}
-									if !side1Success {
-										tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[0], retryErr1)
-									}
+								}
+								if !side1Success {
+									tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[0], retryErr1)
 								}
 							}
-							if !side2Success {
-								rate := tokenFeeRates[outcomes[1]]
-								if rate == 0 {
-									rate = 1000
-								}
-								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
-								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
-									side2Success = true
-									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])
-								} else {
-									// Final position check after retry
-									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
-										for _, pos := range retryPos {
-											if pos.TokenID == token1 && pos.Size >= shares {
-												side2Success = true
-											}
+						}
+						if !side2Success {
+							rate := tokenFeeRates[outcomes[1]]
+							if rate == 0 {
+								rate = 200
+							}
+							tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
+							retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
+								side2Success = true
+								tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])
+							} else {
+								// Final position check after retry
+								if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
+									for _, pos := range retryPos {
+										if pos.TokenID == token1 && pos.Size >= shares {
+											side2Success = true
 										}
 									}
-									if !side2Success {
-										tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[1], retryErr2)
-									}
+								}
+								if !side2Success {
+									tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[1], retryErr2)
 								}
 							}
+						}
 
 							// Final status after recovery
 							if side1Success != side2Success {

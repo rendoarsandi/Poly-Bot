@@ -207,6 +207,8 @@ func run() error {
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
 		MinAskPrice:          cfg.MinAskPrice,
 		MaxAskPrice:          cfg.MaxAskPrice,
+		SplitInitialCapPct:   cfg.SplitInitialCapPct,
+		SplitReplenishCapPct: cfg.SplitReplenishCapPct,
 	}, func(s paper.TUISettings) {
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
@@ -217,6 +219,8 @@ func run() error {
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
+		cfg.SplitInitialCapPct = s.SplitInitialCapPct
+		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
@@ -822,28 +826,31 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 					}
 					
-					for outcome := range t.TokenMap {
-						bids := t.TokenFullBids[outcome]
-						if len(bids) > 0 {
-							t.TokenBids[outcome] = bids[0].Price
-						} else {
-							t.TokenBids[outcome] = 0
-						}
-
-						asks := t.TokenFullAsks[outcome]
-						if len(asks) > 0 {
-							t.TokenAsks[outcome] = asks[0].Price
-						} else {
-							t.TokenAsks[outcome] = 0
-						}
-
-						if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
-							mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
-							t.FloatPrices[outcome] = mid
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
-						}
+				// Range over map values (outcome names), not keys (tokenIDs).
+				// t.TokenMap is tokenID→outcome; we want the outcome name to look
+				// up depth in TokenFullBids/TokenFullAsks which are keyed by outcome.
+				for _, outcome := range t.TokenMap {
+					bids := t.TokenFullBids[outcome]
+					if len(bids) > 0 {
+						t.TokenBids[outcome] = bids[0].Price
+					} else {
+						t.TokenBids[outcome] = 0
 					}
+
+					asks := t.TokenFullAsks[outcome]
+					if len(asks) > 0 {
+						t.TokenAsks[outcome] = asks[0].Price
+					} else {
+						t.TokenAsks[outcome] = 0
+					}
+
+					if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
+						mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
+						t.FloatPrices[outcome] = mid
+						tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+						t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+					}
+				}
 					t.mu.Unlock()
 
 					if foundForThisTrader {
@@ -1273,19 +1280,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				bid2 := t.TokenBids[t.Outcomes[1]]
 				currentEquity := t.Engine.GetEquity()
 
-				// Initial split: create simulated inventory
-				// Split is always safe - can merge back to USDC anytime at 1:1
-				if !t.SplitInitialized {
-					baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
-					initialBuffer := baseTradeSize * 2.0
-					if initialBuffer < MinSplitBuffer {
-						initialBuffer = MinSplitBuffer
-					}
-					maxInitial := currentEquity * MaxInitialSplitPct
-					splitAmount := initialBuffer
-					if splitAmount > maxInitial {
-						splitAmount = maxInitial
-					}
+			// Initial split: create simulated inventory
+			// Split is always safe - can merge back to USDC anytime at 1:1
+			if !t.SplitInitialized {
+				baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+				initialBuffer := baseTradeSize * 2.0
+				if initialBuffer < MinSplitBuffer {
+					initialBuffer = MinSplitBuffer
+				}
+				initialCapPct := liveCfg.SplitInitialCapPct
+				if initialCapPct <= 0 {
+					initialCapPct = MaxInitialSplitPct // fallback to compile-time constant
+				}
+				maxInitial := currentEquity * initialCapPct
+				splitAmount := initialBuffer
+				if splitAmount > maxInitial {
+					splitAmount = maxInitial
+				}
 					if splitAmount >= MinSplitAmount {
 						t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
 						t.Engine.DeductBalance(splitAmount)
@@ -1307,16 +1318,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 					replenishAmount := baseTradeSize * 2.0
 
-					decision := t.ReplenishCtrl.CheckReplenish(paper.ReplenishParams{
-						CurrentShares:      currentShares,
-						TargetBuffer:       targetBuffer,
-						InitialShares:      t.InitialSplitAmount, // Replenish back to initial amount immediately
-						SellMargin:         sellMargin,
-						MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
-						CurrentBalance:     currentEquity,
-						ReplenishAmount:    replenishAmount,
-						MaxBalancePercent:  MaxBalancePercent,
-					})
+				replenishCapPct := liveCfg.SplitReplenishCapPct
+				if replenishCapPct <= 0 {
+					replenishCapPct = MaxBalancePercent // fallback to compile-time constant
+				}
+				decision := t.ReplenishCtrl.CheckReplenish(paper.ReplenishParams{
+					CurrentShares:      currentShares,
+					TargetBuffer:       targetBuffer,
+					InitialShares:      t.InitialSplitAmount, // Replenish back to initial amount immediately
+					SellMargin:         sellMargin,
+					MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
+					CurrentBalance:     currentEquity,
+					ReplenishAmount:    replenishAmount,
+					MaxBalancePercent:  replenishCapPct,
+				})
 
 					if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
 						// Simulate replenishment - use exact amount needed to reach initial

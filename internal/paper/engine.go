@@ -137,7 +137,11 @@ func (e *Engine) UpdateMarketData(marketID, outcome string, price, bid, ask floa
 	e.recalculateDrawdown()
 }
 
-// ClearMarketData clears cached market prices to prevent memory growth across market rounds
+// ClearMarketData clears cached market prices to prevent memory growth across market rounds.
+// It also resets the peak balance to the current cash balance so that the drawdown
+// calculation is not poisoned by token value that was cleared with the split inventories.
+// Without this reset, the kill switch fires immediately on the first tick of a new round
+// because the equity (cash-only) appears far below the old peak (cash + tokens).
 func (e *Engine) ClearMarketData() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -146,8 +150,15 @@ func (e *Engine) ClearMarketData() {
 	e.currentAsks = make(map[string]float64)
 	e.marketBids = make(map[string]float64)
 	e.marketAsks = make(map[string]float64)
-	// Clear split inventory references since they are recreated per round
+	// Clear split inventory references since they are recreated per round.
 	e.splitInventories = nil
+	// Reset peakBalance to the current cash balance so that the risk manager
+	// does not see an artificial drawdown on the first tick of the new round.
+	// Any gains from the previous round are already baked into currentBalance
+	// (split sells returned cash; merges returned cash), so this is correct.
+	if e.currentBalance > 0 {
+		e.peakBalance = e.currentBalance
+	}
 }
 
 // UpdateBidAsk updates bid/ask prices for realistic taker simulation

@@ -98,7 +98,14 @@ func FindMarkets(
 			}
 
 			slug := strings.ToLower(m.Slug)
-			isTargetTimeframe := strings.Contains(slug, timeframe) || strings.Contains(slug, "updown")
+			// Use exact timeframe matching to prevent "5m" matching inside "15m" slugs.
+			// Slugs follow the pattern "asset-15m-YYYYMMDD-HHmm" so we anchor the
+			// timeframe token with hyphens (or start/end of string as fallback).
+			isTargetTimeframe := strings.Contains(slug, "-"+timeframe+"-") ||
+				strings.HasPrefix(slug, timeframe+"-") ||
+				strings.HasSuffix(slug, "-"+timeframe) ||
+				slug == timeframe ||
+				strings.Contains(slug, "updown")
 
 			// If it's an exact market, bypass the strict name checks
 			isExactMatch := false

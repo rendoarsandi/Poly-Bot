@@ -208,13 +208,15 @@ type TUISettings struct {
 	SplitStrategyEnabled bool    // toggle split strategy on/off
 	MinAskPrice          float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice          float64 // e.g. 0.90 = maximum ask price filter
+	SplitInitialCapPct   float64 // e.g. 0.25 = max 25% of balance for initial split
+	SplitReplenishCapPct float64 // e.g. 0.50 = max 50% of balance in split inventory
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, SplitInitialCapPct: 0.15, SplitReplenishCapPct: 0.30}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, SplitInitialCapPct: 0.25, SplitReplenishCapPct: 0.50}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, SplitInitialCapPct: 0.35, SplitReplenishCapPct: 0.70}
 )
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -454,14 +456,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "s", "S", "esc", "enter":
 				m.showSettings = false
 				return m, nil
-			case "up", "k":
-				m.settingsCursor--
-				if m.settingsCursor < 0 {
-					m.settingsCursor = 8
-				}
-				return m, nil
-			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 9
+		case "up", "k":
+			m.settingsCursor--
+			if m.settingsCursor < 0 {
+				m.settingsCursor = 10
+			}
+			return m, nil
+		case "down", "j":
+			m.settingsCursor = (m.settingsCursor + 1) % 11
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -522,20 +524,32 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
-				case 8:
-					m.tui.settings.MaxAskPrice -= 0.01
-					if m.tui.settings.MaxAskPrice < 0.01 {
-						m.tui.settings.MaxAskPrice = 0.01
-					}
-					changed = true
+			case 8:
+				m.tui.settings.MaxAskPrice -= 0.01
+				if m.tui.settings.MaxAskPrice < 0.01 {
+					m.tui.settings.MaxAskPrice = 0.01
 				}
-				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if changed && m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
+				changed = true
+			case 9: // SplitInitialCapPct
+				m.tui.settings.SplitInitialCapPct -= 0.05
+				if m.tui.settings.SplitInitialCapPct < 0.05 {
+					m.tui.settings.SplitInitialCapPct = 0.05
 				}
-				m.tui.mu.Unlock()
-				return m, nil
-			case "right", "+", "l":
+				changed = true
+			case 10: // SplitReplenishCapPct
+				m.tui.settings.SplitReplenishCapPct -= 0.05
+				if m.tui.settings.SplitReplenishCapPct < 0.05 {
+					m.tui.settings.SplitReplenishCapPct = 0.05
+				}
+				changed = true
+			}
+			m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+			if changed && m.tui.onSettingsChange != nil {
+				m.tui.onSettingsChange(m.tui.settings)
+			}
+			m.tui.mu.Unlock()
+			return m, nil
+		case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
 				switch m.settingsCursor {
@@ -591,20 +605,32 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
-				case 8:
-					m.tui.settings.MaxAskPrice += 0.01
-					if m.tui.settings.MaxAskPrice > 0.99 {
-						m.tui.settings.MaxAskPrice = 0.99
-					}
-					changed = true
+			case 8:
+				m.tui.settings.MaxAskPrice += 0.01
+				if m.tui.settings.MaxAskPrice > 0.99 {
+					m.tui.settings.MaxAskPrice = 0.99
 				}
-				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if changed && m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
+				changed = true
+			case 9: // SplitInitialCapPct
+				m.tui.settings.SplitInitialCapPct += 0.05
+				if m.tui.settings.SplitInitialCapPct > 0.95 {
+					m.tui.settings.SplitInitialCapPct = 0.95
 				}
-				m.tui.mu.Unlock()
-				return m, nil
-			// Quick presets
+				changed = true
+			case 10: // SplitReplenishCapPct
+				m.tui.settings.SplitReplenishCapPct += 0.05
+				if m.tui.settings.SplitReplenishCapPct > 0.95 {
+					m.tui.settings.SplitReplenishCapPct = 0.95
+				}
+				changed = true
+			}
+			m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+			if changed && m.tui.onSettingsChange != nil {
+				m.tui.onSettingsChange(m.tui.settings)
+			}
+			m.tui.mu.Unlock()
+			return m, nil
+		// Quick presets
 			case "1":
 				m.tui.mu.Lock()
 				m.tui.settings = SettingsConservative
@@ -801,6 +827,10 @@ func (t *TUI) ClearMarkets() {
 	t.lastAsks = make(map[string]float64)
 	t.orderBookDepth = make(map[string]map[string][]MarketLevel)
 	t.pendingOrders = make(map[string][]PendingOrder)
+	// Clear split inventory references so "ghost" inventory from the previous
+	// market round is no longer displayed. New inventories are re-registered
+	// via RegisterSplitInventory when the next round's traders start.
+	t.splitInventories = nil
 }
 
 func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {
@@ -1913,6 +1943,16 @@ func (m tuiModel) renderSettings(w int) string {
 			label: "Max Ask Price",
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
+		},
+		{
+			label: "Split Initial Cap",
+			value: fmtPct(cfg.SplitInitialCapPct),
+			bar:   renderBar(cfg.SplitInitialCapPct, 20),
+		},
+		{
+			label: "Split Replenish Cap",
+			value: fmtPct(cfg.SplitReplenishCapPct),
+			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 	}
 

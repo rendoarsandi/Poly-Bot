@@ -336,7 +336,7 @@ func main() {
 	// Fetch fee rate
 	rate, _ := client.GetFeeRate(ctx, targetTokenID)
 	if rate == 0 {
-		rate = 1000 // Safe default for 15m
+		rate = 200 // Default 200 bps (2%) matching current 15m market requirements
 	}
 
 	// Sync CLOB allowance with on-chain state right before trading.
