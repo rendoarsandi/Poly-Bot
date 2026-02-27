@@ -791,7 +791,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if ask > 0 && ask < 1.0 {
 							t.TokenAsks[outcome] = ask
 						}
-							if bid > 0 && ask > 0 {
+							if bid > 0 && ask > 0 && bid < ask {
 								mid := (bid + ask) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
@@ -834,33 +834,48 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 					}
 					
-				// Range over map values (outcome names), not keys (tokenIDs).
-				// t.TokenMap is tokenID→outcome; we want the outcome name to look
-				// up depth in TokenFullBids/TokenFullAsks which are keyed by outcome.
+				// After applying deltas, extract the new best bid/ask from the
+				// updated depth and write it to TokenBids/TokenAsks.
 				//
-				// IMPORTANT: only overwrite the stored best price when the depth has
-				// a valid level available. If a price_change delta removed the last
-				// level on one side, leave the previous best price in place rather
-				// than writing 0 — a momentarily empty side is a transient book
-				// state, not a real price of $0.
+				// Sanity-check: if the new best deviates by more than 40% from
+				// the current stored price in a single delta, it is almost
+				// certainly a stale deep-book level that surfaced after the
+				// top-of-book level was removed.  Skip it — the next full book
+				// snapshot will correct the depth.
+				// Also require bid < ask to reject crossed-book corruption.
 				for _, outcome := range t.TokenMap {
-					bids := t.TokenFullBids[outcome]
-					if len(bids) > 0 && bids[0].Price > 0 {
-						t.TokenBids[outcome] = bids[0].Price
+					if bids := t.TokenFullBids[outcome]; len(bids) > 0 && bids[0].Price > 0 {
+						newBid := bids[0].Price
+						prevBid := t.TokenBids[outcome]
+						sane := prevBid <= 0 // no prior value → always accept snapshot
+						if prevBid > 0 {
+							chg := (newBid - prevBid) / prevBid
+							sane = chg >= -0.40 && chg <= 0.40
+						}
+						if sane {
+							t.TokenBids[outcome] = newBid
+						}
 					}
-					// else: keep previous best bid — do NOT zero it out
 
-					asks := t.TokenFullAsks[outcome]
-					if len(asks) > 0 && asks[0].Price > 0 && asks[0].Price < 1.0 {
-						t.TokenAsks[outcome] = asks[0].Price
+					if asks := t.TokenFullAsks[outcome]; len(asks) > 0 && asks[0].Price > 0 && asks[0].Price < 1.0 {
+						newAsk := asks[0].Price
+						prevAsk := t.TokenAsks[outcome]
+						sane := prevAsk <= 0
+						if prevAsk > 0 {
+							chg := (newAsk - prevAsk) / prevAsk
+							sane = chg >= -0.40 && chg <= 0.40
+						}
+						if sane {
+							t.TokenAsks[outcome] = newAsk
+						}
 					}
-					// else: keep previous best ask — do NOT zero it out
 
-					if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
-						mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
+					bid, ask := t.TokenBids[outcome], t.TokenAsks[outcome]
+					if bid > 0 && ask > 0 && bid < ask {
+						mid := (bid + ask) / 2
 						t.FloatPrices[outcome] = mid
 						tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-						t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+						t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 					}
 				}
 					t.mu.Unlock()
@@ -890,18 +905,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					t.mu.Lock()
 					t.LastUpdate = time.Now()
 					// Guard: only persist valid (0,1) prices.
-					if bid > 0 && bid < 1.0 {
-						t.TokenBids[outcome] = bid
-					}
-					if ask > 0 && ask < 1.0 {
-						t.TokenAsks[outcome] = ask
-					}
-					if bid > 0 && ask > 0 {
-							mid := (bid + ask) / 2
-							t.FloatPrices[outcome] = mid
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
-						}
+				if bid > 0 && bid < 1.0 {
+					t.TokenBids[outcome] = bid
+				}
+				if ask > 0 && ask < 1.0 {
+					t.TokenAsks[outcome] = ask
+				}
+				if bid > 0 && ask > 0 && bid < ask {
+					mid := (bid + ask) / 2
+					t.FloatPrices[outcome] = mid
+					tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+					t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+				}
 						t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
 						t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
 						t.mu.Unlock()

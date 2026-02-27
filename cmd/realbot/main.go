@@ -743,14 +743,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						tokenAsks[outcome] = ask
 					}
 
-						// Always update full depth from snapshots
-						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
-						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
+					// Always update full depth from snapshots
+					tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
+					tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
 
-						if bid > 0 && ask > 0 {
-							mid := (bid + ask) / 2
-							engine.UpdateMarketData(id, outcome, mid, bid, ask)
-						}
+					if bid > 0 && ask > 0 && bid < ask {
+						mid := (bid + ask) / 2
+						engine.UpdateMarketData(id, outcome, mid, bid, ask)
+					}
 					}
 					lastUpdate = time.Now()
 				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
@@ -777,32 +777,42 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						}
 					}
 
-				// Update best bids/asks based on the new full depth.
-				// tokenToOutcome is keyed by tokenID; we range over it to get
-				// the canonical outcome name for each token, then look up depth
-				// by that outcome name (which is how tokenFullBids/Asks are keyed).
-				//
-				// IMPORTANT: only overwrite the stored best price when the depth has
-				// a valid level available. If a price_change delta removed the last
-				// level on one side, leave the previous best price in place rather
-				// than writing 0 — a momentarily empty side is a transient book
-				// state, not a real price of $0.
+				// After applying deltas, extract the new best bid/ask.
+				// Sanity-check: skip updates that deviate >40% from the current
+				// stored price in a single delta — those are stale deep-book
+				// levels surfacing after a top-of-book removal.  The next full
+				// snapshot will correct the depth.
 				for _, outcome := range tokenToOutcome {
-					bids := tokenFullBids[outcome]
-					if len(bids) > 0 && bids[0].Price > 0 {
-						tokenBids[outcome] = bids[0].Price
+					if bids := tokenFullBids[outcome]; len(bids) > 0 && bids[0].Price > 0 {
+						newBid := bids[0].Price
+						prevBid := tokenBids[outcome]
+						sane := prevBid <= 0
+						if prevBid > 0 {
+							chg := (newBid - prevBid) / prevBid
+							sane = chg >= -0.40 && chg <= 0.40
+						}
+						if sane {
+							tokenBids[outcome] = newBid
+						}
 					}
-					// else: keep previous best bid — do NOT zero it out
 
-					asks := tokenFullAsks[outcome]
-					if len(asks) > 0 && asks[0].Price > 0 && asks[0].Price < 1.0 {
-						tokenAsks[outcome] = asks[0].Price
+					if asks := tokenFullAsks[outcome]; len(asks) > 0 && asks[0].Price > 0 && asks[0].Price < 1.0 {
+						newAsk := asks[0].Price
+						prevAsk := tokenAsks[outcome]
+						sane := prevAsk <= 0
+						if prevAsk > 0 {
+							chg := (newAsk - prevAsk) / prevAsk
+							sane = chg >= -0.40 && chg <= 0.40
+						}
+						if sane {
+							tokenAsks[outcome] = newAsk
+						}
 					}
-					// else: keep previous best ask — do NOT zero it out
 
-					if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
-						mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
-						engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
+					bid, ask := tokenBids[outcome], tokenAsks[outcome]
+					if bid > 0 && ask > 0 && bid < ask {
+						mid := (bid + ask) / 2
+						engine.UpdateMarketData(id, outcome, mid, bid, ask)
 					}
 				}
 
