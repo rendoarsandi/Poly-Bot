@@ -2,6 +2,7 @@ package paper
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -118,6 +119,7 @@ func makePanel(innerWidth int, borderColor lipgloss.Color, content string) strin
 		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(innerWidth).
+		MaxWidth(innerWidth).
 		Render(content)
 }
 
@@ -337,7 +339,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tui.width = msg.Width
 		m.tui.height = msg.Height
 		m.tui.mu.Unlock()
-		return m, nil
+		
+		// Update the snapshot immediately so the next View() call is perfectly sized
+		m.snap.width = msg.Width
+		m.snap.height = msg.Height
+		
+		// Clear screen on resize to prevent rendering artifacts
+		return m, tea.ClearScreen
 
 	case tickMsg:
 		_ = msg
@@ -657,6 +665,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key {
 		case "s", "S":
 			m.showSettings = true
+			return m, nil
+		case "c", "C":
+			m.tui.mu.Lock()
+			m.tui.eventLog = []string{}
+			m.tui.mu.Unlock()
 			return m, nil
 		case "q", "Q", "ctrl+c":
 			// Call the parent cancel func FIRST so the trading loop shuts down
@@ -1052,9 +1065,10 @@ func (m tuiModel) renderHeader(w int) string {
 	uptimePart := styleDimmed.Render("⏱ " + uptime.String())
 	quitPart := styleMuted.Render("[q] quit")
 	settingsPart := lipgloss.NewStyle().Foreground(clrBrand).Render("[s] settings")
+	clearPart := styleMuted.Render("[c] clear")
 
 	sep := styleMuted.Render("  ·  ")
-	info := "  " + wsPart + sep + uptimePart + sep + settingsPart + sep + quitPart
+	info := "  " + wsPart + sep + uptimePart + sep + settingsPart + sep + clearPart + sep + quitPart
 
 	content := title + "\n" + info
 	return makePanel(inner, clrBrand, content)
@@ -1258,16 +1272,61 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			o2 = o2[:maxLbl]
 		}
 
-		priceLinesB.WriteString(fmt.Sprintf("  %-4s  %s %-5s  %s %s\n",
+		formatDepth := func(lvls []MarketLevel, idx int, c lipgloss.Style) string {
+			if idx < len(lvls) {
+				s := lvls[idx].Size
+				sStr := fmt.Sprintf("%.0f", s)
+				if s >= 1000 {
+					sStr = fmt.Sprintf("%.1fk", s/1000)
+				}
+				if len(sStr) > 4 {
+					sStr = sStr[:4]
+				}
+				str := fmt.Sprintf("%s@.%02.0f", sStr, lvls[idx].Price*100)
+				return c.Render(fmt.Sprintf("%-8s", str))
+			}
+			return "        " // 8 spaces
+		}
+
+		// --- Outcome 1 ---
+		priceLinesB.WriteString(fmt.Sprintf("  %-4s  %s %-5s  %s %-5s  %s\n",
 			o1,
 			styleGreen.Render("B:"), styleGreen.Render("$"+fmtP(bid1)),
 			styleRed.Render("A:"), styleRed.Render("$"+fmtP(ask1)),
+			styleDimmed.Render(fmt.Sprintf("↕%.2f", math.Max(0, ask1-bid1))),
 		))
-		priceLinesB.WriteString(fmt.Sprintf("  %-4s  %s %-5s  %s %s\n",
+
+		if d := depth[id]; d != nil {
+			o1Bids := d[mkt.Outcomes[0]+"_bids"]
+			o1Asks := d[mkt.Outcomes[0]+"_asks"]
+			for i := 1; i <= 2; i++ {
+				bStr := formatDepth(o1Bids, i, styleGreen)
+				aStr := formatDepth(o1Asks, i, styleRed)
+				priceLinesB.WriteString(fmt.Sprintf("           %s  %s\n", bStr, aStr))
+			}
+		} else {
+			priceLinesB.WriteString("\n\n")
+		}
+
+		// --- Outcome 2 ---
+		priceLinesB.WriteString(fmt.Sprintf("  %-4s  %s %-5s  %s %-5s  %s\n",
 			o2,
 			styleGreen.Render("B:"), styleGreen.Render("$"+fmtP(bid2)),
 			styleRed.Render("A:"), styleRed.Render("$"+fmtP(ask2)),
+			styleDimmed.Render(fmt.Sprintf("↕%.2f", math.Max(0, ask2-bid2))),
 		))
+
+		if d := depth[id]; d != nil {
+			o2Bids := d[mkt.Outcomes[1]+"_bids"]
+			o2Asks := d[mkt.Outcomes[1]+"_asks"]
+			for i := 1; i <= 2; i++ {
+				bStr := formatDepth(o2Bids, i, styleGreen)
+				aStr := formatDepth(o2Asks, i, styleRed)
+				priceLinesB.WriteString(fmt.Sprintf("           %s  %s\n", bStr, aStr))
+			}
+		} else {
+			priceLinesB.WriteString("\n\n")
+		}
 
 		if ask1 > 0 && ask2 > 0 {
 			askSum := ask1 + ask2
@@ -1281,6 +1340,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		} else {
 			priceLinesB.WriteString(styleDimmed.Render("  ↻ awaiting price data…"))
 		}
+
 	}
 
 	content := header + "\n" +
