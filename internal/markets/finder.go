@@ -98,7 +98,8 @@ func FindMarkets(
 			}
 
 			slug := strings.ToLower(m.Slug)
-			isTargetTimeframe := strings.Contains(slug, timeframe) || strings.Contains(slug, "updown")
+			// Ensure strict matching for timeframe (e.g. "-5m-" instead of just "5m" which matches "15m")
+			isTargetTimeframe := strings.Contains(slug, "-"+timeframe+"-")
 
 			// If it's an exact market, bypass the strict name checks
 			isExactMatch := false
