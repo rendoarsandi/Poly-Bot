@@ -202,6 +202,37 @@ func (s *SplitInventory) Clear(marketID, outcome1, outcome2 string) {
 	delete(s.splitCostBasis, key2)
 }
 
+// Redeem removes inventory for a market at expiration and returns the payout.
+// The winning outcome pays $1.00 per share. The losing outcome pays $0.
+// Also returns the PnL of this redemption (payout - remaining cost basis).
+func (s *SplitInventory) Redeem(marketID, winningOutcome string) (payout, pnl float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var totalPayout float64
+	var totalCost float64
+
+	prefix := marketID + ":"
+	for key, shares := range s.splitShares {
+		// Only process keys for this market
+		if strings.HasPrefix(key, prefix) {
+			outcome := strings.TrimPrefix(key, prefix)
+			cost := shares * s.splitCostBasis[key]
+			totalCost += cost
+
+			if outcome == winningOutcome {
+				totalPayout += shares * 1.0
+			}
+
+			// Remove from inventory
+			delete(s.splitShares, key)
+			delete(s.splitCostBasis, key)
+		}
+	}
+
+	return totalPayout, totalPayout - totalCost
+}
+
 // ClearAll removes all inventory
 func (s *SplitInventory) ClearAll() {
 	s.mu.Lock()

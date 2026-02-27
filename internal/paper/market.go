@@ -2,6 +2,8 @@ package paper
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -190,10 +192,10 @@ func (mm *MarketMonitor) PrintStatus() {
 }
 
 // ParseEndTimeFromSlug extracts end time from market slug (e.g., btc-updown-15m-1767358800)
-// The slug contains the START timestamp, so we add 15 minutes to get END time
+// The slug contains the START timestamp, so we add the duration to get END time
 func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 	// The slug format ends with the window START timestamp
-	// e.g., btc-updown-15m-1767358800 -> starts at 1767358800, ends at 1767358800 + 900
+	// e.g., btc-updown-15m-1767358800 -> starts at 1767358800, ends at 1767358800 + duration
 	var timestamp int64
 	var err error
 
@@ -220,7 +222,29 @@ func ParseEndTimeFromSlug(slug string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("could not parse timestamp from slug: %s", slug)
 	}
 
-	// Add 15 minutes (900 seconds) to get the END time
-	endTimestamp := timestamp + 900
+	// Parse duration from slug
+	durationSeconds := int64(900) // Default 15m
+	parts := strings.Split(slug, "-")
+	for _, part := range parts {
+		if len(part) > 1 && (strings.HasSuffix(part, "m") || strings.HasSuffix(part, "h") || strings.HasSuffix(part, "d")) {
+			valStr := part[:len(part)-1]
+			val, parseErr := strconv.Atoi(valStr)
+			if parseErr == nil {
+				unit := part[len(part)-1]
+				switch unit {
+				case 'm':
+					durationSeconds = int64(val) * 60
+				case 'h':
+					durationSeconds = int64(val) * 3600
+				case 'd':
+					durationSeconds = int64(val) * 86400
+				}
+				break
+			}
+		}
+	}
+
+	// Add duration to get the END time
+	endTimestamp := timestamp + durationSeconds
 	return time.Unix(endTimestamp, 0), nil
 }

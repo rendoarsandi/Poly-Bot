@@ -687,19 +687,46 @@ func (m tuiModel) View() string {
 
 	rows = append(rows, m.renderHeader(w))
 	rows = append(rows, "")
-	rows = append(rows, m.renderMarketInfo(w))
-	rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity,
-		s.multiplier, s.rounds, s.profitable, s.enginePositions))
-	rows = append(rows, "")
-	rows = append(rows, m.renderPositions(w, s.positions))
 
-	if ord := m.renderOrders(w, s.orders); ord != "" {
-		rows = append(rows, ord)
+	if w > 100 {
+		// Responsive two-column layout
+		leftW := (w - 2) / 2
+		rightW := w - leftW - 2
+		
+		var leftRows []string
+		leftRows = append(leftRows, m.renderMarketInfo(leftW))
+		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
+		leftRows = append(leftRows, m.renderPositions(leftW, s.positions))
+		if ord := m.renderOrders(leftW, s.orders); ord != "" {
+			leftRows = append(leftRows, ord)
+		}
+		
+		var rightRows []string
+		rightRows = append(rightRows, m.renderOrderHistory(rightW, 12))
+		rightRows = append(rightRows, m.renderEventLog(rightW, 12))
+		
+		leftCol := strings.Join(leftRows, "\n\n")
+		rightCol := strings.Join(rightRows, "\n\n")
+		
+		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "  ", rightCol)
+		rows = append(rows, content)
+	} else {
+		// Single column layout
+		rows = append(rows, m.renderMarketInfo(w))
+		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity,
+			s.multiplier, s.rounds, s.profitable, s.enginePositions))
+		rows = append(rows, "")
+		rows = append(rows, m.renderPositions(w, s.positions))
+
+		if ord := m.renderOrders(w, s.orders); ord != "" {
+			rows = append(rows, ord)
+		}
+
+		rows = append(rows, m.renderOrderHistory(w, 8))
+		rows = append(rows, "")
+		rows = append(rows, m.renderEventLog(w, 8))
 	}
 
-	rows = append(rows, m.renderOrderHistory(w))
-	rows = append(rows, "")
-	rows = append(rows, m.renderEventLog(w))
 	rows = append(rows, m.renderFooter(w))
 
 	if s.isKilled {
@@ -1001,14 +1028,6 @@ func (m tuiModel) renderHeader(w int) string {
 		Align(lipgloss.Center).
 		Render("◆  POLYARB-15M TRADING TERMINAL  ◆")
 
-	// REST latency
-	_, restSt := latencyDot(s.restLatency, 100, 200)
-	restStr := "…"
-	if s.restLatency > 0 {
-		restStr = s.restLatency.Round(time.Millisecond).String()
-	}
-	restPart := restSt.Render("● REST ") + restSt.Render(restStr)
-
 	// WS ping
 	_, wsSt := latencyDot(s.wsPingLatency, 200, 500)
 	wsStr := "…"
@@ -1035,7 +1054,7 @@ func (m tuiModel) renderHeader(w int) string {
 	settingsPart := lipgloss.NewStyle().Foreground(clrBrand).Render("[s] settings")
 
 	sep := styleMuted.Render("  ·  ")
-	info := "  " + restPart + sep + wsPart + sep + uptimePart + sep + settingsPart + sep + quitPart
+	info := "  " + wsPart + sep + uptimePart + sep + settingsPart + sep + quitPart
 
 	content := title + "\n" + info
 	return makePanel(inner, clrBrand, content)
@@ -1726,7 +1745,7 @@ func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
 }
 
 // renderOrderHistory: recent trade log panel.
-func (m tuiModel) renderOrderHistory(w int) string {
+func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 	s := m.snap
 	inner := w - 4
 	var sb strings.Builder
@@ -1745,8 +1764,8 @@ func (m tuiModel) renderOrderHistory(w int) string {
 	sb.WriteString(styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 70))) + "\n")
 
 	displayCount := len(s.orderHistory)
-	if displayCount > 8 {
-		displayCount = 8
+	if displayCount > maxItems {
+		displayCount = maxItems
 	}
 
 	for i := len(s.orderHistory) - 1; i >= len(s.orderHistory)-displayCount && i >= 0; i-- {
@@ -1781,7 +1800,7 @@ func (m tuiModel) renderOrderHistory(w int) string {
 }
 
 // renderEventLog: scrolling event log panel.
-func (m tuiModel) renderEventLog(w int) string {
+func (m tuiModel) renderEventLog(w int, maxItems int) string {
 	s := m.snap
 	inner := w - 4
 	var sb strings.Builder
@@ -1790,8 +1809,12 @@ func (m tuiModel) renderEventLog(w int) string {
 	if len(s.eventLog) == 0 {
 		sb.WriteString(styleDimmed.Render("  (waiting for events…)"))
 	} else {
-		for _, event := range s.eventLog {
-			sb.WriteString("  " + event + "\n")
+		startIdx := 0
+		if len(s.eventLog) > maxItems {
+			startIdx = len(s.eventLog) - maxItems
+		}
+		for i := startIdx; i < len(s.eventLog); i++ {
+			sb.WriteString("  " + s.eventLog[i] + "\n")
 		}
 	}
 	return makePanel(inner, clrSlate, sb.String())

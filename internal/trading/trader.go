@@ -87,10 +87,15 @@ func NewPaperTrader(engine *paper.Engine, orderBook *paper.OrderBook) *PaperTrad
 
 func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	cost := price * size
-	// Calculate simulated fee
+	// Calculate simulated fee using Polymarket dynamic curve
 	fee := 0.0
 	if feeRateBps > 0 {
-		fee = cost * (float64(feeRateBps) / 10000.0)
+		feeRate := 0.25
+		exponent := 2.0
+		// curve fee = shares * feeRate * (p * (1-p))^exponent
+		feeTokens := size * feeRate * math.Pow(price*(1.0-price), exponent)
+		// For buy orders, fee is collected in shares. We convert to USDC equivalent.
+		fee = feeTokens * price
 	}
 
 	_, err := t.engine.Buy(outcome, price, size)
@@ -99,6 +104,11 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 			Success: false,
 			Message: err.Error(),
 		}, nil
+	}
+
+	// Deduct the fee from the paper balance to accurately simulate costs
+	if fee > 0 {
+		t.engine.DeductBalance(fee)
 	}
 
 	return &TradeResult{
@@ -118,11 +128,15 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 }
 
 func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
-	// Calculate simulated fee
+	// Calculate simulated fee using Polymarket dynamic curve
 	fee := 0.0
 	if feeRateBps > 0 {
-		proceeds := price * size
-		fee = proceeds * (float64(feeRateBps) / 10000.0)
+		feeRate := 0.25
+		exponent := 2.0
+		// For sell orders, fees are collected directly in USDC.
+		// curve fee = shares * feeRate * (p * (1-p))^exponent
+		feeTokens := size * feeRate * math.Pow(price*(1.0-price), exponent)
+		fee = feeTokens
 	}
 
 	_, err := t.engine.Sell(outcome, price, size)
@@ -131,6 +145,11 @@ func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, 
 			Success: false,
 			Message: err.Error(),
 		}, nil
+	}
+
+	// Deduct the fee from the paper balance to accurately simulate costs
+	if fee > 0 {
+		t.engine.DeductBalance(fee)
 	}
 
 	return &TradeResult{

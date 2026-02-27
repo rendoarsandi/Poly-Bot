@@ -1050,7 +1050,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						var maxValidI, maxValidJ int
 
 						for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
-							if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum {
+							if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum-1e-6 {
 								break // below profitability threshold — stop
 							}
 							if bi+1 > maxValidI {
@@ -1089,9 +1089,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
 							// Enhanced log with liquidity and depth info (same format as paper bot)
-							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell,
-								rawLiq1, rawLiq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 							// Sell both sides in parallel
 							token0 := getTokenID(outcomes[0])
@@ -1160,6 +1160,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							profit1 := splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
 							profit2 := splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
 							totalProfit := profit1 + profit2
+							engine.AddRealizedPnL(totalProfit)
 							tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
 							tui.RecordOrder(id, "SPLIT_SELL", "SELL", sharesToSell*2, (bid1+bid2)/2, sharesToSell*bidSum, sellMargin, "FILLED")
 							// Refresh balance after successful sell (cash increased)
@@ -1280,7 +1281,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						p2 := asks2[j].Price
 
 						// Check if this combination maintains minimum margin
-						if p1+p2 > maxSum {
+						if p1+p2 > maxSum+1e-6 {
 							break // Can't go deeper, would exceed margin threshold
 						}
 
@@ -1371,8 +1372,8 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 						// Calculate trade metrics with buffered prices
 
-						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin, %.1f%% after slippage) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-							id, outcomes[0], ask1, outcomes[1], ask2, sum, (1.0-sum)*100, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin, %.1f%% after slippage) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+							id, outcomes[0], ask1, outcomes[1], ask2, sum, (1.0-sum)*100, margin, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -1853,7 +1854,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 		}
 
 		if winner != "" {
-			result := engine.RedeemWithDetails(winner)
+			result := engine.RedeemWithDetails(id, winner)
 			if result.TotalPnL != 0 {
 				pnlSign := "+"
 				pnlEmoji := "💰"

@@ -582,7 +582,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 	// Order fill callback
 	t.OrderBook.SetFillCallback(func(order *paper.LimitOrder, fillQty, fillPrice float64) {
-		_, err := t.Engine.Buy(order.Outcome, fillPrice, fillQty)
+		_, err := t.Engine.BuyForMarket(t.ID, order.Outcome, fillPrice, fillQty)
 		if err != nil {
 			t.TUI.LogEvent("[%s] ❌ Fill error: %v", t.ID, err)
 			if t.CSVLogger != nil {
@@ -633,7 +633,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				winner := t.determineWinner()
 				if winner != "" {
 					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
-					t.Engine.RedeemWithDetails(winner)
+					t.Engine.RedeemWithDetails(t.ID, winner)
 				}
 
 				finalStats := t.Engine.GetStats()
@@ -667,7 +667,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
 
 				// Use detailed redemption
-				result := t.Engine.RedeemWithDetails(winner)
+				result := t.Engine.RedeemWithDetails(t.ID, winner)
 				if result.WinningShares > 0 || result.LosingShares > 0 {
 					t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
 						t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)
@@ -1076,7 +1076,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							p2 := asks2[j].Price
 
 							// Check if this combination maintains minimum margin
-							if p1+p2 > maxSum {
+							if p1+p2 > maxSum+1e-6 {
 								break // Can't go deeper, would exceed margin threshold
 							}
 
@@ -1189,11 +1189,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 						}
 						if compoundMult > 1.0 {
-							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 						} else {
-							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
-								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 						}
 
 						if t.CSVLogger != nil {
@@ -1380,7 +1380,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 							// Walk bid levels to find matched liquidity
 							for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
-								if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum {
+								if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum-1e-6 {
 									break
 								}
 								if bi+1 > maxValidI {
@@ -1408,12 +1408,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							// Add proceeds back to balance
 							proceeds := sharesToSell * bidSum
 							t.Engine.AddBalance(proceeds)
+							t.Engine.AddRealizedPnL(totalProfit)
 							t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 
 							// Enhanced log with liquidity and depth info (same format as ARB buy)
-							t.TUI.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares, profit $%.2f [liq: %.0f/%.0f, depth: %d/%d→%d/%d]",
+							t.TUI.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares, profit $%.2f [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								t.ID, t.Outcomes[0], bid1, t.Outcomes[1], bid2, bidSum, sellMargin, sharesToSell, totalProfit,
-								rawLiq1, rawLiq2, bookDepth1, bookDepth2, maxValidI, maxValidJ)
+								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 							t.TUI.RecordOrder(t.ID, "SPLIT_SELL", "SELL", sharesToSell*2, bidSum/2, proceeds, sellMargin, "FILLED")
 							t.LastSplitSell = time.Now()
 						}

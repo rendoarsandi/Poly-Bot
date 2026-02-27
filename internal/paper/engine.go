@@ -3,6 +3,7 @@ package paper
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -399,7 +400,7 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 }
 
 // RedeemWithDetails simulates market resolution and returns detailed results
-func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
+func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -407,8 +408,18 @@ func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
 		WinningOutcome: winningOutcome,
 	}
 
-	for _, pos := range e.positions {
-		// Correctly match the outcome even if the key has a "MarketID:" prefix
+	prefix := ""
+	if marketID != "" {
+		prefix = marketID + ":"
+	}
+
+	for key, pos := range e.positions {
+		// Only process positions for this market
+		if marketID != "" && !strings.HasPrefix(key, prefix) && pos.MarketID != marketID {
+			continue
+		}
+
+		// Correctly match the outcome
 		if pos.Outcome == winningOutcome {
 			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
@@ -416,10 +427,10 @@ func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
 			e.realizedPnL += pnl
 			e.currentBalance += proceeds
 
-			result.WinningShares = pos.Quantity
-			result.WinningPayout = proceeds
-			result.WinningCost = pos.TotalCost
-			result.WinningPnL = pnl
+			result.WinningShares += pos.Quantity
+			result.WinningPayout += proceeds
+			result.WinningCost += pos.TotalCost
+			result.WinningPnL += pnl
 			result.TotalPayout += proceeds
 
 			if pnl > 0 {
@@ -433,13 +444,25 @@ func (e *Engine) RedeemWithDetails(winningOutcome string) *RedemptionResult {
 			e.losingTrades++
 
 			result.LosingOutcome = pos.Outcome
-			result.LosingShares = pos.Quantity
-			result.LosingCost = pos.TotalCost
+			result.LosingShares += pos.Quantity
+			result.LosingCost += pos.TotalCost
 		}
+
+		// Remove processed position
+		delete(e.positions, key)
 	}
 
-	// Clear all positions
-	e.positions = make(map[string]*Position)
+	// Now redeem split inventories
+	for _, inv := range e.splitInventories {
+		payout, pnl := inv.Redeem(marketID, winningOutcome)
+		if payout > 0 || pnl != 0 {
+			e.currentBalance += payout
+			e.realizedPnL += pnl
+			result.TotalPayout += payout
+			result.WinningPayout += payout
+			result.WinningPnL += pnl
+		}
+	}
 
 	e.updateDrawdown()
 	return result
@@ -819,6 +842,18 @@ func (e *Engine) AddBalance(amount float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.currentBalance += amount
+}
+
+// AddRealizedPnL adds realized PnL to the engine stats
+func (e *Engine) AddRealizedPnL(pnl float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.realizedPnL += pnl
+	if pnl > 0 {
+		e.winningTrades++
+	} else if pnl < 0 {
+		e.losingTrades++
+	}
 }
 
 // RegisterSplitInventory registers a split inventory for equity calculation

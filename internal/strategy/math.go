@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 )
 
@@ -31,11 +32,10 @@ type TradeMetrics struct {
 // CalculateTradeMetricsCurve computes trade metrics using Polymarket's
 // price-curve fee formula:
 //
-//	fee_per_side = shares × (feeRateBps/10000) × 2 × p × (1−p)
+//	fee_per_side = shares × feeRate × (p × (1−p))^exponent
 //
-// This accurately models the actual on-chain fee for binary prediction markets
-// where the fee curve is lowest near 0/1 and highest at 0.5.
-// Use this for paper-trading simulation.
+// This accurately models the actual on-chain fee for crypto markets
+// where feeRate = 0.25, exponent = 2.0. The curve is lowest near 0/1 and highest at 0.5.
 func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) TradeMetrics {
 	sum := price1 + price2
 	cost := shares * sum
@@ -43,12 +43,16 @@ func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) 
 
 	overhead := 0.0
 	if feeRateBps > 0 {
-		baseRate := float64(feeRateBps) / 10000.0
-		curve1 := 2.0 * price1 * (1.0 - price1)
-		fee1 := shares * baseRate * curve1
-		curve2 := 2.0 * price2 * (1.0 - price2)
-		fee2 := shares * baseRate * curve2
-		overhead = fee1 + fee2
+		feeRate := 0.25
+		exponent := 2.0
+		
+		fee1Tokens := shares * feeRate * math.Pow(price1*(1.0-price1), exponent)
+		fee2Tokens := shares * feeRate * math.Pow(price2*(1.0-price2), exponent)
+		
+		fee1Usdc := fee1Tokens * price1
+		fee2Usdc := fee2Tokens * price2
+		
+		overhead = fee1Usdc + fee2Usdc
 	}
 
 	return TradeMetrics{

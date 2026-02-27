@@ -60,15 +60,16 @@ func TestPaperTrader_FeeCalculation(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Buy with 100 bps fee (1%)
+	// Buy triggers the dynamic curve fee because feeRateBps > 0
 	result, err := trader.Buy(ctx, "token123", "Up", 0.50, 100, api.OrderTypeMarket, api.TIFGoodTilCancelled, 100)
 	if err != nil {
 		t.Fatalf("Buy failed: %v", err)
 	}
 
-	// Cost = 0.50 * 100 = $50
-	// Fee = $50 * 0.01 = $0.50
-	expectedFee := 50.0 * 0.01
+	// Crypto curve: feeTokens = size * 0.25 * (p * (1-p))^2
+	// feeTokens = 100 * 0.25 * (0.5 * 0.5)^2 = 1.5625 shares
+	// USDC fee equivalent = 1.5625 * 0.50 = 0.78125
+	expectedFee := 0.78125
 	if result.Fee != expectedFee {
 		t.Errorf("Expected fee $%.4f, got $%.4f", expectedFee, result.Fee)
 	}
