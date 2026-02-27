@@ -346,6 +346,9 @@ func run() error {
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "ROUND_START", "Round starting with %d markets | Multiplier: %.2fx", len(markets), compoundMultiplier)
 
+		// Create a context for this specific round of trading
+		roundCtx, roundCancel := context.WithCancel(ctx)
+
 		// Create traders for all found markets
 		var wg sync.WaitGroup
 		results := make(chan *marketResult, len(markets))
@@ -369,7 +372,7 @@ func run() error {
 			go func(id string, t *MarketTrader) {
 				defer wg.Done()
 				// Create a sub-context for this specific trader to prevent goroutine leaks
-				tCtx, tCancel := context.WithCancel(ctx)
+				tCtx, tCancel := context.WithCancel(roundCtx)
 				defer tCancel()
 
 				// Panic recovery for trader goroutine
@@ -393,6 +396,24 @@ func run() error {
 
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "TRADERS_RUNNING", "Started %d concurrent market traders", tradersStarted)
 
+		// Goroutine to monitor for TUI restart requests
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-roundCtx.Done():
+					return
+				case <-ticker.C:
+					if tui.GetAndClearRestart() {
+						tui.LogEvent("🔄 Settings saved. Restarting trading loop...")
+						roundCancel() // This cancels the roundCtx, stopping all current traders
+						return
+					}
+				}
+			}
+		}()
+
 		// Wait for all traders to complete with a context-aware mechanism
 		done := make(chan struct{})
 		go func() {
@@ -412,7 +433,17 @@ func run() error {
 			case <-time.After(2 * time.Second):
 				tui.LogEvent("⚠️ Force stopping traders...")
 			}
+		case <-roundCtx.Done():
+			// Round cancelled (e.g. via settings restart)
+			tui.LogEvent("⚠️ Traders stopped for restart...")
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
 		}
+
+		// Ensure round is cancelled even if it finished normally
+		roundCancel()
 
 		// Close channels safely in a background goroutine AFTER wg.Wait()
 		// This prevents deadlocks and panics if traders take a long time to exit
@@ -618,8 +649,35 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.LadderMgr.CancelAllLadders()
 			positions := t.Engine.GetPositions()
 			if len(positions) > 0 {
-				t.TUI.LogEvent("[%s] 🔴 EMERGENCY EXIT: Liquidating...", t.ID)
+				t.TUI.LogEvent("[%s] 🔴 EMERGENCY EXIT: Liquidating positions...", t.ID)
 				t.Engine.LiquidateAll()
+			}
+			// Liquidate split inventory
+			splitPositions := t.SplitInventory.GetAllPositions()
+			if len(splitPositions) > 0 {
+				t.TUI.LogEvent("[%s] 🔀 EMERGENCY EXIT: Merging & Liquidating Split Inventory...", t.ID)
+				// For a 2-outcome market, we just merge min shares, then sell the rest at bid.
+				if len(t.Outcomes) == 2 {
+					minShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
+					if minShares > 0 {
+						t.Engine.MergeForMarket(t.ID, t.Outcomes[0], t.Outcomes[1], minShares)
+						t.SplitInventory.RecordMerge(t.ID, t.Outcomes[0], t.Outcomes[1], minShares)
+						t.TUI.LogEvent("[%s] 🔀 Merged %.0f pairs", t.ID, minShares)
+					}
+					// Sell remaining unbalanced shares at current bid
+					for _, out := range t.Outcomes {
+						rem := t.SplitInventory.GetSplitShares(t.ID, out)
+						if rem > 0 {
+							bid, _ := t.Engine.GetMarketBidAsk(t.ID, out)
+							if bid <= 0 { // Fallback
+								bid = 0.50
+							}
+							t.SplitInventory.RecordSell(t.ID, out, rem, bid)
+							t.Engine.AddBalance(rem * bid)
+							t.TUI.LogEvent("[%s] 📉 Sold %.0f split shares of %s at $%.3f", t.ID, rem, out, bid)
+						}
+					}
+				}
 			}
 			return nil, ctx.Err()
 

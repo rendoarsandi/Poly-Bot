@@ -392,6 +392,9 @@ func run() error {
 			}
 		}
 
+		// Create a context for this specific round of trading
+		roundCtx, roundCancel := context.WithCancel(ctx)
+
 		// Trade each market in parallel
 		var wg sync.WaitGroup
 		for assetID, market := range markets {
@@ -413,6 +416,10 @@ func run() error {
 			wg.Add(1)
 			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64) {
 				defer wg.Done()
+				// Create a sub-context for this specific trader to prevent goroutine leaks
+				tCtx, tCancel := context.WithCancel(roundCtx)
+				defer tCancel()
+
 				defer func() {
 					if r := recover(); r != nil {
 						core.RestoreTerminal()
@@ -422,9 +429,27 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, &splitMu)
+				tradeMarket(tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, &splitMu)
 			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
+
+		// Goroutine to monitor for TUI restart requests
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-roundCtx.Done():
+					return
+				case <-ticker.C:
+					if tui.GetAndClearRestart() {
+						tui.LogEvent("🔄 Settings saved. Restarting trading loop...")
+						roundCancel() // This cancels the roundCtx, stopping all current traders
+						return
+					}
+				}
+			}
+		}()
 
 		// Wait for all markets in this round to finish
 		done := make(chan struct{})
@@ -435,36 +460,47 @@ func run() error {
 
 		select {
 		case <-done:
-			// Sync engine with on-chain balance before calculating round PnL
-			{
-				endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
-				if endBal, endBalErr := realTrader.GetBalance(endBalCtx); endBalErr == nil {
-					engine.SetBalance(endBal)
-					engine.RecalculateDrawdown()
-				}
-				endBalFn()
-			}
-
-			// Calculate round PnL
-			roundPnL := engine.GetEquity() - startingEquity
-			if roundPnL > 0 {
-				tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)
-			} else if roundPnL < 0 {
-				tui.LogEvent("📉 Loss. Round PnL: $%.2f", roundPnL)
-			} else {
-				tui.LogEvent("✅ Round complete, no change")
-			}
-			tui.LogEvent("🔄 All markets closed — searching for next round...")
-			// Release stale keep-alive connections before the next search phase.
-			restClient.CloseIdleConnections()
-			tui.ClearMarkets()
-			orderBook.CancelAllOrders()
-			engine.ClearMarketData()
-			// Loop back to search for new markets
-
+			tui.LogEvent("✅ All markets closed normally.")
 		case <-ctx.Done():
 			goto shutdown
+		case <-roundCtx.Done():
+			// Round cancelled (e.g. via settings restart)
+			tui.LogEvent("⚠️ Traders stopped for restart...")
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
 		}
+
+		// Ensure round is cancelled even if it finished normally
+		roundCancel()
+
+		// Sync engine with on-chain balance before calculating round PnL
+		{
+			endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
+			if endBal, endBalErr := realTrader.GetBalance(endBalCtx); endBalErr == nil {
+				engine.SetBalance(endBal)
+				engine.RecalculateDrawdown()
+			}
+			endBalFn()
+		}
+
+		// Calculate round PnL
+		roundPnL := engine.GetEquity() - startingEquity
+		if roundPnL > 0 {
+			tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)
+		} else if roundPnL < 0 {
+			tui.LogEvent("📉 Loss. Round PnL: $%.2f", roundPnL)
+		} else {
+			tui.LogEvent("✅ Round complete, no change")
+		}
+		tui.LogEvent("🔄 Searching for next round...")
+		
+		// Release stale keep-alive connections before the next search phase.
+		restClient.CloseIdleConnections()
+		tui.ClearMarkets()
+		orderBook.CancelAllOrders()
+		engine.ClearMarketData()
 	}
 
 shutdown:
@@ -637,6 +673,52 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	for {
 		select {
 		case <-ctx.Done():
+			// Liquidate split inventory on emergency exit
+			splitPositions := splitInventory.GetAllPositions()
+			if len(splitPositions) > 0 {
+				tui.LogEvent("[%s] 🔀 EMERGENCY EXIT: Merging & Liquidating Split Inventory...", id)
+				if len(outcomes) == 2 {
+					minShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
+					if minShares > 0 {
+						// real trader merge
+						mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+						txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, minShares)
+						mergeCancel()
+						if err == nil {
+							engine.MergeForMarket(id, outcomes[0], outcomes[1], minShares)
+							splitInventory.RecordMerge(id, outcomes[0], outcomes[1], minShares)
+							tui.LogEvent("[%s] 🔀 Merged %.0f pairs | Tx: %s", id, minShares, txHash)
+						} else {
+							tui.LogEvent("[%s] ⚠️ Failed to merge %.0f pairs on emergency exit: %v", id, minShares, err)
+						}
+					}
+					// Sell remaining unbalanced shares at current bid
+					for _, out := range outcomes {
+						rem := splitInventory.GetSplitShares(id, out)
+						if rem > 0 {
+							bid, _ := engine.GetMarketBidAsk(id, out)
+							if bid <= 0 { // Fallback
+								bid = 0.50
+							}
+							
+							// Best-effort market sell
+							tokenID := getTokenID(out)
+							if tokenID != "" {
+								rate := tokenFeeRates[out]
+								if rate == 0 { rate = 1000 }
+								sellCtx, sellCancel := context.WithTimeout(context.Background(), 10*time.Second)
+								_, err := trader.Sell(sellCtx, tokenID, out, 0.01, rem, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+								sellCancel()
+								if err == nil {
+									splitInventory.RecordSell(id, out, rem, bid)
+									engine.AddBalance(rem * bid)
+									tui.LogEvent("[%s] 📉 Sold %.0f split shares of %s at $%.3f", id, rem, out, bid)
+								}
+							}
+						}
+					}
+				}
+			}
 			return
 		default:
 		}
@@ -857,31 +939,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 
 			if timeToExpiry <= mergeBuffer && timeToExpiry > 0 {
-				// MERGE ALL UNSOLD SPLIT SHARES before market expires
-				availableShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
-				if availableShares >= 1.0 {
-					tui.LogEvent("[%s] ⏰ SPLIT: Merging %.0f unsold shares before expiry", id, availableShares)
-
-					mergeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, availableShares)
-					cancel()
-
-					if err != nil {
-						tui.LogEvent("[%s] ⚠️ SPLIT: Pre-expiry merge failed: %v", id, err)
-					} else {
-						merged := splitInventory.RecordMerge(id, outcomes[0], outcomes[1], availableShares)
-						// Refresh balance after merge (tokens converted back to USDC)
-						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-							currentBalance = newBal
-						}
-						if txHash != "" && len(txHash) >= 10 {
-							tui.LogEvent("[%s] 💰 SPLIT: Merged %.0f shares | Tx: %s...", id, merged, txHash[:10])
-						} else {
-							tui.LogEvent("[%s] 💰 SPLIT: Merged %.0f shares", id, merged)
-						}
-					}
-				}
-				// Don't do any more trading, let market expire
+				// Merging before expiry can take a long time and block the bot.
+				// We disable the auto-merge here and just let the market expire
+				// to be redeemed in the background later.
 				skipPanicBuy = true
 			}
 
@@ -1870,7 +1930,10 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 				}
 
 				// AUTOMATIC ON-CHAIN REDEMPTION
-				// This converts winning tokens back into spendable USDC
+				// This is disabled as requested since it takes a long time.
+				// The user can use the manual tools to redeem later.
+				tui.LogEvent("[%s] ℹ️ Skipping auto-redeem. Use manual tool to claim.", id)
+				/*
 				go func(cid string) {
 					tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
 					// Wait a bit for on-chain state to sync
@@ -1887,6 +1950,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
 					}
 				}(conditionID)
+				*/
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}

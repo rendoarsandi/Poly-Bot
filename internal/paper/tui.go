@@ -266,7 +266,18 @@ type TUI struct {
 	settings         TUISettings
 	onSettingsChange func(TUISettings)
 
+	restartReq bool
+
 	program *tea.Program
+}
+
+// GetAndClearRestart returns true if a restart was requested via settings and clears the flag
+func (t *TUI) GetAndClearRestart() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	req := t.restartReq
+	t.restartReq = false
+	return req
 }
 
 // ─── Bubbletea internals ──────────────────────────────────────────────────────
@@ -461,7 +472,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ── Settings overlay key handling ────────────────────────────────────
 		if m.showSettings {
 			switch key {
-			case "s", "S", "esc", "enter":
+			case "s", "S", "enter":
+				m.tui.mu.Lock()
+				m.tui.restartReq = true
+				m.tui.mu.Unlock()
+				m.showSettings = false
+				return m, nil
+			case "esc":
 				m.showSettings = false
 				return m, nil
 			case "up", "k":
@@ -1992,7 +2009,7 @@ func (m tuiModel) renderSettings(w int) string {
 		{
 			label: "Trade Scale Factor",
 			value: fmtPct(cfg.TradeScaleFactor),
-			bar:   renderBar(cfg.TradeScaleFactor/0.5, 20),
+			bar:   renderBar(cfg.TradeScaleFactor/1.0, 20),
 		},
 		{
 			label: "Buy Min Margin %",
@@ -2050,10 +2067,26 @@ func (m tuiModel) renderSettings(w int) string {
 			lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
 			vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
 		}
-		val := "[" + vSt.Render(r.value) + "]"
-		line := fmt.Sprintf("%s%-20s  %s  %s",
+		
+		// Use fixed-width padding to perfectly align the bars
+		valStr := r.value
+		// Strip ANSI codes if any for length calculation (basic approach, though lipgloss can help)
+		visibleLen := lipgloss.Width(valStr)
+		padLen := 10 - visibleLen
+		if padLen < 0 { padLen = 0 }
+		
+		valPad := valStr + strings.Repeat(" ", padLen)
+		val := "[" + vSt.Render(valPad) + "]"
+		
+		// Properly pad the label ignoring ANSI codes, and increase width to 25 to avoid being too close
+		labelLen := lipgloss.Width(r.label)
+		labelPadLen := 25 - labelLen
+		if labelPadLen < 0 { labelPadLen = 0 }
+		renderedLabel := lSt.Render(r.label) + strings.Repeat(" ", labelPadLen)
+		
+		line := fmt.Sprintf("%s%s  %s  %s",
 			cursor,
-			lSt.Render(r.label),
+			renderedLabel,
 			val,
 			r.bar,
 		)
