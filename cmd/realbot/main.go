@@ -1123,21 +1123,20 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[0]]
-								if rate == 0 {
-									rate = 1000
-								}
-								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-							}()
-
-							go func() {
-								defer wg.Done()
-								rate := tokenFeeRates[outcomes[1]]
-								if rate == 0 {
-									rate = 1000
-								}
-								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.10, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-							}()
-
+													if rate == 0 {
+														rate = 1000
+													}
+													res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+												}()
+								
+												go func() {
+													defer wg.Done()
+													rate := tokenFeeRates[outcomes[1]]
+													if rate == 0 {
+														rate = 1000
+													}
+													res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+												}()
 							wg.Wait()
 
 							side1Success := err1 == nil && res1 != nil && res1.Success
@@ -1391,12 +1390,11 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						// still providing a tiny slippage cushion for fast-moving markets.
 						// Keeping this small also reduces the chance of hitting the CLOB $1/side
 						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.25 limit instead
-						// of the old $0.29, requiring fewer shares to clear the minimum).
-						limitPrice1 := math.Min(0.99, price1+0.01)
-						limitPrice2 := math.Min(0.99, price2+0.01)
-
-						// ═══════════════════════════════════════════════════════════════
-						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
+											// of the old $0.29, requiring fewer shares to clear the minimum).
+											limitPrice1 := 0.99
+											limitPrice2 := 0.99
+						
+											// ═══════════════════════════════════════════════════════════════						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
 						// When one outcome has a very low price (e.g. $0.24), a small
 						// share count can produce a sub-$1 maker amount the CLOB rejects
 						// with "invalid amount for a marketable BUY order, min size: $1".
@@ -1666,18 +1664,17 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								// Phase 3: Auto-cleanup of unbalanced excess shares using Market Sell
 								excess0 := bal0 - actualMin
 								excess1 := bal1 - actualMin
-								if excess0 >= 0.01 {
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
-									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.10, excess0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-									if sellErr != nil {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
-									}
-								}
-								if excess1 >= 0.01 {
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
-									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.10, excess1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-									if sellErr != nil {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
+												if excess0 >= 0.01 {
+													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
+													_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.01, excess0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+													if sellErr != nil {
+														tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
+													}
+												}
+												if excess1 >= 0.01 {
+													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
+													_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.01, excess1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+													if sellErr != nil {										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
 									}
 								}
 							}
@@ -1707,16 +1704,15 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							} else {
 								tui.LogEvent("[%s] 🧹 Legged trade detected! Balances: %s=%.6f, %s=%.6f", id, outcomes[0], bal0, outcomes[1], bal1)
 
-								var sell0Err, sell1Err error
-								if bal0 >= 0.01 {
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
-									_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.10, bal0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-								}
-								if bal1 >= 0.01 {
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
-									_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.10, bal1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-								}
-
+												var sell0Err, sell1Err error
+												if bal0 >= 0.01 {
+													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
+													_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+												}
+												if bal1 >= 0.01 {
+													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
+													_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+												}
 								if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
 									tui.LogEvent("[%s] ✅ Auto-cleanup successful! Applying 30s cooldown before unblocking.", id)
 									panicBuyCooldown = time.Now().Add(30 * time.Second)
