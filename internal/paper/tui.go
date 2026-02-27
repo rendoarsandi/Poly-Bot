@@ -827,6 +827,7 @@ func (t *TUI) ClearMarkets() {
 	t.lastAsks = make(map[string]float64)
 	t.orderBookDepth = make(map[string]map[string][]MarketLevel)
 	t.pendingOrders = make(map[string][]PendingOrder)
+	t.splitInventories = nil
 }
 
 func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {

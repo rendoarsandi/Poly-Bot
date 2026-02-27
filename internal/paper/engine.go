@@ -141,6 +141,15 @@ func (e *Engine) UpdateMarketData(marketID, outcome string, price, bid, ask floa
 func (e *Engine) ClearMarketData() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Prevent "Accounting Amnesia" by adjusting peak balance downwards by the
+	// value of the split inventory being cleared. This prevents the Risk Manager
+	// from seeing a massive artificial drawdown while tokens are settling.
+	inventoryValue := e.getSplitInventoryValue()
+	if inventoryValue > 0 {
+		e.peakBalance -= inventoryValue
+	}
+
 	e.currentPrices = make(map[string]float64)
 	e.currentBids = make(map[string]float64)
 	e.currentAsks = make(map[string]float64)
