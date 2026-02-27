@@ -27,11 +27,9 @@ const (
 	UseLiveUI       = true  // Set to false for traditional logging
 
 	// Split strategy constants
-	MinSplitBuffer     = 50.0  // Minimum initial split buffer ($)
-	MaxInitialSplitPct = 0.25  // Maximum 25% of equity for initial split
-	MinSplitAmount     = 10.0  // Minimum split amount to execute ($)
-	MaxSharesPerSell   = 250.0 // Hard safety cap on shares per sell
-	MaxBalancePercent  = 0.50  // Maximum 50% of balance in split inventory
+	MinSplitBuffer   = 50.0  // Minimum initial split buffer ($)
+	MinSplitAmount   = 10.0  // Minimum split amount to execute ($)
+	MaxSharesPerSell = 250.0 // Hard safety cap on shares per sell
 )
 
 // MarketTrader holds state for trading a single market
@@ -205,6 +203,8 @@ func run() error {
 		MinMarginPercent:     cfg.MinMarginPercent,
 		SplitMinMarginSell:   cfg.SplitMinMarginSell,
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:   cfg.SplitInitialCapPct,
+		SplitReplenishCapPct: cfg.SplitReplenishCapPct,
 		MinAskPrice:          cfg.MinAskPrice,
 		MaxAskPrice:          cfg.MaxAskPrice,
 	}, func(s paper.TUISettings) {
@@ -215,6 +215,8 @@ func run() error {
 		cfg.MinMarginPercent = s.MinMarginPercent
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
+		cfg.SplitInitialCapPct = s.SplitInitialCapPct
+		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
 		_ = cfg.SaveSettings()
@@ -1281,7 +1283,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if initialBuffer < MinSplitBuffer {
 						initialBuffer = MinSplitBuffer
 					}
-					maxInitial := currentEquity * MaxInitialSplitPct
+					maxInitial := currentEquity * t.Config.SplitInitialCapPct
 					splitAmount := initialBuffer
 					if splitAmount > maxInitial {
 						splitAmount = maxInitial
@@ -1315,7 +1317,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
 						CurrentBalance:     currentEquity,
 						ReplenishAmount:    replenishAmount,
-						MaxBalancePercent:  MaxBalancePercent,
+						MaxBalancePercent:  t.Config.SplitReplenishCapPct,
 					})
 
 					if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {

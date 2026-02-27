@@ -296,6 +296,8 @@ func run() error {
 		MinMarginPercent:     cfg.MinMarginPercent,
 		SplitMinMarginSell:   cfg.SplitMinMarginSell,
 		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:   cfg.SplitInitialCapPct,
+		SplitReplenishCapPct: cfg.SplitReplenishCapPct,
 		MinAskPrice:          cfg.MinAskPrice,
 		MaxAskPrice:          cfg.MaxAskPrice,
 	}, func(s paper.TUISettings) {
@@ -306,6 +308,8 @@ func run() error {
 		cfg.MinMarginPercent = s.MinMarginPercent
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
+		cfg.SplitInitialCapPct = s.SplitInitialCapPct
+		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
 		_ = cfg.SaveSettings()
@@ -896,7 +900,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					initialBuffer = 2.0
 				}
 
-				maxInitial := currentBalance * 0.25
+				maxInitial := currentBalance * cfg.SplitInitialCapPct
 				splitAmount := initialBuffer
 				if splitAmount > maxInitial {
 					splitAmount = maxInitial
@@ -967,7 +971,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					MinMarginThreshold: cfg.SplitMinMarginSell - 1.0,
 					CurrentBalance:     currentBalance,
 					ReplenishAmount:    replenishAmount,
-					MaxBalancePercent:  0.50,
+					MaxBalancePercent:  cfg.SplitReplenishCapPct,
 				})
 
 				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {

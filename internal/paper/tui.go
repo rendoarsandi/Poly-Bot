@@ -206,6 +206,8 @@ type TUISettings struct {
 	MinMarginPercent     float64 // e.g. 2.0 = require 2% arb margin
 	SplitMinMarginSell   float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled bool    // toggle split strategy on/off
+	SplitInitialCapPct   float64 // Initial Split Cap percentage
+	SplitReplenishCapPct float64 // Replenishment Cap percentage
 	MinAskPrice          float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice          float64 // e.g. 0.90 = maximum ask price filter
 }
@@ -457,11 +459,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 8
+					m.settingsCursor = 10
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 9
+				m.settingsCursor = (m.settingsCursor + 1) % 11
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -517,12 +519,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.SplitStrategyEnabled = false
 					changed = true
 				case 7:
+					m.tui.settings.SplitInitialCapPct -= 0.05
+					if m.tui.settings.SplitInitialCapPct < 0.05 {
+						m.tui.settings.SplitInitialCapPct = 0.05
+					}
+					changed = true
+				case 8:
+					m.tui.settings.SplitReplenishCapPct -= 0.05
+					if m.tui.settings.SplitReplenishCapPct < 0.05 {
+						m.tui.settings.SplitReplenishCapPct = 0.05
+					}
+					changed = true
+				case 9:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
 						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
-				case 8:
+				case 10:
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
@@ -586,12 +600,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.SplitStrategyEnabled = true
 					changed = true
 				case 7:
+					m.tui.settings.SplitInitialCapPct += 0.05
+					if m.tui.settings.SplitInitialCapPct > 1.0 {
+						m.tui.settings.SplitInitialCapPct = 1.0
+					}
+					changed = true
+				case 8:
+					m.tui.settings.SplitReplenishCapPct += 0.05
+					if m.tui.settings.SplitReplenishCapPct > 1.0 {
+						m.tui.settings.SplitReplenishCapPct = 1.0
+					}
+					changed = true
+				case 9:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
 						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
-				case 8:
+				case 10:
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
@@ -1903,6 +1929,16 @@ func (m tuiModel) renderSettings(w int) string {
 				return styleMuted.Render(" OFF ")
 			}(),
 			bar: "",
+		},
+		{
+			label: "Split Initial Cap",
+			value: fmtPct(cfg.SplitInitialCapPct),
+			bar:   renderBar(cfg.SplitInitialCapPct, 20),
+		},
+		{
+			label: "Split Replenish Cap",
+			value: fmtPct(cfg.SplitReplenishCapPct),
+			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 		{
 			label: "Min Ask Price",
