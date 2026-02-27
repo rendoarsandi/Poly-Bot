@@ -118,6 +118,9 @@ func main() {
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
+	// tokenFeeRates maps outcome → live taker fee in bps fetched from the CLOB API.
+	// 0 is a valid fee (fee-free market) and must NOT be replaced.
+	// Fall back to 1000 bps only when the API call itself fails.
 	tokenFeeRates := make(map[string]int)
 	for tid, out := range tokenMap {
 		var rate int
@@ -129,20 +132,13 @@ func main() {
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-
-		if err == nil {
-			tokenFeeRates[out] = rate
-			// Use 200 bps (2%) as the fallback matching current 15m market requirements
-			if rate == 0 {
-				tokenFeeRates[out] = 200
-				fmt.Printf("ℹ️  Fee rate for %s returned 0, using 200 bps (current 15m default)\n", out)
-			} else {
-				fmt.Printf("ℹ️  Fee rate for %s: %d bps\n", out, rate)
-			}
+		if err != nil {
+			rate = 1000 // API unreachable — use standard 15m taker fee
+			fmt.Printf("⚠️  Fee fetch failed for %s, using 1000 bps fallback\n", out)
 		} else {
-			tokenFeeRates[out] = 200 // Fallback to 200 bps (2%) matching current 15m market requirements
-			fmt.Printf("⚠️  Fee fetch failed for %s, using 200 bps fallback\n", out)
+			fmt.Printf("ℹ️  Fee rate for %s: %d bps (%.2f%%)\n", out, rate, float64(rate)/100.0)
 		}
+		tokenFeeRates[out] = rate
 	}
 
 	// Input handler
@@ -400,10 +396,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			tid := mkt.GetTokenIDForOutcome(market, o)
 			execShares := shares
 			rate := tokenFeeRates[o]
-			if rate == -1 {
-				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
-				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
-			}
 		if side == "BUY" {
 			price := prices[o]
 			results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
@@ -426,9 +418,15 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		failedOutcome := outcomes[failedIdx]
 		tid := mkt.GetTokenIDForOutcome(market, failedOutcome)
 
-		rate := tokenFeeRates[failedOutcome]
-		if rate == 0 {
-			rate = 200
+		// Re-fetch fee for the failed leg — rate may have changed.
+		var rate int
+		if freshRate, ferr := client.GetFeeRate(ctx, tid); ferr == nil {
+			rate = freshRate
+		} else {
+			rate = tokenFeeRates[failedOutcome] // use last-known
+			if rate == 0 {
+				rate = 1000 // hard fallback only when no prior value and API failed
+			}
 		}
 
 		retryCount := 0

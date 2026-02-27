@@ -551,33 +551,51 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	wsMsgChan := wsMgr.StartStreaming(ctx)
 	tui.LogEvent("[%s] 📡 Connected, trading until %v", id, endTime.Format("15:04:05"))
 
-	// Fetch fee rates for the tokens
-	tokenFeeRates := make(map[string]int)
-	for tid, outcome := range tokenMap {
-		// Retry fee fetch a few times at startup
-		var rate int
-		var err error
-		for attempt := 1; attempt <= 3; attempt++ {
-			rate, err = restClient.GetFeeRate(ctx, tid)
-			if err == nil {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
+	// feeRateCache stores the most recently fetched fee rate per tokenID.
+	// It is refreshed before every trade so we always use the live market rate.
+	// The API returns the required taker fee in basis points (e.g. 1000 = 10%).
+	// A return value of 0 from the API means the market is fee-free — that is
+	// a valid rate and must NOT be replaced with a non-zero fallback.
+	// The hard fallback of 1000 bps is only used when the API call itself fails.
+	type feeEntry struct {
+		rate      int
+		fetchedAt time.Time
+	}
+	feeCache := make(map[string]*feeEntry) // tokenID → entry
+	feeCacheTTL := 30 * time.Second
 
-		if err == nil {
-			tokenFeeRates[outcome] = rate
-			// Use 200 bps (2%) as the fallback matching current 15m market requirements
-			if rate == 0 {
-				tokenFeeRates[outcome] = 200
-			} else {
-				tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", id, outcome, float64(rate)/100.0, rate)
-			}
-		} else {
-			// If API fails, use 200 bps (2%) matching current 15m market requirements
-			tokenFeeRates[outcome] = 200
-			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using default 200 bps", id)
+	// getFeeRate returns the live taker fee for tokenID, refreshing the cache
+	// if the entry is absent or older than feeCacheTTL.
+	getFeeRate := func(tokenID string) int {
+		if e, ok := feeCache[tokenID]; ok && time.Since(e.fetchedAt) < feeCacheTTL {
+			return e.rate
 		}
+		rateCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		rate, err := restClient.GetFeeRate(rateCtx, tokenID)
+		cancel()
+		if err != nil {
+			// API unreachable — use 1000 bps (10%) which is the standard taker
+			// fee for 15m markets per the Polymarket CLOB documentation.
+			if e, ok := feeCache[tokenID]; ok {
+				return e.rate // return last-known good value if available
+			}
+			return 1000
+		}
+		feeCache[tokenID] = &feeEntry{rate: rate, fetchedAt: time.Now()}
+		tui.LogEvent("[%s] 💸 Fee rate %s: %d bps (%.2f%%)", id, tokenID[:8]+"…", rate, float64(rate)/100.0)
+		return rate
+	}
+
+	// Build tokenID lookup: outcome → tokenID (reverse of tokenMap)
+	outcomeToTokenID := make(map[string]string, len(tokenMap))
+	for tid, outcome := range tokenMap {
+		outcomeToTokenID[outcome] = tid
+	}
+
+	// Pre-warm the cache for all tokens so the first trade has the correct rate.
+	for tid, outcome := range tokenMap {
+		rate := getFeeRate(tid)
+		tui.LogEvent("[%s] ℹ️ Fee rate for %s: %d bps (%.2f%%)", id, outcome, rate, float64(rate)/100.0)
 	}
 
 	tokenBids := make(map[string]float64)
@@ -1147,25 +1165,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							var res1, res2 *trading.TradeResult
 							var err1, err2 error
 
-							// Use market orders for split selling with aggressive $0.10 floor
-							// This ensures immediate fill against any available liquidity
-						go func() {
-							defer wg.Done()
-							rate := tokenFeeRates[outcomes[0]]
-							if rate == 0 {
-								rate = 200
-							}
-							res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-						}()
+					// Use market orders for split selling — fetch live fee rate per token.
+					rate0 := getFeeRate(token0)
+					rate1 := getFeeRate(token1)
+					go func() {
+						defer wg.Done()
+						res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate0)
+					}()
 
-						go func() {
-							defer wg.Done()
-							rate := tokenFeeRates[outcomes[1]]
-							if rate == 0 {
-								rate = 200
-							}
-							res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-						}()
+					go func() {
+						defer wg.Done()
+						res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate1)
+					}()
 
 							wg.Wait()
 
@@ -1271,14 +1282,14 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 					currentEquity := currentBalance // In realbot we use cash as conservative equity
 					tradeSize := cfg.CalculateTradeSize(currentEquity)
 
-					// Get max fee rate for conservative margin calculation
-					maxFeeRateBps := 0
-					if rate1, ok := tokenFeeRates[outcomes[0]]; ok && rate1 > maxFeeRateBps {
-						maxFeeRateBps = rate1
-					}
-					if rate2, ok := tokenFeeRates[outcomes[1]]; ok && rate2 > maxFeeRateBps {
-						maxFeeRateBps = rate2
-					}
+				// Get max fee rate for conservative margin calculation.
+				// Fetch live rates — cache hit is instant, miss re-fetches from API.
+				feeR0 := getFeeRate(outcomeToTokenID[outcomes[0]])
+				feeR1 := getFeeRate(outcomeToTokenID[outcomes[1]])
+				maxFeeRateBps := feeR0
+				if feeR1 > maxFeeRateBps {
+					maxFeeRateBps = feeR1
+				}
 
 					// Scale shares based on margin (User requested NO fee buffer deduction)
 					shares := tradeSize / sum
@@ -1460,23 +1471,18 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
 
-					go func() {
-						defer wg.Done()
-						rate := tokenFeeRates[outcomes[0]]
-						if rate == 0 {
-							rate = 200
-						}
-						res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-					}()
+				// Fetch live fee rates immediately before order submission.
+				buyRate0 := getFeeRate(token0)
+				buyRate1 := getFeeRate(token1)
+				go func() {
+					defer wg.Done()
+					res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, buyRate0)
+				}()
 
-					go func() {
-						defer wg.Done()
-						rate := tokenFeeRates[outcomes[1]]
-						if rate == 0 {
-							rate = 200
-						}
-						res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-					}()
+				go func() {
+					defer wg.Done()
+					res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, buyRate1)
+				}()
 
 						wg.Wait()
 
@@ -1582,14 +1588,10 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 									outcomes[1], rbal1, prevSide2, side2Success)
 							}
 
-						// If still unbalanced, retry the order for the missing side
-						if !side1Success {
-							rate := tokenFeeRates[outcomes[0]]
-							if rate == 0 {
-								rate = 200
-							}
-							tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
-							retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+					// If still unbalanced, retry the order for the missing side
+					if !side1Success {
+						tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
+						retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, getFeeRate(token0))
 							if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
 								side1Success = true
 								tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
@@ -1607,13 +1609,9 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								}
 							}
 						}
-						if !side2Success {
-							rate := tokenFeeRates[outcomes[1]]
-							if rate == 0 {
-								rate = 200
-							}
-							tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
-							retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+					if !side2Success {
+						tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
+						retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, getFeeRate(token1))
 							if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
 								side2Success = true
 								tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])

@@ -333,10 +333,16 @@ func main() {
 
 	fmt.Println("🚀 Sending order...")
 
-	// Fetch fee rate
-	rate, _ := client.GetFeeRate(ctx, targetTokenID)
-	if rate == 0 {
-		rate = 200 // Default 200 bps (2%) matching current 15m market requirements
+	// Fetch the live taker fee rate from the CLOB API.
+	// The API returns the exact bps required for this market — use it directly.
+	// A return of 0 means fee-free (valid). Only fall back to 1000 bps on error,
+	// since 1000 bps (10%) is the standard taker fee for 15m markets.
+	rate, feeErr := client.GetFeeRate(ctx, targetTokenID)
+	if feeErr != nil {
+		rate = 1000
+		fmt.Printf("⚠️ Fee fetch failed (%v), using 1000 bps fallback\n", feeErr)
+	} else {
+		fmt.Printf("💸 Fee rate: %d bps (%.2f%%)\n", rate, float64(rate)/100.0)
 	}
 
 	// Sync CLOB allowance with on-chain state right before trading.
