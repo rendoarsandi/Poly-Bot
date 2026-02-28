@@ -82,6 +82,8 @@ type Engine struct {
 	// Per-market bid/ask prices: "marketID:outcome" -> price
 	marketBids map[string]float64
 	marketAsks map[string]float64
+
+	feeRateBps int // Fee configuration
 }
 
 // NewEngine creates a new paper trading engine
@@ -100,6 +102,13 @@ func NewEngine(startingBalance float64) *Engine {
 		marketBids:         make(map[string]float64),
 		marketAsks:         make(map[string]float64),
 	}
+}
+
+// SetFeeRateBps sets the fee rate for paper trading simulations
+func (e *Engine) SetFeeRateBps(rate int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.feeRateBps = rate
 }
 
 // UpdatePrice updates current market price for an outcome and recalculates drawdown
@@ -143,12 +152,11 @@ func (e *Engine) ClearMarketData() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Prevent "Accounting Amnesia" by adjusting peak balance downwards by the
-	// value of the split inventory being cleared. This prevents the Risk Manager
-	// from seeing a massive artificial drawdown while tokens are settling.
+	// Simulate merging all remaining split inventories back to cash
+	// to prevent artificial balance loss on rotation/restart.
 	inventoryValue := e.getSplitInventoryValue()
 	if inventoryValue > 0 {
-		e.peakBalance -= inventoryValue
+		e.currentBalance += inventoryValue
 	}
 
 	e.currentPrices = make(map[string]float64)
@@ -255,6 +263,14 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (
 	// Deduct from balance
 	e.currentBalance -= cost
 
+	// Calculate fee (collected in shares for BUY)
+	feeTokens := 0.0
+	if e.feeRateBps > 0 {
+		// Calculate curve fee for crypto markets (feeRate=0.25, exponent=2.0)
+		feeTokens = quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
+	}
+	netQuantity := quantity - feeTokens
+
 	// Create position key that includes market ID
 	posKey := outcome
 	if marketID != "" {
@@ -269,7 +285,7 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (
 	}
 
 	// Calculate new average price
-	totalQty := pos.Quantity + quantity
+	totalQty := pos.Quantity + netQuantity
 	if totalQty > 0 {
 		pos.AvgPrice = (pos.TotalCost + cost) / totalQty
 	}
@@ -284,7 +300,7 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (
 		Side:      "buy",
 		Outcome:   outcome,
 		Price:     price,
-		Quantity:  quantity,
+		Quantity:  netQuantity,
 		Value:     cost,
 	}
 	e.addTrade(trade)
@@ -306,8 +322,15 @@ func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 		return nil, fmt.Errorf("insufficient position: need %.4f, have %.4f", quantity, available)
 	}
 
+	// Calculate fee (collected in USDC for SELL)
+	feeUsdc := 0.0
+	if e.feeRateBps > 0 {
+		feeTokens := quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
+		feeUsdc = feeTokens * price
+	}
+
 	// Calculate PnL for this sale
-	proceeds := price * quantity
+	proceeds := (price * quantity) - feeUsdc
 	costBasis := pos.AvgPrice * quantity
 	pnl := proceeds - costBasis
 
@@ -588,26 +611,19 @@ func (e *Engine) LiquidateAll() float64 {
 
 		if bid, ok := e.currentBids[outcome]; ok && bid >= minSanePrice && bid <= maxSanePrice {
 			price = bid // Use BID for taker sells
-			/*
-				fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ BID $%.3f (chasing liquidity)\n",
-					outcome, pos.Quantity, bid)
-			*/
 		} else if p, ok := e.currentPrices[outcome]; ok && p >= minSanePrice && p <= maxSanePrice {
 			// Fallback to mid-price with simulated slippage (2% worse)
 			price = p * 0.98
-			/*
-				fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (mid-2%% slippage)\n",
-					outcome, pos.Quantity, price)
-			*/
-		} else {
-			// Use cost basis as last resort
-			/*
-				fmt.Printf("🔴 TAKER SELL %s: %.0f shares @ $%.3f (cost basis - no valid price)\n",
-					outcome, pos.Quantity, price)
-			*/
 		}
 
-		proceeds := pos.Quantity * price
+		// Calculate fee (collected in USDC for SELL)
+		feeUsdc := 0.0
+		if e.feeRateBps > 0 {
+			feeTokens := pos.Quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
+			feeUsdc = feeTokens * price
+		}
+
+		proceeds := (pos.Quantity * price) - feeUsdc
 		pnl := proceeds - pos.TotalCost
 		e.realizedPnL += pnl
 		e.currentBalance += proceeds
@@ -634,6 +650,16 @@ func (e *Engine) LiquidateAll() float64 {
 
 	// Clear all positions
 	e.positions = make(map[string]*Position)
+	
+	// Liquidate split inventory (merge back to cash)
+	inventoryValue := e.getSplitInventoryValue()
+	if inventoryValue > 0 {
+		e.currentBalance += inventoryValue
+		totalProceeds += inventoryValue
+		// No realized PnL because split shares hold their cash value exactly
+	}
+	e.splitInventories = nil
+
 	e.recalculateDrawdown()
 
 	return totalProceeds

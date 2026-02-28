@@ -643,7 +643,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
-	leggedPanicBuy := false         // Set true if a legged position couldn't be recovered — blocks further buys
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
 
 	// Initial balance tracking
@@ -1027,7 +1026,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			}
 
 			// Check for panic sell opportunity: bid_sum > $1.00 + minMargin
-			if bid1 > 0.10 && bid2 > 0.10 && bid1 < 0.90 && bid2 < 0.90 {
+			if bid1 >= liveCfg.MinAskPrice && bid2 >= liveCfg.MinAskPrice && bid1 <= liveCfg.MaxAskPrice && bid2 <= liveCfg.MaxAskPrice {
 				bidSum := bid1 + bid2
 				sellMargin := (bidSum - 1.0) * 100 // Profit margin from selling
 
@@ -1284,12 +1283,6 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 		if skipPanicBuy {
 			continue
 		}
-		// If we have an irrecoverable legged position, stop buying to prevent
-		// accumulating more exposure on the already-filled side.
-		if leggedPanicBuy {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
 		if time.Now().Before(panicBuyCooldown) {
 			continue
 		}
@@ -1445,7 +1438,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 
 					// Check why we might skip trading
 					if shares < 1.0 {
-						tui.LogEvent("[%s] ⚠️ Shares below 1.0 minimum: %.2f", id, shares)
+						tui.LogEvent("[%s] ⚠️ Actionable matched liquidity below 1.0 share minimum: %.2f", id, shares)
 						continue
 					}
 					if time.Since(lastTrade) <= 2*time.Second {
@@ -1715,7 +1708,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
 							time.Sleep(5 * time.Second)
 
-							mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+							mergeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 							defer cancel()
 
 							// Query on-chain CTF balances with retries (mirrors utilbot's queryBalancedCTFBalances).
@@ -1772,7 +1765,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							return // Exit tradeMarket
 						} else if side1Success || side2Success {
 							// Only one side filled after retry — record the unbalanced position and
-							// permanently block further panic buys to prevent exposure accumulation.
+							// temporarily block further panic buys to prevent exposure accumulation.
 							if side1Success {
 								engine.BuyForMarket(id, outcomes[0], price1, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
@@ -1782,37 +1775,70 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
 
-							cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+							cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 60*time.Second)
 							defer cancelCleanup()
 
-							bal0, bal1, balErr0, balErr1 := trader.QueryBalancedCTFBalances(cleanupCtx, token0, token1, shares)
-							if balErr0 != nil || balErr1 != nil {
-								tui.LogEvent("[%s] ⚠️ On-chain balance query failed (err0=%v, err1=%v), cannot safely cleanup", id, balErr0, balErr1)
-								leggedPanicBuy = true
-								tui.LogEvent("[%s] 🚫 Panic buy disabled for this market (legged position — holding until expiry)", id)
-							} else {
-								tui.LogEvent("[%s] 🧹 Legged trade detected! Balances: %s=%.6f, %s=%.6f", id, outcomes[0], bal0, outcomes[1], bal1)
+							tui.LogEvent("[%s] ⚠️ Legged trade detected! Waiting up to 10s for delayed on-chain balances to settle...", id)
 
-												var sell0Err, sell1Err error
-												if bal0 >= 0.01 {
-													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
-													_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-												}
-												if bal1 >= 0.01 {
-													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
-													_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-												}
-								if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
-									tui.LogEvent("[%s] ✅ Auto-cleanup successful! Applying 30s cooldown before unblocking.", id)
-									panicBuyCooldown = time.Now().Add(30 * time.Second)
-									leggedPanicBuy = false
+							var bal0, bal1 float64
+							var balErr0, balErr1 error
+							settled := false
+
+							// Ping pong loop to check balances for up to 10 seconds before acting
+							for probe := 0; probe < 10; probe++ {
+								bal0, bal1, balErr0, balErr1 = trader.QueryBalancedCTFBalances(cleanupCtx, token0, token1, shares)
+
+								if balErr0 == nil && balErr1 == nil {
+									// If both show up eventually, we are safe to merge
+									if bal0 >= 0.01 && bal1 >= 0.01 {
+										tui.LogEvent("[%s] 🟢 Delayed balances arrived: %s=%.2f, %s=%.2f. Attempting Merge!", id, outcomes[0], bal0, outcomes[1], bal1)
+										settled = true
+										break
+									}
+								}
+								time.Sleep(1 * time.Second)
+							}
+
+							if balErr0 != nil || balErr1 != nil {
+								tui.LogEvent("[%s] ⚠️ On-chain balance query failed (err0=%v, err1=%v), applying 1m cooldown", id, balErr0, balErr1)
+								panicBuyCooldown = time.Now().Add(60 * time.Second)
+							} else if settled && bal0 >= 0.01 && bal1 >= 0.01 {
+								// Both balances arrived, try to merge them safely instead of dumping them to market
+								actualMin := math.Min(bal0, bal1)
+								_, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, actualMin)
+								if err != nil {
+									tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
+									// Fallback to sell below
 								} else {
-									leggedPanicBuy = true
-									tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Panic buy disabled for this market.", id)
+									tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
+									panicBuyCooldown = time.Now().Add(30 * time.Second)
+									// Clean up any remaining dust below
+									bal0 -= actualMin
+									bal1 -= actualMin
 								}
 							}
-						}
-						// If both failed, nothing to record
+
+							// If not settled via merge, or if dust remains, clean it up via Market Sell
+							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking for unbalanced shares to sell... Balances: %s=%.2f, %s=%.2f", id, outcomes[0], bal0, outcomes[1], bal1)
+
+							var sell0Err, sell1Err error
+							if bal0 >= 0.01 {
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
+								_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+							}
+							if bal1 >= 0.01 {
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
+								_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
+							}
+
+							if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
+								tui.LogEvent("[%s] ✅ Auto-cleanup routine finished! Applying 30s cooldown before unblocking.", id)
+								panicBuyCooldown = time.Now().Add(30 * time.Second)
+							} else {
+								tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Applying 2m cooldown to prevent immediate retry loops.", id)
+								panicBuyCooldown = time.Now().Add(120 * time.Second)
+							}
+						}						// If both failed, nothing to record
 
 						// Force refresh balance after trade to ensure accurate tracking
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {

@@ -1293,6 +1293,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			o2 = o2[:maxLbl]
 		}
 
+		// formatDepth is unused when depth display is disabled
+		/*
 		formatDepth := func(lvls []MarketLevel, idx int, c lipgloss.Style) string {
 			if idx < len(lvls) {
 				s := lvls[idx].Size
@@ -1308,6 +1310,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			}
 			return "        " // 8 spaces
 		}
+		*/
 
 		// --- Outcome 1 ---
 		priceLinesB.WriteString(fmt.Sprintf("  %-4s  %s %-5s  %s %-5s  %s\n",
@@ -1317,6 +1320,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			styleDimmed.Render(fmt.Sprintf("↕%.2f", math.Max(0, ask1-bid1))),
 		))
 
+		// Depth display disabled
+		/*
 		if d := depth[id]; d != nil {
 			o1Bids := d[mkt.Outcomes[0]+"_bids"]
 			o1Asks := d[mkt.Outcomes[0]+"_asks"]
@@ -1328,6 +1333,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		} else {
 			priceLinesB.WriteString("\n\n")
 		}
+		*/
 
 		// --- Outcome 2 ---
 		priceLinesB.WriteString(fmt.Sprintf("  %-4s  %s %-5s  %s %-5s  %s\n",
@@ -1337,6 +1343,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			styleDimmed.Render(fmt.Sprintf("↕%.2f", math.Max(0, ask2-bid2))),
 		))
 
+		// Depth display disabled
+		/*
 		if d := depth[id]; d != nil {
 			o2Bids := d[mkt.Outcomes[1]+"_bids"]
 			o2Asks := d[mkt.Outcomes[1]+"_asks"]
@@ -1348,6 +1356,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		} else {
 			priceLinesB.WriteString("\n\n")
 		}
+		*/
 
 		if ask1 > 0 && ask2 > 0 {
 			askSum := ask1 + ask2

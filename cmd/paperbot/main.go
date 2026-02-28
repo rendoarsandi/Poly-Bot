@@ -180,6 +180,10 @@ func run() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	fmt.Println("✅ Config loaded successfully")
+	
+	// Apply fee settings to engine
+	engine.SetFeeRateBps(cfg.FeeRateBps)
+
 	if cfg.FeeRateBps > 0 {
 		// Show effective fee at p=0.50 (worst case for arb)
 		// Formula: fee_tokens = shares * base_rate * 2 * p * (1-p)
@@ -672,8 +676,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							if bid <= 0 { // Fallback
 								bid = 0.50
 							}
-							t.SplitInventory.RecordSell(t.ID, out, rem, bid)
-							t.Engine.AddBalance(rem * bid)
+							
+							feeUsdc := 0.0
+							if t.Config.FeeRateBps > 0 {
+								feeUsdc = rem * 0.25 * math.Pow(bid*(1.0-bid), 2.0) * bid
+							}
+							
+							profit := t.SplitInventory.RecordSell(t.ID, out, rem, bid)
+							t.Engine.AddRealizedPnL(profit - feeUsdc)
+							t.Engine.AddBalance((rem * bid) - feeUsdc)
 							t.TUI.LogEvent("[%s] 📉 Sold %.0f split shares of %s at $%.3f", t.ID, rem, out, bid)
 						}
 					}
@@ -1357,7 +1368,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 
 				// Check for panic sell opportunity
-				if bid1 > 0.10 && bid2 > 0.10 && bid1 < 0.90 && bid2 < 0.90 {
+				if bid1 >= liveCfg.MinAskPrice && bid2 >= liveCfg.MinAskPrice && bid1 <= liveCfg.MaxAskPrice && bid2 <= liveCfg.MaxAskPrice {
 					bidSum := bid1 + bid2
 					sellMargin := (bidSum - 1.0) * 100
 
@@ -1473,13 +1484,21 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								}
 							}
 
+							// Calculate fees (collected in USDC for SELL)
+							feeUsdc := 0.0
+							if t.Config.FeeRateBps > 0 {
+								fee1 := sharesToSell * 0.25 * math.Pow(bid1*(1.0-bid1), 2.0) * bid1
+								fee2 := sharesToSell * 0.25 * math.Pow(bid2*(1.0-bid2), 2.0) * bid2
+								feeUsdc = fee1 + fee2
+							}
+
 							// Simulate sell: record profit
 							profit1 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[0], sharesToSell, bid1)
 							profit2 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[1], sharesToSell, bid2)
-							totalProfit := profit1 + profit2
+							totalProfit := profit1 + profit2 - feeUsdc
 
 							// Add proceeds back to balance
-							proceeds := sharesToSell * bidSum
+							proceeds := (sharesToSell * bidSum) - feeUsdc
 							t.Engine.AddBalance(proceeds)
 							t.Engine.AddRealizedPnL(totalProfit)
 							t.Engine.RecalculateDrawdown() // Safe to check drawdown now

@@ -814,8 +814,10 @@ func (t *RealTrader) QueryBalancedCTFBalances(
 	token0, token1 string,
 	expectedShares float64,
 ) (bal0, bal1 float64, err0, err1 error) {
-	const maxAttempts = 8
-	const settleDelay = 500 * time.Millisecond
+	// Increase attempts from 8 to 20, wait 1 second between attempts (total 20s timeout)
+	// Polygon RPCs can be heavily delayed during network congestion
+	const maxAttempts = 20
+	const settleDelay = 1000 * time.Millisecond
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		bal0, err0 = t.GetCTFBalanceFloat(ctx, token0)
