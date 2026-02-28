@@ -1430,10 +1430,25 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							// Sort bids by price descending (best bids first)
 							sortedBids1 := make([]paper.MarketLevel, len(bids1))
 							copy(sortedBids1, bids1)
+							// Inject BBO if missing due to orderbook lag to prevent liq: 0/0
+							hasBid1 := false
+							for _, b := range sortedBids1 {
+								if b.Price >= bid1-1e-6 { hasBid1 = true; break }
+							}
+							if !hasBid1 {
+								sortedBids1 = append(sortedBids1, paper.MarketLevel{Price: bid1, Size: sharesToSell})
+							}
 							sort.Slice(sortedBids1, func(a, b int) bool { return sortedBids1[a].Price > sortedBids1[b].Price })
 
 							sortedBids2 := make([]paper.MarketLevel, len(bids2))
 							copy(sortedBids2, bids2)
+							hasBid2 := false
+							for _, b := range sortedBids2 {
+								if b.Price >= bid2-1e-6 { hasBid2 = true; break }
+							}
+							if !hasBid2 {
+								sortedBids2 = append(sortedBids2, paper.MarketLevel{Price: bid2, Size: sharesToSell})
+							}
 							sort.Slice(sortedBids2, func(a, b int) bool { return sortedBids2[a].Price > sortedBids2[b].Price })
 
 							// Walk bid levels to find matched liquidity
