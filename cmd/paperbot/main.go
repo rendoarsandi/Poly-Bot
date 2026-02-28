@@ -1103,34 +1103,35 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						// Will use baseShares only (no scaling)
 					}
 
-					if margin >= minMarginPercent && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
+					if margin >= minMarginPercent-1e-4 && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
 						baseShares := baseSharesPerTrade
 
 						// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
 						// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
 						maxSum := 1.0 - (minMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
 
-						// Adjust maxSum to account for fees if enabled
-						// Polymarket fees: fee_tokens = shares * base_rate * 2 * p * (1-p)
-						// For arb near sum=1.0, prices are ~0.50 each, so curve = 0.5
-						// Conservative: assume worst case fee (both sides at p=0.50)
-						feeRateBps := t.Config.FeeRateBps
-						if feeRateBps > 0 {
-							baseRate := float64(feeRateBps) / 10000.0
-							// Worst case: both sides at p=0.50, curve = 2*0.5*0.5 = 0.5
-							worstCaseFeePerSide := baseRate * 0.5
-							// Total fee for both sides (in tokens, which equals $ at settlement)
-							totalFeeFraction := worstCaseFeePerSide * 2
-							maxSum -= totalFeeFraction
-						}
-
 						// Copy and sort asks by price ascending for both outcomes
 						asks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
 						copy(asks1, t.TokenFullAsks[t.Outcomes[0]])
+						// Inject BBO if missing due to orderbook lag
+						hasAsk1 := false
+						for _, a := range asks1 {
+							if a.Price <= ask1+1e-6 { hasAsk1 = true; break }
+						}
+						if !hasAsk1 {
+							asks1 = append(asks1, paper.MarketLevel{Price: ask1, Size: baseShares})
+						}
 						sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
 						asks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
 						copy(asks2, t.TokenFullAsks[t.Outcomes[1]])
+						hasAsk2 := false
+						for _, a := range asks2 {
+							if a.Price <= ask2+1e-6 { hasAsk2 = true; break }
+						}
+						if !hasAsk2 {
+							asks2 = append(asks2, paper.MarketLevel{Price: ask2, Size: baseShares})
+						}
 						sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
 
 						// Calculate aggregated matched liquidity across valid price levels
@@ -1228,6 +1229,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if shares > maxSafeShares {
 							shares = maxSafeShares
 						}
+						feeRateBps := t.Config.FeeRateBps
 						tm := strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
 						cost, netProfit := tm.Cost, tm.Net
 
@@ -1400,7 +1402,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 
 					// Panic sell logic
-					if sellMargin >= t.Config.SplitMinMarginSell && time.Since(t.LastSplitSell) > 2*time.Second {
+					if sellMargin >= t.Config.SplitMinMarginSell-1e-4 && time.Since(t.LastSplitSell) > 2*time.Second {
 						requestedShares := baseTradeSize
 						if t.Config.EnableMarginAggression {
 							multiplier := sellMargin / 2.0

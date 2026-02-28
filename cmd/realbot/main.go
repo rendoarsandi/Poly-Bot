@@ -1097,7 +1097,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}(id, market.ConditionID, outcomes[0], outcomes[1], decision.Amount)
 				}
 
-				if sellMargin >= cfg.SplitMinMarginSell && time.Since(lastSplitSell) > 2*time.Second {
+				if sellMargin >= cfg.SplitMinMarginSell-1e-4 && time.Since(lastSplitSell) > 2*time.Second {
 					// DETERMINISTIC AGGRESSION
 					requestedShares := baseTradeSize
 					if cfg.EnableMarginAggression {
@@ -1332,7 +1332,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				bufferedSum := (ask1 + slippageBuffer) + (ask2 + slippageBuffer)
 				margin := (1.0 - bufferedSum) * 100 // Use buffered sum for margin check
 
-				if margin >= cfg.MinMarginPercent {
+				if margin >= cfg.MinMarginPercent-1e-4 {
 					// Evaluate risk
 					riskAction, riskReason := riskMgr.Evaluate()
 					if riskAction == paper.RiskActionKillSwitch {
@@ -1375,10 +1375,25 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
 					copy(asks1, tokenFullAsks[outcomes[0]])
+					// Inject BBO if missing due to orderbook lag
+					hasAsk1 := false
+					for _, a := range asks1 {
+						if a.Price <= ask1+1e-6 { hasAsk1 = true; break }
+					}
+					if !hasAsk1 {
+						asks1 = append(asks1, paper.MarketLevel{Price: ask1, Size: shares})
+					}
 					sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
 					asks2 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[1]]))
 					copy(asks2, tokenFullAsks[outcomes[1]])
+					hasAsk2 := false
+					for _, a := range asks2 {
+						if a.Price <= ask2+1e-6 { hasAsk2 = true; break }
+					}
+					if !hasAsk2 {
+						asks2 = append(asks2, paper.MarketLevel{Price: ask2, Size: shares})
+					}
 					sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
 
 					// Calculate aggregated matched liquidity across valid price levels
