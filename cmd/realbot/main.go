@@ -1807,8 +1807,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 							}
 
-							tui.LogEvent("[%s] ✅ One-shot execution complete after successful buy and merge.", id)
-							return // Exit tradeMarket
+							tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
+							
+							// Refresh balance for next trade
+							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+								currentBalance = newBal
+							}
+							time.Sleep(5 * time.Second)
 						} else if side1Success || side2Success {
 							// Only one side filled after retry — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.

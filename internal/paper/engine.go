@@ -235,6 +235,7 @@ func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []
 		}
 
 		take := math.Min(remaining, lv.Size)
+		
 		totalCost += take * lv.Price
 		filledQty += take
 		remaining -= take

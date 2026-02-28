@@ -106,10 +106,8 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
-	// Deduct the fee from the paper balance to accurately simulate costs
-	if fee > 0 {
-		t.engine.DeductBalance(fee)
-	}
+	// The engine handles fee deduction internally (reducing net shares on buy, reducing proceeds on sell)
+	// We do not deduct USDC fees here to avoid double-charging in the simulation.
 
 	return &TradeResult{
 		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
@@ -147,10 +145,8 @@ func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, 
 		}, nil
 	}
 
-	// Deduct the fee from the paper balance to accurately simulate costs
-	if fee > 0 {
-		t.engine.DeductBalance(fee)
-	}
+	// The engine handles fee deduction internally (reducing net shares on buy, reducing proceeds on sell)
+	// We do not deduct USDC fees here to avoid double-charging in the simulation.
 
 	return &TradeResult{
 		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),

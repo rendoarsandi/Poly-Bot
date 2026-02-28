@@ -1273,20 +1273,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						// FORCE FILL: Use MarketBuy to "walk the book" and guarantee fills
 						// This ensures both sides fill completely, avoiding legging risk
-						// Get fresh copies of ask levels (sorted by price ascending)
-						freshAsks1 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[0]]))
-						copy(freshAsks1, t.TokenFullAsks[t.Outcomes[0]])
-						sort.Slice(freshAsks1, func(i, j int) bool { return freshAsks1[i].Price < freshAsks1[j].Price })
-
-						freshAsks2 := make([]paper.MarketLevel, len(t.TokenFullAsks[t.Outcomes[1]]))
-						copy(freshAsks2, t.TokenFullAsks[t.Outcomes[1]])
-						sort.Slice(freshAsks2, func(i, j int) bool { return freshAsks2[i].Price < freshAsks2[j].Price })
+						// Use the previously generated asks1 and asks2 slices which ALREADY contain
+						// the injected BBO if it was missing due to orderbook lag.
+						freshAsks1 := make([]paper.MarketLevel, len(asks1))
+						copy(freshAsks1, asks1)
+						
+						freshAsks2 := make([]paper.MarketLevel, len(asks2))
+						copy(freshAsks2, asks2)
 
 						// Execute market orders that consume liquidity across multiple levels
 						// Force fill: walks the book to guarantee execution
 						trade1, avgPrice1, err1 := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
 						trade2, avgPrice2, err2 := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
-
 						if err1 != nil || err2 != nil {
 							// Concurrency edge case: another market consumed the cash between our check and execution.
 							// Fail gracefully without recording bogus $0 trades.
