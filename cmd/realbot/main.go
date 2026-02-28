@@ -1279,7 +1279,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							totalProfit := profit1 + profit2
 							engine.AddRealizedPnL(totalProfit)
 							tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
-							tui.RecordOrder(id, "SPLIT_SELL", "SELL", sharesToSell*2, (bid1+bid2)/2, sharesToSell*bidSum, sellMargin, "FILLED")
+							tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
+							tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
 							// Refresh balance after successful sell (cash increased)
 							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 								currentBalance = newBal
