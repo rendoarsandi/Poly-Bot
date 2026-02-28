@@ -345,6 +345,8 @@ func run() error {
 
 	// Main trading loop - Keep running: after each round of markets ends, search for new ones.
 	globalSplitStatus := make(map[string]bool)
+	globalSplitInventories := make(map[string]*paper.SplitInventory)
+	globalInitialSplits := make(map[string]float64)
 	var splitMu sync.Mutex
 	currentBalance := balance // Seed with the pre-fetched balance
 
@@ -429,7 +431,7 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, &splitMu)
+				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu)
 			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
@@ -566,10 +568,10 @@ func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
 	return nil
 }
 
-func tradeMarket(ctx context.Context, id string, market *api.Market, endTime time.Time,
+func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
-	globalSplitStatus map[string]bool, splitMu *sync.Mutex) {
+	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex) {
 
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
@@ -663,58 +665,85 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 	// SPLIT STRATEGY INITIALIZATION
 	// Create split inventory tracker (separate from bought shares)
 	// ═══════════════════════════════════════════════════════════════════════════
-	splitInventory := paper.NewSplitInventory()
+	splitMu.Lock()
+	splitInventory, exists := globalSplitInventories[market.ConditionID]
+	if !exists {
+		splitInventory = paper.NewSplitInventory()
+		globalSplitInventories[market.ConditionID] = splitInventory
+	}
+	initialSplitAmount := globalInitialSplits[market.ConditionID]
+	splitMu.Unlock()
+
 	engine.RegisterSplitInventory(splitInventory)   // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)      // Register for TUI display
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
-	var initialSplitAmount float64                  // Track initial split for replenishment target
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Liquidate split inventory on emergency exit
-			splitPositions := splitInventory.GetAllPositions()
-			if len(splitPositions) > 0 {
-				tui.LogEvent("[%s] 🔀 EMERGENCY EXIT: Merging & Liquidating Split Inventory...", id)
-				if len(outcomes) == 2 {
-					minShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
-					if minShares > 0 {
-						// real trader merge
-						mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 30*time.Second)
-						txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, minShares)
-						mergeCancel()
-						if err == nil {
-							engine.MergeForMarket(id, outcomes[0], outcomes[1], minShares)
-							splitInventory.RecordMerge(id, outcomes[0], outcomes[1], minShares)
-							tui.LogEvent("[%s] 🔀 Merged %.0f pairs | Tx: %s", id, minShares, txHash)
-						} else {
-							tui.LogEvent("[%s] ⚠️ Failed to merge %.0f pairs on emergency exit: %v", id, minShares, err)
+			isShutdown := globalCtx.Err() != nil
+			timeToExpiry := time.Until(endTime)
+			
+			// TUI Restart logic: Preserve inventory if active
+			if !isShutdown && timeToExpiry > 30*time.Second {
+				tui.LogEvent("[%s] ⚠️ TUI Restart: Preserving split inventory for next round", id)
+				return
+			}
+
+			// Shutdown or expiration: Execute full merge and cleanup using actual on-chain balances
+			tui.LogEvent("[%s] 🔀 EMERGENCY EXIT: Querying on-chain balances for full merge...", id)
+			if len(outcomes) == 2 {
+				token0 := getTokenID(outcomes[0])
+				token1 := getTokenID(outcomes[1])
+				
+				if token0 != "" && token1 != "" {
+					cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancelCleanup()
+					
+					bal0, bal1, err0, err1 := trader.QueryBalancedCTFBalances(cleanupCtx, token0, token1, 1000000)
+					
+					if err0 == nil && err1 == nil {
+						minShares := bal0
+						if bal1 < minShares {
+							minShares = bal1
 						}
-					}
-					// Sell remaining unbalanced shares at current bid
-					for _, out := range outcomes {
-						rem := splitInventory.GetSplitShares(id, out)
-						if rem > 0 {
-							bid, _ := engine.GetMarketBidAsk(id, out)
-							if bid <= 0 { // Fallback
-								bid = 0.50
-							}
-							
-							// Best-effort market sell
-							tokenID := getTokenID(out)
-							if tokenID != "" {
-								rate := tokenFeeRates[out]
-								if rate == 0 { rate = 1000 }
-								sellCtx, sellCancel := context.WithTimeout(context.Background(), 10*time.Second)
-								_, err := trader.Sell(sellCtx, tokenID, out, 0.01, rem, api.OrderTypeMarket, api.TIFFillOrKill, rate)
-								sellCancel()
-								if err == nil {
-									splitInventory.RecordSell(id, out, rem, bid)
-									engine.AddBalance(rem * bid)
-									tui.LogEvent("[%s] 📉 Sold %.0f split shares of %s at $%.3f", id, rem, out, bid)
+						
+						if minShares >= 0.000001 {
+							txHash, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, minShares)
+							if err == nil {
+								engine.MergeForMarket(id, outcomes[0], outcomes[1], minShares)
+								splitInventory.RecordMerge(id, outcomes[0], outcomes[1], minShares)
+								if txHash != "" && len(txHash) >= 10 {
+									tui.LogEvent("[%s] 🔀 Merged %.0f pairs | Tx: %s...", id, minShares, txHash[:10])
+								} else {
+									tui.LogEvent("[%s] 🔀 Merged %.0f pairs", id, minShares)
 								}
+								bal0 -= minShares
+								bal1 -= minShares
+							} else {
+								tui.LogEvent("[%s] ⚠️ Failed to merge %.0f pairs on emergency exit: %v", id, minShares, err)
 							}
 						}
+						
+						// Sell remaining unbalanced shares
+						if bal0 >= 0.01 {
+							rate := tokenFeeRates[outcomes[0]]
+							if rate == 0 { rate = 1000 }
+							_, sellErr := trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							if sellErr == nil {
+								tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, bal0, outcomes[0])
+							}
+						}
+						if bal1 >= 0.01 {
+							rate := tokenFeeRates[outcomes[1]]
+							if rate == 0 { rate = 1000 }
+							_, sellErr := trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							if sellErr == nil {
+								tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, bal1, outcomes[1])
+							}
+						}
+					} else {
+						tui.LogEvent("[%s] ⚠️ Could not query on-chain balances for emergency merge: %v, %v", id, err0, err1)
 					}
 				}
 			}
@@ -1009,6 +1038,7 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 							// Only mark as initialized on SUCCESS (globally)
 							splitMu.Lock()
 							globalSplitStatus[condID] = true
+							globalInitialSplits[condID] = amt
 							splitMu.Unlock()
 							initialSplitAmount = amt
 						}
