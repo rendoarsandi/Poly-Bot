@@ -1282,19 +1282,14 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						copy(freshAsks2, asks2)
 
 						// Execute market orders that consume liquidity across multiple levels
-						// Force fill: walks the book to guarantee execution
-						trade1, avgPrice1, err1 := t.Engine.MarketBuy(t.ID, t.Outcomes[0], shares, freshAsks1)
-						trade2, avgPrice2, err2 := t.Engine.MarketBuy(t.ID, t.Outcomes[1], shares, freshAsks2)
-						if err1 != nil || err2 != nil {
+						// Force fill: walks the book atomically to guarantee execution without legging
+						trade1, trade2, avgPrice1, avgPrice2, err := t.Engine.MarketBuyArb(t.ID, t.Outcomes[0], t.Outcomes[1], shares, freshAsks1, freshAsks2)
+						if err != nil {
 							// Concurrency edge case: another market consumed the cash between our check and execution.
 							// Fail gracefully without recording bogus $0 trades.
-							t.TUI.LogEvent("[%s] ⚠️ Trade failed during execution (TOCTOU / Insufficient balance). err1: %v, err2: %v", t.ID, err1, err2)
-							
-							// If one legged (rare in paperbot since it's synchronous per market, but possible if cash ran out mid-way),
-							// we could theoretically unwind, but paperbot engine doesn't track legged paper trades strictly.
+							t.TUI.LogEvent("[%s] ⚠️ Trade failed during execution (TOCTOU / Insufficient balance): %v", t.ID, err)
 							continue
 						}
-
 						// Get actual fill quantities
 						filled1, filled2 := shares, shares
 						actualCost1, actualCost2 := shares*avgPrice1, shares*avgPrice2

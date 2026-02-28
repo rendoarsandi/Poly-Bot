@@ -254,6 +254,95 @@ func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []
 	return trade, avgPrice, err
 }
 
+// MarketBuyArb atomically executes a market buy for both sides of an arbitrage.
+// It pre-checks the total cost against the current balance to prevent "legging"
+// (where one side succeeds but the other fails due to insufficient funds).
+func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity float64, levels1, levels2 []MarketLevel) (*Trade, *Trade, float64, float64, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 1. Simulate the walk for Side 1
+	if len(levels1) == 0 {
+		return nil, nil, 0, 0, fmt.Errorf("no liquidity available for %s", outcome1)
+	}
+	rem1 := quantity
+	cost1 := 0.0
+	filled1 := 0.0
+	for _, lv := range levels1 {
+		if lv.Size <= 0 { continue }
+		take := math.Min(rem1, lv.Size)
+		cost1 += take * lv.Price
+		filled1 += take
+		rem1 -= take
+		if rem1 <= 0.0001 { break }
+	}
+	if filled1 <= 0 {
+		return nil, nil, 0, 0, fmt.Errorf("insufficient liquidity to fill any amount for %s", outcome1)
+	}
+
+	// 2. Simulate the walk for Side 2
+	if len(levels2) == 0 {
+		return nil, nil, 0, 0, fmt.Errorf("no liquidity available for %s", outcome2)
+	}
+	rem2 := quantity
+	cost2 := 0.0
+	filled2 := 0.0
+	for _, lv := range levels2 {
+		if lv.Size <= 0 { continue }
+		take := math.Min(rem2, lv.Size)
+		cost2 += take * lv.Price
+		filled2 += take
+		rem2 -= take
+		if rem2 <= 0.0001 { break }
+	}
+	if filled2 <= 0 {
+		return nil, nil, 0, 0, fmt.Errorf("insufficient liquidity to fill any amount for %s", outcome2)
+	}
+
+	// 3. Match quantities to ensure we don't buy unbalanced legs
+	// The realbot limits quantity to matched liquidity beforehand, so this is just a safety
+	minFilled := math.Min(filled1, filled2)
+	
+	// Recalculate costs for exactly minFilled
+	cost1 = 0.0
+	rem1 = minFilled
+	for _, lv := range levels1 {
+		if lv.Size <= 0 { continue }
+		take := math.Min(rem1, lv.Size)
+		cost1 += take * lv.Price
+		rem1 -= take
+		if rem1 <= 0.0001 { break }
+	}
+	
+	cost2 = 0.0
+	rem2 = minFilled
+	for _, lv := range levels2 {
+		if lv.Size <= 0 { continue }
+		take := math.Min(rem2, lv.Size)
+		cost2 += take * lv.Price
+		rem2 -= take
+		if rem2 <= 0.0001 { break }
+	}
+
+	avgPrice1 := cost1 / minFilled
+	avgPrice2 := cost2 / minFilled
+
+	// 4. ATOMIC BALANCE CHECK
+	totalCost := cost1 + cost2
+	if totalCost > e.currentBalance {
+		return nil, nil, 0, 0, fmt.Errorf("insufficient balance for arb: need %.4f, have %.4f", totalCost, e.currentBalance)
+	}
+
+	// 5. Execute both buys (guaranteed to succeed since we hold the lock and checked balance)
+	trade1, err1 := e.executeBuy(marketID, outcome1, avgPrice1, minFilled)
+	if err1 != nil { return nil, nil, 0, 0, err1 }
+	
+	trade2, err2 := e.executeBuy(marketID, outcome2, avgPrice2, minFilled)
+	if err2 != nil { return nil, nil, 0, 0, err2 }
+
+	return trade1, trade2, avgPrice1, avgPrice2, nil
+}
+
 // executeBuy is the internal implementation of a buy (must be called with lock)
 func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (*Trade, error) {
 	cost := price * quantity
