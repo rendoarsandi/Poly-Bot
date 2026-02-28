@@ -923,18 +923,22 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 		t.orderBookDepth[marketID] = make(map[string][]MarketLevel)
 	}
 	for outcome, levels := range bids {
-		copied := make([]MarketLevel, 0, 5)
-		for i := 0; i < len(levels) && i < 5; i++ {
-			copied = append(copied, levels[i])
+		if len(levels) > 0 {
+			copied := make([]MarketLevel, 0, 5)
+			for i := 0; i < len(levels) && i < 5; i++ {
+				copied = append(copied, levels[i])
+			}
+			t.orderBookDepth[marketID][outcome+"_bids"] = copied
 		}
-		t.orderBookDepth[marketID][outcome+"_bids"] = copied
 	}
 	for outcome, levels := range asks {
-		copied := make([]MarketLevel, 0, 5)
-		for i := 0; i < len(levels) && i < 5; i++ {
-			copied = append(copied, levels[i])
+		if len(levels) > 0 {
+			copied := make([]MarketLevel, 0, 5)
+			for i := 0; i < len(levels) && i < 5; i++ {
+				copied = append(copied, levels[i])
+			}
+			t.orderBookDepth[marketID][outcome+"_asks"] = copied
 		}
-		t.orderBookDepth[marketID][outcome+"_asks"] = copied
 	}
 }
 

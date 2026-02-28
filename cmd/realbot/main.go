@@ -896,6 +896,20 @@ func tradeMarket(ctx context.Context, id string, market *api.Market, endTime tim
 			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}
 
+		// Also update order book depth for live display
+		bidDepth := make(map[string][]paper.MarketLevel)
+		askDepth := make(map[string][]paper.MarketLevel)
+
+		for _, outcome := range outcomes {
+			if bids, ok := tokenFullBids[outcome]; ok {
+				bidDepth[outcome] = append([]paper.MarketLevel(nil), bids...)
+			}
+			if asks, ok := tokenFullAsks[outcome]; ok {
+				askDepth[outcome] = append([]paper.MarketLevel(nil), asks...)
+			}
+		}
+		tui.UpdateOrderBookDepth(id, bidDepth, askDepth)
+
 		// ============ REST FALLBACK ============
 		// WS is primary for liquidity data via full depth updates and deltas.
 		// Only poll REST if WS is unhealthy or stale.

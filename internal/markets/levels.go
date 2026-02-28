@@ -34,48 +34,47 @@ func LevelsToPriceDepth(levels []api.PriceLevel) []paper.MarketLevel {
 // For simplicity, we just insert, sort, and return.
 // isBid determines the sort order.
 func ApplyDelta(book []paper.MarketLevel, price, size float64, isBid bool) []paper.MarketLevel {
-	// Find if level exists
+	// Create a new slice to prevent race conditions from in-place modifications
+	var newBook []paper.MarketLevel
 	found := false
-	for i, level := range book {
+
+	for _, level := range book {
 		// Use a tiny epsilon for float comparison to avoid precision issues
 		if price > level.Price-0.000001 && price < level.Price+0.000001 {
 			found = true
-			if size <= 0 {
-				// Remove level
-				book = append(book[:i], book[i+1:]...)
-			} else {
-				// Update size
-				book[i].Size = size
+			if size > 0 {
+				newBook = append(newBook, paper.MarketLevel{Price: price, Size: size})
 			}
-			break
+		} else {
+			newBook = append(newBook, level)
 		}
 	}
 
 	// Insert new level
 	if !found && size > 0 {
-		book = append(book, paper.MarketLevel{Price: price, Size: size})
+		newBook = append(newBook, paper.MarketLevel{Price: price, Size: size})
 	}
 
 	// Resort book
 	if isBid {
 		// Bids: descending
-		for i := 0; i < len(book)-1; i++ {
-			for j := i + 1; j < len(book); j++ {
-				if book[i].Price < book[j].Price {
-					book[i], book[j] = book[j], book[i]
+		for i := 0; i < len(newBook)-1; i++ {
+			for j := i + 1; j < len(newBook); j++ {
+				if newBook[i].Price < newBook[j].Price {
+					newBook[i], newBook[j] = newBook[j], newBook[i]
 				}
 			}
 		}
 	} else {
 		// Asks: ascending
-		for i := 0; i < len(book)-1; i++ {
-			for j := i + 1; j < len(book); j++ {
-				if book[i].Price > book[j].Price {
-					book[i], book[j] = book[j], book[i]
+		for i := 0; i < len(newBook)-1; i++ {
+			for j := i + 1; j < len(newBook); j++ {
+				if newBook[i].Price > newBook[j].Price {
+					newBook[i], newBook[j] = newBook[j], newBook[i]
 				}
 			}
 		}
 	}
 
-	return book
+	return newBook
 }
