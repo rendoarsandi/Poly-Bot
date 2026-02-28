@@ -1590,7 +1590,8 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		if err != nil {
 			restErrors++
 			lastErr = err
-			continue
+			// If one request fails (likely due to no internet), break immediately to prevent further blocking
+			break
 		}
 
 		// Check if book is empty

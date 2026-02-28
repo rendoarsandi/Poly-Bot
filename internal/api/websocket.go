@@ -17,8 +17,8 @@ const (
 	heartbeatInterval = 10 * time.Second
 	// If no message received in this time, consider connection dead
 	readTimeout = 30 * time.Second
-	// Max reconnection attempts before giving up
-	maxReconnectAttempts = 10
+	// Max reconnection attempts before giving up (effectively infinite)
+	maxReconnectAttempts = 1000000
 	// Delay between reconnection attempts (starts at 1s, doubles each attempt)
 	reconnectDelay = 1 * time.Second
 	// Ping failures before triggering reconnect
@@ -62,9 +62,8 @@ func NewWSManager(url string) *WSManager {
 
 func (m *WSManager) Connect(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.conn != nil {
+		m.mu.Unlock()
 		return nil
 	}
 
@@ -75,6 +74,7 @@ func (m *WSManager) Connect(ctx context.Context) error {
 
 	// Store context for reconnection
 	m.ctx, m.cancel = context.WithCancel(ctx)
+	m.mu.Unlock()
 
 	if err := m.connectInternal(m.ctx); err != nil {
 		return err
@@ -103,7 +103,9 @@ func (m *WSManager) connectInternal(ctx context.Context) error {
 	// Set read limit to handle large order books
 	c.SetReadLimit(1024 * 1024) // 1MB
 
+	m.mu.Lock()
 	m.conn = c
+	m.mu.Unlock()
 
 	m.connected.Store(true)
 	m.lastMessage.Store(time.Now().Unix())
@@ -160,6 +162,7 @@ func (m *WSManager) heartbeatLoop() {
 				pingCancel()
 				if err != nil {
 					consecutivePingFailures++
+					m.pingLatencyNs.Store(0)
 
 					// Only reconnect after multiple failures (handles temporary throttling)
 					if consecutivePingFailures >= maxPingFailures {
@@ -189,6 +192,7 @@ func (m *WSManager) tryReconnect() {
 	defer m.reconnecting.Store(false)
 
 	m.connected.Store(false)
+	m.pingLatencyNs.Store(0)
 
 	m.mu.Lock()
 	ctx := m.ctx
@@ -226,9 +230,7 @@ attemptLoop:
 		}
 
 		// Try to reconnect
-		m.mu.Lock()
 		err := m.connectInternal(ctx)
-		m.mu.Unlock()
 
 		if err != nil {
 			continue
@@ -476,7 +478,6 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				if readCtx.Err() == context.DeadlineExceeded {
 					// Timeout is normal - connection is still alive
 					// The heartbeat ping will verify actual connection health
-					consecutiveErrors = 0 // Reset on timeout (not a real error)
 					continue
 				}
 

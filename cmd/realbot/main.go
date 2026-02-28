@@ -1906,14 +1906,18 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 	success := false
 	for tokenID, outcome := range tokenMap {
 		start := time.Now()
-		book, err := restClient.GetOrderBook(ctx, tokenID)
+		// Use a short 2s timeout for fallback to prevent freezing the main loop when internet is down
+		reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		book, err := restClient.GetOrderBook(reqCtx, tokenID)
 		latency := time.Since(start)
+		cancel()
 
 		// Update TUI with real REST latency
 		tui.UpdateRestLatency(latency)
 
 		if err != nil {
-			continue
+			// If one request fails (likely due to no internet), break immediately to prevent further blocking
+			break
 		}
 
 		// Parse timestamp for freshness check
