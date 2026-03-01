@@ -2,8 +2,8 @@ package paper
 
 import "sort"
 
-// SafetyMargin is the percentage of liquidity we consider safe to trade (80%)
-const SafetyMargin = 0.80
+// SafetyMargin is the percentage of liquidity we consider safe to trade (100%)
+const SafetyMargin = 1.00
 
 // MarketLevel is defined in orderbook.go - reused here for liquidity calculations
 
@@ -77,7 +77,7 @@ func CalculateAggregatedLiquidity(asks1, asks2 []MarketLevel, maxSum float64) Li
 		}
 	}
 
-	// Apply 80% safety margin
+	// apply 100% safety margin
 	result.MaxSafeShares = result.TotalMatchedLiquidity * SafetyMargin
 
 	return result
@@ -94,23 +94,10 @@ func CalculateSafeShares(
 ) float64 {
 	shares := baseShares
 
-	// Only scale if risk allows
-	if !reduceSize {
-		// Scale shares based on margin - dynamic scaling from 1% baseline
-		multiplier := margin
-		if multiplier < 1.0 {
-			multiplier = 1.0
-		}
-		if multiplier > 5.0 {
-			multiplier = 5.0
-		}
-		shares = baseShares * float64(int(multiplier))
-	}
-
 	// Apply compounding multiplier from profitable rounds
 	shares = float64(int(shares * compoundMultiplier))
 
-	// FINAL LIQUIDITY CAP: Ensure shares never exceed 80% of available liquidity
+	// FINAL LIQUIDITY CAP: Ensure shares never exceed 100% of available liquidity
 	// This must be checked AFTER all scaling (margin scaling + compounding)
 	maxSafeShares := totalMatchedLiquidity * SafetyMargin
 	if shares > maxSafeShares {

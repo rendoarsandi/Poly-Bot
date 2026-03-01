@@ -6,8 +6,8 @@ import (
 
 // TestSafetyMarginConstant verifies the 80% safety margin constant
 func TestSafetyMarginConstant(t *testing.T) {
-	if SafetyMargin != 0.80 {
-		t.Errorf("SafetyMargin should be 0.80, got %v", SafetyMargin)
+	if SafetyMargin != 1.00 {
+		t.Errorf("SafetyMargin should be 1.00, got %v", SafetyMargin)
 	}
 }
 

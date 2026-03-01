@@ -1099,17 +1099,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 				if sellMargin >= cfg.SplitMinMarginSell-1e-4 && time.Since(lastSplitSell) > 2*time.Second {
 					// DETERMINISTIC AGGRESSION
-					requestedShares := baseTradeSize
-					if cfg.EnableMarginAggression {
-						multiplier := sellMargin / 2.0
-						if multiplier > cfg.MaxAggressionMultiplier {
-							multiplier = cfg.MaxAggressionMultiplier
-						}
-						if multiplier < 1.0 {
-							multiplier = 1.0
-						}
-						requestedShares = baseTradeSize * multiplier
-					}
+					// Use SplitInitialCapPct to determine the number of shares to sell
+					requestedShares := currentBalance * cfg.SplitInitialCapPct
 
 					// GRACEFUL SELL: Sell what we have
 					availableShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
