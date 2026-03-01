@@ -343,7 +343,7 @@ func TestEngine_GetEquity_WithSplitInventory(t *testing.T) {
 	}
 
 	// In real usage, proceeds would be added via AddBalance
-	// This simulates the actual flow in cmd/bot/main.go
+	// This simulates the actual flow in cmd/paperbot/main.go
 	proceeds := 50.0 * 0.55 // Sold 50 shares at $0.55
 	engine.AddBalance(proceeds)
 

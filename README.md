@@ -70,10 +70,13 @@ go build -o market-bot ./cmd/paperbot
 Polymarket API credentials are **derived from your private key** - they are not created in a dashboard. You only need to run this once:
 
 ```bash
-# Option 1: Pass private key as argument
+# Option 1: Use Go tool (Recommended)
+go run cmd/derivekey/main.go
+
+# Option 2: Use Node.js script (Pass private key as argument)
 node scripts/derive-api-key.js 0xYOUR_PRIVATE_KEY_HERE
 
-# Option 2: Use environment variable
+# Option 3: Use Node.js script (Use environment variable)
 POLY_PK=0xYOUR_PRIVATE_KEY node scripts/derive-api-key.js
 ```
 
@@ -177,13 +180,13 @@ DRY_RUN_FIRST=true        # Simulate orders first (recommended)
 > YES
 ```
 
-### Latency Benchmark Tool
+### Diagnostic Tool
 
-Test your network latency to Polymarket without spending money:
+Test your network latency to Polymarket, verify wallet configuration, and check API connectivity without spending money:
 
 ```bash
-# Run the latency benchmark
-go run cmd/latency/main.go
+# Run the diagnostic tool
+go run cmd/diagnose/main.go
 ```
 
 This measures:
@@ -194,33 +197,29 @@ This measures:
 - Order submission round-trip (dry-run)
 - Maximum throughput (RPS)
 
-### Liquidity Test Tool
+### Utility Bot (Interactive Panic Buy / Sell)
 
-Analyze real-time order book depth and matched liquidity:
+An interactive command-line tool to execute real trades with on-chain merge, live order book, and liquidity-capped execution. Useful for capturing sudden volatility manually:
 
 ```bash
-# Run the liquidity analyzer
-go run cmd/testliq/main.go
+# Run the utility bot
+go run cmd/util/main.go
 ```
 
-This displays:
-- Best ask prices for both outcomes
-- Top 10 price levels with cumulative liquidity
-- Matched liquidity at different margin thresholds (-2% to +6%)
-- Real-time WebSocket streaming updates every 3 seconds
+### Manual Management Tools
 
-Example output:
+Manage your positions and merge/redeem tokens manually using standalone tools.
+
+**Manual Position Manager:**
+List on-chain positions and evaluate condition IDs and outcomes.
+```bash
+go run cmd/manual/main.go
 ```
-📈 BEST ASKS: Up=$0.48 + Down=$0.50 = $0.98 (margin: 2.00%)
 
-📊 Up ASK LEVELS (25 total):
-   L1: $0.480 x    500 shares (cumulative:    500)
-   L2: $0.490 x    300 shares (cumulative:    800)
-   ...
-
-📈 MATCHED LIQUIDITY BY MARGIN THRESHOLD:
-   → +2%: matched=   500 | Up(L1)=   500 | Down(L1)=   600
-     +3%: matched=   800 | Up(L2)=   800 | Down(L2)=   900
+**Merge/Redeem Tool:**
+Manually trigger CTF merge or redeem on polymarket outcomes.
+```bash
+go run cmd/mergeredeem/main.go
 ```
 
 ### Example Output
@@ -390,41 +389,22 @@ BIDS (our orders)
 ```
 Market-bot/
 ├── cmd/
-│   ├── bot/
-│   │   └── main.go           # Paper trading bot (default)
-│   ├── realbot/
-│   │   └── main.go           # Real trading bot (production)
-│   ├── latency/
-│   │   └── main.go           # Network latency benchmark tool
-│   └── testliq/
-│       └── main.go           # Real-time liquidity analyzer
+│   ├── paperbot/         # Paper trading bot (default)
+│   ├── realbot/          # Real trading bot (production)
+│   ├── diagnose/         # Network connectivity and API diagnostic tool
+│   ├── util/             # Utility bot for interactive panic buy/sell
+│   ├── derivekey/        # Go tool to derive Polymarket API key
+│   ├── manual/           # Manual on-chain position management
+│   └── mergeredeem/      # Tool to manually merge and redeem tokens
 ├── internal/
-│   ├── api/
-│   │   ├── rest_client.go    # Polymarket REST API
-│   │   ├── websocket.go      # WebSocket connection
-│   │   ├── parser.go         # Order book parsing
-│   │   ├── clob_client.go    # CLOB order placement (real trading)
-│   │   ├── signer.go         # EIP-712 order signing
-│   │   ├── secp256k1.go      # Ethereum curve implementation
-│   │   └── polygon.go        # Polygon RPC (balance queries)
-│   ├── core/
-│   │   └── config.go         # Configuration loader
-│   ├── paper/
-│   │   ├── engine.go         # Paper trading engine
-│   │   ├── orderbook.go      # Limit order simulation
-│   │   ├── ladder.go         # Ladder quoting system
-│   │   ├── risk.go           # Risk manager & kill switch
-│   │   ├── liquidity.go      # Aggregated liquidity calculation
-│   │   ├── market.go         # Market resolution handling
-│   │   ├── split_inventory.go # CTF split share tracking (separate from bought)
-│   │   ├── tui.go            # Terminal UI display
-│   │   └── *_test.go         # Comprehensive test suite
-│   ├── trading/
-│   │   ├── trader.go         # Unified trading interface (paper/real)
-│   │   └── trader_test.go    # Trader interface tests
-│   └── strategy/
-│       └── math.go           # Discount sum calculations
-├── .env.example              # Example configuration
+│   ├── api/              # Polymarket REST, WS, and Signer clients
+│   ├── core/             # Configuration loader and security
+│   ├── markets/          # Market discovery and state management
+│   ├── paper/            # Paper trading engine and order book
+│   ├── strategy/         # Math and discount sum calculations
+│   └── trading/          # Unified trading interface (paper/real)
+├── scripts/              # Various JS/Go utility scripts
+├── .env.example          # Example configuration
 ├── go.mod
 └── README.md
 ```

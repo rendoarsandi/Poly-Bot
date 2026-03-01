@@ -21,6 +21,7 @@ import (
 	"Market-bot/internal/core"
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/setup"
 	"Market-bot/internal/strategy"
 	"Market-bot/internal/trading"
 )
@@ -69,20 +70,13 @@ func run() error {
 		return nil
 	}
 
-	// Validate credentials
-	if err := cfg.ValidateForRealTrading(); err != nil {
-		return fmt.Errorf("credential validation failed: %w", err)
-	}
-	fmt.Println("✅ Credentials validated")
-
-	// Create real trader
-	realTrader, err := trading.NewRealTrader(cfg)
+	// Create real trader and auto-setup credentials/allowances if missing
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // Increased timeout for setup
+	realTrader, err := setup.EnsureRealTradingSetup(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create trader: %w", err)
+		cancel()
+		return fmt.Errorf("failed to setup or create trader: %w", err)
 	}
-
-	// Setup context
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 	// Sync CLOB cached allowance with on-chain state
 	fmt.Println("🔄 Syncing CLOB balance allowance...")

@@ -81,7 +81,7 @@ func NewHybridDataManager(restPollInterval, wsStaleThreshold time.Duration) *Hyb
 }
 
 // ShouldPollREST determines if REST should be polled based on current state
-// This mirrors the logic in cmd/bot/main.go
+// This mirrors the logic in cmd/paperbot/main.go
 func (h *HybridDataManager) ShouldPollREST() bool {
 	// Always poll REST for liquidity at the configured interval
 	needsRestPoll := time.Since(h.lastRestPoll) > h.restPollInterval

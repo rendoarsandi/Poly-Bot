@@ -15,7 +15,7 @@ import (
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
-	"Market-bot/internal/trading"
+	"Market-bot/internal/setup"
 	"github.com/joho/godotenv"
 )
 
@@ -26,9 +26,15 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	trader, err := trading.NewRealTrader(cfg)
+	// Create context for setup
+	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelSetup()
+
+	// Ensure trading mode is set and credentials exist
+	cfg.TradingMode = core.ModeReal
+	trader, err := setup.EnsureRealTradingSetup(setupCtx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to create trader: %v", err)
+		log.Fatalf("Failed to setup or create trader: %v", err)
 	}
 
 	ctx := context.Background()
