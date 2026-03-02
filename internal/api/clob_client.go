@@ -879,10 +879,7 @@ func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string) er
 func generateSalt() int64 {
 	b := make([]byte, 8)
 	rand.Read(b)
-	// Ensure positive salt
-	val := new(big.Int).SetBytes(b).Int64()
-	if val < 0 {
-		return -val
-	}
-	return val
+	// Clear highest bit to ensure it fits in a positive int64
+	b[0] &= 0x7f
+	return new(big.Int).SetBytes(b).Int64()
 }

@@ -147,8 +147,8 @@ func run() error {
 	// Confirmation prompt
 	if cfg.RequireConfirm {
 		fmt.Println("╔═══════════════════════════════════════════════════════╗")
-		fmt.Println("║  Type 'YES' to start real trading                     ║")
-		fmt.Println("║  Type 'view' to just view markets without trading     ║")
+		fmt.Println("║  Type 'on' to start with Split Strategy ENABLED       ║")
+		fmt.Println("║  Type 'off' to start with Split Strategy DISABLED     ║")
 		fmt.Println("╚═══════════════════════════════════════════════════════╝")
 		fmt.Print("> ")
 
@@ -159,14 +159,18 @@ func run() error {
 		}
 
 		input = strings.TrimSpace(strings.ToLower(input))
-		if input == "view" {
-			return viewMarketsOnly(cfg, realTrader)
-		}
-		if input != "yes" {
-			fmt.Println("❌ Cancelled")
+		if input == "on" {
+			cfg.SplitStrategyEnabled = true
+			_ = cfg.SaveSettings()
+			fmt.Println("✅ Starting real trading bot with Split Strategy ON...")
+		} else if input == "off" {
+			cfg.SplitStrategyEnabled = false
+			_ = cfg.SaveSettings()
+			fmt.Println("✅ Starting real trading bot with Split Strategy OFF...")
+		} else {
+			fmt.Println("❌ Cancelled (must type 'on' or 'off')")
 			return nil
 		}
-		fmt.Println("✅ Starting real trading bot...")
 	}
 
 	// Setup signal handling

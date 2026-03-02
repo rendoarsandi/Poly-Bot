@@ -175,9 +175,15 @@ func (s *SplitInventory) GetRealizedPnL() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// P&L = proceeds - cost
-	// But we need to account for unsold shares still being worth their cost
-	return s.totalSellProceeds - s.totalSplitCost
+	unrealizedCost := 0.0
+	for key, shares := range s.splitShares {
+		unrealizedCost += shares * s.splitCostBasis[key]
+	}
+
+	// Cost of shares sold = total cost - cost of remaining shares
+	costOfSold := s.totalSplitCost - unrealizedCost
+
+	return s.totalSellProceeds - costOfSold
 }
 
 // NeedsReplenish checks if inventory is below threshold for a given margin target

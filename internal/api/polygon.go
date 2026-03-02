@@ -3,7 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
+
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -502,7 +502,7 @@ func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender 
 	// 2. approved: (true/false)
 
 	operator := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
-	
+
 	val := "0000000000000000000000000000000000000000000000000000000000000001"
 	if !approved {
 		val = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -652,16 +652,12 @@ func (c *PolygonClient) call(ctx context.Context, method string, params []interf
 func parseHexBigInt(s string) (*big.Int, error) {
 	s = strings.TrimPrefix(s, "0x")
 	if s == "" {
-		s = "0"
+		return big.NewInt(0), nil
 	}
 
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		// Try parsing directly as hex string
-		n := new(big.Int)
-		n.SetString(s, 16)
-		return n, nil
+	n := new(big.Int)
+	if _, ok := n.SetString(s, 16); !ok {
+		return nil, fmt.Errorf("failed to parse hex string: %s", s)
 	}
-
-	return new(big.Int).SetBytes(b), nil
+	return n, nil
 }

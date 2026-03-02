@@ -617,12 +617,15 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 		})
 	}
 
+	// Require at least $10,000 USDC allowance to avoid frequent re-approvals
+	minAllowance := new(big.Int).SetUint64(10000 * 1000000)
+
 	// 1. Approve USDC for Legacy Exchange (Binary Markets)
 	allowanceLegacy, err := checkAllowance(api.CTFExchange)
 	if err != nil {
 		return false, fmt.Errorf("failed to check legacy allowance: %w", err)
 	}
-	if allowanceLegacy.Cmp(big.NewInt(0)) == 0 {
+	if allowanceLegacy.Cmp(minAllowance) < 0 {
 		fmt.Println("🔓 Approving USDC for Legacy Exchange...")
 		// Approve max uint256
 		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
@@ -662,7 +665,7 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to check NegRisk allowance: %w", err)
 	}
-	if allowanceNegRisk.Cmp(big.NewInt(0)) == 0 {
+	if allowanceNegRisk.Cmp(minAllowance) < 0 {
 		fmt.Println("🔓 Approving USDC for NegRisk Exchange...")
 		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
 		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.NegRiskExchange, maxUint256)
