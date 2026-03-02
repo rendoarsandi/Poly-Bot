@@ -1232,7 +1232,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 	timeLine := fmt.Sprintf("⏱ %s  ·  %s [%s]%s",
 		timeSt.Render(remaining.Round(time.Second).String()),
-		ageSt.Render(fmt.Sprintf("%.1fs", age.Seconds())),
+		ageSt.Render(fmt.Sprintf("%dms", age.Milliseconds())),
 		srcSt.Render(src),
 		ageWarn,
 	)
