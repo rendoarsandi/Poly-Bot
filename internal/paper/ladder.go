@@ -95,7 +95,7 @@ func (l *Ladder) CancelAll() int {
 	count := 0
 	for _, order := range l.Orders {
 		if order != nil && (order.Status == OrderStatusOpen || order.Status == OrderStatusPartial) {
-			l.OrderBook.CancelOrder(order.ID)
+			_ = l.OrderBook.CancelOrder(order.ID)
 			count++
 		}
 	}

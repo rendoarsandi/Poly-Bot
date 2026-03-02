@@ -377,9 +377,9 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Only poll every 5 seconds to avoid rate limits, but fast enough for trading
-	// (Reduced from 30s for more accurate balance tracking during active trading)
-	if time.Since(t.lastBalanceUpdate) < 5*time.Second && !t.lastBalanceUpdate.IsZero() {
+	// If background sync is keeping this fresh, we can rely on it.
+	// We use a 30s TTL here so if the background ticker is delayed, we still use the cache instead of blocking the WS loop.
+	if time.Since(t.lastBalanceUpdate) < 30*time.Second && !t.lastBalanceUpdate.IsZero() {
 		return t.cachedBalance, nil
 	}
 
@@ -450,7 +450,7 @@ func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
 }
 
 // RedeemOnChain performs the on-chain redemption of winning tokens
-func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (string, error) {
+func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
 	// First check if resolved on-chain (FREE READ)
 	resolved, err := t.polygon.IsMarketResolved(ctx, conditionID)
 	if err != nil {
@@ -462,7 +462,7 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (str
 	}
 
 	// Get signer from clob (we need to export it or add a helper)
-	return t.polygon.RedeemPositions(ctx, t.clob.GetSigner(), conditionID)
+	return t.polygon.RedeemPositions(ctx, t.clob.GetSigner(), conditionID, numOutcomes)
 }
 
 // retryOnChainTx executes an on-chain transaction with retry logic and confirmation waiting.
@@ -540,7 +540,7 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 // Use this immediately after buying both sides of an arb to capture profit instantly.
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
-func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64) (string, error) {
+func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64, numOutcomes int) (string, error) {
 	// CTF tokens use 6 decimals (same as USDC)
 	// Convert shares to the proper amount with decimals
 	amount := new(big.Int)
@@ -549,7 +549,7 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	amount.SetInt64(int64(amountFloat))
 
 	return t.retryOnChainTx(ctx, "merge", func() (string, error) {
-		return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount)
+		return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount, numOutcomes)
 	})
 }
 
@@ -559,14 +559,14 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 // Use this to build inventory, then sell when bid_sum > $1.03 for profit.
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
-func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcAmount float64) (string, error) {
+func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcAmount float64, numOutcomes int) (string, error) {
 	// CTF tokens use 6 decimals (same as USDC)
 	amount := new(big.Int)
 	amountFloat := usdcAmount * 1e6
 	amount.SetInt64(int64(amountFloat))
 
 	return t.retryOnChainTx(ctx, "split", func() (string, error) {
-		return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount)
+		return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount, numOutcomes)
 	})
 }
 

@@ -30,7 +30,7 @@ type APICredentials struct {
 }
 
 func main() {
-	godotenv.Load()
+	_ = godotenv.Load()
 
 	pk := os.Getenv("PK")
 	if pk == "" {

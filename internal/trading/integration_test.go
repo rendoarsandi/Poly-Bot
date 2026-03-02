@@ -37,7 +37,7 @@ func (m *MockPolygonClient) GetUSDCBalance(ctx context.Context, address string) 
 	return m.usdcBalance, nil
 }
 
-func (m *MockPolygonClient) SplitPositions(ctx context.Context, signer *api.Signer, conditionID string, amount *big.Int) (string, error) {
+func (m *MockPolygonClient) SplitPositions(ctx context.Context, signer *api.Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -62,7 +62,7 @@ func (m *MockPolygonClient) SplitPositions(ctx context.Context, signer *api.Sign
 	return "0xsplit_tx_hash", nil
 }
 
-func (m *MockPolygonClient) MergePositions(ctx context.Context, signer *api.Signer, conditionID string, amount *big.Int) (string, error) {
+func (m *MockPolygonClient) MergePositions(ctx context.Context, signer *api.Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -90,7 +90,7 @@ func (m *MockPolygonClient) MergePositions(ctx context.Context, signer *api.Sign
 	return "0xmerge_tx_hash", nil
 }
 
-func (m *MockPolygonClient) RedeemPositions(ctx context.Context, signer *api.Signer, conditionID string) (string, error) {
+func (m *MockPolygonClient) RedeemPositions(ctx context.Context, signer *api.Signer, conditionID string, numOutcomes int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -283,7 +283,7 @@ func TestBuyMergeFlow_FullCycle(t *testing.T) {
 
 	// Step 4: Merge on-chain
 	amount := big.NewInt(int64(shares * 1e6))
-	txHash, err := polygon.MergePositions(ctx, nil, conditionID, amount)
+	txHash, err := polygon.MergePositions(ctx, nil, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestBuyMergeFlow_MergeFails(t *testing.T) {
 	polygon.failNextMerge = true
 
 	amount := big.NewInt(1e6)
-	_, err := polygon.MergePositions(ctx, nil, conditionID, amount)
+	_, err := polygon.MergePositions(ctx, nil, conditionID, amount, 2)
 	if err == nil {
 		t.Error("Merge should have failed")
 	}
@@ -380,7 +380,7 @@ func TestSplitSellFlow_FullCycle(t *testing.T) {
 
 	// Step 1: Split USDC into tokens
 	amount := big.NewInt(int64(shares * 1e6))
-	txHash, err := polygon.SplitPositions(ctx, nil, conditionID, amount)
+	txHash, err := polygon.SplitPositions(ctx, nil, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Split failed: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestSplitSellFlow_InsufficientUSDCForSplit(t *testing.T) {
 
 	// Try to split $1.00
 	amount := big.NewInt(1e6)
-	_, err := polygon.SplitPositions(ctx, nil, "0xtest", amount)
+	_, err := polygon.SplitPositions(ctx, nil, "0xtest", amount, 2)
 	if err == nil {
 		t.Error("Split should fail due to insufficient USDC")
 	}
@@ -507,14 +507,14 @@ func TestMergeWithImbalancedTokens(t *testing.T) {
 
 	// Try to merge 2 - should fail
 	amount := big.NewInt(2e6)
-	_, err := polygon.MergePositions(ctx, nil, conditionID, amount)
+	_, err := polygon.MergePositions(ctx, nil, conditionID, amount, 2)
 	if err == nil {
 		t.Error("Merge should fail with insufficient DOWN tokens")
 	}
 
 	// Merge 1 should succeed
 	amount = big.NewInt(1e6)
-	_, err = polygon.MergePositions(ctx, nil, conditionID, amount)
+	_, err = polygon.MergePositions(ctx, nil, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Merge of 1 share should succeed: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestRedeemAfterMarketResolution(t *testing.T) {
 	}
 
 	// Redeem
-	_, err := polygon.RedeemPositions(ctx, nil, conditionID)
+	_, err := polygon.RedeemPositions(ctx, nil, conditionID, 2)
 	if err != nil {
 		t.Fatalf("Redeem failed: %v", err)
 	}
@@ -581,13 +581,13 @@ func TestConcurrentBuyMerge(t *testing.T) {
 
 			// Split
 			amount := big.NewInt(1e6)
-			_, err := polygon.SplitPositions(ctx, nil, conditionID, amount)
+			_, err := polygon.SplitPositions(ctx, nil, conditionID, amount, 2)
 			if err != nil {
 				return
 			}
 
 			// Merge
-			_, err = polygon.MergePositions(ctx, nil, conditionID, amount)
+			_, err = polygon.MergePositions(ctx, nil, conditionID, amount, 2)
 			if err != nil {
 				return
 			}
@@ -623,7 +623,7 @@ func TestMarketWindowExpiry(t *testing.T) {
 
 	// Split at start of window
 	amount := big.NewInt(1e6)
-	_, err := polygon.SplitPositions(ctx, nil, conditionID, amount)
+	_, err := polygon.SplitPositions(ctx, nil, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Split failed: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestMarketWindowExpiry(t *testing.T) {
 	}
 
 	// Redeem works
-	_, err = polygon.RedeemPositions(ctx, nil, conditionID)
+	_, err = polygon.RedeemPositions(ctx, nil, conditionID, 2)
 	if err != nil {
 		t.Fatalf("Redeem failed: %v", err)
 	}
@@ -654,8 +654,7 @@ func BenchmarkSplitMergeCycle(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		amount := big.NewInt(1e6)
-		polygon.SplitPositions(ctx, nil, conditionID, amount)
-		polygon.MergePositions(ctx, nil, conditionID, amount)
-	}
-}
+	        amount := big.NewInt(1e6)
+	        _, _ = polygon.SplitPositions(ctx, nil, conditionID, amount, 2)
+	        _, _ = polygon.MergePositions(ctx, nil, conditionID, amount, 2)
+	}}

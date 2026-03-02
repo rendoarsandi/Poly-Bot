@@ -55,9 +55,9 @@ func TestWSManagerSubscribeRead(t *testing.T) {
 		defer c.Close(websocket.StatusInternalError, "the sky is falling")
 
 		var msg map[string]string
-		wsjson.Read(r.Context(), c, &msg)
+		_ = wsjson.Read(r.Context(), c, &msg)
 
-		c.Write(r.Context(), websocket.MessageText, []byte(`{"status":"ok"}`))
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
@@ -67,9 +67,8 @@ func TestWSManagerSubscribeRead(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	mgr.Connect(ctx)
+	_ = mgr.Connect(ctx)
 	defer mgr.Close()
-
 	err := mgr.Subscribe(ctx, map[string]string{"type": "subscribe"})
 	if err != nil {
 		t.Fatalf("Failed to subscribe: %v", err)

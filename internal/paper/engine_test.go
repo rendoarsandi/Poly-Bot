@@ -147,7 +147,7 @@ func TestMarketBuy_UpdatesPosition(t *testing.T) {
 	}
 
 	// First buy
-	engine.MarketBuy("BTC", "Up", 50, levels)
+	_, _, _ = engine.MarketBuy("BTC", "Up", 50, levels)
 
 	positions := engine.GetPositions()
 	pos, ok := positions["BTC:Up"]
@@ -166,10 +166,10 @@ func TestMarketBuy_UpdatesPosition(t *testing.T) {
 	// Second buy - should update position with weighted average
 	levels2 := []MarketLevel{
 		{Price: 0.50, Size: 50},
-	}
-	engine.MarketBuy("BTC", "Up", 50, levels2)
+		}
+		_, _, _ = engine.MarketBuy("BTC", "Up", 50, levels2)
 
-	positions = engine.GetPositions()
+		positions = engine.GetPositions()
 	pos = positions["BTC:Up"]
 
 	if pos.Quantity != 100 {

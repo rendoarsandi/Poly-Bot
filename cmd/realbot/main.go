@@ -181,26 +181,26 @@ func run() error {
 
 	// emergencyCleanup ensures we don't leave hanging orders or unmerged positions
 	emergencyCleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		// Give the overall cleanup up to 45 seconds, but each merge gets its own context
+		overallCtx, cancelAll := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancelAll()
 
 		fmt.Println("\n🧹 Running emergency cleanup...")
 
 		// 1. Cancel all open orders
-		if err := realTrader.CancelAll(cleanupCtx); err != nil {
+		if err := realTrader.CancelAll(overallCtx); err != nil {
 			fmt.Printf("⚠️  Failed to cancel orders: %v\n", err)
 		} else {
 			fmt.Println("✅ All orders cancelled")
 		}
 
 		// 2. Identify and merge balanced positions
-		positions, err := realTrader.GetPositions(cleanupCtx)
+		positions, err := realTrader.GetPositions(overallCtx)
 		if err != nil {
 			fmt.Printf("⚠️  Could not fetch positions for merge: %v\n", err)
 		} else if len(positions) > 0 {
 			// Map positions to their markets to find ConditionIDs
-			// We'll need a fresh list of markets for this
-			markets, err := restClient.GetMarketsByTimeframe(cleanupCtx, nil, "15m")
+			markets, err := restClient.GetMarketsByTimeframe(overallCtx, nil, "15m")
 			if err == nil {
 				// Group tokens by ConditionID
 				condToTokens := make(map[string][]string)
@@ -210,6 +210,7 @@ func run() error {
 					}
 				}
 
+				var wg sync.WaitGroup
 				// Find balanced pairs for each market
 				for condID, tokens := range condToTokens {
 					if len(tokens) != 2 {
@@ -231,14 +232,36 @@ func run() error {
 					}
 
 					if minQty >= 0.000001 {
-						fmt.Printf("💰 Merging %.6f pairs for market %s...\n", minQty, condID[:10])
-						_, err := realTrader.MergeOnChain(cleanupCtx, condID, minQty)
-						if err != nil {
-							fmt.Printf("❌ Merge failed: %v\n", err)
-						} else {
-							fmt.Println("✅ Merge successful")
-						}
+						wg.Add(1)
+						go func(cID string, tks []string, mq float64) {
+							defer wg.Done()
+							fmt.Printf("💰 Merging %.6f pairs for market %s...\n", mq, cID[:10])
+							// Independent 30s timeout per merge
+							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+							defer mergeCancel()
+
+							_, err := realTrader.MergeOnChain(mergeCtx, cID, mq, len(tks))
+							if err != nil {
+								fmt.Printf("❌ Merge failed for %s: %v\n", cID[:10], err)
+							} else {
+								fmt.Printf("✅ Merge successful for %s\n", cID[:10])
+							}
+						}(condID, tokens, minQty)
 					}
+				}
+
+				// Wait for all concurrent merges to finish or overall timeout
+				done := make(chan struct{})
+				go func() {
+					wg.Wait()
+					close(done)
+				}()
+
+				select {
+				case <-done:
+					fmt.Println("✅ All emergency merges completed")
+				case <-overallCtx.Done():
+					fmt.Println("⚠️ Emergency cleanup timed out waiting for some merges")
 				}
 			}
 		}
@@ -494,7 +517,7 @@ func run() error {
 			tui.LogEvent("✅ Round complete, no change")
 		}
 		tui.LogEvent("🔄 Searching for next round...")
-		
+
 		// Release stale keep-alive connections before the next search phase.
 		restClient.CloseIdleConnections()
 		tui.ClearMarkets()
@@ -592,6 +615,23 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	currentBalance := startingBalance
 	// currentCash := startingBalance // Unused after removing balance checks
 
+	// Background ticker to keep balance and allowance fresh without blocking WS loop
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				bgCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				_ = trader.UpdateBalanceAllowance(bgCtx)
+				_, _ = trader.ForceRefreshBalance(bgCtx)
+				cancel()
+			}
+		}
+	}()
+
 	// Helper to get token ID from outcome
 	getTokenID := func(outcome string) string {
 		for tid, out := range tokenToOutcome {
@@ -624,7 +664,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		case <-ctx.Done():
 			isShutdown := globalCtx.Err() != nil
 			timeToExpiry := time.Until(endTime)
-			
+
 			// TUI Restart logic: Preserve inventory if active
 			if !isShutdown && timeToExpiry > 30*time.Second {
 				tui.LogEvent("[%s] ⚠️ TUI Restart: Preserving split inventory for next round", id)
@@ -633,18 +673,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 			// Shutdown or expiration: Execute full merge and cleanup using actual on-chain balances
 			tui.LogEvent("[%s] 🔀 EMERGENCY EXIT: Querying on-chain balances for full merge...", id)
-			
+
 			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancelCleanup()
 
 			// Query all token balances
 			balances := make([]float64, len(outcomes))
 			tokens := make([]string, len(outcomes))
-			
+
 			for i, out := range outcomes {
 				tokens[i] = getTokenID(out)
 			}
-			
+
 			// Retry loop for balances
 			var minShares float64
 			var fetchErr error
@@ -671,17 +711,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 				time.Sleep(1000 * time.Millisecond)
 			}
-			
+
 			if fetchErr == nil {
 				if minShares >= 0.000001 {
-					txHash, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, minShares)
+					txHash, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, minShares, len(market.Tokens))
 					if err == nil {
 						// Only record paper engine stats if it's a binary market (engine limitation)
 						if len(outcomes) == 2 {
 							engine.MergeForMarket(id, outcomes[0], outcomes[1], minShares)
 							splitInventory.RecordMerge(id, outcomes[0], outcomes[1], minShares)
 						}
-						
+
 						if txHash != "" && len(txHash) >= 10 {
 							tui.LogEvent("[%s] 🔀 Merged %.0f sets | Tx: %s...", id, minShares, txHash[:10])
 						} else {
@@ -694,12 +734,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] ⚠️ Failed to merge %.0f sets on emergency exit: %v", id, minShares, err)
 					}
 				}
-				
+
 				// Sell remaining unbalanced shares
 				for i, out := range outcomes {
 					if balances[i] >= 0.01 {
 						rate := tokenFeeRates[out]
-						if rate == 0 { rate = 1000 }
+						if rate == 0 {
+							rate = 1000
+						}
 						_, sellErr := trader.Sell(cleanupCtx, tokens[i], out, 0.01, balances[i], api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 						if sellErr == nil {
 							tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, balances[i], out)
@@ -953,7 +995,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			// Move to BACKGROUND to prevent blocking the main trading loop
 			splitMu.Lock()
 			isSplit := globalSplitStatus[market.ConditionID]
-			
+
 			// We check the cooldown safely using the global initial split value map (if 0, we can try)
 			// But for cooldown, we'll just move nextSplitAttempt access inside the lock if we use a global cooldown map.
 			// Or better: keep nextSplitAttempt but protect it with splitMu.
@@ -989,14 +1031,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						splitCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 						defer cancel()
 
-						txHash, err := trader.SplitOnChain(splitCtx, condID, amt)
-						
+						txHash, err := trader.SplitOnChain(splitCtx, condID, amt, len(outcomes))
+
 						splitMu.Lock() // Re-acquire lock to update shared state
 						if err != nil {
 							tui.LogEvent("[%s] ⚠️ SPLIT: Background initial split failed: %v (will retry in 60s)", mID, err)
 							// Set cooldown on failure to prevent RPC spam and nonce issues
 							nextSplitAttempt = time.Now().Add(60 * time.Second)
-							
+
 							// Revert optimistic split status so it can be retried
 							globalSplitStatus[condID] = false
 						} else {
@@ -1059,7 +1101,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Use derived context for proper shutdown propagation
 						bgCtx, bgCancel := context.WithTimeout(ctx, 60*time.Second)
 						defer bgCancel()
-						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt)
+						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt, len(outcomes))
 						if bgErr == nil {
 							// Update engine simulation immediately
 							splitInventory.RecordSplit(mID, out0, out1, amt)
@@ -1112,10 +1154,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Inject BBO if missing due to orderbook lag to prevent liq: 0/0
 						hasBid1 := false
 						for _, b := range sortedBids1 {
-						        if b.Price >= bid1-1e-6 { hasBid1 = true; break }
+							if b.Price >= bid1-1e-6 {
+								hasBid1 = true
+								break
+							}
 						}
 						if !hasBid1 {
-						        sortedBids1 = append(sortedBids1, paper.MarketLevel{Price: bid1, Size: sharesToSell})
+							sortedBids1 = append(sortedBids1, paper.MarketLevel{Price: bid1, Size: sharesToSell})
 						}
 						sort.Slice(sortedBids1, func(a, b int) bool { return sortedBids1[a].Price > sortedBids1[b].Price })
 
@@ -1123,10 +1168,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						copy(sortedBids2, bids2)
 						hasBid2 := false
 						for _, b := range sortedBids2 {
-						        if b.Price >= bid2-1e-6 { hasBid2 = true; break }
+							if b.Price >= bid2-1e-6 {
+								hasBid2 = true
+								break
+							}
 						}
 						if !hasBid2 {
-						        sortedBids2 = append(sortedBids2, paper.MarketLevel{Price: bid2, Size: sharesToSell})
+							sortedBids2 = append(sortedBids2, paper.MarketLevel{Price: bid2, Size: sharesToSell})
 						}
 						sort.Slice(sortedBids2, func(a, b int) bool { return sortedBids2[a].Price > sortedBids2[b].Price })
 						var rawLiq1, rawLiq2, matchedBidLiq float64
@@ -1189,11 +1237,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// Sync CLOB allowance with on-chain state right before trading.
 							// This is the root cause of "insufficient balance/allowance" errors:
 							// the CLOB loses sync with on-chain state between startup and trade time.
-							// utilbot does this at startup right before execution — we do it here
-							// for every trade attempt so the CLOB is always current.
-							if syncErr := trader.UpdateBalanceAllowance(ctx); syncErr != nil {
-								tui.LogEvent("[%s] ⚠️ SPLIT: Allowance sync failed: %v (continuing)", id, syncErr)
-							}
+							// Background ticker keeps allowance synced.
 
 							var wg sync.WaitGroup
 							wg.Add(2)
@@ -1206,20 +1250,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							go func() {
 								defer wg.Done()
 								rate := tokenFeeRates[outcomes[0]]
-													if rate == 0 {
-														rate = 1000
-													}
-													res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
-												}()
-								
-												go func() {
-													defer wg.Done()
-													rate := tokenFeeRates[outcomes[1]]
-													if rate == 0 {
-														rate = 1000
-													}
-													res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
-												}()
+								if rate == 0 {
+									rate = 1000
+								}
+								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+							}()
+
+							go func() {
+								defer wg.Done()
+								rate := tokenFeeRates[outcomes[1]]
+								if rate == 0 {
+									rate = 1000
+								}
+								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+							}()
 							wg.Wait()
 
 							side1Success := err1 == nil && res1 != nil && res1.Success
@@ -1238,32 +1282,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome)
 							}
 
-						if side1Success && side2Success {
-							// Both sides sold - record in split inventory
-							profit1 := splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
-							profit2 := splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
-							totalProfit := profit1 + profit2
-							engine.AddRealizedPnL(totalProfit)
-							tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
-							tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
-							tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
-							// Refresh balance after successful sell (cash increased)
-							_, _ = trader.ForceRefreshBalance(ctx)
+							if side1Success && side2Success {
+								// Both sides sold - record in split inventory
+								profit1 := splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
+								profit2 := splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
+								totalProfit := profit1 + profit2
+								engine.AddRealizedPnL(totalProfit)
+								tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
+								tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
+								tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
+								// Refresh balance after successful sell (cash increased)
+								_, _ = trader.ForceRefreshBalance(ctx)
 
-							// ONE-SHOT: Exit after successful sell
-							tui.LogEvent("[%s] ✅ One-shot execution complete after successful split sell.", id)
-							return
-						} else {
-							// Partial success - record to keep inventory accurate
-							if side1Success {
-								splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
-								tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[0])
+								// ONE-SHOT: Exit after successful sell
+								tui.LogEvent("[%s] ✅ One-shot execution complete after successful split sell.", id)
+								return
+							} else {
+								// Partial success - record to keep inventory accurate
+								if side1Success {
+									splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[0])
+								}
+								if side2Success {
+									splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[1])
+								}
 							}
-							if side2Success {
-								splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
-								tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[1])
-							}
-						}
 
 							lastSplitSell = time.Now()
 						}
@@ -1343,7 +1387,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Inject BBO if missing due to orderbook lag
 					hasAsk1 := false
 					for _, a := range asks1 {
-						if a.Price <= ask1+1e-6 { hasAsk1 = true; break }
+						if a.Price <= ask1+1e-6 {
+							hasAsk1 = true
+							break
+						}
 					}
 					if !hasAsk1 {
 						asks1 = append(asks1, paper.MarketLevel{Price: ask1, Size: shares})
@@ -1354,7 +1401,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					copy(asks2, tokenFullAsks[outcomes[1]])
 					hasAsk2 := false
 					for _, a := range asks2 {
-						if a.Price <= ask2+1e-6 { hasAsk2 = true; break }
+						if a.Price <= ask2+1e-6 {
+							hasAsk2 = true
+							break
+						}
 					}
 					if !hasAsk2 {
 						asks2 = append(asks2, paper.MarketLevel{Price: ask2, Size: shares})
@@ -1442,7 +1492,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] ⚠️ Risk limit exceeded for cost $%.2f", id, cost)
 						continue
 					}
-					
+
 					// Skipping conservative balance checks (costWithBuffer > currentCash) to allow max execution.
 					// If balance is insufficient, the API call will fail naturally.
 
@@ -1513,11 +1563,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Sync CLOB allowance with on-chain state right before trading.
 						// Root cause of "insufficient balance/allowance" errors in realbot:
 						// allowance synced once at startup can go stale by the time an arb opportunity arrives.
-						// utilbot syncs right before execution; we mirror that here.
-						if syncErr := trader.UpdateBalanceAllowance(ctx); syncErr != nil {
-							tui.LogEvent("[%s] ⚠️ ARB: Allowance sync failed: %v (continuing)", id, syncErr)
-						}
-
+						// Background ticker keeps allowance synced.
 						var wg sync.WaitGroup
 						wg.Add(2)
 
@@ -1566,7 +1612,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									bal1 = pos.Size
 								}
 							}
-							
+
 							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
 
 							// Override success flags based on actual inventory
@@ -1711,12 +1757,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// NOW record to engine - only record positions that actually succeeded
 						// This ensures engine state matches reality for accurate drawdown calculation
 						if side1Success && side2Success {
-							// Both sides filled (either initially or via recovery) - record both
-							engine.BuyForMarket(id, outcomes[0], price1, shares)
-							engine.BuyForMarket(id, outcomes[1], price2, shares)
+						        // Both sides filled (either initially or via recovery) - record both
+						        _, _ = engine.BuyForMarket(id, outcomes[0], price1, shares)
+						        _, _ = engine.BuyForMarket(id, outcomes[1], price2, shares)
 
-							// ONE-SHOT: Execute merge and then EXIT
-							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
+						        // ONE-SHOT: Execute merge and then EXIT							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
 							time.Sleep(5 * time.Second)
 
 							mergeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1742,7 +1787,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								return // Exit tradeMarket
 							}
 
-							txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, mergeQty)
+							txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, mergeQty, len(market.Tokens))
 							if err != nil {
 								tui.LogEvent("[%s] ⚠️ Merge failed: %v (will redeem at expiry)", id, err)
 							} else {
@@ -1757,36 +1802,36 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								// Phase 3: Auto-cleanup of unbalanced excess shares using Market Sell
 								excess0 := bal0 - actualMin
 								excess1 := bal1 - actualMin
-								  if excess0 >= 0.01 {
-									  // Check against Polymarket's ~$1.00 minimum order value for sells
-									  // We estimate this by checking if shares * price >= $1.00
-									  // Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
-									  // If it fails, we catch the error and log it clearly.
-									  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
-									  _, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.01, excess0, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
-									  if sellErr != nil {
-										  if strings.Contains(sellErr.Error(), "min size") {
-											  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
-										  } else {
-											  tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
-										  }
-									  }
-								  }
-								  if excess1 >= 0.01 {
-									  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
-									  _, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.01, excess1, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
-									  if sellErr != nil {
-										  if strings.Contains(sellErr.Error(), "min size") {
-											  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
-										  } else {
-											  tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
-										  }
-									  }
-								  }
+								if excess0 >= 0.01 {
+									// Check against Polymarket's ~$1.00 minimum order value for sells
+									// We estimate this by checking if shares * price >= $1.00
+									// Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
+									// If it fails, we catch the error and log it clearly.
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
+									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.01, excess0, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+									if sellErr != nil {
+										if strings.Contains(sellErr.Error(), "min size") {
+											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
+										} else {
+											tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
+										}
+									}
+								}
+								if excess1 >= 0.01 {
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
+									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.01, excess1, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+									if sellErr != nil {
+										if strings.Contains(sellErr.Error(), "min size") {
+											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
+										} else {
+											tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
+										}
+									}
+								}
 							}
 
 							tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
-							
+
 							// Refresh balance for next trade
 							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 								currentBalance = newBal
@@ -1796,11 +1841,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// Only one side filled after retry — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.
 							if side1Success {
-								engine.BuyForMarket(id, outcomes[0], price1, shares)
-								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
+							        _, _ = engine.BuyForMarket(id, outcomes[0], price1, shares)
+							        tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
 							}
 							if side2Success {
-								engine.BuyForMarket(id, outcomes[1], price2, shares)
+								_, _ = engine.BuyForMarket(id, outcomes[1], price2, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
 
@@ -1834,7 +1879,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else if settled && bal0 >= 0.01 && bal1 >= 0.01 {
 								// Both balances arrived, try to merge them safely instead of dumping them to market
 								actualMin := math.Min(bal0, bal1)
-								_, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, actualMin)
+								_, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, actualMin, len(market.Tokens))
 								if err != nil {
 									tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
 									// Fallback to sell below
@@ -1851,22 +1896,22 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking for unbalanced shares to sell... Balances: %s=%.2f, %s=%.2f", id, outcomes[0], bal0, outcomes[1], bal1)
 
 							var sell0Err, sell1Err error
-							  if bal0 >= 0.01 {
-								  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
-								  _, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
-								  if sell0Err != nil && strings.Contains(sell0Err.Error(), "min size") {
-									  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal0, outcomes[0])
-									  sell0Err = nil // Treat dust as 'successfully handled' so we don't spam retries
-								  }
-							  }
-							  if bal1 >= 0.01 {
-								  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
-								  _, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
-								  if sell1Err != nil && strings.Contains(sell1Err.Error(), "min size") {
-									  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal1, outcomes[1])
-									  sell1Err = nil // Treat dust as 'successfully handled' so we don't spam retries
-								  }
-							  }
+							if bal0 >= 0.01 {
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
+								_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+								if sell0Err != nil && strings.Contains(sell0Err.Error(), "min size") {
+									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal0, outcomes[0])
+									sell0Err = nil // Treat dust as 'successfully handled' so we don't spam retries
+								}
+							}
+							if bal1 >= 0.01 {
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
+								_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+								if sell1Err != nil && strings.Contains(sell1Err.Error(), "min size") {
+									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal1, outcomes[1])
+									sell1Err = nil // Treat dust as 'successfully handled' so we don't spam retries
+								}
+							}
 
 							if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
 								tui.LogEvent("[%s] ✅ Auto-cleanup routine finished! Applying 30s cooldown before unblocking.", id)
@@ -1875,7 +1920,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Applying 2m cooldown to prevent immediate retry loops.", id)
 								panicBuyCooldown = time.Now().Add(120 * time.Second)
 							}
-						}						// If both failed, nothing to record
+						} // If both failed, nothing to record
 
 						// Force refresh balance after trade to ensure accurate tracking
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
@@ -2029,22 +2074,22 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 				// The user can use the manual tools to redeem later.
 				tui.LogEvent("[%s] ℹ️ Skipping auto-redeem. Use manual tool to claim.", id)
 				/*
-				go func(cid string) {
-					tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
-					// Wait a bit for on-chain state to sync
-					time.Sleep(30 * time.Second)
-					// Use fresh context since parent ctx may be cancelled during shutdown
-					redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-					defer cancel()
-					txHash, err := trader.RedeemOnChain(redeemCtx, cid)
-					if err != nil {
-						tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
-					} else if len(txHash) >= 10 {
-						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
-					} else {
-						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
-					}
-				}(conditionID)
+					go func(cid string) {
+						tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
+						// Wait a bit for on-chain state to sync
+						time.Sleep(30 * time.Second)
+						// Use fresh context since parent ctx may be cancelled during shutdown
+						redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+						defer cancel()
+						txHash, err := trader.RedeemOnChain(redeemCtx, cid)
+						if err != nil {
+							tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
+						} else if len(txHash) >= 10 {
+							tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
+						} else {
+							tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
+						}
+					}(conditionID)
 				*/
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)

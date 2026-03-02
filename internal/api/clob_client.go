@@ -846,7 +846,7 @@ func (c *CLOBClient) GetMarketInfo(ctx context.Context, conditionID string) (*Ma
 // RedeemPositions redeems winning positions for a resolved market
 // Note: This requires interaction with the CTF contract on Polygon
 // The CLOB API handles this automatically for most cases
-func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string) error {
+func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string, numOutcomes int) error {
 	if c.testMode {
 		return nil
 	}
@@ -882,7 +882,7 @@ func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string) er
 // generateSalt generates a random salt for order signing
 func generateSalt() int64 {
 	b := make([]byte, 8)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	// Clear highest bit to ensure it fits in a positive int64
 	b[0] &= 0x7f
 	return new(big.Int).SetBytes(b).Int64()

@@ -38,10 +38,9 @@ func main() {
 			warnSt.Render("⚠  Executes REAL trades with on-chain merge") + "\n" +
 			dimSt.Render("Live order book  ·  Liquidity-capped execution")))
 
-	godotenv.Load()
-	cfg, err := core.LoadConfig()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+			_ = godotenv.Load()
+			cfg, err := core.LoadConfig()
+			if err != nil {		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	// Create context for setup
@@ -84,11 +83,10 @@ func main() {
 	sort.Strings(assetNames)
 
 	if len(markets) > 1 {
-		fmt.Printf("Assets found: [%s]. Choose one: ", strings.Join(assetNames, ", "))
-		fmt.Scanln(&selectedAsset)
-		selectedAsset = strings.ToUpper(selectedAsset)
-	} else {
-		selectedAsset = assetNames[0]
+	        fmt.Printf("Assets found: [%s]. Choose one: ", strings.Join(assetNames, ", "))
+	        _, _ = fmt.Scanln(&selectedAsset)
+	        selectedAsset = strings.ToUpper(selectedAsset)
+	} else {		selectedAsset = assetNames[0]
 	}
 
 	market, ok := markets[selectedAsset]
@@ -116,7 +114,7 @@ func main() {
 	sort.Strings(outcomes)
 
 	if wsMgr.IsConnected() {
-		wsMgr.Subscribe(ctx, map[string]interface{}{"type": "market", "assets_ids": assetIDs})
+		_ = wsMgr.Subscribe(ctx, map[string]interface{}{"type": "market", "assets_ids": assetIDs})
 	}
 	wsMsgChan := wsMgr.StartStreaming(ctx)
 
@@ -266,13 +264,12 @@ takeAction:
 	fmt.Println("\nActions: 1:Panic Buy, 2:Panic Sell")
 	fmt.Print("Choice: ")
 	var choice int
-	fmt.Scanln(&choice)
+	_, _ = fmt.Scanln(&choice)
 	fmt.Print("Shares per side (min 5): ")
 	var shares float64
-	fmt.Scanln(&shares)
+	_, _ = fmt.Scanln(&shares)
 
-	if choice == 1 {
-		executeBoth(ctx, trader, market, outcomes, "BUY", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
+	if choice == 1 {		executeBoth(ctx, trader, market, outcomes, "BUY", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	} else {
 		executeBoth(ctx, trader, market, outcomes, "SELL", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	}
@@ -378,9 +375,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	totalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
 	fmt.Printf("🚀 Executing: %s %.0f shares (Est. total value: $%.2f USDC). Confirm? (y/n): ", side, shares, totalValue)
 	var confirm string
-	fmt.Scanln(&confirm)
-	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-		log.Fatal("Cancelled.")
+	_, _ = fmt.Scanln(&confirm)
+	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {		log.Fatal("Cancelled.")
 	}
 
 	// For SELL: Split USDC into YES+NO tokens first
@@ -389,7 +385,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		fmt.Printf("🔄 Splitting $%.0f USDC into token pairs...\n", splitAmount)
 		splitCtx, cancelSplit := context.WithTimeout(ctx, 90*time.Second)
 		defer cancelSplit()
-		tx, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount)
+		tx, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount, len(market.Tokens))
 		if err != nil {
 			log.Fatalf("❌ Split failed: %v", err)
 		}
@@ -505,7 +501,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			if minQty >= 0.000001 {
 				fmt.Printf("🔄 Merging %.6f pairs...\n", minQty)
 				mergeCtx, cancelMerge := context.WithTimeout(context.Background(), 90*time.Second)
-				tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty)
+				tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
 				cancelMerge()
 				if mergeErr != nil {
 					fmt.Printf("❌ Merge failed: %v\n", mergeErr)

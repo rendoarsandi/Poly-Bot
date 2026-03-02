@@ -29,10 +29,9 @@ type OnChainPosition struct {
 }
 
 func main() {
-	godotenv.Load()
-	cfg, err := core.LoadConfig()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+        _ = godotenv.Load()
+        cfg, err := core.LoadConfig()
+        if err != nil {		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	// Create context for setup
@@ -186,7 +185,7 @@ func main() {
 
 				if choice == "1" {
 					fmt.Println("🚀 Sending redemption tx...")
-					tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID)
+					tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID, 2)
 					if err != nil {
 						fmt.Printf("❌ Redeem failed: %v\n", err)
 					} else {
@@ -210,7 +209,7 @@ func main() {
 			text, _ := reader.ReadString('\n')
 			if strings.TrimSpace(text) == "1" {
 				fmt.Println("🚀 Sending force redemption tx...")
-				tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID)
+				tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID, 2)
 				if err != nil {
 					fmt.Printf("❌ Redeem failed: %v\n", err)
 				} else {

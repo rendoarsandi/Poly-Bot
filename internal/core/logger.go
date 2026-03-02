@@ -38,7 +38,7 @@ func NewCSVLogger(filename string) (*CSVLogger, error) {
 	// Write header if file is new
 	info, err := file.Stat()
 	if err == nil && info.Size() == 0 {
-		writer.Write([]string{"Timestamp", "Level", "Asset", "Event", "Details", "Equity"})
+		_ = writer.Write([]string{"Timestamp", "Level", "Asset", "Event", "Details", "Equity"})
 		writer.Flush()
 	}
 
@@ -88,7 +88,7 @@ func (l *CSVLogger) run() {
 			}
 			l.mu.Lock()
 			l.writer.Flush()
-			l.file.Sync()
+			_ = l.file.Sync()
 			l.mu.Unlock()
 			return
 		}
@@ -98,7 +98,7 @@ func (l *CSVLogger) run() {
 func (l *CSVLogger) writeEntry(e LogEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.writer.Write([]string{
+	_ = l.writer.Write([]string{
 		sanitizeForCSV(e.Timestamp),
 		sanitizeForCSV(e.Level),
 		sanitizeForCSV(e.Asset),

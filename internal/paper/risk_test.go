@@ -22,10 +22,9 @@ func TestRiskManager_KillSwitch_ExposurePlusUnmatched(t *testing.T) {
 
 	// Create imbalanced positions that exceed both thresholds
 	// $150 exposure (> $100) AND >15% unmatched
-	engine.BuyForMarket("", "Up", 0.50, 200)   // 200 Up shares = $100
-	engine.BuyForMarket("", "Down", 0.50, 100) // 100 Down shares = $50
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 200)   // 200 Up shares = $100
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 100) // 100 Down shares = $50
 	// Total exposure: $150, Unmatched: 100/300 = 33%
-
 	action, reason := rm.Evaluate()
 	if action != RiskActionKillSwitch {
 		t.Errorf("Expected kill switch for exposure+unmatched, got %s: %s", action, reason)
@@ -49,10 +48,9 @@ func TestRiskManager_KillSwitch_UnmatchedSharesAbsolute(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Create >100 unmatched shares
-	engine.BuyForMarket("", "Up", 0.50, 200)  // 200 Up
-	engine.BuyForMarket("", "Down", 0.50, 50) // 50 Down
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 200)  // 200 Up
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 50) // 50 Down
 	// Unmatched: 150 > 100 threshold
-
 	action, reason := rm.Evaluate()
 	if action != RiskActionKillSwitch {
 		t.Errorf("Expected kill switch for unmatched shares, got %s: %s", action, reason)
@@ -76,10 +74,9 @@ func TestRiskManager_ReduceSize(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Create balanced positions that exceed exposure only
-	engine.BuyForMarket("", "Up", 0.50, 100)   // $50
-	engine.BuyForMarket("", "Down", 0.50, 100) // $50
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 100)   // $50
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 100) // $50
 	// Total: $100, but with open orders it will exceed
-
 	// Add open order value
 	orderBook.PlaceOrder("Up", "buy", 0.50, 50, 1) // $25 more
 
@@ -106,10 +103,9 @@ func TestRiskManager_Rebalance(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Create skewed positions (>10% imbalance)
-	engine.BuyForMarket("", "Up", 0.50, 100)  // 100 Up
-	engine.BuyForMarket("", "Down", 0.50, 70) // 70 Down
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 100)  // 100 Up
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 70) // 70 Down
 	// Skew: 30/170 = 17.6% > 10%
-
 	action, reason := rm.Evaluate()
 	if action != RiskActionRebalance {
 		t.Errorf("Expected rebalance action, got %s: %s", action, reason)
@@ -126,8 +122,8 @@ func TestRiskManager_NoAction(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Create small, balanced positions
-	engine.BuyForMarket("", "Up", 0.50, 10)   // $5
-	engine.BuyForMarket("", "Down", 0.50, 10) // $5
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 10)   // $5
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 10) // $5
 
 	action, _ := rm.Evaluate()
 	if action != RiskActionNone {
@@ -157,7 +153,7 @@ func TestRiskManager_CanPlaceOrder(t *testing.T) {
 	}
 
 	// Add existing exposure
-	engine.BuyForMarket("", "Up", 0.50, 180) // $90 exposure
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 180) // $90 exposure
 
 	// Should reject order that would exceed limit
 	if rm.CanPlaceOrder(20.0) {
@@ -187,8 +183,8 @@ func TestRiskManager_CanPlaceOrder_AfterKillSwitch(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Trigger kill switch
-	engine.BuyForMarket("", "Up", 0.50, 200)  // 200 Up
-	engine.BuyForMarket("", "Down", 0.50, 50) // 50 Down
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 200)  // 200 Up
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 50) // 50 Down
 	rm.Evaluate()                             // This should trigger kill switch
 
 	// Now no orders should be allowed
@@ -207,8 +203,8 @@ func TestRiskManager_GetSkewAdjustment(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Create imbalanced positions
-	engine.BuyForMarket("", "Up", 0.50, 150) // Heavy on Up
-	engine.BuyForMarket("", "Down", 0.50, 50)
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 150) // Heavy on Up
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 50)
 
 	lightSide, adjustment := rm.GetSkewAdjustment()
 
@@ -234,8 +230,8 @@ func TestRiskManager_GetSkewAdjustment_Balanced(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Create balanced positions
-	engine.BuyForMarket("", "Up", 0.50, 100)
-	engine.BuyForMarket("", "Down", 0.50, 100)
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 100)
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 100)
 
 	_, adjustment := rm.GetSkewAdjustment()
 
@@ -261,7 +257,7 @@ func TestRiskManager_Reset(t *testing.T) {
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
 	// Trigger kill switch
-	engine.BuyForMarket("", "Up", 0.50, 100)
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 100)
 	rm.Evaluate()
 
 	if !rm.IsKillSwitchTriggered() {
@@ -354,8 +350,8 @@ func BenchmarkRiskManager_Evaluate(b *testing.B) {
 	config := DefaultRiskConfig()
 	rm := NewRiskManager(config, engine, orderBook, outcomes)
 
-	engine.BuyForMarket("", "Up", 0.50, 50)
-	engine.BuyForMarket("", "Down", 0.50, 50)
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 50)
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 50)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

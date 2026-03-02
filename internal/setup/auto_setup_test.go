@@ -30,12 +30,11 @@ func TestUpdateEnvFile(t *testing.T) {
 
 	// Change working directory to temp dir
 	origWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(origWd)
+	_ = os.Chdir(tempDir)
+	defer func() { _ = os.Chdir(origWd) }()
 
 	// Create dummy .env in temp dir
-	os.WriteFile(".env", initialContent, 0644)
-
+	_ = os.WriteFile(".env", initialContent, 0644)
 	pk := "0x1234567890abcdef"
 	creds := &APICredentials{
 		APIKey:     "test-api-key",

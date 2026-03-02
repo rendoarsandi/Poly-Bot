@@ -75,27 +75,37 @@ func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string
 	return denominator.Cmp(big.NewInt(0)) > 0, nil
 }
 
+// generateIndexSetsHex creates the ABI encoded dynamic array of index sets
+// For N outcomes, it generates an array where the i-th element is 1 << i
+func generateIndexSetsHex(numOutcomes int) string {
+	arrayLenHex := fmt.Sprintf("%064x", numOutcomes)
+	data := arrayLenHex
+	for i := 0; i < numOutcomes; i++ {
+		val := 1 << i
+		data += fmt.Sprintf("%064x", val)
+	}
+	return data
+}
+
 // RedeemPositions sends the on-chain transaction to redeem winning tokens (PAID WRITE)
-func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string) (string, error) {
+func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
 	// Function selector for redeemPositions(address,bytes32,bytes32,uint256[]): 0x01b7037c
 	// Parameters:
 	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 	// 2. parentCollectionId: 0x0000000000000000000000000000000000000000000000000000000000000000
 	// 3. conditionId: (provided)
-	// 4. indexSets: [1, 2] for binary markets - redeems both outcomes (only winner pays out)
+	// 4. indexSets: dynamic array of index sets (only winner pays out)
 
 	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
-	// ABI encoding for indexSets [1, 2] (Dynamic array)
+	// ABI encoding for indexSets (Dynamic array)
 	// Offset to array (128 bytes = 4 * 32)
 	offset := "0000000000000000000000000000000000000000000000000000000000000080"
-	arrayLen := "0000000000000000000000000000000000000000000000000000000000000002"
-	idx1 := "0000000000000000000000000000000000000000000000000000000000000001"
-	idx2 := "0000000000000000000000000000000000000000000000000000000000000002"
+	indexSetsData := generateIndexSetsHex(numOutcomes)
 
-	data := "0x01b7037c" + collateral + parent + cond + offset + arrayLen + idx1 + idx2
+	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
 
 	// Get nonce and gas price
 	nonce, err := c.GetNonce(ctx, signer.Address())
@@ -122,30 +132,28 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 // This is the inverse of MergePositions - use to create inventory for panic selling.
 // 1 USDC → 1 YES token + 1 NO token
 // Use this to build inventory, then sell when bid_sum > $1.03 for profit.
-func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int) (string, error) {
+func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
 	// Function selector for splitPosition(address,bytes32,bytes32,uint256[],uint256): 0x72ce4275
 	// Parameters:
 	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
 	// 3. conditionId: (provided)
-	// 4. partition: [1, 2] for binary markets (YES/NO or Up/Down)
+	// 4. partition: dynamic array of index sets
 	// 5. amount: USDC amount to split (returns this many token pairs)
 
 	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
-	// ABI encoding for partition [1, 2] (Dynamic array)
+	// ABI encoding for partition (Dynamic array)
 	// Offset to array data (160 bytes = 5 * 32, since amount is 5th param)
 	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
 	// Amount (5th param) - pad to 32 bytes
 	amtHex := fmt.Sprintf("%064x", amount)
-	// Array: length=2, values=[1,2]
-	arrayLen := "0000000000000000000000000000000000000000000000000000000000000002"
-	idx1 := "0000000000000000000000000000000000000000000000000000000000000001"
-	idx2 := "0000000000000000000000000000000000000000000000000000000000000002"
 
-	data := "0x72ce4275" + collateral + parent + cond + offset + amtHex + arrayLen + idx1 + idx2
+	indexSetsData := generateIndexSetsHex(numOutcomes)
+
+	data := "0x72ce4275" + collateral + parent + cond + offset + amtHex + indexSetsData
 
 	// Get nonce and gas price
 	nonce, err := c.GetNonce(ctx, signer.Address())
@@ -171,30 +179,28 @@ func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, cond
 // MergePositions burns equal YES+NO tokens to get USDC back instantly (PAID WRITE)
 // Unlike RedeemPositions, this works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides to capture arbitrage profit instantly.
-func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int) (string, error) {
+func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
 	// Function selector for mergePositions(address,bytes32,bytes32,uint256[],uint256): 0x9e7212ad
 	// Parameters:
 	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
 	// 3. conditionId: (provided)
-	// 4. partition: [2, 1] for binary markets (index sets for NO, YES)
+	// 4. partition: dynamic array of index sets
 	// 5. amount: number of full sets to merge (returns this much USDC)
 
 	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
-	// ABI encoding for partition [2, 1] (Dynamic array)
+	// ABI encoding for partition (Dynamic array)
 	// Offset to array data (160 bytes = 5 * 32, pointing past the 5 fixed params)
 	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
 	// Amount (5th param) - pad to 32 bytes
 	amtHex := fmt.Sprintf("%064x", amount)
-	// Array: length=2, values=[2, 1] (NO index set first, YES index set second)
-	arrayLen := "0000000000000000000000000000000000000000000000000000000000000002"
-	idx1 := "0000000000000000000000000000000000000000000000000000000000000002"
-	idx2 := "0000000000000000000000000000000000000000000000000000000000000001"
 
-	data := "0x9e7212ad" + collateral + parent + cond + offset + amtHex + arrayLen + idx1 + idx2
+	indexSetsData := generateIndexSetsHex(numOutcomes)
+
+	data := "0x9e7212ad" + collateral + parent + cond + offset + amtHex + indexSetsData
 
 	// Get nonce and gas price
 	nonce, err := c.GetNonce(ctx, signer.Address())
@@ -223,7 +229,7 @@ func (c *PolygonClient) GetNonce(ctx context.Context, address string) (uint64, e
 		return 0, err
 	}
 	var hexResult string
-	json.Unmarshal(result, &hexResult)
+	_ = json.Unmarshal(result, &hexResult)
 	n, _ := parseHexBigInt(hexResult)
 	return n.Uint64(), nil
 }
@@ -234,7 +240,7 @@ func (c *PolygonClient) GetGasPrice(ctx context.Context) (*big.Int, error) {
 		return nil, err
 	}
 	var hexResult string
-	json.Unmarshal(result, &hexResult)
+	_ = json.Unmarshal(result, &hexResult)
 	return parseHexBigInt(hexResult)
 }
 
@@ -244,7 +250,7 @@ func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string)
 		return "", err
 	}
 	var txHash string
-	json.Unmarshal(result, &txHash)
+	_ = json.Unmarshal(result, &txHash)
 	return txHash, nil
 }
 

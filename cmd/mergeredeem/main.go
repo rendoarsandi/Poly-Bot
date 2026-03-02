@@ -20,10 +20,9 @@ import (
 )
 
 func main() {
-	godotenv.Load()
-	cfg, err := core.LoadConfig()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+        _ = godotenv.Load()
+        cfg, err := core.LoadConfig()
+        if err != nil {		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	// Create context for setup
@@ -163,10 +162,10 @@ func main() {
 			fmt.Printf("   👉 ACTION: Can MERGE %.0f pairs into $%.2f USDC\n", minQty, minQty)
 			fmt.Print("   Confirm Merge? (y/n): ")
 			var confirm string
-			fmt.Scanln(&confirm)
+			_, _ = fmt.Scanln(&confirm)
 			if strings.ToLower(confirm) == "y" {
 				mergeCtx, cancelMerge := context.WithTimeout(ctx, 90*time.Second)
-				tx, err := trader.MergeOnChain(mergeCtx, m.ConditionID, minQty)
+				tx, err := trader.MergeOnChain(mergeCtx, m.ConditionID, minQty, len(m.Tokens))
 				cancelMerge()
 				if err != nil {
 					fmt.Printf("   ❌ Merge failed: %v\n", err)
@@ -233,15 +232,15 @@ func main() {
 						}
 
 						var confirm string
-						fmt.Scanln(&confirm)
+						_, _ = fmt.Scanln(&confirm)
 						if strings.ToLower(confirm) == "y" {
 							var tx string
 							var err error
 							redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
 							if forceRedeem || !resolved {
-								tx, err = polygon.RedeemPositions(redeemCtx, trader.GetSigner(), m.ConditionID)
+								tx, err = polygon.RedeemPositions(redeemCtx, trader.GetSigner(), m.ConditionID, len(m.Tokens))
 							} else {
-								tx, err = trader.RedeemOnChain(redeemCtx, m.ConditionID)
+								tx, err = trader.RedeemOnChain(redeemCtx, m.ConditionID, len(m.Tokens))
 							}
 							cancelRedeem()
 
@@ -261,9 +260,9 @@ func main() {
 				fmt.Printf("   ⏳ Market still active in API. If resolution is ready on-chain, you can force redeem.\n")
 				fmt.Print("   Try Force Redeem? (y/n): ")
 				var confirm string
-				fmt.Scanln(&confirm)
+				_, _ = fmt.Scanln(&confirm)
 				if strings.ToLower(confirm) == "y" {
-					tx, err := trader.RedeemOnChain(ctx, m.ConditionID)
+					tx, err := trader.RedeemOnChain(ctx, m.ConditionID, len(m.Tokens))
 					if err != nil {
 						fmt.Printf("   ❌ Force Redeem failed: %v\n", err)
 					} else {

@@ -42,7 +42,7 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 			Markets: []api.GammaMarket{market},
 		}
 		resp = append(resp, event)
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 

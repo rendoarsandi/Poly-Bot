@@ -10,8 +10,8 @@ import (
 func TestGetMarket(t *testing.T) {
 	// Mock Polymarket API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"active":true,"condition_id":"test-condition","slug":"test-market","tokens":[{"token_id":"yes-token","outcome":"Yes"},{"token_id":"no-token","outcome":"No"}]}`))
+	        w.WriteHeader(http.StatusOK)
+	        _, _ = w.Write([]byte(`{"active":true,"condition_id":"test-condition","slug":"test-market","tokens":[{"token_id":"yes-token","outcome":"Yes"},{"token_id":"no-token","outcome":"No"}]}`))
 	}))
 	defer server.Close()
 
@@ -39,10 +39,9 @@ func TestNewRestClientDefault(t *testing.T) {
 
 func TestListMarkets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{
-			"data": [
-				{"market_slug": "market-1", "active": true, "closed": false},
+	        w.WriteHeader(http.StatusOK)
+	        _, _ = w.Write([]byte(`{
+	                "data": [				{"market_slug": "market-1", "active": true, "closed": false},
 				{"market_slug": "market-2", "active": true, "closed": false}
 			]
 		}`))

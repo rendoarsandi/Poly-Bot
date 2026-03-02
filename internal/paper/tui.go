@@ -46,7 +46,7 @@ var (
 			Bold(true).
 			Padding(0, 2)
 
-	styleBoldGreen   = lipgloss.NewStyle().Bold(true).Foreground(clrBlue) // XRP
+	styleBoldGreen = lipgloss.NewStyle().Bold(true).Foreground(clrBlue) // XRP
 
 	// Per-asset border colors for market panels
 	assetBorderColors = map[string]lipgloss.Color{

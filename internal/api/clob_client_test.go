@@ -24,7 +24,7 @@ func TestPlaceOrder_FOK_Killed(t *testing.T) {
 			OrderID:  "0x123",
 			ErrorMsg: "",
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -77,7 +77,7 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 			Status:  "MATCHED", // or FILLED
 			OrderID: "0x123",
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -118,9 +118,9 @@ func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody struct {
 			Order OrderPayload `json:"order"`
-		}
-		json.NewDecoder(r.Body).Decode(&reqBody)
-		makerAmount = reqBody.Order.MakerAmount
+			}
+			_ = json.NewDecoder(r.Body).Decode(&reqBody)
+			makerAmount = reqBody.Order.MakerAmount
 		takerAmount = reqBody.Order.TakerAmount
 
 		resp := OrderResponse{
@@ -128,7 +128,7 @@ func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 			Status:  "MATCHED",
 			OrderID: "0x123",
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 

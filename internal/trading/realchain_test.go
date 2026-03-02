@@ -38,11 +38,10 @@ func setupRealClients(t *testing.T) (*api.PolygonClient, *api.Signer, *core.Conf
 	}
 	for _, p := range envPaths {
 		if abs, err := filepath.Abs(p); err == nil {
-			if _, err := os.Stat(abs); err == nil {
-				godotenv.Load(abs)
-				break
-			}
-		}
+		        if _, err := os.Stat(abs); err == nil {
+		                _ = godotenv.Load(abs)
+		                break
+		        }		}
 	}
 
 	cfg, err := core.LoadConfig()
@@ -128,7 +127,7 @@ func TestRealSplit_1Share(t *testing.T) {
 	amount := big.NewInt(1000000) // 1 USDC
 	t.Logf("Splitting $1 USDC for condition: %s", conditionID)
 
-	txHash, err := polygon.SplitPositions(ctx, signer, conditionID, amount)
+	txHash, err := polygon.SplitPositions(ctx, signer, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Split failed: %v", err)
 	}
@@ -192,7 +191,7 @@ func TestRealMerge_1Share(t *testing.T) {
 	amount := big.NewInt(1000000) // 1 share
 	t.Logf("Merging 1 share for condition: %s", conditionID)
 
-	txHash, err := polygon.MergePositions(ctx, signer, conditionID, amount)
+	txHash, err := polygon.MergePositions(ctx, signer, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
 	}
@@ -255,7 +254,7 @@ func TestRealSplitMergeCycle_1Share(t *testing.T) {
 	// Step 1: Split
 	amount := big.NewInt(1000000)
 	t.Log("Step 1: Splitting $1 USDC...")
-	splitTx, err := polygon.SplitPositions(ctx, signer, conditionID, amount)
+	splitTx, err := polygon.SplitPositions(ctx, signer, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Split failed: %v", err)
 	}
@@ -272,7 +271,7 @@ func TestRealSplitMergeCycle_1Share(t *testing.T) {
 
 	// Step 2: Merge
 	t.Log("Step 2: Merging tokens back...")
-	mergeTx, err := polygon.MergePositions(ctx, signer, conditionID, amount)
+	mergeTx, err := polygon.MergePositions(ctx, signer, conditionID, amount, 2)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
 	}
@@ -339,7 +338,7 @@ func TestRealRedeem_ResolvedMarket(t *testing.T) {
 
 	// Redeem
 	t.Logf("Redeeming from condition: %s", conditionID)
-	txHash, err := polygon.RedeemPositions(ctx, signer, conditionID)
+	txHash, err := polygon.RedeemPositions(ctx, signer, conditionID, 2)
 	if err != nil {
 		t.Fatalf("Redeem failed: %v", err)
 	}

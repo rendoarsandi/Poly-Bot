@@ -257,12 +257,11 @@ func TestPaperTrader_MultiplePositions(t *testing.T) {
 	ctx := context.Background()
 
 	// Buy Up
-	trader.Buy(ctx, "tokenUp", "Up", 0.45, 10, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
+	_, _ = trader.Buy(ctx, "tokenUp", "Up", 0.45, 10, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
 	// Buy Down
-	trader.Buy(ctx, "tokenDown", "Down", 0.50, 10, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
+	_, _ = trader.Buy(ctx, "tokenDown", "Down", 0.50, 10, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
 
 	positions, _ := trader.GetPositions(ctx)
-
 	if len(positions) < 2 {
 		t.Errorf("Expected at least 2 positions, got %d", len(positions))
 	}
@@ -294,9 +293,8 @@ func BenchmarkPaperTrader_Buy(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		trader.Buy(ctx, "token", "Up", 0.50, 1, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
-	}
-}
+	        _, _ = trader.Buy(ctx, "token", "Up", 0.50, 1, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
+	}}
 
 // TestRealTrader_SafetyLimits tests the checkSafetyLimits function
 // Note: We can't create a full RealTrader without credentials, but we can test the logic
