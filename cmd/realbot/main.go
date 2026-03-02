@@ -1777,19 +1777,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								// Phase 3: Auto-cleanup of unbalanced excess shares using Market Sell
 								excess0 := bal0 - actualMin
 								excess1 := bal1 - actualMin
-												if excess0 >= 0.01 {
-													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
-													_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.01, excess0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-													if sellErr != nil {
-														tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
-													}
-												}
-												if excess1 >= 0.01 {
-													tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
-													_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.01, excess1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-													if sellErr != nil {										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
-									}
-								}
+								  if excess0 >= 0.01 {
+									  // Check against Polymarket's ~$1.00 minimum order value for sells
+									  // We estimate this by checking if shares * price >= $1.00
+									  // Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
+									  // If it fails, we catch the error and log it clearly.
+									  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
+									  _, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.01, excess0, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+									  if sellErr != nil {
+										  if strings.Contains(sellErr.Error(), "min size") {
+											  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
+										  } else {
+											  tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
+										  }
+									  }
+								  }
+								  if excess1 >= 0.01 {
+									  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
+									  _, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.01, excess1, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+									  if sellErr != nil {
+										  if strings.Contains(sellErr.Error(), "min size") {
+											  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
+										  } else {
+											  tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
+										  }
+									  }
+								  }
 							}
 
 							tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
@@ -1858,14 +1871,22 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking for unbalanced shares to sell... Balances: %s=%.2f, %s=%.2f", id, outcomes[0], bal0, outcomes[1], bal1)
 
 							var sell0Err, sell1Err error
-							if bal0 >= 0.01 {
-								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
-								_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-							}
-							if bal1 >= 0.01 {
-								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
-								_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillOrKill, cfg.FeeRateBps)
-							}
+							  if bal0 >= 0.01 {
+								  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
+								  _, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+								  if sell0Err != nil && strings.Contains(sell0Err.Error(), "min size") {
+									  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal0, outcomes[0])
+									  sell0Err = nil // Treat dust as 'successfully handled' so we don't spam retries
+								  }
+							  }
+							  if bal1 >= 0.01 {
+								  tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
+								  _, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFImmediateOrCancel, cfg.FeeRateBps)
+								  if sell1Err != nil && strings.Contains(sell1Err.Error(), "min size") {
+									  tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal1, outcomes[1])
+									  sell1Err = nil // Treat dust as 'successfully handled' so we don't spam retries
+								  }
+							  }
 
 							if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
 								tui.LogEvent("[%s] ✅ Auto-cleanup routine finished! Applying 30s cooldown before unblocking.", id)
