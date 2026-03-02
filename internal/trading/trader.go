@@ -232,11 +232,6 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		return nil, fmt.Errorf("failed to create CLOB client: %w", err)
 	}
 
-	// Enable test mode if configured
-	if cfg.TestMode {
-		clob.SetTestMode(true)
-	}
-
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
 	return &RealTrader{
