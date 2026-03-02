@@ -306,6 +306,18 @@ riskConfig := paper.RiskConfig{
 }
 ```
 
+## Hardcoded Execution Parameters & Logic
+
+To prevent configuration drift and ensure ultra-low latency execution, several critical trading mechanics are intentionally **hardcoded** into the bot's execution engine (`cmd/realbot/main.go`). These are distinct from the TUI settings (which only control *when* to trigger a trade).
+
+| Parameter / Logic | Value | Location | Reason / Description |
+|------------------|-------|----------|----------------------|
+| **Buy Limit Price** | `$0.99` | `cmd/realbot/main.go` | When a buy arbitrage triggers, the bot sends an aggressive market order capped at $0.99. This guarantees it can "walk the book" through multiple price levels to grab all available liquidity without failing due to 1-2 cents of slippage. |
+| **Sell Limit Price** | `$0.01` | `cmd/realbot/main.go` | When panic-selling split inventory, it acts as a market dump capped at $0.01 to ensure immediate liquidation against whatever bids exist. |
+| **Time In Force (TIF)**| `IOC` | `cmd/realbot/main.go` | All orders use `TIFImmediateOrCancel` instead of `FOK` (Fill-Or-Kill). This prevents Polymarket from rejecting the entire order if it's missing just a few shares. It takes exactly what is available and cancels the rest. |
+| **Minimum Order Size**| `$1.00` | `cmd/realbot/main.go` | Polymarket rejects any order (buy or sell) under $1.00 in value. The bot automatically floors buy orders to ensure `shares * price >= $1.00`. For cleanups (sells), if the remaining dust is under $1.00, it gracefully skips selling and holds the dust to avoid crash loops. |
+| **On-Chain Sync Delay**| `Query` | `internal/trading/trader.go` | After buying, the bot does not trust the CLOB API. It pings the Polygon blockchain every 1s (up to 20s) to count exactly how many CTF tokens arrived in the wallet before executing a merge. This entirely prevents "fake fill" errors. |
+
 ## How It Works
 
 ### The Gabagool Strategy
