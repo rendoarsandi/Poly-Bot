@@ -23,7 +23,7 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 	err := cfg.ValidateForRealTrading()
 	if err != nil {
 		fmt.Println("\n⚠️ Polymarket credentials missing or incomplete.")
-		
+
 		pk := cfg.PK
 		if pk == "" {
 			fmt.Print("Please enter your Polygon Private Key (starts with 0x): ")
@@ -76,7 +76,7 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 func updateEnvFile(pk string, creds *APICredentials) error {
 	envFile := ".env"
 	lines := []string{}
-	
+
 	if _, err := os.Stat(envFile); err == nil {
 		content, err := os.ReadFile(envFile)
 		if err == nil {

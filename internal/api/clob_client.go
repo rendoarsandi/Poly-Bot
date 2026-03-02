@@ -142,7 +142,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 
 	if req.Side == SideBuy {
 		// BUY: makerAmount = USDC (what we pay), takerAmount = shares (what we receive)
-		
+
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
@@ -150,19 +150,19 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			// Market Buy Restrictions:
 			// - Taker (Shares): Max 4 decimals (multiple of 100 units)
 			// - Maker (USDC): Max 2 decimals (multiple of 10,000 units)
-			
+
 			// Truncate size to 4 decimals
 			sizeMicro = (sizeMicro / 100) * 100
 
 			// Calculate USDC cost with truncated size
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 			usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
-			
+
 			// Truncate USDC to 2 decimals
 			usdcVal := usdcMicroBig.Int64()
 			usdcVal = (usdcVal / 10000) * 10000
 			usdcMicroBig.SetInt64(usdcVal)
-			
+
 			makerAmount = usdcMicroBig.String()
 			takerAmount = strconv.FormatInt(sizeMicro, 10)
 		} else {
@@ -173,7 +173,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			makerAmount = usdcMicroBig.String()
 			takerAmount = strconv.FormatInt(sizeMicro, 10)
 		}
-		
+
 		fmt.Printf("DEBUG: BUY Side (%s) - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.OrderType, req.Size, req.Price, makerAmount, takerAmount)
 	} else {
 		// SELL: makerAmount = shares (what we give), takerAmount = USDC (what we receive)
@@ -190,7 +190,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			sizeMicro = (sizeMicro / 100) * 100
 
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-			
+
 			divisor := big.NewInt(1e6)
 			remainder := new(big.Int).Mod(usdcMicroBig, divisor)
 			usdcMicroBig.Div(usdcMicroBig, divisor)
@@ -210,7 +210,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			takerAmount = usdcMicroBig.String()
 		} else {
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-			
+
 			// Use Ceiling division for SELL orders to ensure implied price >= limit price.
 			// Truncation (floor) can result in implied price < limit price, causing API rejection.
 			divisor := big.NewInt(1e6)

@@ -379,7 +379,7 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 
 	// Only poll every 5 seconds to avoid rate limits, but fast enough for trading
 	// (Reduced from 30s for more accurate balance tracking during active trading)
-	if time.Since(t.lastBalanceUpdate) < 5*time.Second && t.lastBalanceUpdate.IsZero() == false {
+	if time.Since(t.lastBalanceUpdate) < 5*time.Second && !t.lastBalanceUpdate.IsZero() {
 		return t.cachedBalance, nil
 	}
 
@@ -697,10 +697,9 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 		}
 		sentTx = true
 	}
-	
+
 	return sentTx, nil
 }
-
 
 // checkSafetyLimits verifies the trade doesn't exceed safety limits
 func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {

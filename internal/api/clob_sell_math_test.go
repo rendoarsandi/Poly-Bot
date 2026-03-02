@@ -17,21 +17,21 @@ func TestSellOrderMath_CeilingDivision(t *testing.T) {
 	price := 0.3
 	size := 0.000004
 
-	priceMicro := int64(price * 1e6 + 0.5) // 300,000
-	sizeMicro := int64(size * 1e6 + 0.5)   // 4
+	priceMicro := int64(price*1e6 + 0.5) // 300,000
+	sizeMicro := int64(size*1e6 + 0.5)   // 4
 
 	// Implementation Logic (Copied from fixed code)
 	usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-	
+
 	divisor := big.NewInt(1e6)
 	remainder := new(big.Int).Mod(usdcMicroBig, divisor)
-	
+
 	// Perform Ceiling Division
 	usdcMicroBig.Div(usdcMicroBig, divisor)
 	if remainder.Sign() > 0 {
 		usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
 	}
-	
+
 	usdcResult := usdcMicroBig.Int64()
 
 	// Assertion: Check if result is Ceil(1.2) = 2

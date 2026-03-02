@@ -366,9 +366,9 @@ func TestReplenishController_CheckReplenish_InitialShares_BalanceCap(t *testing.
 		InitialShares:      50, // Want to replenish 45 shares
 		SellMargin:         5.0,
 		MinMarginThreshold: 2.0,
-		CurrentBalance:     100,         // Small balance
-		ReplenishAmount:    50,          // Ignored
-		MaxBalancePercent:  0.30,        // Cap at 30 shares (100 * 0.30)
+		CurrentBalance:     100,  // Small balance
+		ReplenishAmount:    50,   // Ignored
+		MaxBalancePercent:  0.30, // Cap at 30 shares (100 * 0.30)
 	}
 
 	decision := ctrl.CheckReplenish(params)

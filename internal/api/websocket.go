@@ -7,16 +7,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 const (
 	// Heartbeat interval - ping every 10 seconds for aggressive keepalive
 	// Prevents connection from going stale on mobile/constrained environments
 	heartbeatInterval = 10 * time.Second
-	// If no message received in this time, consider connection dead
-	readTimeout = 30 * time.Second
 	// Max reconnection attempts before giving up (effectively infinite)
 	maxReconnectAttempts = 1000000
 	// Delay between reconnection attempts (starts at 1s, doubles each attempt)
@@ -419,9 +417,7 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 
 		// Panic recovery for streaming goroutine
 		defer func() {
-			if r := recover(); r != nil {
-				// Log but don't crash - just close channel
-			}
+			_ = recover() // Catch panic but do nothing, let channel close naturally
 		}()
 
 		consecutiveErrors := 0

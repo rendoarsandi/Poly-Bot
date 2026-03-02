@@ -27,12 +27,12 @@ func TestUpdateEnvFile(t *testing.T) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
-	
+
 	// Change working directory to temp dir
 	origWd, _ := os.Getwd()
 	os.Chdir(tempDir)
 	defer os.Chdir(origWd)
-	
+
 	// Create dummy .env in temp dir
 	os.WriteFile(".env", initialContent, 0644)
 

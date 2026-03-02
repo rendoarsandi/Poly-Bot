@@ -260,4 +260,3 @@ func (c *Config) SaveSettings() error {
 
 	return godotenv.Write(envMap, ".env")
 }
-

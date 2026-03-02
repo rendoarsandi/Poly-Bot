@@ -44,7 +44,7 @@ func TestMergePositions_CallDataEncoding(t *testing.T) {
 
 	actual := "0x9e7212ad" + actualCollateral + actualParent + actualCond + actualOffset + actualAmtHex + actualArrayLen + actualIdx1 + actualIdx2
 
-	if strings.ToLower(expected) != strings.ToLower(actual) {
+	if !strings.EqualFold(expected, actual) {
 		t.Errorf("Calldata mismatch:\nExpected: %s\nActual:   %s", expected, actual)
 	}
 
@@ -102,13 +102,13 @@ func TestRedeemPositions_CallDataEncoding(t *testing.T) {
 
 	// Verify USDC contract address is correct
 	expectedUSDC := "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-	if strings.ToLower(USDCContract) != strings.ToLower(expectedUSDC) {
+	if !strings.EqualFold(USDCContract, expectedUSDC) {
 		t.Errorf("Wrong USDC contract address")
 	}
 
 	// Verify CTF contract address is correct
 	expectedCTF := "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-	if strings.ToLower(CTFContract) != strings.ToLower(expectedCTF) {
+	if !strings.EqualFold(CTFContract, expectedCTF) {
 		t.Errorf("Wrong CTF contract address")
 	}
 }

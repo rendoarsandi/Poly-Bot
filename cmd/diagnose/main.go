@@ -58,8 +58,8 @@ func main() {
 		ctfApproved, errApprove := polygon.IsCTFApproved(ctx, address, contract)
 
 		usdcIcon := "✅"
-		allowanceStr := "Error"
-		
+		var allowanceStr string
+
 		// Check USDC Allowance
 		if errAllow != nil {
 			usdcIcon = "⚠️"
@@ -76,9 +76,9 @@ func main() {
 		// Check CTF Operator (Skip for CTF Contract)
 		ctfIcon := "✅"
 		ctfStr := fmt.Sprintf("%v", ctfApproved)
-		
+
 		if name == "CTF Contract" {
-			ctfIcon = "⚪" 
+			ctfIcon = "⚪"
 			ctfStr = "N/A"
 		} else {
 			if errApprove != nil {
@@ -121,13 +121,13 @@ func main() {
 		for _, t := range m.Tokens {
 			tokenBig := new(big.Int)
 			tokenBig.SetString(t.TokenID, 10)
-			
+
 			bal, err := polygon.GetCTFBalance(ctx, address, tokenBig)
 			if err == nil && bal.Cmp(big.NewInt(0)) > 0 {
 				shares := new(big.Float).SetInt(bal)
 				shares = shares.Quo(shares, big.NewFloat(1e6))
 				s, _ := shares.Float64()
-				
+
 				if s >= 0.01 {
 					if !foundTokens {
 						fmt.Println("📦 Detected Token Balances:")

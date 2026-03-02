@@ -75,7 +75,7 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 		resp := OrderResponse{
 			Success: true,
 			Status:  "MATCHED", // or FILLED
-			OrderID:  "0x123",
+			OrderID: "0x123",
 		}
 		json.NewEncoder(w).Encode(resp)
 	}))

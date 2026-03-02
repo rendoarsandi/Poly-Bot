@@ -148,7 +148,7 @@ func (mm *MarketMonitor) GetTimeToEnd() time.Duration {
 	if mm.currentMarket == nil {
 		return 0
 	}
-	remaining := mm.currentMarket.EndTime.Sub(time.Now())
+	remaining := time.Until(mm.currentMarket.EndTime)
 	if remaining < 0 {
 		return 0
 	}

@@ -235,7 +235,7 @@ func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []
 		}
 
 		take := math.Min(remaining, lv.Size)
-		
+
 		totalCost += take * lv.Price
 		filledQty += take
 		remaining -= take
@@ -269,12 +269,16 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 	cost1 := 0.0
 	filled1 := 0.0
 	for _, lv := range levels1 {
-		if lv.Size <= 0 { continue }
+		if lv.Size <= 0 {
+			continue
+		}
 		take := math.Min(rem1, lv.Size)
 		cost1 += take * lv.Price
 		filled1 += take
 		rem1 -= take
-		if rem1 <= 0.0001 { break }
+		if rem1 <= 0.0001 {
+			break
+		}
 	}
 	if filled1 <= 0 {
 		return nil, nil, 0, 0, fmt.Errorf("insufficient liquidity to fill any amount for %s", outcome1)
@@ -288,12 +292,16 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 	cost2 := 0.0
 	filled2 := 0.0
 	for _, lv := range levels2 {
-		if lv.Size <= 0 { continue }
+		if lv.Size <= 0 {
+			continue
+		}
 		take := math.Min(rem2, lv.Size)
 		cost2 += take * lv.Price
 		filled2 += take
 		rem2 -= take
-		if rem2 <= 0.0001 { break }
+		if rem2 <= 0.0001 {
+			break
+		}
 	}
 	if filled2 <= 0 {
 		return nil, nil, 0, 0, fmt.Errorf("insufficient liquidity to fill any amount for %s", outcome2)
@@ -302,26 +310,34 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 	// 3. Match quantities to ensure we don't buy unbalanced legs
 	// The realbot limits quantity to matched liquidity beforehand, so this is just a safety
 	minFilled := math.Min(filled1, filled2)
-	
+
 	// Recalculate costs for exactly minFilled
 	cost1 = 0.0
 	rem1 = minFilled
 	for _, lv := range levels1 {
-		if lv.Size <= 0 { continue }
+		if lv.Size <= 0 {
+			continue
+		}
 		take := math.Min(rem1, lv.Size)
 		cost1 += take * lv.Price
 		rem1 -= take
-		if rem1 <= 0.0001 { break }
+		if rem1 <= 0.0001 {
+			break
+		}
 	}
-	
+
 	cost2 = 0.0
 	rem2 = minFilled
 	for _, lv := range levels2 {
-		if lv.Size <= 0 { continue }
+		if lv.Size <= 0 {
+			continue
+		}
 		take := math.Min(rem2, lv.Size)
 		cost2 += take * lv.Price
 		rem2 -= take
-		if rem2 <= 0.0001 { break }
+		if rem2 <= 0.0001 {
+			break
+		}
 	}
 
 	avgPrice1 := cost1 / minFilled
@@ -335,10 +351,14 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 
 	// 5. Execute both buys (guaranteed to succeed since we hold the lock and checked balance)
 	trade1, err1 := e.executeBuy(marketID, outcome1, avgPrice1, minFilled)
-	if err1 != nil { return nil, nil, 0, 0, err1 }
-	
+	if err1 != nil {
+		return nil, nil, 0, 0, err1
+	}
+
 	trade2, err2 := e.executeBuy(marketID, outcome2, avgPrice2, minFilled)
-	if err2 != nil { return nil, nil, 0, 0, err2 }
+	if err2 != nil {
+		return nil, nil, 0, 0, err2
+	}
 
 	return trade1, trade2, avgPrice1, avgPrice2, nil
 }
@@ -743,7 +763,7 @@ func (e *Engine) LiquidateAll() float64 {
 
 	// Clear all positions
 	e.positions = make(map[string]*Position)
-	
+
 	// Liquidate split inventory (merge back to cash)
 	inventoryValue := e.getSplitInventoryValue()
 	if inventoryValue > 0 {

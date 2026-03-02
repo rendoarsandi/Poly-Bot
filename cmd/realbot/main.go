@@ -366,7 +366,6 @@ func run() error {
 				// keep currentBalance from last known value
 			} else {
 				currentBalance = newBal
-				balance = currentBalance
 				engine.SetBalance(currentBalance)
 				engine.RecalculateDrawdown()
 			}
@@ -507,62 +506,6 @@ shutdown:
 	tui.Stop()
 	fmt.Println("\n👋 Bot stopped.")
 	emergencyCleanup()
-	return nil
-}
-
-func viewMarketsOnly(cfg *core.Config, trader *trading.RealTrader) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	restClient := api.NewRestClient("")
-
-	fmt.Println()
-	fmt.Println("🔍 Searching for active markets...")
-
-	markets, err := restClient.GetMarketsByTimeframe(ctx, nil, "15m")
-	if err != nil {
-		return fmt.Errorf("failed to fetch markets: %w", err)
-	}
-
-	if len(markets) == 0 {
-		fmt.Println("📭 No active markets found")
-		return nil
-	}
-
-	fmt.Printf("\n📊 Found %d market(s):\n", len(markets))
-	fmt.Println("═══════════════════════════════════════════════════════")
-
-	for _, m := range markets {
-		fmt.Printf("\n📈 %s\n", m.Slug)
-
-		tokenMap := make(map[string]string)
-		for _, t := range m.Tokens {
-			tokenMap[t.TokenID] = t.Outcome
-		}
-
-		prices, err := restClient.GetCLOBBidAsk(ctx, tokenMap)
-		if err != nil {
-			fmt.Printf("   ⚠️  Error: %v\n", err)
-			continue
-		}
-
-		sumAsks := 0.0
-		for outcome, pa := range prices {
-			spread := pa.Ask - pa.Bid
-			fmt.Printf("   %s: Bid $%.3f | Ask $%.3f | Spread $%.3f\n",
-				outcome, pa.Bid, pa.Ask, spread)
-			sumAsks += pa.Ask
-		}
-
-		margin := (1.0 - sumAsks) * 100
-		if margin > 0 {
-			fmt.Printf("   💰 Arb margin: %.2f%% (sum=$%.3f)\n", margin, sumAsks)
-		} else {
-			fmt.Printf("   ❌ No arb (sum=$%.3f)\n", sumAsks)
-		}
-	}
-
-	fmt.Println("\n═══════════════════════════════════════════════════════")
 	return nil
 }
 
@@ -1271,9 +1214,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
 							tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
 							// Refresh balance after successful sell (cash increased)
-							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-								currentBalance = newBal
-							}
+							_, _ = trader.ForceRefreshBalance(ctx)
 
 							// ONE-SHOT: Exit after successful sell
 							tui.LogEvent("[%s] ✅ One-shot execution complete after successful split sell.", id)
@@ -1854,7 +1795,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							if balErr0 != nil || balErr1 != nil {
 								tui.LogEvent("[%s] ⚠️ On-chain balance query failed (err0=%v, err1=%v), applying 1m cooldown", id, balErr0, balErr1)
-								panicBuyCooldown = time.Now().Add(60 * time.Second)
+								// panicBuyCooldown is assigned at the end of the block
 							} else if settled && bal0 >= 0.01 && bal1 >= 0.01 {
 								// Both balances arrived, try to merge them safely instead of dumping them to market
 								actualMin := math.Min(bal0, bal1)
@@ -1864,7 +1805,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									// Fallback to sell below
 								} else {
 									tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
-									panicBuyCooldown = time.Now().Add(30 * time.Second)
+									// panicBuyCooldown is assigned at the end of the block
 									// Clean up any remaining dust below
 									bal0 -= actualMin
 									bal1 -= actualMin

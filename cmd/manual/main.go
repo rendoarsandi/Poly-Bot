@@ -138,16 +138,12 @@ func main() {
 	// Check Market Status
 	fmt.Println("🔍 Checking market status...")
 	marketInfo, err := trader.GetMarketInfo(ctx, selectedPos.ConditionID)
-	
+
 	isResolved := false
 	var winnerOutcome string
 
 	if err == nil {
 		isResolved = marketInfo.Closed
-		if !isResolved {
-			// Check date
-			// (Omitting complex date parse for brevity, relying on Closed flag primarily)
-		}
 
 		if isResolved {
 			for _, t := range marketInfo.Tokens {
@@ -174,20 +170,20 @@ func main() {
 
 		if winnerOutcome != "" {
 			fmt.Printf("   🏆 Winner: %s\n", winnerOutcome)
-			
+
 			// Check if selected position is winner
 			cleanSelected := core.SanitizeString(selectedPos.Outcome)
 			cleanWinner := core.SanitizeString(winnerOutcome)
-			
+
 			if strings.EqualFold(cleanSelected, cleanWinner) {
 				fmt.Println("\n🎉 YOU HAVE A WINNING POSITION!")
 				fmt.Println("   1. REDEEM on-chain (Claim USDC)")
 				fmt.Println("   0. Exit")
 				fmt.Print("Choice: ")
-				
+
 				text, _ := reader.ReadString('\n')
 				choice := strings.TrimSpace(text)
-				
+
 				if choice == "1" {
 					fmt.Println("🚀 Sending redemption tx...")
 					tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID)
@@ -205,12 +201,12 @@ func main() {
 		} else {
 			fmt.Println("   ❓ Winner not reported by API yet.")
 			fmt.Println("   Try again later or check Polymarket directly.")
-			
+
 			fmt.Println("\nActions:")
 			fmt.Println("   1. Force REDEEM (If you are sure you won)")
 			fmt.Println("   0. Exit")
 			fmt.Print("Choice: ")
-			
+
 			text, _ := reader.ReadString('\n')
 			if strings.TrimSpace(text) == "1" {
 				fmt.Println("🚀 Sending force redemption tx...")

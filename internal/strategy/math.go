@@ -45,13 +45,13 @@ func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) 
 	if feeRateBps > 0 {
 		feeRate := 0.25
 		exponent := 2.0
-		
+
 		fee1Tokens := shares * feeRate * math.Pow(price1*(1.0-price1), exponent)
 		fee2Tokens := shares * feeRate * math.Pow(price2*(1.0-price2), exponent)
-		
+
 		fee1Usdc := fee1Tokens * price1
 		fee2Usdc := fee2Tokens * price2
-		
+
 		overhead = fee1Usdc + fee2Usdc
 	}
 

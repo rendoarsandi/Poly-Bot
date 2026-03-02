@@ -508,9 +508,8 @@ func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender 
 		val = "0000000000000000000000000000000000000000000000000000000000000000"
 	}
 
-	data := "0x22cb465" // Note: the selector is shorter if we don't pad correctly, but we'll use standard 8 chars
 	// Correct selector for setApprovalForAll is 0xa22cb465
-	data = "0xa22cb465" + operator + val
+	data := "0xa22cb465" + operator + val
 
 	// Get nonce and gas price
 	nonce, err := c.GetNonce(ctx, signer.Address())

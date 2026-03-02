@@ -97,11 +97,12 @@ func main() {
 			} else {
 				if err != nil {
 					fmt.Printf("   ❌ Error looking up slug: %v\n", err)
-				} else {
-					fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
 					if resp != nil {
 						resp.Body.Close()
 					}
+				} else {
+					fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
+					resp.Body.Close()
 				}
 			}
 		}
@@ -129,11 +130,11 @@ func main() {
 		// Fetch balances for both tokens in this market
 		var balances []float64
 		var outcomes []string
-		
+
 		for _, t := range m.Tokens {
 			tokenBig := new(big.Int)
 			tokenBig.SetString(t.TokenID, 10)
-			
+
 			bal, err := polygon.GetCTFBalance(ctx, address, tokenBig)
 			if err != nil {
 				balances = append(balances, 0)
@@ -196,8 +197,12 @@ func main() {
 				if winnerOutcome != "" {
 					fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
 					hasWinner := false
-					if outcomes[0] == winnerOutcome && balances[0] >= 0.01 { hasWinner = true }
-					if outcomes[1] == winnerOutcome && balances[1] >= 0.01 { hasWinner = true }
+					if outcomes[0] == winnerOutcome && balances[0] >= 0.01 {
+						hasWinner = true
+					}
+					if outcomes[1] == winnerOutcome && balances[1] >= 0.01 {
+						hasWinner = true
+					}
 
 					if hasWinner {
 						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")

@@ -129,11 +129,11 @@ func (s *Signer) getDomainSeparator() [32]byte {
 	copy(encoded[0:32], typeHash[:])
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
-	
+
 	// ChainId as uint256 (32 bytes)
 	chainIdBytes := padLeft(chainId.Bytes(), 32)
 	copy(encoded[96:128], chainIdBytes)
-	
+
 	// address as uint256 (32 bytes, padded left)
 	copy(encoded[128:160], padLeft(verifyingContract, 32))
 
@@ -176,7 +176,7 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
 	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
 	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
-	
+
 	// uint8 fields are at the end of their 32-byte slots (padded left)
 	encoded[352+31] = side
 	encoded[384+31] = signatureType

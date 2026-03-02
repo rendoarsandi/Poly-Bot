@@ -411,14 +411,14 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
 				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
 			}
-		if side == "BUY" {
-			price := prices[o]
-			results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
-		} else {
-			price := prices[o]
-			// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
-			results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
-		}
+			if side == "BUY" {
+				price := prices[o]
+				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+			} else {
+				price := prices[o]
+				// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
+				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+			}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
 	}

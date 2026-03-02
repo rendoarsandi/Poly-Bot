@@ -46,10 +46,6 @@ var (
 			Bold(true).
 			Padding(0, 2)
 
-	// Bold + colored – asset section headers
-	styleBoldYellow  = lipgloss.NewStyle().Bold(true).Foreground(clrAmber)
-	styleBoldCyan    = lipgloss.NewStyle().Bold(true).Foreground(clrTeal)
-	styleBoldMagenta = lipgloss.NewStyle().Bold(true).Foreground(clrOrange)
 	styleBoldGreen   = lipgloss.NewStyle().Bold(true).Foreground(clrBlue) // XRP
 
 	// Per-asset border colors for market panels
@@ -75,21 +71,6 @@ func getAssetStyle(id string) lipgloss.Style {
 		return styleBoldGreen.UnsetBold()
 	default:
 		return styleWhite
-	}
-}
-
-func getBoldAssetStyle(id string) lipgloss.Style {
-	switch id {
-	case "BTC":
-		return styleBoldYellow
-	case "ETH":
-		return styleBoldCyan
-	case "SOL":
-		return styleBoldMagenta
-	case "XRP":
-		return styleBoldGreen
-	default:
-		return styleBold
 	}
 }
 
@@ -350,11 +331,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tui.width = msg.Width
 		m.tui.height = msg.Height
 		m.tui.mu.Unlock()
-		
+
 		// Update the snapshot immediately so the next View() call is perfectly sized
 		m.snap.width = msg.Width
 		m.snap.height = msg.Height
-		
+
 		// Clear screen on resize to prevent rendering artifacts
 		return m, tea.ClearScreen
 
@@ -402,15 +383,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		snapLastPrices := make(map[string]float64)
-		for k, v := range m.tui.lastPrices { snapLastPrices[k] = v }
+		for k, v := range m.tui.lastPrices {
+			snapLastPrices[k] = v
+		}
 		snapLastBids := make(map[string]float64)
-		for k, v := range m.tui.lastBids { snapLastBids[k] = v }
+		for k, v := range m.tui.lastBids {
+			snapLastBids[k] = v
+		}
 		snapLastAsks := make(map[string]float64)
-		for k, v := range m.tui.lastAsks { snapLastAsks[k] = v }
+		for k, v := range m.tui.lastAsks {
+			snapLastAsks[k] = v
+		}
 		snapRealBids := make(map[string]float64)
-		for k, v := range m.tui.realBids { snapRealBids[k] = v }
+		for k, v := range m.tui.realBids {
+			snapRealBids[k] = v
+		}
 		snapRealAsks := make(map[string]float64)
-		for k, v := range m.tui.realAsks { snapRealAsks[k] = v }
+		for k, v := range m.tui.realAsks {
+			snapRealAsks[k] = v
+		}
 
 		snapPendingOrders := make(map[string][]PendingOrder)
 		for k, v := range m.tui.pendingOrders {
@@ -722,7 +713,7 @@ func (m tuiModel) View() string {
 		// Responsive two-column layout
 		leftW := (w - 2) / 2
 		rightW := w - leftW - 2
-		
+
 		var leftRows []string
 		leftRows = append(leftRows, m.renderMarketInfo(leftW))
 		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
@@ -730,14 +721,14 @@ func (m tuiModel) View() string {
 		if ord := m.renderOrders(leftW, s.orders); ord != "" {
 			leftRows = append(leftRows, ord)
 		}
-		
+
 		var rightRows []string
 		rightRows = append(rightRows, m.renderOrderHistory(rightW, 12))
 		rightRows = append(rightRows, m.renderEventLog(rightW, 12))
-		
+
 		leftCol := strings.Join(leftRows, "\n\n")
 		rightCol := strings.Join(rightRows, "\n\n")
-		
+
 		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "  ", rightCol)
 		rows = append(rows, content)
 	} else {
@@ -1295,21 +1286,21 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 		// formatDepth is unused when depth display is disabled
 		/*
-		formatDepth := func(lvls []MarketLevel, idx int, c lipgloss.Style) string {
-			if idx < len(lvls) {
-				s := lvls[idx].Size
-				sStr := fmt.Sprintf("%.0f", s)
-				if s >= 1000 {
-					sStr = fmt.Sprintf("%.1fk", s/1000)
+			formatDepth := func(lvls []MarketLevel, idx int, c lipgloss.Style) string {
+				if idx < len(lvls) {
+					s := lvls[idx].Size
+					sStr := fmt.Sprintf("%.0f", s)
+					if s >= 1000 {
+						sStr = fmt.Sprintf("%.1fk", s/1000)
+					}
+					if len(sStr) > 4 {
+						sStr = sStr[:4]
+					}
+					str := fmt.Sprintf("%s@.%02.0f", sStr, lvls[idx].Price*100)
+					return c.Render(fmt.Sprintf("%-8s", str))
 				}
-				if len(sStr) > 4 {
-					sStr = sStr[:4]
-				}
-				str := fmt.Sprintf("%s@.%02.0f", sStr, lvls[idx].Price*100)
-				return c.Render(fmt.Sprintf("%-8s", str))
+				return "        " // 8 spaces
 			}
-			return "        " // 8 spaces
-		}
 		*/
 
 		// --- Outcome 1 ---
@@ -1322,17 +1313,17 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 		// Depth display disabled
 		/*
-		if d := depth[id]; d != nil {
-			o1Bids := d[mkt.Outcomes[0]+"_bids"]
-			o1Asks := d[mkt.Outcomes[0]+"_asks"]
-			for i := 1; i <= 2; i++ {
-				bStr := formatDepth(o1Bids, i, styleGreen)
-				aStr := formatDepth(o1Asks, i, styleRed)
-				priceLinesB.WriteString(fmt.Sprintf("           %s  %s\n", bStr, aStr))
+			if d := depth[id]; d != nil {
+				o1Bids := d[mkt.Outcomes[0]+"_bids"]
+				o1Asks := d[mkt.Outcomes[0]+"_asks"]
+				for i := 1; i <= 2; i++ {
+					bStr := formatDepth(o1Bids, i, styleGreen)
+					aStr := formatDepth(o1Asks, i, styleRed)
+					priceLinesB.WriteString(fmt.Sprintf("           %s  %s\n", bStr, aStr))
+				}
+			} else {
+				priceLinesB.WriteString("\n\n")
 			}
-		} else {
-			priceLinesB.WriteString("\n\n")
-		}
 		*/
 
 		// --- Outcome 2 ---
@@ -1345,17 +1336,17 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 		// Depth display disabled
 		/*
-		if d := depth[id]; d != nil {
-			o2Bids := d[mkt.Outcomes[1]+"_bids"]
-			o2Asks := d[mkt.Outcomes[1]+"_asks"]
-			for i := 1; i <= 2; i++ {
-				bStr := formatDepth(o2Bids, i, styleGreen)
-				aStr := formatDepth(o2Asks, i, styleRed)
-				priceLinesB.WriteString(fmt.Sprintf("           %s  %s\n", bStr, aStr))
+			if d := depth[id]; d != nil {
+				o2Bids := d[mkt.Outcomes[1]+"_bids"]
+				o2Asks := d[mkt.Outcomes[1]+"_asks"]
+				for i := 1; i <= 2; i++ {
+					bStr := formatDepth(o2Bids, i, styleGreen)
+					aStr := formatDepth(o2Asks, i, styleRed)
+					priceLinesB.WriteString(fmt.Sprintf("           %s  %s\n", bStr, aStr))
+				}
+			} else {
+				priceLinesB.WriteString("\n\n")
 			}
-		} else {
-			priceLinesB.WriteString("\n\n")
-		}
 		*/
 
 		if ask1 > 0 && ask2 > 0 {
@@ -1412,37 +1403,6 @@ func (m tuiModel) renderSingleMarket(w int) string {
 	}
 
 	return makePanel(inner, clrTeal, sb.String())
-}
-
-// renderOrderBookForMarket is kept for potential direct callers in tests.
-func (m tuiModel) renderOrderBookForMarket(marketID, outcome string, bestBid, bestAsk float64) string {
-	s := m.snap
-	depth := s.orderBookDepth[marketID]
-	bids := depth[outcome+"_bids"]
-	asks := depth[outcome+"_asks"]
-
-	if len(bids) > 0 && bids[0].Price > bestBid {
-		bestBid = bids[0].Price
-	}
-	if len(asks) > 0 && asks[0].Price > 0 && (bestAsk == 0 || asks[0].Price < bestAsk) {
-		bestAsk = asks[0].Price
-	}
-
-	displayOutcome := core.SanitizeString(outcome)
-	if len(displayOutcome) > 6 {
-		displayOutcome = displayOutcome[:6]
-	}
-
-	bidStr := styleMuted.Render("--.-")
-	askStr := styleMuted.Render("--.-")
-	if bestBid > 0 {
-		bidStr = styleGreen.Render(fmt.Sprintf("$%.2f", bestBid))
-	}
-	if bestAsk > 0 {
-		askStr = styleRed.Render(fmt.Sprintf("$%.2f", bestAsk))
-	}
-
-	return fmt.Sprintf("  %-6s  B: %s  A: %s\n", displayOutcome, bidStr, askStr)
 }
 
 func abs(x float64) float64 {
@@ -1851,7 +1811,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 	// Table header
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-5s  %-6s  %-5s  %-8s  %-6s  %-7s  %s",
 		"TIME", "MKT", "OUTC", "SIDE", "SHARES", "PRICE", "COST", "MARGIN")) + "\n")
-	sb.WriteString(styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 70))) + "\n")
+	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 70))) + "\n")
 
 	displayCount := len(s.orderHistory)
 	if displayCount > maxItems {
@@ -1915,11 +1875,11 @@ func (m tuiModel) renderFooter(w int) string {
 	m.tui.mu.Lock()
 	mode := m.tui.mode
 	m.tui.mu.Unlock()
-	
+
 	if mode == "" {
 		mode = "Paper"
 	}
-	
+
 	modeText := mode + " Trading Mode"
 	left := styleMuted.Render("  Polyarb-15m  ·  " + modeText)
 	right := styleMuted.Render("Press [q] to quit  ")
@@ -2080,23 +2040,27 @@ func (m tuiModel) renderSettings(w int) string {
 			lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
 			vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
 		}
-		
+
 		// Use fixed-width padding to perfectly align the bars
 		valStr := r.value
 		// Strip ANSI codes if any for length calculation (basic approach, though lipgloss can help)
 		visibleLen := lipgloss.Width(valStr)
 		padLen := 10 - visibleLen
-		if padLen < 0 { padLen = 0 }
-		
+		if padLen < 0 {
+			padLen = 0
+		}
+
 		valPad := valStr + strings.Repeat(" ", padLen)
 		val := "[" + vSt.Render(valPad) + "]"
-		
+
 		// Properly pad the label ignoring ANSI codes, and increase width to 25 to avoid being too close
 		labelLen := lipgloss.Width(r.label)
 		labelPadLen := 25 - labelLen
-		if labelPadLen < 0 { labelPadLen = 0 }
+		if labelPadLen < 0 {
+			labelPadLen = 0
+		}
 		renderedLabel := lSt.Render(r.label) + strings.Repeat(" ", labelPadLen)
-		
+
 		line := fmt.Sprintf("%s%s  %s  %s",
 			cursor,
 			renderedLabel,

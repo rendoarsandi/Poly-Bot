@@ -180,7 +180,7 @@ func run() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	fmt.Println("✅ Config loaded successfully")
-	
+
 	// Apply fee settings to engine
 	engine.SetFeeRateBps(cfg.FeeRateBps)
 
@@ -676,12 +676,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							if bid <= 0 { // Fallback
 								bid = 0.50
 							}
-							
+
 							feeUsdc := 0.0
 							if t.Config.FeeRateBps > 0 {
 								feeUsdc = rem * 0.25 * math.Pow(bid*(1.0-bid), 2.0) * bid
 							}
-							
+
 							profit := t.SplitInventory.RecordSell(t.ID, out, rem, bid)
 							t.Engine.AddRealizedPnL(profit - feeUsdc)
 							t.Engine.AddBalance((rem * bid) - feeUsdc)
@@ -806,44 +806,142 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 					messagesProcessed++
 
-				// Parse and process WebSocket message immediately.
-				//
-				// Polymarket CLOB WS sends two message shapes:
-				//   1. Book snapshot  – array of objects with "bids"/"asks" fields
-				//      (event_type:"book").  Sent on subscribe and after reconnect.
-				//   2. Price-change delta – single object with "price_changes" array
-				//      (event_type:"price_change").  Contains only changed levels
-				//      but NO size information, so we cannot update the full book
-				//      from them.  We apply the best-bid/ask update from the delta
-				//      and rely on the 4 ms REST poll for full-depth accuracy.
-				//
-				// IMPORTANT: only write to TokenBids/TokenAsks when the parsed
-				// value is strictly positive — a zero value means "no orders on
-				// that side in this message" and must NOT overwrite a previously
-				// valid price from REST or an earlier WS snapshot.
-				if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
-					// ── Book snapshot (array) ──────────────────────────────
-					foundForThisTrader := false
-					for _, b := range books {
+					// Parse and process WebSocket message immediately.
+					//
+					// Polymarket CLOB WS sends two message shapes:
+					//   1. Book snapshot  – array of objects with "bids"/"asks" fields
+					//      (event_type:"book").  Sent on subscribe and after reconnect.
+					//   2. Price-change delta – single object with "price_changes" array
+					//      (event_type:"price_change").  Contains only changed levels
+					//      but NO size information, so we cannot update the full book
+					//      from them.  We apply the best-bid/ask update from the delta
+					//      and rely on the 4 ms REST poll for full-depth accuracy.
+					//
+					// IMPORTANT: only write to TokenBids/TokenAsks when the parsed
+					// value is strictly positive — a zero value means "no orders on
+					// that side in this message" and must NOT overwrite a previously
+					// valid price from REST or an earlier WS snapshot.
+					if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
+						// ── Book snapshot (array) ──────────────────────────────
+						foundForThisTrader := false
+						for _, b := range books {
+							bid, ask := 0.0, 0.0
+							for _, order := range b.Bids {
+								p, _ := strconv.ParseFloat(order.Price, 64)
+								if p > bid {
+									bid = p
+								}
+							}
+							for _, order := range b.Asks {
+								p, _ := strconv.ParseFloat(order.Price, 64)
+								if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+									ask = p
+								}
+							}
+							outcome := t.TokenMap[b.AssetID]
+							if outcome != "" {
+								foundForThisTrader = true
+								t.mu.Lock()
+								// Guard: only persist valid (non-zero) prices so we
+								// never overwrite a good REST value with a zero.
+								if bid > 0 {
+									t.TokenBids[outcome] = bid
+								}
+								if ask > 0 {
+									t.TokenAsks[outcome] = ask
+								}
+								if bid > 0 && ask > 0 {
+									mid := (bid + ask) / 2
+									t.FloatPrices[outcome] = mid
+									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+								}
+								// Always update full depth from snapshots — REST will
+								// keep this fresh on the 4 ms poll as well.
+								t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
+								t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
+								t.mu.Unlock()
+							}
+						}
+						if foundForThisTrader {
+							t.mu.Lock()
+							t.LastUpdate = time.Now()
+							t.mu.Unlock()
+						}
+					} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
+						// ── Price-change delta ─────────────────────────────────
+						foundForThisTrader := false
+
+						t.mu.Lock()
+						for _, pc := range update.PriceChanges {
+							outcome := t.TokenMap[pc.AssetID]
+							if outcome == "" {
+								continue
+							}
+							foundForThisTrader = true
+							p, errP := strconv.ParseFloat(pc.Price, 64)
+							s, errS := strconv.ParseFloat(pc.Size, 64)
+							if errP != nil || errS != nil || p <= 0 {
+								continue
+							}
+
+							switch pc.Side {
+							case "BUY":
+								t.TokenFullBids[outcome] = mkt.ApplyDelta(t.TokenFullBids[outcome], p, s, true)
+							case "SELL":
+								t.TokenFullAsks[outcome] = mkt.ApplyDelta(t.TokenFullAsks[outcome], p, s, false)
+							}
+						}
+
+						for outcome := range t.TokenMap {
+							bids := t.TokenFullBids[outcome]
+							if len(bids) > 0 {
+								t.TokenBids[outcome] = bids[0].Price
+							} else {
+								t.TokenBids[outcome] = 0
+							}
+
+							asks := t.TokenFullAsks[outcome]
+							if len(asks) > 0 {
+								t.TokenAsks[outcome] = asks[0].Price
+							} else {
+								t.TokenAsks[outcome] = 0
+							}
+
+							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
+								mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
+								t.FloatPrices[outcome] = mid
+								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+							}
+						}
+						t.mu.Unlock()
+
+						if foundForThisTrader {
+							t.mu.Lock()
+							t.LastUpdate = time.Now()
+							t.mu.Unlock()
+						}
+					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+						// ── Book snapshot (single object) ──────────────────────
 						bid, ask := 0.0, 0.0
-						for _, order := range b.Bids {
+						for _, order := range book.Bids {
 							p, _ := strconv.ParseFloat(order.Price, 64)
 							if p > bid {
 								bid = p
 							}
 						}
-						for _, order := range b.Asks {
+						for _, order := range book.Asks {
 							p, _ := strconv.ParseFloat(order.Price, 64)
 							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
 								ask = p
 							}
 						}
-						outcome := t.TokenMap[b.AssetID]
+						outcome := t.TokenMap[book.AssetID]
 						if outcome != "" {
-							foundForThisTrader = true
 							t.mu.Lock()
-							// Guard: only persist valid (non-zero) prices so we
-							// never overwrite a good REST value with a zero.
+							t.LastUpdate = time.Now()
+							// Guard: only persist valid (non-zero) prices.
 							if bid > 0 {
 								t.TokenBids[outcome] = bid
 							}
@@ -856,109 +954,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
-							// Always update full depth from snapshots — REST will
-							// keep this fresh on the 4 ms poll as well.
-							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
-							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
+							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
+							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
 							t.mu.Unlock()
 						}
 					}
-					if foundForThisTrader {
-						t.mu.Lock()
-						t.LastUpdate = time.Now()
-						t.mu.Unlock()
-					}
-				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
-					// ── Price-change delta ─────────────────────────────────
-					foundForThisTrader := false
-					
-					t.mu.Lock()
-					for _, pc := range update.PriceChanges {
-						outcome := t.TokenMap[pc.AssetID]
-						if outcome == "" {
-							continue
-						}
-						foundForThisTrader = true
-						p, errP := strconv.ParseFloat(pc.Price, 64)
-						s, errS := strconv.ParseFloat(pc.Size, 64)
-						if errP != nil || errS != nil || p <= 0 {
-							continue
-						}
-
-						switch pc.Side {
-						case "BUY":
-							t.TokenFullBids[outcome] = mkt.ApplyDelta(t.TokenFullBids[outcome], p, s, true)
-						case "SELL":
-							t.TokenFullAsks[outcome] = mkt.ApplyDelta(t.TokenFullAsks[outcome], p, s, false)
-						}
-					}
-					
-					for outcome := range t.TokenMap {
-						bids := t.TokenFullBids[outcome]
-						if len(bids) > 0 {
-							t.TokenBids[outcome] = bids[0].Price
-						} else {
-							t.TokenBids[outcome] = 0
-						}
-
-						asks := t.TokenFullAsks[outcome]
-						if len(asks) > 0 {
-							t.TokenAsks[outcome] = asks[0].Price
-						} else {
-							t.TokenAsks[outcome] = 0
-						}
-
-						if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
-							mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
-							t.FloatPrices[outcome] = mid
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
-						}
-					}
-					t.mu.Unlock()
-
-					if foundForThisTrader {
-						t.mu.Lock()
-						t.LastUpdate = time.Now()
-						t.mu.Unlock()
-					}
-				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
-					// ── Book snapshot (single object) ──────────────────────
-					bid, ask := 0.0, 0.0
-					for _, order := range book.Bids {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > bid {
-							bid = p
-						}
-					}
-					for _, order := range book.Asks {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
-							ask = p
-						}
-					}
-					outcome := t.TokenMap[book.AssetID]
-					if outcome != "" {
-						t.mu.Lock()
-						t.LastUpdate = time.Now()
-						// Guard: only persist valid (non-zero) prices.
-						if bid > 0 {
-							t.TokenBids[outcome] = bid
-						}
-						if ask > 0 {
-							t.TokenAsks[outcome] = ask
-						}
-						if bid > 0 && ask > 0 {
-							mid := (bid + ask) / 2
-							t.FloatPrices[outcome] = mid
-							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
-						}
-						t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
-						t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
-						t.mu.Unlock()
-					}
-				}
 				default:
 					// No more messages in channel, continue with rest of loop
 					goto doneProcessingWS
@@ -987,7 +987,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// WS is primary for liquidity data via full depth updates and deltas.
 			// Only poll REST if WS is unhealthy or stale.
 			staleTime := time.Since(t.LastUpdate)
-			
+
 			// Update WS staleness and ping latency in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
@@ -1068,21 +1068,21 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				ask1 := t.TokenAsks[t.Outcomes[0]]
 				ask2 := t.TokenAsks[t.Outcomes[1]]
 
-			// Read live price-range filter from settings panel (adjustable at runtime)
-			minAsk := liveCfg.MinAskPrice
-			maxAsk := liveCfg.MaxAskPrice
+				// Read live price-range filter from settings panel (adjustable at runtime)
+				minAsk := liveCfg.MinAskPrice
+				maxAsk := liveCfg.MaxAskPrice
 
-			if ask1 >= minAsk && ask1 <= maxAsk && ask2 >= minAsk && ask2 <= maxAsk {
-				sum := ask1 + ask2
-				margin := (1.0 - sum) * 100
+				if ask1 >= minAsk && ask1 <= maxAsk && ask2 >= minAsk && ask2 <= maxAsk {
+					sum := ask1 + ask2
+					margin := (1.0 - sum) * 100
 
-				// Skip trading if kill switch is active (but don't exit - wait for expiration)
-				if killSwitchActive {
-					continue
-				}
+					// Skip trading if kill switch is active (but don't exit - wait for expiration)
+					if killSwitchActive {
+						continue
+					}
 
-				// Use config for minimum margin (default 2%)
-				minMarginPercent := t.Config.MinMarginPercent
+					// Use config for minimum margin (default 2%)
+					minMarginPercent := t.Config.MinMarginPercent
 
 					// Calculate dynamic trade size based on EQUITY (not just cash)
 					// This ensures consistent sizing regardless of how much is in positions
@@ -1116,7 +1116,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						// Inject BBO if missing due to orderbook lag
 						hasAsk1 := false
 						for _, a := range asks1 {
-							if a.Price <= ask1+1e-6 { hasAsk1 = true; break }
+							if a.Price <= ask1+1e-6 {
+								hasAsk1 = true
+								break
+							}
 						}
 						if !hasAsk1 {
 							asks1 = append(asks1, paper.MarketLevel{Price: ask1, Size: baseShares})
@@ -1127,7 +1130,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						copy(asks2, t.TokenFullAsks[t.Outcomes[1]])
 						hasAsk2 := false
 						for _, a := range asks2 {
-							if a.Price <= ask2+1e-6 { hasAsk2 = true; break }
+							if a.Price <= ask2+1e-6 {
+								hasAsk2 = true
+								break
+							}
 						}
 						if !hasAsk2 {
 							asks2 = append(asks2, paper.MarketLevel{Price: ask2, Size: baseShares})
@@ -1229,22 +1235,26 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if shares > maxSafeShares {
 							shares = maxSafeShares
 						}
-						
+
 						// --- PRE-CALCULATE ACTUAL COST BY WALKING THE BOOK ---
 						// Instead of assuming all shares fill at the top-of-book price (ask1/ask2),
 						// we simulate walking the orderbook to find the TRUE cost of this trade.
 						trueCost := 0.0
-						
+
 						// Helper to calculate cost for one side
 						calcSideCost := func(qty float64, asks []paper.MarketLevel) float64 {
 							c := 0.0
 							rem := qty
 							for _, lv := range asks {
-								if lv.Size <= 0 { continue }
+								if lv.Size <= 0 {
+									continue
+								}
 								take := math.Min(rem, lv.Size)
 								c += take * lv.Price
 								rem -= take
-								if rem <= 0.0001 { break }
+								if rem <= 0.0001 {
+									break
+								}
 							}
 							return c
 						}
@@ -1259,7 +1269,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							// If we can't afford it, scale the shares down proportionally
 							scaleFactor := currentCash / trueCost
 							shares = shares * scaleFactor
-							
+
 							// Recalculate true cost with the new, smaller share size
 							trueCost1 = calcSideCost(shares, asks1)
 							trueCost2 = calcSideCost(shares, asks2)
@@ -1316,7 +1326,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						// the injected BBO if it was missing due to orderbook lag.
 						freshAsks1 := make([]paper.MarketLevel, len(asks1))
 						copy(freshAsks1, asks1)
-						
+
 						freshAsks2 := make([]paper.MarketLevel, len(asks2))
 						copy(freshAsks2, asks2)
 
@@ -1478,7 +1488,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							// Inject BBO if missing due to orderbook lag to prevent liq: 0/0
 							hasBid1 := false
 							for _, b := range sortedBids1 {
-								if b.Price >= bid1-1e-6 { hasBid1 = true; break }
+								if b.Price >= bid1-1e-6 {
+									hasBid1 = true
+									break
+								}
 							}
 							if !hasBid1 {
 								sortedBids1 = append(sortedBids1, paper.MarketLevel{Price: bid1, Size: sharesToSell})
@@ -1489,7 +1502,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							copy(sortedBids2, bids2)
 							hasBid2 := false
 							for _, b := range sortedBids2 {
-								if b.Price >= bid2-1e-6 { hasBid2 = true; break }
+								if b.Price >= bid2-1e-6 {
+									hasBid2 = true
+									break
+								}
 							}
 							if !hasBid2 {
 								sortedBids2 = append(sortedBids2, paper.MarketLevel{Price: bid2, Size: sharesToSell})
@@ -1543,7 +1559,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 							t.TUI.RecordOrder(t.ID, t.Outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
 							t.TUI.RecordOrder(t.ID, t.Outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
-							t.LastSplitSell = time.Now()						}
+							t.LastSplitSell = time.Now()
+						}
 					}
 				}
 
@@ -1553,7 +1570,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					remainingShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 					if remainingShares >= 1.0 {
 						merged := t.SplitInventory.RecordMerge(t.ID, t.Outcomes[0], t.Outcomes[1], remainingShares)
-						t.Engine.AddBalance(merged) // $1 per merged pair
+						t.Engine.AddBalance(merged)    // $1 per merged pair
 						t.Engine.RecalculateDrawdown() // Safe to check drawdown now
 						t.TUI.LogEvent("[%s] 💰 SPLIT MERGE (sim): Merged %.0f shares → $%.2f", t.ID, merged, merged)
 					}

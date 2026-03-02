@@ -17,12 +17,12 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Mock Gamma response
 		var resp []api.GammaEvent
-		
+
 		// Create a market with an uppercase asset in slug to test case insensitivity
 		// Let's use an asset 'BTC' but the target user config might say 'btc'
 		// Or the slug has 'btc' and the user config says 'BTC'
 		// The issue was matching slug "btc-updown-..." with asset "BTC" using strings.Contains
-		
+
 		market := api.GammaMarket{
 			ConditionID:  "0x123",
 			ClobTokenIds: `["111","222"]`,
@@ -30,12 +30,12 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 			Active:       true,
 			Closed:       false,
 		}
-		
+
 		// Target slug format is handled in ParseEndTimeFromSlug
 		// Let's give it an end time 10 minutes from now
 		now := time.Now().Add(10 * time.Minute)
 		endDate := now.Format(time.RFC3339)
-		
+
 		event := api.GammaEvent{
 			Slug:    "btc-updown-15m",
 			EndDate: endDate,

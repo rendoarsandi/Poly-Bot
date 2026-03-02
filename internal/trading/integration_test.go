@@ -12,15 +12,15 @@ import (
 
 // MockPolygonClient simulates on-chain CTF operations
 type MockPolygonClient struct {
-	mu              sync.Mutex
-	usdcBalance     float64
-	tokenBalances   map[string]float64 // conditionID:outcome -> balance
-	mergedAmounts   []float64
-	splitAmounts    []float64
-	redeemCalled    bool
-	failNextMerge   bool
-	failNextSplit   bool
-	marketResolved  map[string]bool
+	mu             sync.Mutex
+	usdcBalance    float64
+	tokenBalances  map[string]float64 // conditionID:outcome -> balance
+	mergedAmounts  []float64
+	splitAmounts   []float64
+	redeemCalled   bool
+	failNextMerge  bool
+	failNextSplit  bool
+	marketResolved map[string]bool
 }
 
 func NewMockPolygonClient(initialUSDC float64) *MockPolygonClient {
