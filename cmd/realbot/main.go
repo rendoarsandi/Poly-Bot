@@ -633,60 +633,81 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 			// Shutdown or expiration: Execute full merge and cleanup using actual on-chain balances
 			tui.LogEvent("[%s] 🔀 EMERGENCY EXIT: Querying on-chain balances for full merge...", id)
-			if len(outcomes) == 2 {
-				token0 := getTokenID(outcomes[0])
-				token1 := getTokenID(outcomes[1])
-				
-				if token0 != "" && token1 != "" {
-					cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancelCleanup()
-					
-					bal0, bal1, err0, err1 := trader.QueryBalancedCTFBalances(cleanupCtx, token0, token1, 1000000)
-					
-					if err0 == nil && err1 == nil {
-						minShares := bal0
-						if bal1 < minShares {
-							minShares = bal1
-						}
-						
-						if minShares >= 0.000001 {
-							txHash, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, minShares)
-							if err == nil {
-								engine.MergeForMarket(id, outcomes[0], outcomes[1], minShares)
-								splitInventory.RecordMerge(id, outcomes[0], outcomes[1], minShares)
-								if txHash != "" && len(txHash) >= 10 {
-									tui.LogEvent("[%s] 🔀 Merged %.0f pairs | Tx: %s...", id, minShares, txHash[:10])
-								} else {
-									tui.LogEvent("[%s] 🔀 Merged %.0f pairs", id, minShares)
-								}
-								bal0 -= minShares
-								bal1 -= minShares
-							} else {
-								tui.LogEvent("[%s] ⚠️ Failed to merge %.0f pairs on emergency exit: %v", id, minShares, err)
-							}
-						}
-						
-						// Sell remaining unbalanced shares
-						if bal0 >= 0.01 {
-							rate := tokenFeeRates[outcomes[0]]
-							if rate == 0 { rate = 1000 }
-							_, sellErr := trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
-							if sellErr == nil {
-								tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, bal0, outcomes[0])
-							}
-						}
-						if bal1 >= 0.01 {
-							rate := tokenFeeRates[outcomes[1]]
-							if rate == 0 { rate = 1000 }
-							_, sellErr := trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
-							if sellErr == nil {
-								tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, bal1, outcomes[1])
-							}
-						}
-					} else {
-						tui.LogEvent("[%s] ⚠️ Could not query on-chain balances for emergency merge: %v, %v", id, err0, err1)
+			
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancelCleanup()
+
+			// Query all token balances
+			balances := make([]float64, len(outcomes))
+			tokens := make([]string, len(outcomes))
+			
+			for i, out := range outcomes {
+				tokens[i] = getTokenID(out)
+			}
+			
+			// Retry loop for balances
+			var minShares float64
+			var fetchErr error
+			for attempt := 1; attempt <= 20; attempt++ {
+				minShares = math.MaxFloat64
+				fetchErr = nil
+				for i, t := range tokens {
+					if t == "" {
+						fetchErr = fmt.Errorf("empty token ID for outcome %s", outcomes[i])
+						break
+					}
+					bal, err := trader.GetCTFBalanceFloat(cleanupCtx, t)
+					if err != nil {
+						fetchErr = err
+						break
+					}
+					balances[i] = bal
+					if bal < minShares {
+						minShares = bal
 					}
 				}
+				if fetchErr == nil {
+					break
+				}
+				time.Sleep(1000 * time.Millisecond)
+			}
+			
+			if fetchErr == nil {
+				if minShares >= 0.000001 {
+					txHash, err := trader.MergeOnChain(cleanupCtx, market.ConditionID, minShares)
+					if err == nil {
+						// Only record paper engine stats if it's a binary market (engine limitation)
+						if len(outcomes) == 2 {
+							engine.MergeForMarket(id, outcomes[0], outcomes[1], minShares)
+							splitInventory.RecordMerge(id, outcomes[0], outcomes[1], minShares)
+						}
+						
+						if txHash != "" && len(txHash) >= 10 {
+							tui.LogEvent("[%s] 🔀 Merged %.0f sets | Tx: %s...", id, minShares, txHash[:10])
+						} else {
+							tui.LogEvent("[%s] 🔀 Merged %.0f sets", id, minShares)
+						}
+						for i := range balances {
+							balances[i] -= minShares
+						}
+					} else {
+						tui.LogEvent("[%s] ⚠️ Failed to merge %.0f sets on emergency exit: %v", id, minShares, err)
+					}
+				}
+				
+				// Sell remaining unbalanced shares
+				for i, out := range outcomes {
+					if balances[i] >= 0.01 {
+						rate := tokenFeeRates[out]
+						if rate == 0 { rate = 1000 }
+						_, sellErr := trader.Sell(cleanupCtx, tokens[i], out, 0.01, balances[i], api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+						if sellErr == nil {
+							tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, balances[i], out)
+						}
+					}
+				}
+			} else {
+				tui.LogEvent("[%s] ⚠️ Could not query on-chain balances for emergency merge: %v", id, fetchErr)
 			}
 			return
 		default:
@@ -932,9 +953,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			// Move to BACKGROUND to prevent blocking the main trading loop
 			splitMu.Lock()
 			isSplit := globalSplitStatus[market.ConditionID]
+			
+			// We check the cooldown safely using the global initial split value map (if 0, we can try)
+			// But for cooldown, we'll just move nextSplitAttempt access inside the lock if we use a global cooldown map.
+			// Or better: keep nextSplitAttempt but protect it with splitMu.
+			shouldSplit := !isSplit && time.Now().After(nextSplitAttempt)
+			if shouldSplit {
+				// Optimistically mark as split to prevent concurrent duplicate attempts
+				globalSplitStatus[market.ConditionID] = true
+			}
 			splitMu.Unlock()
 
-			if !isSplit && time.Now().After(nextSplitAttempt) && replenishCtrl.MarkInProgress() {
+			if shouldSplit && replenishCtrl.MarkInProgress() {
 				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
 
 				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
@@ -960,10 +990,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						defer cancel()
 
 						txHash, err := trader.SplitOnChain(splitCtx, condID, amt)
+						
+						splitMu.Lock() // Re-acquire lock to update shared state
 						if err != nil {
 							tui.LogEvent("[%s] ⚠️ SPLIT: Background initial split failed: %v (will retry in 60s)", mID, err)
 							// Set cooldown on failure to prevent RPC spam and nonce issues
 							nextSplitAttempt = time.Now().Add(60 * time.Second)
+							
+							// Revert optimistic split status so it can be retried
+							globalSplitStatus[condID] = false
 						} else {
 							// Update engine simulation immediately
 							splitInventory.RecordSplit(mID, out0, out1, amt)
@@ -977,12 +1012,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							// Only mark as initialized on SUCCESS (globally)
-							splitMu.Lock()
 							globalSplitStatus[condID] = true
 							globalInitialSplits[condID] = amt
-							splitMu.Unlock()
 							initialSplitAmount = amt
 						}
+						splitMu.Unlock()
 					}(id, market.ConditionID, outcomes[0], outcomes[1], splitAmount)
 				} else {
 					// Not enough balance to split even $1
@@ -1448,11 +1482,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// still providing a tiny slippage cushion for fast-moving markets.
 						// Keeping this small also reduces the chance of hitting the CLOB $1/side
 						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.25 limit instead
-											// of the old $0.29, requiring fewer shares to clear the minimum).
-											limitPrice1 := 0.99
-											limitPrice2 := 0.99
-						
-											// ═══════════════════════════════════════════════════════════════						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
+						// of the old $0.29, requiring fewer shares to clear the minimum).
+						limitPrice1 := math.Min(0.99, ask1+0.01)
+						limitPrice2 := math.Min(0.99, ask2+0.01)
+
+						// ═══════════════════════════════════════════════════════════════
+						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
 						// When one outcome has a very low price (e.g. $0.24), a small
 						// share count can produce a sub-$1 maker amount the CLOB rejects
 						// with "invalid amount for a marketable BUY order, min size: $1".

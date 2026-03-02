@@ -158,9 +158,13 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 			usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-			// Truncate USDC to 2 decimals
+			// Round up USDC to 2 decimals to ensure we don't drop below the $1.00 CLOB minimum
 			usdcVal := usdcMicroBig.Int64()
-			usdcVal = (usdcVal / 10000) * 10000
+			if usdcVal%10000 != 0 {
+				usdcVal = ((usdcVal / 10000) + 1) * 10000
+			} else {
+				usdcVal = (usdcVal / 10000) * 10000
+			}
 			usdcMicroBig.SetInt64(usdcVal)
 
 			makerAmount = usdcMicroBig.String()

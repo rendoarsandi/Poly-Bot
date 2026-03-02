@@ -471,10 +471,6 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string) (str
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc func() (string, error)) (string, error) {
-	// Lock globally so only one on-chain transaction happens at a time across all assets
-	t.onChainMu.Lock()
-	defer t.onChainMu.Unlock()
-
 	var lastErr error
 	var txHash string
 
@@ -489,7 +485,11 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 		default:
 		}
 
+		// Lock globally only during transaction submission to prevent nonce collisions
+		t.onChainMu.Lock()
 		txHash, lastErr = txFunc()
+		t.onChainMu.Unlock()
+
 		if lastErr != nil {
 			fmt.Printf("⛓️ [%s] send failed on attempt %d: %v\n", txName, attempt, lastErr)
 			// Failed to send tx - retry after backoff
