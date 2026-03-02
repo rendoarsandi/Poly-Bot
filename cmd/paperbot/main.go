@@ -1217,7 +1217,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						// Apply compounding multiplier from profitable rounds
 						compoundMult := t.Engine.GetCompoundMultiplier()
-						shares = float64(int(float64(shares) * compoundMult))
+						shares = shares * compoundMult
 
 						// Force at least 1 share if there's any matched liquidity and we have budget
 						if shares < 1.0 && minLiquidity >= 1.0 {

@@ -346,12 +346,15 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 // executeBuy is the internal implementation of a buy (must be called with lock)
 func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (*Trade, error) {
 	cost := price * quantity
-	if cost > e.currentBalance {
+	if cost > e.currentBalance+1e-8 {
 		return nil, fmt.Errorf("insufficient balance: need %.4f, have %.4f", cost, e.currentBalance)
 	}
 
 	// Deduct from balance
 	e.currentBalance -= cost
+	if e.currentBalance < 0 {
+		e.currentBalance = 0
+	}
 
 	// Calculate fee (collected in shares for BUY)
 	feeTokens := 0.0

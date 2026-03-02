@@ -95,7 +95,7 @@ func CalculateSafeShares(
 	shares := baseShares
 
 	// Apply compounding multiplier from profitable rounds
-	shares = float64(int(shares * compoundMultiplier))
+	shares = shares * compoundMultiplier
 
 	// FINAL LIQUIDITY CAP: Ensure shares never exceed 100% of available liquidity
 	// This must be checked AFTER all scaling (margin scaling + compounding)

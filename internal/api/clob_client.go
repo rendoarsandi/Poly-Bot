@@ -348,11 +348,11 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		makerAmount, _ := strconv.ParseFloat(signedOrder.Order.MakerAmount, 64)
 		makerAmountUSDC := makerAmount / 1e6 // Convert from base units
 
-		if signedOrder.Order.Side == "0" && allowance.Balance < makerAmountUSDC {
+		if signedOrder.Order.Side == "0" && (allowance.Balance < makerAmountUSDC || allowance.Allowance < makerAmountUSDC) {
 			return &OrderResponse{
 				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
 				Success:  false,
-				ErrorMsg: fmt.Sprintf("test mode: insufficient balance ($%.2f < $%.2f needed)", allowance.Balance, makerAmountUSDC),
+				ErrorMsg: fmt.Sprintf("test mode: insufficient balance or allowance (Balance: $%.2f, Allowance: $%.2f < $%.2f needed)", allowance.Balance, allowance.Allowance, makerAmountUSDC),
 			}, nil
 		}
 

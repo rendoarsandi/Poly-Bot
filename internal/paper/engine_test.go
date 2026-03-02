@@ -23,7 +23,7 @@ func TestMarketBuy_WalksTheBook(t *testing.T) {
 	// - 50 @ $0.45 = $22.50
 	// - 30 @ $0.47 = $14.10
 	// Total: $36.60, Avg price: $36.60/80 = $0.4575
-	trade, avgPrice, err := engine.MarketBuy("BTC", "Up", 80, 1.0, levels)
+	trade, avgPrice, err := engine.MarketBuy("BTC", "Up", 80, levels)
 
 	if err != nil {
 		t.Fatalf("MarketBuy failed: %v", err)
@@ -69,7 +69,7 @@ func TestMarketBuy_PartialFill(t *testing.T) {
 	}
 
 	// Try to buy 100 shares - should only get 75
-	trade, _, err := engine.MarketBuy("BTC", "Up", 100, 1.0, levels)
+	trade, _, err := engine.MarketBuy("BTC", "Up", 100, levels)
 
 	if err != nil {
 		t.Fatalf("MarketBuy failed: %v", err)
@@ -92,7 +92,7 @@ func TestMarketBuy_NoLiquidity(t *testing.T) {
 	// Empty order book
 	levels := []MarketLevel{}
 
-	_, _, err := engine.MarketBuy("BTC", "Up", 100, 1.0, levels)
+	_, _, err := engine.MarketBuy("BTC", "Up", 100, levels)
 
 	if err == nil {
 		t.Error("Expected error for no liquidity, got nil")
@@ -130,7 +130,7 @@ func TestMarketBuy_InsufficientBalance(t *testing.T) {
 	}
 
 	// Try to buy $50 worth with only $10
-	_, _, err := engine.MarketBuy("BTC", "Up", 100, 1.0, levels)
+	_, _, err := engine.MarketBuy("BTC", "Up", 100, levels)
 
 	if err == nil {
 		t.Error("Expected insufficient balance error, got nil")
@@ -147,7 +147,7 @@ func TestMarketBuy_UpdatesPosition(t *testing.T) {
 	}
 
 	// First buy
-	engine.MarketBuy("BTC", "Up", 50, 1.0, levels)
+	engine.MarketBuy("BTC", "Up", 50, levels)
 
 	positions := engine.GetPositions()
 	pos, ok := positions["BTC:Up"]

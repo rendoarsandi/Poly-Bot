@@ -50,7 +50,6 @@ type Config struct {
 	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
 	MaxDailyLoss   float64 // Maximum daily loss before stopping
 	RequireConfirm bool    // Require confirmation before each trade
-	TestMode       bool    // Test mode: validate orders (sign, check balance) but don't submit
 
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
@@ -110,7 +109,6 @@ func LoadConfig() (*Config, error) {
 		MaxTradeSize:    parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
 		MaxDailyLoss:    parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
 		RequireConfirm:  os.Getenv("REQUIRE_CONFIRM") == "true",
-		TestMode:        os.Getenv("TEST_MODE") != "false", // Default true for safety
 		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",
 		// Aggression settings
 		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
