@@ -723,7 +723,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if bal0 >= 0.01 {
 							rate := tokenFeeRates[outcomes[0]]
 							if rate == 0 { rate = 1000 }
-							_, sellErr := trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							_, sellErr := trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 							if sellErr == nil {
 								tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, bal0, outcomes[0])
 							}
@@ -731,7 +731,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if bal1 >= 0.01 {
 							rate := tokenFeeRates[outcomes[1]]
 							if rate == 0 { rate = 1000 }
-							_, sellErr := trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							_, sellErr := trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 							if sellErr == nil {
 								tui.LogEvent("[%s] 📉 Sold %.0f unbalanced shares of %s", id, bal1, outcomes[1])
 							}
@@ -1228,7 +1228,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 													if rate == 0 {
 														rate = 1000
 													}
-													res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+													res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 												}()
 								
 												go func() {
@@ -1237,7 +1237,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 													if rate == 0 {
 														rate = 1000
 													}
-													res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+													res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 												}()
 							wg.Wait()
 
@@ -1550,7 +1550,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if rate == 0 {
 								rate = 1000
 							}
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 						}()
 
 						go func() {
@@ -1559,7 +1559,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if rate == 0 {
 								rate = 1000
 							}
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+							res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 						}()
 
 						wg.Wait()
@@ -1673,7 +1673,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									rate = 1000
 								}
 								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
-								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 								if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
 									side1Success = true
 									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
@@ -1697,7 +1697,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									rate = 1000
 								}
 								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
-								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
 									side2Success = true
 									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])
