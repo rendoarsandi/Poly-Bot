@@ -1229,9 +1229,47 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if shares > maxSafeShares {
 							shares = maxSafeShares
 						}
+						
+						// --- PRE-CALCULATE ACTUAL COST BY WALKING THE BOOK ---
+						// Instead of assuming all shares fill at the top-of-book price (ask1/ask2),
+						// we simulate walking the orderbook to find the TRUE cost of this trade.
+						trueCost := 0.0
+						
+						// Helper to calculate cost for one side
+						calcSideCost := func(qty float64, asks []paper.MarketLevel) float64 {
+							c := 0.0
+							rem := qty
+							for _, lv := range asks {
+								if lv.Size <= 0 { continue }
+								take := math.Min(rem, lv.Size)
+								c += take * lv.Price
+								rem -= take
+								if rem <= 0.0001 { break }
+							}
+							return c
+						}
+
+						trueCost1 := calcSideCost(shares, asks1)
+						trueCost2 := calcSideCost(shares, asks2)
+						trueCost = trueCost1 + trueCost2
+
+						// If the true cost exceeds our cash, scale DOWN the shares exactly
+						// to what we can afford, ensuring we never hit the "Insufficient balance" error.
+						if trueCost > currentCash {
+							// If we can't afford it, scale the shares down proportionally
+							scaleFactor := currentCash / trueCost
+							shares = shares * scaleFactor
+							
+							// Recalculate true cost with the new, smaller share size
+							trueCost1 = calcSideCost(shares, asks1)
+							trueCost2 = calcSideCost(shares, asks2)
+							trueCost = trueCost1 + trueCost2
+						}
+
 						feeRateBps := t.Config.FeeRateBps
 						tm := strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
-						cost, netProfit := tm.Cost, tm.Net
+						_, netProfit := tm.Cost, tm.Net
+						cost := trueCost
 
 						// Skip if net profit is not positive after order cost
 						if netProfit <= 0 {
@@ -1252,7 +1290,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 							shares = maxAffordableShares
 							tm = strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
-							cost, netProfit = tm.Cost, tm.Net
+							_, netProfit = tm.Cost, tm.Net
+							cost = trueCost
 
 							// If still over risk limit or not profitable after cost, don't trade
 							if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
