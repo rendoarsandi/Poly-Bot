@@ -808,12 +808,14 @@ func (e *Engine) getSplitInventoryValue() float64 {
 
 func (e *Engine) getUnrealizedValue() float64 {
 	value := 0.0
-	for outcome, pos := range e.positions {
+	for key, pos := range e.positions {
 		// Use BID price for valuation (what we could sell for)
 		// This is more conservative and realistic
-		if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+		if bid, ok := e.marketBids[key]; ok && bid > 0 {
 			value += pos.Quantity * bid
-		} else if price, ok := e.currentPrices[outcome]; ok {
+		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
+			value += pos.Quantity * bid
+		} else if price, ok := e.currentPrices[pos.Outcome]; ok {
 			value += pos.Quantity * price
 		} else {
 			// Use cost basis if no current price
@@ -832,12 +834,15 @@ func (e *Engine) GetUnrealizedPnL() float64 {
 
 func (e *Engine) getUnrealizedPnL() float64 {
 	unrealized := 0.0
-	for outcome, pos := range e.positions {
+	for key, pos := range e.positions {
 		// Use BID price for valuation (what we could sell for)
-		if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+		if bid, ok := e.marketBids[key]; ok && bid > 0 {
 			currentValue := pos.Quantity * bid
 			unrealized += currentValue - pos.TotalCost
-		} else if price, ok := e.currentPrices[outcome]; ok {
+		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
+			currentValue := pos.Quantity * bid
+			unrealized += currentValue - pos.TotalCost
+		} else if price, ok := e.currentPrices[pos.Outcome]; ok {
 			currentValue := pos.Quantity * price
 			unrealized += currentValue - pos.TotalCost
 		}
