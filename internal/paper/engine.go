@@ -698,9 +698,9 @@ func (e *Engine) LiquidateAll() float64 {
 		// This is worse than mid-price, simulating realistic slippage
 		price := pos.AvgPrice // Fallback to cost basis
 
-		// Price sanity bounds - reject obviously bad data
-		const minSanePrice = 0.15
-		const maxSanePrice = 0.85
+		// Price sanity bounds - disabled to defer to config settings
+		const minSanePrice = 0.00
+		const maxSanePrice = 1.00
 
 		if bid, ok := e.currentBids[outcome]; ok && bid >= minSanePrice && bid <= maxSanePrice {
 			price = bid // Use BID for taker sells

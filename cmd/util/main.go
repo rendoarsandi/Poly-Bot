@@ -413,11 +413,11 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			}
 		if side == "BUY" {
 			price := prices[o]
-			results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+			results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 		} else {
 			price := prices[o]
 			// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
-			results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+			results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 		}
 			printTradeResult(side+" "+o, results[i], errs[i])
 		}(out, idx)
@@ -448,14 +448,14 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 
 			if side == "BUY" {
 				// Use $0.99 cap for buy recovery to guarantee fill
-				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 			} else {
 				// Use latest bid-driven price for sell recovery with FOK
 				retryPrice := prices[failedOutcome]
 				if retryPrice <= 0 || retryPrice >= 1 {
 					retryPrice = 0.5
 				}
-				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillOrKill, rate)
+				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 			}
 
 			if retryErr == nil && retryRes != nil && retryRes.Success {

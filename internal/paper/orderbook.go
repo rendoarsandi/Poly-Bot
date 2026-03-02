@@ -207,9 +207,9 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 			continue
 		}
 
-		// Price sanity bounds for binary markets
-		const minSanePrice = 0.20
-		const maxSanePrice = 0.80
+		// Price sanity bounds - disabled to defer to config settings
+		const minSanePrice = 0.00
+		const maxSanePrice = 1.00
 		const maxPriceImprovement = 0.30
 
 		// Track if we skipped fills due to price sanity issues
