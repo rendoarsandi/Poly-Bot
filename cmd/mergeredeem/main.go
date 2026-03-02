@@ -208,27 +208,15 @@ func main() {
 
 						// Automatic wait for resolution
 						fmt.Printf("   ⏳ Checking on-chain resolution status...")
-						resolved := false
-						for i := 0; i < 18; i++ { // Wait up to 3 minutes (18 * 10s)
-							isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
-							if err == nil && isRes {
-								resolved = true
-								fmt.Println(" ✅ READY")
-								break
-							}
-							if i == 0 {
-								fmt.Print("\n   ⏳ Market not yet settled on-chain. Waiting for Polygon to sync...")
-							} else {
-								fmt.Print(".")
-							}
-							time.Sleep(10 * time.Second)
-						}
+						isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
+						resolved := err == nil && isRes
 
-						if !resolved && !forceRedeem {
-							fmt.Println("\n   ⚠️  Market still not settled on-chain after 3 minutes.")
-							fmt.Print("   Do you want to FORCE the redemption attempt anyway? (y/n): ")
-						} else {
+						if resolved {
+							fmt.Println(" ✅ READY")
 							fmt.Print("   Confirm On-Chain Redeem? (y/n): ")
+						} else {
+							fmt.Println(" ⚠️ NOT YET SETTLED")
+							fmt.Print("   Market not settled on-chain. Force redemption attempt anyway? (y/n): ")
 						}
 
 						var confirm string

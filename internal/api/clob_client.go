@@ -149,7 +149,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		if req.OrderType == OrderTypeMarket {
 			// Market Buy Restrictions:
 			// - Taker (Shares): Max 4 decimals (multiple of 100 units)
-			// - Maker (USDC): Max 2 decimals (multiple of 10,000 units)
+			// - Maker (USDC): Max 4 decimals (multiple of 100 units) to ensure exact price match
 
 			// Truncate size to 4 decimals
 			sizeMicro = (sizeMicro / 100) * 100
@@ -158,12 +158,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 			usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-			// Round up USDC to 2 decimals to ensure we don't drop below the $1.00 CLOB minimum
+			// Round up USDC to nearest 4 decimals (multiple of 100 units)
+			// to ensure implied price remains >= limit price
 			usdcVal := usdcMicroBig.Int64()
-			if usdcVal%10000 != 0 {
-				usdcVal = ((usdcVal / 10000) + 1) * 10000
-			} else {
-				usdcVal = (usdcVal / 10000) * 10000
+			if usdcVal%100 != 0 {
+				usdcVal = ((usdcVal / 100) + 1) * 100
 			}
 			usdcMicroBig.SetInt64(usdcVal)
 
@@ -186,12 +185,12 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		if req.OrderType == OrderTypeMarket {
-			// Market Sell Restrictions:
-			// - Maker (Shares): Max 4 decimals (multiple of 100 units)
-			// - Taker (USDC): Max 2 decimals (multiple of 10,000 units)
+			// Market Sell Restrictions (per API error):
+			// - Maker (Shares): Max 2 decimals (multiple of 10,000 units)
+			// - Taker (USDC): Max 4 decimals (multiple of 100 units)
 
-			// Truncate size to 4 decimals
-			sizeMicro = (sizeMicro / 100) * 100
+			// Truncate size (Shares) to 2 decimals
+			sizeMicro = (sizeMicro / 10000) * 10000
 
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 
@@ -202,11 +201,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 				usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
 			}
 
-			// Round USDC up to nearest 2 decimals (multiple of 10000 units)
+			// Round USDC up to nearest 4 decimals (multiple of 100 units)
 			// to ensure implied price remains >= limit price
 			usdcVal := usdcMicroBig.Int64()
-			if usdcVal%10000 != 0 {
-				usdcVal = ((usdcVal / 10000) + 1) * 10000
+			if usdcVal%100 != 0 {
+				usdcVal = ((usdcVal / 100) + 1) * 100
 			}
 			usdcMicroBig.SetInt64(usdcVal)
 
