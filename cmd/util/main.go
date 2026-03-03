@@ -403,12 +403,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			shares = math.Floor(totalLiq)
 		}
 	} else {
-		// For SELL (Mint & Dump), minimum order size is 5 shares per Polymarket rules.
-		if shares < 5.0 {
-			shares = 5.0
-			fmt.Printf("ℹ️  Bumped USDC to 5.0 to meet the 5-share minimum sell limit.\n")
-		}
-
 		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...),
@@ -446,8 +440,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 
 	var initialUSDC float64
 	if side == "SELL" {
-		initialUSDC, _ = trader.GetBalance(ctx)
-		
+		initialUSDC, _ = trader.ForceRefreshBalance(ctx)
+
 		splitAmount := shares // 1 USDC per split → 1 YES + 1 NO
 		fmt.Printf("🔄 Splitting $%.0f USDC into token pairs...\n", splitAmount)
 		splitCtx, cancelSplit := context.WithTimeout(ctx, 90*time.Second)
@@ -460,7 +454,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		fmt.Println("⏳ Waiting for on-chain settlement...")
 		time.Sleep(3 * time.Second)
 	}
-
 	var wg sync.WaitGroup
 	wg.Add(2)
 	results, errs := make([]*trading.TradeResult, 2), make([]error, 2)
@@ -590,8 +583,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		} else if side == "SELL" {
 			fmt.Println("💰 Sell success! Waiting for on-chain balances to update...")
 			time.Sleep(3 * time.Second)
-			
-			finalUSDC, err := trader.GetBalance(ctx)
+
+			finalUSDC, err := trader.ForceRefreshBalance(ctx)
 			if err != nil {
 				fmt.Printf("⚠️ Failed to fetch final USDC balance: %v\n", err)
 			} else {
@@ -599,12 +592,12 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				// actual received from the sale = finalUSDC - (initialUSDC - shares)
 				expectedRemaining := initialUSDC - shares
 				actualReceived := finalUSDC - expectedRemaining
-				
+
 				// Expected to receive totalValue, but paid fee and slippage
 				expectedReceived := totalValue
 				totalActualFee := expectedReceived - actualReceived
 				if totalActualFee < 0 { totalActualFee = 0 }
-				
+
 				fmt.Printf("📊 On-chain USDC: Initial=$%.2f, Final=$%.2f\n", initialUSDC, finalUSDC)
 				fmt.Printf("💵 Actual Received: $%.4f USDC (Expected ~$%.2f)\n", actualReceived, expectedReceived)
 				fmt.Printf("💸 ACTUAL DEDUCTED FEE & SLIPPAGE: $%.4f USDC\n", totalActualFee)
