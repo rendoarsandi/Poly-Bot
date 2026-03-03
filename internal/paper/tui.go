@@ -1053,26 +1053,6 @@ func (m tuiModel) renderHeader(w int) string {
 		Align(lipgloss.Center).
 		Render("◆  POLYARB-15M TRADING TERMINAL  ◆")
 
-	// WS ping
-	_, wsSt := latencyDot(s.wsPingLatency, 200, 500)
-	wsStr := "…"
-	if s.wsPingLatency > 0 {
-		wsStr = s.wsPingLatency.Round(time.Millisecond).String()
-	}
-	// WS freshness
-	freshSt := styleGreen
-	freshStr := "…"
-	if s.wsLatency > 0 {
-		freshStr = fmt.Sprintf("%.0fs", s.wsLatency.Seconds())
-		if s.wsLatency > 10*time.Second {
-			freshSt = styleRed
-		} else if s.wsLatency > 5*time.Second {
-			freshSt = styleYellow
-		}
-	}
-	wsPart := wsSt.Render("● WS ") + wsSt.Render(wsStr) +
-		styleMuted.Render(" (") + freshSt.Render(freshStr) + styleMuted.Render(")")
-
 	uptime := time.Since(s.startTime).Round(time.Second)
 	uptimePart := styleDimmed.Render("⏱ " + uptime.String())
 	quitPart := styleMuted.Render("[q] quit")
@@ -1080,7 +1060,7 @@ func (m tuiModel) renderHeader(w int) string {
 	clearPart := styleMuted.Render("[c] clear")
 
 	sep := styleMuted.Render("  ·  ")
-	info := "  " + wsPart + sep + uptimePart + sep + settingsPart + sep + clearPart + sep + quitPart
+	info := "  " + uptimePart + sep + settingsPart + sep + clearPart + sep + quitPart
 
 	content := title + "\n" + info
 	return makePanel(inner, clrBrand, content)
