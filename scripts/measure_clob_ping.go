@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -27,15 +28,48 @@ func main() {
 	log.SetFlags(0)
 	log.SetOutput(os.Stderr)
 
+	fmt.Printf("🚀 Measuring Raw Network Ping (%d samples)...\n", samples)
+	fmt.Println("--------------------------------------------------")
+	
+	client := &http.Client{Timeout: 5 * time.Second}
+	var totalRaw time.Duration
+	var rawSuccess int
+
+	for i := 1; i <= samples; i++ {
+		start := time.Now()
+		resp, err := client.Get("https://clob.polymarket.com/time")
+		latency := time.Since(start)
+
+		if err != nil {
+			fmt.Printf("Raw Ping %d: ❌ Error: %v\n", i, err)
+		} else {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				fmt.Printf("Raw Ping %d: ✅ %v\n", i, latency)
+				totalRaw += latency
+				rawSuccess++
+			} else {
+				fmt.Printf("Raw Ping %d: ❌ Bad Status %d\n", i, resp.StatusCode)
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if rawSuccess > 0 {
+		fmt.Printf("📊 Average Raw Ping: %v\n\n", totalRaw/time.Duration(rawSuccess))
+	} else {
+		fmt.Printf("📊 Average Raw Ping: N/A\n\n")
+	}
+
 	cfg, err := core.LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
 	clob, err := api.NewCLOBClient(cfg.PK, cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize CLOB client: %v\\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize CLOB client: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -49,10 +83,10 @@ func main() {
 	ctx := context.Background()
 	tokenID := "21742633143463906290569050155826241533067272736897614950488156847949938836455"
 
-	var totalLatency time.Duration
-	var successful int
+	var totalTrade time.Duration
+	var tradeSuccess int
 
-	fmt.Printf("🚀 Measuring CLOB Offchain + Ping Latency (%d samples)...\\n", samples)
+	fmt.Printf("🚀 Measuring Trade-Ready Ping (Signing + Auth) (%d samples)...\n", samples)
 	fmt.Println("--------------------------------------------------")
 
 	for i := 1; i <= samples; i++ {
@@ -70,11 +104,11 @@ func main() {
 		os.Stdout = oldStdout // Restore stdout
 
 		if err != nil {
-			fmt.Printf("Attempt %d: ❌ Error: %v (Latency: %v)\\n", i, err, latency)
+			fmt.Printf("Trade Ping %d: ❌ Error: %v (Latency: %v)\n", i, err, latency)
 		} else {
-			fmt.Printf("Attempt %d: ✅ Success | Latency: %v\\n", i, latency)
-			totalLatency += latency
-			successful++
+			fmt.Printf("Trade Ping %d: ✅ %v\n", i, latency)
+			totalTrade += latency
+			tradeSuccess++
 		}
 
 		// Wait briefly before next ping
@@ -82,10 +116,9 @@ func main() {
 	}
 
 	fmt.Println("--------------------------------------------------")
-	if successful > 0 {
-		avg := totalLatency / time.Duration(successful)
-		fmt.Printf("📊 Average Ping Latency: %v\\n", avg)
+	if tradeSuccess > 0 {
+		fmt.Printf("📊 Average Trade Ping: %v\n", totalTrade/time.Duration(tradeSuccess))
 	} else {
-		fmt.Println("📊 Average Ping Latency: N/A (all requests failed)")
+		fmt.Println("📊 Average Trade Ping: N/A (all requests failed)")
 	}
 }
