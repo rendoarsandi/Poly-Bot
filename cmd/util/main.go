@@ -67,11 +67,28 @@ func main() {
 	}
 
 	// 1. Find markets
-	fmt.Println("🔍 Searching for active 15m markets...")
-	markets := findMarkets(ctx, client)
+	fmt.Println("Select timeframe:")
+	fmt.Println("1. 5m")
+	fmt.Println("2. 15m")
+	fmt.Print("Choice [default 2]: ")
+	var tfChoice string
+	_, _ = fmt.Scanln(&tfChoice)
+	tfChoice = strings.TrimSpace(tfChoice)
+	
+	timeframe := "15m"
+	if tfChoice == "1" {
+		timeframe = "5m"
+	} else if tfChoice == "2" || tfChoice == "" {
+		timeframe = "15m"
+	} else {
+		log.Fatalf("❌ Invalid choice.")
+	}
+
+	fmt.Printf("🔍 Searching for active %s markets...\n", timeframe)
+	markets := findMarkets(ctx, client, timeframe)
 
 	if len(markets) == 0 {
-		log.Fatal("❌ No active 15m markets found.")
+		log.Fatalf("❌ No active %s markets found.", timeframe)
 	}
 
 	// 1.2 Asset selection
@@ -137,10 +154,10 @@ func main() {
 
 		if err == nil {
 			tokenFeeRates[out] = rate
-			// 15m markets require 1000 bps authorization even if endpoint returns 0
+			// markets might require 1000 bps authorization even if endpoint returns 0
 			if rate == 0 {
 				tokenFeeRates[out] = 1000
-				fmt.Printf("ℹ️  Fee rate for %s returned 0, forcing 1000 bps (required for 15m)\n", out)
+				fmt.Printf("ℹ️  Fee rate for %s returned 0, forcing 1000 bps\n", out)
 			} else {
 				fmt.Printf("ℹ️  Fee rate for %s: %d bps\n", out, rate)
 			}
@@ -265,28 +282,40 @@ takeAction:
 	fmt.Print("Choice: ")
 	var choice int
 	_, _ = fmt.Scanln(&choice)
-	fmt.Print("Shares per side (min 5): ")
-	var shares float64
-	_, _ = fmt.Scanln(&shares)
-
-	if choice == 1 {		executeBoth(ctx, trader, market, outcomes, "BUY", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
+	
+	var inputAmount float64
+	if choice == 1 {
+		fmt.Print("USDC to Panic Buy (min 5): ")
+		_, _ = fmt.Scanln(&inputAmount)
+		executeBoth(ctx, trader, market, outcomes, "BUY", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
+	} else if choice == 2 {
+		fmt.Print("USDC to Panic Sell (min 5): ")
+		_, _ = fmt.Scanln(&inputAmount)
+		executeBoth(ctx, trader, market, outcomes, "SELL", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	} else {
-		executeBoth(ctx, trader, market, outcomes, "SELL", shares, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		log.Fatal("Invalid choice.")
 	}
 }
 
-func findMarkets(ctx context.Context, restClient *api.RestClient) map[string]*api.Market {
+func findMarkets(ctx context.Context, restClient *api.RestClient, timeframe string) map[string]*api.Market {
 	found := make(map[string]*api.Market)
 	assets := []string{"btc", "eth"}
+	
+	// Set dynamic spare time based on timeframe to prevent volatility
+	spareTime := 31 * time.Minute
+	if timeframe == "5m" {
+		spareTime = 11 * time.Minute // 5m markets are created closer to expiration, use 11m
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return found
 		default:
-			if ms, err := restClient.GetMarketsByTimeframe(ctx, nil, "15m"); err == nil {
+			if ms, err := restClient.GetMarketsByTimeframe(ctx, nil, timeframe); err == nil {
 				for _, m := range ms {
 					et, _ := paper.ParseEndTimeFromSlug(m.Slug)
-					if time.Now().After(et) || time.Until(et) < 30*time.Second {
+					if time.Now().After(et) || time.Until(et) < spareTime {
 						continue
 					}
 					for _, a := range assets {
@@ -349,6 +378,20 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	shares := targetShares
 
 	if side == "BUY" {
+		combinedPrice := prices[outcomes[0]] + prices[outcomes[1]]
+		if combinedPrice > 0 {
+			shares = targetShares / combinedPrice
+		}
+		
+		// To avoid "min size: $1" errors on Market buys due to price being slightly below $1.00 or floating point issues:
+		// Let's ensure the *MakerAmount* will be at least 1.05 USDC if they try to buy a very small amount.
+		// For a market buy, price used is 0.99, so makerAmount = shares * 0.99.
+		// We want shares * 0.99 >= 1.05  => shares >= 1.05 / 0.99
+		minShares := 1.05 / 0.99
+		if shares < minShares {
+			shares = minShares
+		}
+		
 		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[1]]...),
@@ -360,6 +403,12 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			shares = math.Floor(totalLiq)
 		}
 	} else {
+		// For SELL (Mint & Dump), minimum order size is 5 shares per Polymarket rules.
+		if shares < 5.0 {
+			shares = 5.0
+			fmt.Printf("ℹ️  Bumped USDC to 5.0 to meet the 5-share minimum sell limit.\n")
+		}
+
 		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...),
@@ -373,14 +422,32 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	}
 
 	totalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
-	fmt.Printf("🚀 Executing: %s %.0f shares (Est. total value: $%.2f USDC). Confirm? (y/n): ", side, shares, totalValue)
+
+	expectedFee0 := shares * (float64(tokenFeeRates[outcomes[0]]) / 10000.0)
+	expectedFee1 := shares * (float64(tokenFeeRates[outcomes[1]]) / 10000.0)
+	
+	if side == "BUY" {
+		fmt.Printf("💸 Expected fee deduction: %s=%.4f shares, %s=%.4f shares\n", outcomes[0], expectedFee0, outcomes[1], expectedFee1)
+	} else {
+		expectedUsdcFee0 := expectedFee0 * prices[outcomes[0]]
+		expectedUsdcFee1 := expectedFee1 * prices[outcomes[1]]
+		fmt.Printf("💸 Expected fee deduction: %s=$%.4f, %s=$%.4f\n", outcomes[0], expectedUsdcFee0, outcomes[1], expectedUsdcFee1)
+	}
+
+	unitName := "shares"
+	if side == "SELL" {
+		unitName = "USDC"
+	}
+	fmt.Printf("🚀 Executing: %s %.0f %s (Est. total value: $%.2f USDC). Confirm? (y/n): ", side, shares, unitName, totalValue)
 	var confirm string
 	_, _ = fmt.Scanln(&confirm)
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {		log.Fatal("Cancelled.")
 	}
 
-	// For SELL: Split USDC into YES+NO tokens first
+	var initialUSDC float64
 	if side == "SELL" {
+		initialUSDC, _ = trader.GetBalance(ctx)
+		
 		splitAmount := shares // 1 USDC per split → 1 YES + 1 NO
 		fmt.Printf("🔄 Splitting $%.0f USDC into token pairs...\n", splitAmount)
 		splitCtx, cancelSplit := context.WithTimeout(ctx, 90*time.Second)
@@ -417,7 +484,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
 				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 			}
-			printTradeResult(side+" "+o, results[i], errs[i])
+			printTradeResult(side+" "+o, results[i], errs[i], rate, execShares)
 		}(out, idx)
 	}
 	wg.Wait()
@@ -487,10 +554,20 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 
 			bal0, bal1, err0, err1 := trader.QueryBalancedCTFBalances(context.Background(), token0, token1, shares)
 			if err0 != nil || err1 != nil {
-				fmt.Printf("⚠️ Failed to query balances (err0=%v, err1=%v), falling back to requested shares\n", err0, err1)
-				bal0, bal1 = shares, shares
+				feeRate0 := float64(tokenFeeRates[outcomes[0]]) / 10000.0
+				feeRate1 := float64(tokenFeeRates[outcomes[1]]) / 10000.0
+				bal0 = shares * (1.0 - feeRate0)
+				bal1 = shares * (1.0 - feeRate1)
+				fmt.Printf("⚠️ Failed to query balances (err0=%v, err1=%v), falling back to fee-deducted shares (%.6f, %.6f)\n", err0, err1, bal0, bal1)
 			}
-			fmt.Printf("📊 On-chain balances: %s=%.2f, %s=%.2f\n", outcomes[0], bal0, outcomes[1], bal1)
+			
+			actualFee0 := shares - bal0
+			actualFee1 := shares - bal1
+			if actualFee0 < 0 { actualFee0 = 0 }
+			if actualFee1 < 0 { actualFee1 = 0 }
+			
+			fmt.Printf("📊 On-chain balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
+			fmt.Printf("💸 ACTUAL DEDUCTED FEE: %s=%.4f shares, %s=%.4f shares\n", outcomes[0], actualFee0, outcomes[1], actualFee1)
 
 			// Don't floor the merge quantity! CTF supports 6 decimals.
 			// Use the minimum available balance directly to merge everything.
@@ -510,11 +587,33 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			} else {
 				fmt.Printf("⚠️ Not enough balanced pairs to merge (min=%.6f)\n", minQty)
 			}
+		} else if side == "SELL" {
+			fmt.Println("💰 Sell success! Waiting for on-chain balances to update...")
+			time.Sleep(3 * time.Second)
+			
+			finalUSDC, err := trader.GetBalance(ctx)
+			if err != nil {
+				fmt.Printf("⚠️ Failed to fetch final USDC balance: %v\n", err)
+			} else {
+				// We started with initialUSDC, split 'shares' amount, then sold.
+				// actual received from the sale = finalUSDC - (initialUSDC - shares)
+				expectedRemaining := initialUSDC - shares
+				actualReceived := finalUSDC - expectedRemaining
+				
+				// Expected to receive totalValue, but paid fee and slippage
+				expectedReceived := totalValue
+				totalActualFee := expectedReceived - actualReceived
+				if totalActualFee < 0 { totalActualFee = 0 }
+				
+				fmt.Printf("📊 On-chain USDC: Initial=$%.2f, Final=$%.2f\n", initialUSDC, finalUSDC)
+				fmt.Printf("💵 Actual Received: $%.4f USDC (Expected ~$%.2f)\n", actualReceived, expectedReceived)
+				fmt.Printf("💸 ACTUAL DEDUCTED FEE & SLIPPAGE: $%.4f USDC\n", totalActualFee)
+			}
 		}
 	}
 }
 
-func printTradeResult(act string, res *trading.TradeResult, err error) {
+func printTradeResult(act string, res *trading.TradeResult, err error, rate int, shares float64) {
 	if err != nil || (res != nil && !res.Success) {
 		msg := "Error"
 		if err != nil {
@@ -524,6 +623,20 @@ func printTradeResult(act string, res *trading.TradeResult, err error) {
 		}
 		fmt.Printf("FAILED: %s - %s\n", act, msg)
 	} else {
-		fmt.Printf("SUCCESS: %s - OrderID: %s\n", act, res.OrderID)
+		actualFeeRate := float64(rate) / 10000.0
+		feePercentage := float64(rate) / 100.0 // bps to percentage
+		if strings.HasPrefix(act, "BUY") {
+			// For BUY, fee is deducted from the shares you receive.
+			// However, since we executed at price 0.99 for Market Buy, the actual shares matched might differ.
+			// The API charges fee on the matched shares. For simplicity and estimation parity, we show the expected fee based on the requested shares.
+			feeShares := shares * actualFeeRate
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares\n", act, res.OrderID, feePercentage, feeShares)
+		} else {
+			// For SELL, fee is deducted from the USDC you receive.
+			// Since we executed at price 0.01 for Market Sell, the actual USDC matched might differ.
+			// For simplicity and estimation parity, we show the expected fee based on the requested shares.
+			feeUSDC := shares * actualFeeRate
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC\n", act, res.OrderID, feePercentage, feeUSDC)
+		}
 	}
 }

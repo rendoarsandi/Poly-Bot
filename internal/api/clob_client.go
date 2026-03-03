@@ -148,11 +148,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 
 		if req.OrderType == OrderTypeMarket {
 			// Market Buy Restrictions:
-			// - Taker (Shares): Max 4 decimals (multiple of 100 units)
+			// - Taker (Shares): Max 2 decimals (multiple of 10000 units)
 			// - Maker (USDC): Max 4 decimals (multiple of 100 units) to ensure exact price match
 
-			// Truncate size to 4 decimals
-			sizeMicro = (sizeMicro / 100) * 100
+			// Truncate size to 2 decimals
+			sizeMicro = (sizeMicro / 10000) * 10000
 
 			// Calculate USDC cost with truncated size
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
@@ -786,12 +786,15 @@ func (c *CLOBClient) GetTradeHistory(ctx context.Context) ([]TradeHistory, error
 		return nil, fmt.Errorf("get trades failed with status %d", resp.StatusCode)
 	}
 
-	var trades []TradeHistory
-	if err := json.NewDecoder(resp.Body).Decode(&trades); err != nil {
+	var response struct {
+		Data       []TradeHistory `json:"data"`
+		NextCursor string         `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("failed to decode trades: %w", err)
 	}
 
-	return trades, nil
+	return response.Data, nil
 }
 
 // MarketInfo represents market resolution info
