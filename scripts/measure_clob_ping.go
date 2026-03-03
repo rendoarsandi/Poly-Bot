@@ -12,9 +12,13 @@ import (
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	godotenv.Load("../.env")
+	godotenv.Load(".env")
+
 	var samples int
 	flag.IntVar(&samples, "n", 10, "Number of ping samples")
 	flag.Parse()

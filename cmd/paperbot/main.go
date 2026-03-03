@@ -640,6 +640,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastReconnectCount := int32(0)    // Track reconnections
 	lastWsWarnTime := time.Time{}     // Rate-limit WS warnings
 	lastForceReconnect := time.Time{} // Track forced reconnection attempts
+	lastTrade := time.Time{}          // Prevent trade spam
 
 	const wsWarnInterval = 10 * time.Second   // Only warn once per 10 seconds
 	const wsForceReconnect = 10 * time.Second // Force reconnection after 10 seconds stale
@@ -1103,6 +1104,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						// Will use baseShares only (no scaling)
 					}
 
+					if time.Since(lastTrade) <= 2*time.Second {
+						// Cooldown - don't spam logs, just skip silently
+						continue
+					}
+
 					if margin >= minMarginPercent-1e-4 && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
 						baseShares := baseSharesPerTrade
 
@@ -1374,6 +1380,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 						}
 
+						lastTrade = time.Now()
 						t.LaddersPlaced = true
 					}
 				}
