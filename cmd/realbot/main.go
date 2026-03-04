@@ -946,6 +946,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 	doneWS:
 
+		// Final safety check: scrub any crossed books that survived the WS processing loop
+		for _, outcome := range outcomes {
+			if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 && tokenBids[outcome] >= tokenAsks[outcome] {
+				tokenBids[outcome] = 0
+				tokenAsks[outcome] = 0
+				tokenFullBids[outcome] = nil
+				tokenFullAsks[outcome] = nil
+				lastUpdateTs[outcome] = 0
+				lastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
+			}
+		}
+
 		if messagesProcessed > 0 {
 			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}

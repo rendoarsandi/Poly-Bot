@@ -987,6 +987,19 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 		doneProcessingWS:
 
+			// Final safety check: scrub any crossed books that survived the WS processing loop
+			t.mu.Lock()
+			for outcome := range t.TokenMap {
+				if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 && t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+					t.TokenBids[outcome] = 0
+					t.TokenAsks[outcome] = 0
+					t.TokenFullBids[outcome] = nil
+					t.TokenFullAsks[outcome] = nil
+					t.LastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
+				}
+			}
+			t.mu.Unlock()
+
 			// Update TUI after processing WS messages
 			if messagesProcessed > 0 {
 				t.TUI.UpdateMarketPricesWithSource(t.ID, t.TokenBids, t.TokenAsks, "WS")
