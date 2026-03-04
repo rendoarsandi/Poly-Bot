@@ -839,6 +839,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									ask = p
 								}
 							}
+							
+							if bid > 0 && ask > 0 && bid >= ask {
+								continue // Reject crossed snapshot
+							}
+
 							outcome := t.TokenMap[b.AssetID]
 							if outcome != "" {
 								foundForThisTrader = true
@@ -948,6 +953,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								ask = p
 							}
 						}
+
+						if bid > 0 && ask > 0 && bid >= ask {
+							continue // Reject crossed snapshot
+						}
+
 						outcome := t.TokenMap[book.AssetID]
 						if outcome != "" {
 							t.mu.Lock()
@@ -1003,8 +1013,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.TUI.UpdateWSLatency(wsLastMsg)
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
+			forceRestFallback := false
+			for outcome := range t.TokenBids {
+				if t.TokenBids[outcome] == 0 || t.TokenAsks[outcome] == 0 || t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+					if staleTime > 3*time.Second {
+						forceRestFallback = true
+						break
+					}
+				}
+			}
+
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			if wsUnhealthy && staleTime > 3*time.Second {
+			if forceRestFallback || (wsUnhealthy && staleTime > 3*time.Second) {
 				t.handleRestFallback(ctx, tokenPrices, staleTime)
 			}
 
@@ -1673,7 +1693,7 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 				t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
 				continue
 			}
-			if p > bid {
+			if p > 0 && p < 1.0 && p > bid {
 				bid = p
 			}
 		}
@@ -1683,9 +1703,13 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 				t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
 				continue
 			}
-			if p > 0 && (ask == 0 || p < ask) {
+			if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
 				ask = p
 			}
+		}
+
+		if bid > 0 && ask > 0 && bid >= ask {
+			continue // Reject crossed book
 		}
 
 		// Always update with whatever data we got (even partial)

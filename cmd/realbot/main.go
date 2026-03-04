@@ -854,6 +854,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// Guard: only persist valid (non-zero) prices so we
 						// never overwrite a good REST value with a zero.
+						if bid > 0 && ask > 0 && bid >= ask {
+							// Reject crossed snapshot
+							continue
+						}
+
 						if bid > 0 {
 							tokenBids[outcome] = bid
 						}
@@ -969,17 +974,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 
-		// Detect ghost levels (crossed market: Bid >= Ask) which indicate a missed zero-size delta
-		hasCrossedMarket := false
+		// Force REST fallback if a book was just cleared or if it is currently crossed
+		forceRestFallback := false
 		for _, outcome := range outcomes {
-			if tokenBids[outcome] >= tokenAsks[outcome] && tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
-				hasCrossedMarket = true
-				break
+			if tokenBids[outcome] == 0 || tokenAsks[outcome] == 0 || tokenBids[outcome] >= tokenAsks[outcome] {
+				// Only force if we haven't updated in a few seconds to avoid spamming
+				if staleTime > 3*time.Second {
+					forceRestFallback = true
+					break
+				}
 			}
 		}
 
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
-		if hasCrossedMarket || (wsUnhealthy && staleTime > 3*time.Second) {
+		if forceRestFallback || (wsUnhealthy && staleTime > 3*time.Second) {
 			// Note: REST fallback updated to also capture full depth
 			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastUpdateTs, engine, restClient, tui) {
 				lastUpdate = time.Now()
@@ -2049,6 +2057,11 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		// Guard each side separately so a missing bid doesn't zero-out a
 		// previously valid ask and vice-versa.
 		if isNewer {
+			// Reject crossed books from REST
+			if bid > 0 && ask > 0 && bid >= ask {
+				continue
+			}
+			
 			if bid > 0 {
 				bids[outcome] = bid
 				success = true
