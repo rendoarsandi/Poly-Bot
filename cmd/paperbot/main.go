@@ -840,22 +840,25 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								}
 							}
 							
-							if bid > 0 && ask > 0 && bid >= ask {
-								continue // Reject crossed snapshot
-							}
-
 							outcome := t.TokenMap[b.AssetID]
 							if outcome != "" {
 								foundForThisTrader = true
 								t.mu.Lock()
-								// Guard: only persist valid (non-zero) prices so we
-								// never overwrite a good REST value with a zero.
-								if bid > 0 {
-									t.TokenBids[outcome] = bid
+								
+								// WS Snapshot is absolute state.
+								if bid > 0 && ask > 0 && bid >= ask {
+									// Reject crossed snapshot and clear state
+									t.TokenBids[outcome] = 0
+									t.TokenAsks[outcome] = 0
+									t.TokenFullBids[outcome] = nil
+									t.TokenFullAsks[outcome] = nil
+									t.mu.Unlock()
+									continue
 								}
-								if ask > 0 {
-									t.TokenAsks[outcome] = ask
-								}
+
+								t.TokenBids[outcome] = bid
+								t.TokenAsks[outcome] = ask
+
 								if bid > 0 && ask > 0 {
 									mid := (bid + ask) / 2
 									t.FloatPrices[outcome] = mid
@@ -1722,17 +1725,21 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		}
 
 		if bid > 0 && ask > 0 && bid >= ask {
+			t.mu.Lock()
+			t.TokenBids[outcome] = 0
+			t.TokenAsks[outcome] = 0
+			t.TokenFullBids[outcome] = nil
+			t.TokenFullAsks[outcome] = nil
+			t.mu.Unlock()
+			restSuccess++ // Ensure UI gets updated to 0
 			continue // Reject crossed book
 		}
 
 		// Always update with whatever data we got (even partial)
 		t.mu.Lock()
-		if bid > 0 {
-			t.TokenBids[outcome] = bid
-		}
-		if ask > 0 && ask < 1.0 {
-			t.TokenAsks[outcome] = ask
-		}
+		t.TokenBids[outcome] = bid
+		t.TokenAsks[outcome] = ask
+		
 		if bid > 0 && ask > 0 && ask < 1.0 {
 			mid := (bid + ask) / 2
 			t.FloatPrices[outcome] = mid
@@ -1743,10 +1750,8 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		t.mu.Unlock()
 
-		// Count as success if we got any valid data
-		if bid > 0 || (ask > 0 && ask < 1.0) || len(book.Bids) > 0 || len(book.Asks) > 0 {
-			restSuccess++
-		}
+		// Count as success to ensure UI gets updated
+		restSuccess++
 	}
 
 	// Log result - minimal spam, maximum info

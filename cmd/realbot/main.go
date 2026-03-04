@@ -2075,6 +2075,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 				asks[outcome] = 0
 				fullBids[outcome] = nil
 				fullAsks[outcome] = nil
+				success = true // Important: ensure UI updates to 0 (--.-)
 				continue
 			}
 			
