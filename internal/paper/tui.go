@@ -1239,7 +1239,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			}
 		}
 
-		// Infer from complement
+		// Infer from complement logic removed to prevent display artifacts when bot clears orderbook
+		/*
 		if bid1 == 0 && ask2 > 0 {
 			bid1 = 1.0 - ask2
 		}
@@ -1252,6 +1253,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		if ask2 == 0 && bid1 > 0 {
 			ask2 = 1.0 - bid1
 		}
+		*/
 
 		fmtP := func(v float64) string {
 			if v <= 0 {

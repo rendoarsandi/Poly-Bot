@@ -1361,8 +1361,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								_, _ = trader.ForceRefreshBalance(ctx)
 
 								// ONE-SHOT: Exit after successful sell
-								tui.LogEvent("[%s] ✅ One-shot execution complete after successful split sell.", id)
-								return
+								tui.LogEvent("[%s] ✅ Execution complete after successful split sell.", id)
+								// return removed to allow continuous trading
 							} else {
 								// Partial success - record to keep inventory accurate
 								if side1Success {
@@ -1850,7 +1850,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								mergeQty = actualMin
 							} else {
 								tui.LogEvent("[%s] ⚠️ No balanced on-chain positions to merge", id)
-								return // Exit tradeMarket
+								continue // Keep monitoring instead of exiting
 							}
 
 							txHash, err := trader.MergeOnChain(mergeCtx, market.ConditionID, mergeQty, len(market.Tokens))
