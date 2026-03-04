@@ -921,6 +921,8 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 				copied = append(copied, levels[i])
 			}
 			t.orderBookDepth[marketID][outcome+"_bids"] = copied
+		} else {
+			delete(t.orderBookDepth[marketID], outcome+"_bids")
 		}
 	}
 	for outcome, levels := range asks {
@@ -930,6 +932,8 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 				copied = append(copied, levels[i])
 			}
 			t.orderBookDepth[marketID][outcome+"_asks"] = copied
+		} else {
+			delete(t.orderBookDepth[marketID], outcome+"_asks")
 		}
 	}
 }
