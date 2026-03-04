@@ -862,8 +862,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						// Always update full depth from snapshots
-						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
-						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
+						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
+						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks, false)
 
 						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
@@ -2049,8 +2049,8 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			}
 			// ALWAYS update full depth (liquidity) if newer, as REST is our primary source
 			// for recovering from stale or dropped WS states.
-			fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
-			fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
+			fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
+			fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		}
 	}
 	if success {

@@ -859,8 +859,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								}
 								// Always update full depth from snapshots — REST will
 								// keep this fresh on the 4 ms poll as well.
-								t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids)
-								t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks)
+								t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
+								t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks, false)
 								t.mu.Unlock()
 							}
 						}
@@ -955,8 +955,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 							}
-							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
-							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
+							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
+							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 							t.mu.Unlock()
 						}
 					}
@@ -1692,8 +1692,8 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 			tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 		}
-		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
-		t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
+		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
+		t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		t.mu.Unlock()
 
 		// Count as success if we got any valid data

@@ -17,11 +17,11 @@ func TestLevelsToPriceDepth(t *testing.T) {
 	}
 
 	expected := []paper.MarketLevel{
-		{Price: 0.50, Size: 100.5},
 		{Price: 0.55, Size: 200.0},
+		{Price: 0.50, Size: 100.5},
 	}
 
-	result := LevelsToPriceDepth(apiLevels)
+	result := LevelsToPriceDepth(apiLevels, true)
 
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("LevelsToPriceDepth failed. Expected %v, got %v", expected, result)

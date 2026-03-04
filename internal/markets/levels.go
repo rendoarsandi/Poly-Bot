@@ -10,8 +10,9 @@ import (
 
 // LevelsToPriceDepth converts a slice of API PriceLevels (string fields) into
 // the float64-typed MarketLevel slice used throughout the paper and trading
-// packages. Entries that fail to parse are skipped silently.
-func LevelsToPriceDepth(levels []api.PriceLevel) []paper.MarketLevel {
+// packages. Entries that fail to parse are skipped silently. The result is sorted
+// depending on whether it represents bids (descending) or asks (ascending).
+func LevelsToPriceDepth(levels []api.PriceLevel, isBid bool) []paper.MarketLevel {
 	result := make([]paper.MarketLevel, 0, len(levels))
 	for _, l := range levels {
 		p, err := strconv.ParseFloat(l.Price, 64)
@@ -24,6 +25,19 @@ func LevelsToPriceDepth(levels []api.PriceLevel) []paper.MarketLevel {
 		}
 		result = append(result, paper.MarketLevel{Price: p, Size: s})
 	}
+	
+	if isBid {
+		// Bids: descending (highest first)
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Price > result[j].Price
+		})
+	} else {
+		// Asks: ascending (lowest first)
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Price < result[j].Price
+		})
+	}
+	
 	return result
 }
 

@@ -210,8 +210,8 @@ func main() {
 					if ask > 0 {
 						tokenAsks[out] = ask
 					}
-					tokenFullBids[out] = mkt.LevelsToPriceDepth(b.Bids)
-					tokenFullAsks[out] = mkt.LevelsToPriceDepth(b.Asks)
+					tokenFullBids[out] = mkt.LevelsToPriceDepth(b.Bids, true)
+					tokenFullAsks[out] = mkt.LevelsToPriceDepth(b.Asks, false)
 				}
 			}
 		case <-ticker.C:
@@ -240,8 +240,8 @@ func main() {
 					if ask > 0 {
 						tokenAsks[out] = ask
 					}
-					tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids)
-					tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks)
+					tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids, true)
+					tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks, false)
 				}
 			}
 
