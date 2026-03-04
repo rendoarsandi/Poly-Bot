@@ -1364,8 +1364,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 
 						// Record both sides - force market orders always fill
-						t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, "FILLED")
-						t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, "FILLED")
+						t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, 0.0, "FILLED")
+						t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, 0.0, "FILLED")
 
 						// INSTANT MERGE: Immediately merge to realize profit
 						// This matches realbot behavior and ensures round PnL is accurate
@@ -1564,8 +1564,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.TUI.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares, profit $%.2f [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								t.ID, t.Outcomes[0], bid1, t.Outcomes[1], bid2, bidSum, sellMargin, sharesToSell, totalProfit,
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-							t.TUI.RecordOrder(t.ID, t.Outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
-							t.TUI.RecordOrder(t.ID, t.Outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
+							t.TUI.RecordOrder(t.ID, t.Outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, profit1, "FILLED")
+							t.TUI.RecordOrder(t.ID, t.Outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, profit2, "FILLED")
 							t.LastSplitSell = time.Now()
 						}
 					}

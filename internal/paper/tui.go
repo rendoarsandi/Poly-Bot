@@ -176,6 +176,7 @@ type OrderHistoryEntry struct {
 	Price     float64
 	Cost      float64
 	Margin    float64
+	Profit    float64
 	Status    string // "FILLED", "PARTIAL", "FAILED"
 }
 
@@ -991,7 +992,7 @@ func (t *TUI) SetKillSwitch(reason string) {
 	t.killReason = reason
 }
 
-func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, margin float64, status string) {
+func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, margin, profit float64, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	entry := OrderHistoryEntry{
@@ -1003,6 +1004,7 @@ func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, m
 		Price:     price,
 		Cost:      cost,
 		Margin:    margin,
+		Profit:    profit,
 		Status:    status,
 	}
 	t.orderHistory = append(t.orderHistory, entry)
@@ -1718,7 +1720,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			sort.Slice(sps, func(i, j int) bool { return sps[i].Outcome < sps[j].Outcome })
 			strs := make([]string, 0, len(sps))
 			for _, sp := range sps {
-				strs = append(strs, fmt.Sprintf("%s: %.0f@$%.2f",
+				strs = append(strs, fmt.Sprintf("%s: %.2f@$%.4f",
 					core.SanitizeString(sp.Outcome), sp.Shares, sp.CostBasis))
 			}
 			sb.WriteString(strings.Join(strs, "  │  "))
@@ -1730,7 +1732,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 						minSh = sp.Shares
 					}
 				}
-				sb.WriteString("  →  " + styleGreen.Render(fmt.Sprintf("%.0f pairs sellable", minSh)))
+				sb.WriteString("  →  " + styleGreen.Render(fmt.Sprintf("%.2f pairs sellable", minSh)))
 			}
 			sb.WriteString("\n")
 		}
@@ -1789,9 +1791,9 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 	sb.WriteString(sectionHeader("📋", fmt.Sprintf("ORDER HISTORY  (last %d)", len(s.orderHistory)), clrSlate) + "\n")
 
 	// Table header
-	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-5s  %-6s  %-5s  %-8s  %-6s  %-7s  %s",
-		"TIME", "MKT", "OUTC", "SIDE", "SHARES", "PRICE", "COST", "MARGIN")) + "\n")
-	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 70))) + "\n")
+	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-5s  %-6s  %-5s  %-9s  %-8s  %-8s  %s",
+		"TIME", "MKT", "OUTC", "SIDE", "SHARES", "PRICE", "VALUE", "PROFIT/MARGIN")) + "\n")
+	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 75))) + "\n")
 
 	displayCount := len(s.orderHistory)
 	if displayCount > maxItems {
@@ -1812,8 +1814,22 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 			marginSt = styleYellow
 		}
 
+		var marginText string
+		if o.Side == "SELL" {
+			sg := ""
+			if o.Profit > 0 {
+				sg = "+"
+			} else if o.Profit < 0 {
+				sg = "-"
+				marginSt = styleRed
+			}
+			marginText = fmt.Sprintf("%s$%.2f (%.1f%%)", sg, math.Abs(o.Profit), o.Margin)
+		} else {
+			marginText = fmt.Sprintf("%.2f%%", o.Margin)
+		}
+
 		aStyle := getAssetStyle(o.MarketID)
-		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %6.0f  $%-5.2f  $%-5.1f  %s  %s\n",
+		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.2f  $%-7.4f  $%-7.2f  %s  %s\n",
 			styleDimmed.Render(o.Timestamp.Format("15:04:05")),
 			aStyle.Render(fmt.Sprintf("%-3s", o.MarketID)),
 			core.SanitizeString(o.Outcome),
@@ -1822,7 +1838,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 			o.Price,
 			o.Cost,
 			statusIcon,
-			marginSt.Render(fmt.Sprintf("%.1f%%", o.Margin)),
+			marginSt.Render(marginText),
 		))
 	}
 

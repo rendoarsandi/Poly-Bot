@@ -1321,8 +1321,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								totalProfit := profit1 + profit2
 								engine.AddRealizedPnL(totalProfit)
 								tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
-								tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, "FILLED")
-								tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, "FILLED")
+								tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, profit1, "FILLED")
+								tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, profit2, "FILLED")
 								// Refresh balance after successful sell (cash increased)
 								_, _ = trader.ForceRefreshBalance(ctx)
 
@@ -1664,7 +1664,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Log results based on VERIFIED state
 						if side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FILLED")
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, 0.0, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
@@ -1676,12 +1676,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 							}
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, "FAILED")
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, 0.0, "FAILED")
 						}
 
 						if side2Success {
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, "FILLED")
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, 0.0, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
@@ -1693,7 +1693,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 							}
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, "FAILED")
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, 0.0, "FAILED")
 						}
 
 						// ═══════════════════════════════════════════════════════════════
