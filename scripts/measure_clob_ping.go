@@ -17,11 +17,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"Market-bot/internal/api"
@@ -59,6 +61,16 @@ func (s *stats) report() string {
 		max.Round(100*time.Microsecond), len(s.samples))
 }
 
+// pingCLOB does GET /time on the CLOB using the bot's shared httpClient
+// via RestClient.PingTime(). Lightest possible authenticated round-trip.
+var benchRest *api.RestClient
+
+func pingCLOB(ctx context.Context) (time.Duration, error) {
+	start := time.Now()
+	err := benchRest.Ping(ctx)
+	return time.Since(start), err
+}
+
 func main() {
 	godotenv.Load("../.env")
 	godotenv.Load(".env")
@@ -67,8 +79,9 @@ func main() {
 	flag.IntVar(&samples, "n", 10, "Number of ping samples per test")
 	flag.Parse()
 
+	// Silence all log output (including [CLOB] API error lines from clob_client)
 	log.SetFlags(0)
-	log.SetOutput(os.Stderr)
+	log.SetOutput(io.Discard)
 
 	cfg, err := core.LoadConfig()
 	if err != nil {
@@ -82,31 +95,51 @@ func main() {
 		os.Exit(1)
 	}
 
-	rest := api.NewRestClient("")
+	benchRest = api.NewRestClient("")
 	ctx := context.Background()
 
-	// Use a real active token — price $0.01 ensures the order is harmless
-	tokenID := "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+	// Fetch a live token ID from an active market
+	fmt.Println("⏳ Finding an active market token...")
+	tokenID := ""
+	markets, err := benchRest.ListMarkets(ctx)
+	if err == nil {
+		for _, m := range markets {
+			if m.Active && !m.Closed && len(m.Tokens) >= 2 {
+				tokenID = m.Tokens[0].TokenID
+				fmt.Printf("   Using token from market: %s\n", m.Slug)
+				break
+			}
+		}
+	}
+	if tokenID == "" {
+		fmt.Println("   ⚠️  Could not find active market, using fallback token (orders will 400 but latency is still valid)")
+		tokenID = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+	}
 
+	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════════════╗")
 	fmt.Println("║        CLOB Latency Benchmark (Real Execution Path)     ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// ── 1. Warm up connections (2 throwaway requests) ──
+	// ── 1. Warm up connections (3 throwaway requests) ──
 	fmt.Println("⏳ Warming up HTTP connection pool...")
-	for i := 0; i < 2; i++ {
-		_, _ = rest.GetOrderBook(ctx, tokenID)
+	var warmupErrs int
+	for i := 0; i < 3; i++ {
+		if _, err := pingCLOB(ctx); err != nil {
+			warmupErrs++
+		}
+	}
+	if warmupErrs > 0 {
+		fmt.Fprintf(os.Stderr, "   ⚠️  %d/%d warm-up pings failed — check network/auth\n", warmupErrs, 3)
 	}
 	fmt.Println()
 
-	// ── 2. Raw Network RTT (uses same shared httpClient as the bot) ──
+	// ── 2. Raw Network RTT ──
 	fmt.Printf("── 1. Raw Network RTT: GET /time (%d samples) ──\n", samples)
 	rawStats := &stats{}
 	for i := 0; i < samples; i++ {
-		start := time.Now()
-		_, err := rest.GetOrderBook(ctx, tokenID)
-		d := time.Since(start)
+		d, err := pingCLOB(ctx)
 		if err != nil {
 			fmt.Printf("   %2d: ❌ %v\n", i+1, err)
 		} else {
@@ -120,32 +153,20 @@ func main() {
 	fmt.Printf("── 2. EIP-712 Signing Overhead: CPU only (%d samples) ──\n", samples)
 	signStats := &stats{}
 	clob.SetTestMode(true)
-	// Suppress stdout from internal packages
-	oldStdout := os.Stdout
-	null, _ := os.Open(os.DevNull)
 	for i := 0; i < samples; i++ {
 		req := &api.OrderRequest{
 			TokenID: tokenID, Price: 0.50, Size: 10.0,
 			Side: api.SideBuy, FeeRateBps: 100,
 		}
-		// In test mode PlaceOrder does: salt + amount calc + EIP-712 sign +
-		// HMAC auth + JSON marshal + build HTTP request + GetBalanceAllowance.
-		// We want ONLY the signing part, so we measure a tight loop of just
-		// the signing by calling PlaceOrder with a disconnected context that
-		// will fail on the network call, giving us just the CPU time.
-		//
-		// Actually, test mode returns before any network call if we give it
-		// a context that already expired for the balance check. But that
-		// changes the codepath. Instead, just measure the full test-mode
-		// PlaceOrder (which includes one GET /balance-allowance) and subtract
-		// the raw RTT later to isolate signing.
-		os.Stdout = null
 		start := time.Now()
-		_, _ = clob.PlaceOrder(ctx, req)
+		_, err := clob.PlaceOrder(ctx, req)
 		d := time.Since(start)
-		os.Stdout = oldStdout
-		signStats.add(d)
-		fmt.Printf("   %2d: %v (sign + balance check)\n", i+1, d.Round(100*time.Microsecond))
+		if err != nil {
+			fmt.Printf("   %2d: ❌ %v\n", i+1, err)
+		} else {
+			signStats.add(d)
+			fmt.Printf("   %2d: %v (sign + balance check)\n", i+1, d.Round(100*time.Microsecond))
+		}
 	}
 	fmt.Printf("   📊 %s\n", signStats.report())
 	fmt.Println("   ℹ️  This includes 1x GET /balance-allowance. Subtract raw RTT for pure signing cost.")
@@ -182,11 +203,9 @@ func main() {
 			TimeInForce: api.TIFImmediateOrCancel,
 			FeeRateBps:  100,
 		}
-		os.Stdout = null
 		start := time.Now()
 		resp, err := clob.PlaceOrder(ctx, req)
 		d := time.Since(start)
-		os.Stdout = oldStdout
 
 		status := "?"
 		if err != nil {
@@ -209,6 +228,7 @@ func main() {
 	parallelStats := &stats{}
 	leg1Stats := &stats{}
 	leg2Stats := &stats{}
+	var errCount int64
 	for i := 0; i < samples; i++ {
 		var d1, d2 time.Duration
 		var wg sync.WaitGroup
@@ -223,10 +243,11 @@ func main() {
 				TimeInForce: api.TIFImmediateOrCancel, FeeRateBps: 100,
 			}
 			s := time.Now()
-			os.Stdout = null
-			_, _ = clob.PlaceOrder(ctx, req)
-			os.Stdout = oldStdout
+			_, err := clob.PlaceOrder(ctx, req)
 			d1 = time.Since(s)
+			if err != nil {
+				atomic.AddInt64(&errCount, 1)
+			}
 		}()
 		go func() {
 			defer wg.Done()
@@ -236,10 +257,11 @@ func main() {
 				TimeInForce: api.TIFImmediateOrCancel, FeeRateBps: 100,
 			}
 			s := time.Now()
-			os.Stdout = null
-			_, _ = clob.PlaceOrder(ctx, req)
-			os.Stdout = oldStdout
+			_, err := clob.PlaceOrder(ctx, req)
 			d2 = time.Since(s)
+			if err != nil {
+				atomic.AddInt64(&errCount, 1)
+			}
 		}()
 		wg.Wait()
 		total := time.Since(overallStart)
@@ -252,6 +274,9 @@ func main() {
 			d1.Round(100*time.Microsecond),
 			d2.Round(100*time.Microsecond))
 		time.Sleep(300 * time.Millisecond)
+	}
+	if errCount > 0 {
+		fmt.Printf("   ⚠️  %d errors encountered — results may not reflect real latency\n", errCount)
 	}
 	fmt.Printf("   📊 Wall clock: %s\n", parallelStats.report())
 	fmt.Printf("   📊 Leg 1:      %s\n", leg1Stats.report())

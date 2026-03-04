@@ -1788,9 +1788,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// NOW record to engine - only record positions that actually succeeded
 						// This ensures engine state matches reality for accurate drawdown calculation
-						// Declare mergeCancel at this scope so both branches can use it
-						var mergeCancel context.CancelFunc
-
 						if side1Success && side2Success {
 						        // Both sides filled (either initially or via recovery) - record both
 						        _, _ = engine.BuyForMarket(id, outcomes[0], price1, shares)
@@ -1800,8 +1797,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
 							time.Sleep(5 * time.Second)
 
-							var mergeCtx context.Context
-							mergeCtx, mergeCancel = context.WithTimeout(context.Background(), 60*time.Second)
+							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 60*time.Second)
 
 							// Query on-chain CTF balances with retries (mirrors utilbot's queryBalancedCTFBalances).
 							// CLOB positions are off-chain order records; for MergeOnChain the tokens must be
@@ -1875,7 +1871,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 							time.Sleep(5 * time.Second)
 						} else if side1Success || side2Success {
-							mergeCancel() // Release unused merge context
 							// Only one side filled after retry — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.
 							if side1Success {

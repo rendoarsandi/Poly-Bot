@@ -501,3 +501,20 @@ func parseFloat(s string) (float64, error) {
 func (c *RestClient) CloseIdleConnections() {
 	httpClient.CloseIdleConnections()
 }
+
+
+// Ping does a lightweight GET /time to measure raw network RTT through the
+// shared httpClient (same transport, connection pool, and HTTP/2 as the bot).
+func (c *RestClient) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/time", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return nil
+}
