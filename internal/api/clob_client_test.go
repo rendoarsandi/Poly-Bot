@@ -155,14 +155,14 @@ func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 		t.Fatalf("PlaceOrder failed: %v", err)
 	}
 
-	// Shares (Maker for SELL): 10.123456 -> 4 decimals -> 10.1234 -> 10123400 micro
-	if makerAmount != "10123400" {
-		t.Errorf("Expected makerAmount (shares) 10123400, got %s", makerAmount)
+	// Shares (Maker for SELL): 10.123456 -> 2 decimals (truncate) -> 10.12 -> 10120000 micro
+	if makerAmount != "10120000" {
+		t.Errorf("Expected makerAmount (shares) 10120000, got %s", makerAmount)
 	}
 
-	// USDC (Taker for SELL): 10.1234 * 0.5 = 5.0617 USDC
-	// Round up to nearest 2 decimals = 5.07 USDC -> 5070000 micro
-	if takerAmount != "5070000" {
-		t.Errorf("Expected takerAmount (USDC) 5070000, got %s", takerAmount)
+	// USDC (Taker for SELL): 10.12 * 0.5 = 5.06 USDC
+	// Round up to nearest 4 decimals = 5.06 USDC -> 5060000 micro
+	if takerAmount != "5060000" {
+		t.Errorf("Expected takerAmount (USDC) 5060000, got %s", takerAmount)
 	}
 }

@@ -283,9 +283,12 @@ func run() error {
 	// Watchdog for graceful shutdown
 	go func() {
 		<-ctx.Done()
-		// If we receive another interrupt during cleanup, force exit
+		// If we receive a second interrupt during cleanup, force exit.
+		// Use a separate signal channel since ctx is already cancelled.
+		forceCh := make(chan os.Signal, 1)
+		signal.Notify(forceCh, os.Interrupt, syscall.SIGTERM)
 		go func() {
-			<-ctx.Done()
+			<-forceCh
 			core.RestoreTerminal()
 			fmt.Println("\n⚠️ Force exit requested")
 			os.Exit(1)
@@ -1279,16 +1282,36 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							side2Success := err2 == nil && res2 != nil && res2.Success
 
 							// ═══════════════════════════════════════════════════════════════
-							// ONE-SHOT: No recovery - if unbalanced, log and exit
+							// LEGGED SPLIT SELL RECOVERY: If one side sold and the other
+							// didn't, retry the failed side once to avoid an unbalanced
+							// split inventory (which causes permanent exposure).
 							// ═══════════════════════════════════════════════════════════════
 							if side1Success != side2Success {
-								// One succeeded, one failed - just log and move on
 								failedOutcome := outcomes[0]
+								failedToken := token0
+								failedRate := tokenFeeRates[outcomes[0]]
 								if side1Success {
 									failedOutcome = outcomes[1]
+									failedToken = token1
+									failedRate = tokenFeeRates[outcomes[1]]
 								}
-								tui.LogEvent("[%s] ⚠️ SPLIT UNBALANCED: %s sold, %s failed. Skipping recovery (one-shot mode).", id,
+								if failedRate == 0 {
+									failedRate = 1000
+								}
+								tui.LogEvent("[%s] ⚠️ SPLIT LEGGED: %s sold, %s failed — retrying failed side...", id,
 									map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome)
+								time.Sleep(1 * time.Second)
+								retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, failedRate)
+								if retryErr == nil && retryRes != nil && retryRes.Success {
+									if !side1Success {
+										side1Success = true
+									} else {
+										side2Success = true
+									}
+									tui.LogEvent("[%s] ✅ SPLIT: Retry %s succeeded", id, failedOutcome)
+								} else {
+									tui.LogEvent("[%s] ❌ SPLIT: Retry %s failed (legged position remains)", id, failedOutcome)
+								}
 							}
 
 							if side1Success && side2Success {
@@ -1765,16 +1788,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// NOW record to engine - only record positions that actually succeeded
 						// This ensures engine state matches reality for accurate drawdown calculation
+						// Declare mergeCancel at this scope so both branches can use it
+						var mergeCancel context.CancelFunc
+
 						if side1Success && side2Success {
 						        // Both sides filled (either initially or via recovery) - record both
 						        _, _ = engine.BuyForMarket(id, outcomes[0], price1, shares)
 						        _, _ = engine.BuyForMarket(id, outcomes[1], price2, shares)
 
-						        // ONE-SHOT: Execute merge and then EXIT							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
+						        // ONE-SHOT: Execute merge and then EXIT
+							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
 							time.Sleep(5 * time.Second)
 
-							mergeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-							defer cancel()
+							var mergeCtx context.Context
+							mergeCtx, mergeCancel = context.WithTimeout(context.Background(), 60*time.Second)
 
 							// Query on-chain CTF balances with retries (mirrors utilbot's queryBalancedCTFBalances).
 							// CLOB positions are off-chain order records; for MergeOnChain the tokens must be
@@ -1839,6 +1866,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 							}
 
+							mergeCancel() // Release merge context resources
 							tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
 
 							// Refresh balance for next trade
@@ -1847,6 +1875,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 							time.Sleep(5 * time.Second)
 						} else if side1Success || side2Success {
+							mergeCancel() // Release unused merge context
 							// Only one side filled after retry — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.
 							if side1Success {
@@ -1859,7 +1888,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 60*time.Second)
-							defer cancelCleanup()
 
 							tui.LogEvent("[%s] ⚠️ Legged trade detected! Waiting up to 10s for delayed on-chain balances to settle...", id)
 
@@ -1923,12 +1951,25 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
+								// Record estimated loss from cleanup sells (sold at market floor $0.01)
+								cleanupLoss := 0.0
+								if bal0 >= 0.01 && sell0Err == nil {
+									cleanupLoss += bal0 * (price1 - 0.01) // Lost difference vs buy price
+								}
+								if bal1 >= 0.01 && sell1Err == nil {
+									cleanupLoss += bal1 * (price2 - 0.01)
+								}
+								if cleanupLoss > 0 {
+									trader.RecordLoss(cleanupLoss)
+									tui.LogEvent("[%s] 📉 Cleanup loss recorded: $%.2f", id, cleanupLoss)
+								}
 								tui.LogEvent("[%s] ✅ Auto-cleanup routine finished! Applying 30s cooldown before unblocking.", id)
 								panicBuyCooldown = time.Now().Add(30 * time.Second)
 							} else {
 								tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Applying 2m cooldown to prevent immediate retry loops.", id)
 								panicBuyCooldown = time.Now().Add(120 * time.Second)
 							}
+							cancelCleanup() // Release cleanup context resources
 						} // If both failed, nothing to record
 
 						// Force refresh balance after trade to ensure accurate tracking

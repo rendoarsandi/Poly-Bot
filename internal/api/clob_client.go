@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -177,7 +178,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			takerAmount = strconv.FormatInt(sizeMicro, 10)
 		}
 
-		fmt.Printf("DEBUG: BUY Side (%s) - Size: %.6f, Price: %.6f -> Maker(USDC): %s, Taker(Shares): %s\n", req.OrderType, req.Size, req.Price, makerAmount, takerAmount)
+		// Debug log removed for production
 	} else {
 		// SELL: makerAmount = shares (what we give), takerAmount = USDC (what we receive)
 		// This ensures the API computes price correctly as takerAmount/makerAmount = USDC/shares = Price
@@ -228,8 +229,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			takerAmount = usdcMicroBig.String()
 		}
 
-		fmt.Printf("DEBUG: SELL Side (%s) - Size: %.6f, Price: %.6f -> Maker(Shares): %s, Taker(USDC): %s\n",
-			req.OrderType, req.Size, req.Price, makerAmount, takerAmount)
+		// Debug log removed for production
 	}
 
 	// Polymarket rejects non-zero expiration for non-GTD orders.
@@ -397,12 +397,8 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
-		// Log the failed request and response for debugging
-		fmt.Printf("\n--- API ERROR DEBUG ---\n")
-		fmt.Printf("Request Body: %s\n", string(body))
-		fmt.Printf("Response Status: %d\n", statusCode)
-		fmt.Printf("Response Body: %s\n", string(bodyBytes))
-		fmt.Printf("-----------------------\n\n")
+		// Log API errors through structured logging (avoid stdout pollution in TUI mode)
+		log.Printf("[CLOB] API error: HTTP %d | Body: %s", statusCode, string(bodyBytes))
 
 		var result OrderResponse
 		if err := json.Unmarshal(bodyBytes, &result); err != nil {

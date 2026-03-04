@@ -152,8 +152,8 @@ func (m *WSManager) heartbeatLoop() {
 
 			if conn != nil {
 				// Send ping outside of lock to prevent blocking
-				// Use longer timeout - Android may throttle when backgrounded
-				pingCtx, pingCancel := context.WithTimeout(ctx, 15*time.Second)
+				// 5s timeout balances Android throttle concerns vs stale-data detection speed
+				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 				pingStart := time.Now()
 				err := conn.Ping(pingCtx)
 				pingLatency := time.Since(pingStart)

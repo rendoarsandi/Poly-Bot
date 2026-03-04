@@ -286,9 +286,16 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 
 	if resp.Success {
 		t.mu.Lock()
+		// Optimistically update cached balance but mark it stale so the
+		// background ticker refreshes it with the actual on-chain value.
+		// This prevents over-spending on the next order if partial fill occurred.
 		if t.cachedBalance > 0 {
 			t.cachedBalance -= (cost + fee)
+			if t.cachedBalance < 0 {
+				t.cachedBalance = 0
+			}
 		}
+		t.lastBalanceUpdate = time.Time{} // Mark stale for next GetBalance
 		t.mu.Unlock()
 	}
 
@@ -314,6 +321,15 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 }
 
 func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
+	// Check safety limits (same as Buy)
+	proceeds := price * size
+	if err := t.checkSafetyLimits(proceeds); err != nil {
+		return &TradeResult{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+
 	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
 		Price:       price,
@@ -331,16 +347,17 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 	}
 
 	fee := 0.0
-	proceeds := price * size
 	if feeRateBps > 0 {
 		fee = proceeds * (float64(feeRateBps) / 10000.0)
 	}
 
 	if resp.Success {
 		t.mu.Lock()
+		// Optimistically update cached balance but mark stale for refresh
 		if t.cachedBalance > 0 {
 			t.cachedBalance += (proceeds - fee)
 		}
+		t.lastBalanceUpdate = time.Time{} // Mark stale for next GetBalance
 		t.mu.Unlock()
 	}
 
@@ -546,7 +563,7 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	amount := new(big.Int)
 	// shares * 1e6 for 6 decimal places
 	amountFloat := shares * 1e6
-	amount.SetInt64(int64(amountFloat))
+	amount.SetInt64(int64(math.Round(amountFloat)))
 
 	return t.retryOnChainTx(ctx, "merge", func() (string, error) {
 		return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount, numOutcomes)
@@ -563,7 +580,7 @@ func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcA
 	// CTF tokens use 6 decimals (same as USDC)
 	amount := new(big.Int)
 	amountFloat := usdcAmount * 1e6
-	amount.SetInt64(int64(amountFloat))
+	amount.SetInt64(int64(math.Round(amountFloat)))
 
 	return t.retryOnChainTx(ctx, "split", func() (string, error) {
 		return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount, numOutcomes)
@@ -725,11 +742,22 @@ func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
 	return nil
 }
 
-// RecordLoss records a loss for daily tracking
+// RecordLoss records a loss for daily tracking.
+// Positive amount = loss, negative amount = gain (reduces daily loss counter).
 func (t *RealTrader) RecordLoss(amount float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Reset daily loss if new day (mirrors checkSafetyLimits)
+	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
+		t.dailyLoss = 0
+		t.startOfDay = time.Now().Truncate(24 * time.Hour)
+	}
+
 	t.dailyLoss += amount
+	if t.dailyLoss < 0 {
+		t.dailyLoss = 0 // Don't let gains create negative loss
+	}
 }
 
 // Address returns the wallet address

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,25 +21,18 @@ const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
 
 // httpClient is the shared HTTP client for all REST calls.
 //
-// IMPORTANT: HTTP/2 is intentionally disabled here.
-// When ForceAttemptHTTP2 is true, Go's net/http creates a persistent
-// background goroutine (http2ClientConn.readLoop) per connection.  If that
-// goroutine encounters a bytes.ErrTooLarge panic (e.g. on memory pressure or
-// an unexpectedly large TLS record from the server), the panic is NOT
-// recoverable from user-land because it runs outside any defer/recover we
-// control — the whole process crashes.
-//
-// Forcing HTTP/1.1 eliminates that goroutine entirely.  All reads happen
-// inside the goroutine that issued the request, where our recover() works.
+// HTTP/2 is enabled for connection multiplexing — all concurrent requests to
+// the same host share a single TCP+TLS connection, eliminating per-request
+// handshake overhead.  Response bodies are still capped via io.LimitReader
+// (maxResponseBodySize) at every call site to prevent unbounded reads.
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		// Smaller pool: 4 concurrent traders × ~10 connections each is plenty.
 		MaxIdleConns:        50,
 		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     20,
-		IdleConnTimeout:     60 * time.Second,
-		DisableCompression:  true, // Skip compression for speed
+		MaxConnsPerHost:     0, // No limit — HTTP/2 multiplexes on one conn
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true, // Skip compression for speed on small JSON
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -48,13 +40,7 @@ var httpClient = &http.Client{
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		// Disable HTTP/2: ForceAttemptHTTP2=false alone is not enough because
-		// the server can still negotiate h2 via ALPN.  Setting TLSNextProto to
-		// a non-nil empty map tells Go's HTTP stack to skip h2 entirely.
-		// The client-side TLSNextProto signature is:
-		//   func(authority string, c *tls.Conn) http.RoundTripper
-		ForceAttemptHTTP2: false,
-		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+		ForceAttemptHTTP2:     true, // Enable HTTP/2 via ALPN negotiation
 	},
 }
 
