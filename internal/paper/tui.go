@@ -1223,7 +1223,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		bid2 := mkt.Bids[mkt.Outcomes[1]]
 		ask2 := mkt.Asks[mkt.Outcomes[1]]
 
-		// Supplement from order-book depth
+		// Supplement from order-book depth logic removed to prevent UI from pulling ghost prices from stale depth maps
+		/*
 		if d := depth[id]; d != nil {
 			if bids := d[mkt.Outcomes[0]+"_bids"]; len(bids) > 0 && bids[0].Price > bid1 {
 				bid1 = bids[0].Price
@@ -1238,6 +1239,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 				ask2 = asks[0].Price
 			}
 		}
+		*/
 
 		// Infer from complement logic removed to prevent display artifacts when bot clears orderbook
 		/*
