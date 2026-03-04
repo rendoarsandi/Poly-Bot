@@ -829,7 +829,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							bid, ask := 0.0, 0.0
 							for _, order := range b.Bids {
 								p, _ := strconv.ParseFloat(order.Price, 64)
-								if p > bid {
+								if p > 0 && p < 1.0 && p > bid {
 									bid = p
 								}
 							}
@@ -910,6 +910,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 
 							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
+								// Check for crossed book
+								if t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+									t.LastUpdate = time.Now().Add(-20 * time.Second)
+									t.TokenBids[outcome] = 0
+									t.TokenAsks[outcome] = 0
+									t.TokenFullBids[outcome] = nil
+									t.TokenFullAsks[outcome] = nil
+									continue
+								}
+								
 								mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
@@ -926,9 +936,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						// ── Book snapshot (single object) ──────────────────────
 						bid, ask := 0.0, 0.0
-						for _, order := range book.Bids {
-							p, _ := strconv.ParseFloat(order.Price, 64)
-							if p > bid {
+						for _, b := range book.Bids {
+							p, _ := strconv.ParseFloat(b.Price, 64)
+							if p > 0 && p < 1.0 && p > bid {
 								bid = p
 							}
 						}

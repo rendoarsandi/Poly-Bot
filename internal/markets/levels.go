@@ -16,7 +16,7 @@ func LevelsToPriceDepth(levels []api.PriceLevel, isBid bool) []paper.MarketLevel
 	result := make([]paper.MarketLevel, 0, len(levels))
 	for _, l := range levels {
 		p, err := strconv.ParseFloat(l.Price, 64)
-		if err != nil {
+		if err != nil || p <= 0.0 || p >= 1.0 {
 			continue
 		}
 		s, err := strconv.ParseFloat(l.Size, 64)
@@ -51,6 +51,12 @@ func LevelsToPriceDepth(levels []api.PriceLevel, isBid bool) []paper.MarketLevel
 func ApplyDelta(book []paper.MarketLevel, price, size float64, isBid bool) []paper.MarketLevel {
 	// Create a new slice to prevent race conditions from in-place modifications
 	var newBook []paper.MarketLevel
+	
+	// Ignore invalid bounds
+	if price <= 0.0 || price >= 1.0 {
+		return book
+	}
+
 	found := false
 
 	for _, level := range book {

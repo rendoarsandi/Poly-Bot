@@ -838,7 +838,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if err != nil {
 								continue
 							}
-							if p > bid {
+							if p > 0 && p < 1.0 && p > bid {
 								bid = p
 							}
 						}
@@ -912,6 +912,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
+							// Check for crossed book (WS state corruption or missing delete delta)
+							if tokenBids[outcome] >= tokenAsks[outcome] {
+								// Force a REST poll immediately by making WS look stale
+								lastUpdateTs[outcome] = 0
+								lastUpdate = time.Now().Add(-20 * time.Second)
+								
+								// Clear corrupted data
+								tokenBids[outcome] = 0
+								tokenAsks[outcome] = 0
+								tokenFullBids[outcome] = nil
+								tokenFullAsks[outcome] = nil
+								continue
+							}
+
 							mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
 							engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
 						}
@@ -2020,7 +2034,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
 			p, _ := strconv.ParseFloat(b.Price, 64)
-			if p > bid {
+			if p > 0 && p < 1.0 && p > bid {
 				bid = p
 			}
 		}
