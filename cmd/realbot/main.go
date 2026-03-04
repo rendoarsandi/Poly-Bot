@@ -952,8 +952,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 
+		// Detect ghost levels (crossed market: Bid >= Ask) which indicate a missed zero-size delta
+		hasCrossedMarket := false
+		for _, outcome := range outcomes {
+			if tokenBids[outcome] >= tokenAsks[outcome] && tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
+				hasCrossedMarket = true
+				break
+			}
+		}
+
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
-		if wsUnhealthy && staleTime > 3*time.Second {
+		if hasCrossedMarket || (wsUnhealthy && staleTime > 3*time.Second) {
 			// Note: REST fallback updated to also capture full depth
 			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastUpdateTs, engine, restClient, tui) {
 				lastUpdate = time.Now()
@@ -2002,12 +2011,11 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 				mid := (bid + ask) / 2
 				engine.UpdateMarketData(id, outcome, mid, bid, ask)
 			}
+			// ALWAYS update full depth (liquidity) if newer, as REST is our primary source
+			// for recovering from stale or dropped WS states.
+			fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
+			fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
 		}
-
-		// ALWAYS update full depth (liquidity), as REST is our primary source for this
-		// and stale liquidity is better than no liquidity for safety checks
-		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids)
-		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks)
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")

@@ -467,6 +467,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
 				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
 			}
+			
+			startReq := time.Now()
+			
 			if side == "BUY" {
 				// Use 0.99 for Market Buys to ensure fill and bypass limits if needed
 				price := 0.99
@@ -477,7 +480,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
 				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 			}
-			printTradeResult(side+" "+o, results[i], errs[i], rate, execShares)
+			latency := time.Since(startReq)
+			printTradeResult(side+" "+o, results[i], errs[i], rate, execShares, latency)
 		}(out, idx)
 	}
 	wg.Wait()
@@ -504,6 +508,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			var retryRes *trading.TradeResult
 			var retryErr error
 
+			startReq := time.Now()
+
 			if side == "BUY" {
 				// Use $0.99 cap for buy recovery to guarantee fill
 				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
@@ -513,8 +519,10 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 			}
 
+			latency := time.Since(startReq)
+
 			if retryErr == nil && retryRes != nil && retryRes.Success {
-				fmt.Printf("✅ Recovery SUCCESS for %s after %d retries!\n", failedOutcome, retryCount)
+				fmt.Printf("✅ Recovery SUCCESS for %s after %d retries! (Latency: %v)\n", failedOutcome, retryCount, latency)
 				results[failedIdx] = retryRes
 				errs[failedIdx] = nil
 				break
@@ -526,7 +534,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			} else if retryRes != nil {
 				msg = retryRes.Message
 			}
-			fmt.Printf("❌ Recovery attempt #%d failed: %s\n", retryCount, msg)
+			fmt.Printf("❌ Recovery attempt #%d failed: %s (Latency: %v)\n", retryCount, msg, latency)
 			time.Sleep(500 * time.Millisecond)
 		}
 
@@ -606,7 +614,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	}
 }
 
-func printTradeResult(act string, res *trading.TradeResult, err error, rate int, shares float64) {
+func printTradeResult(act string, res *trading.TradeResult, err error, rate int, shares float64, latency time.Duration) {
 	if err != nil || (res != nil && !res.Success) {
 		msg := "Error"
 		if err != nil {
@@ -614,7 +622,7 @@ func printTradeResult(act string, res *trading.TradeResult, err error, rate int,
 		} else if res != nil {
 			msg = res.Message
 		}
-		fmt.Printf("FAILED: %s - %s\n", act, msg)
+		fmt.Printf("FAILED: %s - %s (Latency: %v)\n", act, msg, latency)
 	} else {
 		actualFeeRate := float64(rate) / 10000.0
 		feePercentage := float64(rate) / 100.0 // bps to percentage
@@ -623,13 +631,13 @@ func printTradeResult(act string, res *trading.TradeResult, err error, rate int,
 			// However, since we executed at price 0.99 for Market Buy, the actual shares matched might differ.
 			// The API charges fee on the matched shares. For simplicity and estimation parity, we show the expected fee based on the requested shares.
 			feeShares := shares * actualFeeRate
-			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares\n", act, res.OrderID, feePercentage, feeShares)
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares (Latency: %v)\n", act, res.OrderID, feePercentage, feeShares, latency)
 		} else {
 			// For SELL, fee is deducted from the USDC you receive.
 			// Since we executed at price 0.01 for Market Sell, the actual USDC matched might differ.
 			// For simplicity and estimation parity, we show the expected fee based on the requested shares.
 			feeUSDC := shares * actualFeeRate
-			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC\n", act, res.OrderID, feePercentage, feeUSDC)
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC (Latency: %v)\n", act, res.OrderID, feePercentage, feeUSDC, latency)
 		}
 	}
 }

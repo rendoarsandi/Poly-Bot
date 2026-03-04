@@ -1,6 +1,7 @@
 package markets
 
 import (
+	"sort"
 	"strconv"
 
 	"Market-bot/internal/api"
@@ -58,22 +59,14 @@ func ApplyDelta(book []paper.MarketLevel, price, size float64, isBid bool) []pap
 	// Resort book
 	if isBid {
 		// Bids: descending
-		for i := 0; i < len(newBook)-1; i++ {
-			for j := i + 1; j < len(newBook); j++ {
-				if newBook[i].Price < newBook[j].Price {
-					newBook[i], newBook[j] = newBook[j], newBook[i]
-				}
-			}
-		}
+		sort.Slice(newBook, func(i, j int) bool {
+			return newBook[i].Price > newBook[j].Price
+		})
 	} else {
 		// Asks: ascending
-		for i := 0; i < len(newBook)-1; i++ {
-			for j := i + 1; j < len(newBook); j++ {
-				if newBook[i].Price > newBook[j].Price {
-					newBook[i], newBook[j] = newBook[j], newBook[i]
-				}
-			}
-		}
+		sort.Slice(newBook, func(i, j int) bool {
+			return newBook[i].Price < newBook[j].Price
+		})
 	}
 
 	return newBook
