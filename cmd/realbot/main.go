@@ -852,19 +852,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// Guard: only persist valid (non-zero) prices so we
-						// never overwrite a good REST value with a zero.
+						// WS Snapshot is absolute state.
 						if bid > 0 && ask > 0 && bid >= ask {
-							// Reject crossed snapshot
+							// Reject crossed snapshot and clear state
+							tokenBids[outcome] = 0
+							tokenAsks[outcome] = 0
+							tokenFullBids[outcome] = nil
+							tokenFullAsks[outcome] = nil
 							continue
 						}
 
-						if bid > 0 {
-							tokenBids[outcome] = bid
-						}
-						if ask > 0 {
-							tokenAsks[outcome] = ask
-						}
+						tokenBids[outcome] = bid
+						tokenAsks[outcome] = ask
 
 						// Always update full depth from snapshots
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
@@ -2071,17 +2070,19 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		if isNewer {
 			// Reject crossed books from REST
 			if bid > 0 && ask > 0 && bid >= ask {
+				// Clear crossed book state
+				bids[outcome] = 0
+				asks[outcome] = 0
+				fullBids[outcome] = nil
+				fullAsks[outcome] = nil
 				continue
 			}
 			
-			if bid > 0 {
-				bids[outcome] = bid
-				success = true
-			}
-			if ask > 0 {
-				asks[outcome] = ask
-				success = true
-			}
+			// REST is absolute state. If it's missing a side, that side is 0.
+			bids[outcome] = bid
+			asks[outcome] = ask
+			success = true
+			
 			if bid > 0 && ask > 0 {
 				mid := (bid + ask) / 2
 				engine.UpdateMarketData(id, outcome, mid, bid, ask)
