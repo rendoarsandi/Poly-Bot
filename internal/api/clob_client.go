@@ -85,7 +85,7 @@ type TimeInForce string
 const (
 	TIFGoodTilCancelled  TimeInForce = "GTC"
 	TIFFillOrKill        TimeInForce = "FOK"
-	TIFImmediateOrCancel TimeInForce = "FAK"
+	TIFFillAndKill TimeInForce = "FAK"
 )
 
 // OrderRequest represents a new order request

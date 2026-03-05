@@ -200,7 +200,7 @@ func main() {
 			Size:        5.0,
 			Side:        api.SideBuy,
 			OrderType:   api.OrderTypeMarket,
-			TimeInForce: api.TIFImmediateOrCancel,
+			TimeInForce: api.TIFFillAndKill,
 			FeeRateBps:  100,
 		}
 		start := time.Now()
@@ -240,7 +240,7 @@ func main() {
 			req := &api.OrderRequest{
 				TokenID: tokenID, Price: 0.01, Size: 5.0,
 				Side: api.SideBuy, OrderType: api.OrderTypeMarket,
-				TimeInForce: api.TIFImmediateOrCancel, FeeRateBps: 100,
+				TimeInForce: api.TIFFillAndKill, FeeRateBps: 100,
 			}
 			s := time.Now()
 			_, err := clob.PlaceOrder(ctx, req)
@@ -254,7 +254,7 @@ func main() {
 			req := &api.OrderRequest{
 				TokenID: tokenID, Price: 0.01, Size: 5.0,
 				Side: api.SideBuy, OrderType: api.OrderTypeMarket,
-				TimeInForce: api.TIFImmediateOrCancel, FeeRateBps: 100,
+				TimeInForce: api.TIFFillAndKill, FeeRateBps: 100,
 			}
 			s := time.Now()
 			_, err := clob.PlaceOrder(ctx, req)

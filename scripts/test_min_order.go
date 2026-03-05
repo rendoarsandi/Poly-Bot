@@ -85,7 +85,7 @@ func main() {
 			Size:        tc.Size,
 			Side:        tc.Side,
 			OrderType:   tc.Type,
-			TimeInForce: api.TIFImmediateOrCancel,
+			TimeInForce: api.TIFFillAndKill,
 			FeeRateBps:  1000, // Explicitly set to 1000 to pass fee validation
 		}
 		

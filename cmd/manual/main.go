@@ -353,9 +353,9 @@ func main() {
 
 	var res *trading.TradeResult
 	if executeSide == "BUY" {
-		res, err = trader.Buy(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+		res, err = trader.Buy(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, rate)
 	} else {
-		res, err = trader.Sell(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+		res, err = trader.Sell(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, rate)
 	}
 
 	if err != nil {

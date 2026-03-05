@@ -473,12 +473,12 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 			if side == "BUY" {
 				// Use 0.99 for Market Buys to ensure fill and bypass limits if needed
 				price := 0.99
-				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
 			} else {
 				// Use 0.01 for Market Sells to ensure fill and bypass 5-share limit
 				price := 0.01
 				// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
-				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
 			}
 			latency := time.Since(startReq)
 			printTradeResult(side+" "+o, results[i], errs[i], rate, execShares, latency)
@@ -512,11 +512,11 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 
 			if side == "BUY" {
 				// Use $0.99 cap for buy recovery to guarantee fill
-				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
 			} else {
 				// Use 0.01 for market sell recovery to guarantee fill and bypass 5-share limit
 				retryPrice := 0.01
-				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
 			}
 
 			latency := time.Since(startReq)
