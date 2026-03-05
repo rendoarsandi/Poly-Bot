@@ -1846,10 +1846,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									}
 								}
 								prevSide1, prevSide2 := side1Success, side2Success
-								side1Success = rbal0 > 0.01
-								side2Success = rbal1 > 0.01
-								if side1Success { filled1 = rbal0 }
-								if side2Success { filled2 = rbal1 }
+								side1Success = prevSide1 || rbal0 > 0.01
+								side2Success = prevSide2 || rbal1 > 0.01
+								if rbal0 > 0.01 { filled1 = rbal0 }
+								if rbal1 > 0.01 { filled2 = rbal1 }
 								tui.LogEvent("[%s] 🔍 Re-verify after delay: %s=%.4f (%v→%v), %s=%.4f (%v→%v)",
 									id, outcomes[0], rbal0, prevSide1, side1Success,
 									outcomes[1], rbal1, prevSide2, side2Success)
