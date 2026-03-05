@@ -607,7 +607,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
-	lastUpdateTs := make(map[string]int64) // outcome -> unix nano timestamp
 	lastUpdate := time.Now()
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
@@ -813,25 +812,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							continue
 						}
 
-						// Parse timestamp for freshness check
-						var msgTs int64
-						if b.Timestamp != "" {
-							// Try parsing as unix nano or micro string first
-							if ts, err := strconv.ParseInt(b.Timestamp, 10, 64); err == nil {
-								msgTs = ts
-							} else if t, err := time.Parse(time.RFC3339Nano, b.Timestamp); err == nil {
-								msgTs = t.UnixNano()
-							}
-						}
-
-						// Only update if data is newer or same age
-						if msgTs > 0 && msgTs < lastUpdateTs[outcome] {
-							continue
-						}
-						if msgTs > 0 {
-							lastUpdateTs[outcome] = msgTs
-						}
-
 						bid, ask := 0.0, 0.0
 						for _, order := range b.Bids {
 							p, err := strconv.ParseFloat(order.Price, 64)
@@ -919,7 +899,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// Check for crossed book (WS state corruption or missing delete delta)
 							if tokenBids[outcome] >= tokenAsks[outcome] {
 								// Force a REST poll immediately by making WS look stale
-								lastUpdateTs[outcome] = 0
 								lastUpdate = time.Now().Add(-20 * time.Second)
 								
 								// Clear corrupted data
@@ -952,7 +931,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenAsks[outcome] = 0
 				tokenFullBids[outcome] = nil
 				tokenFullAsks[outcome] = nil
-				lastUpdateTs[outcome] = 0
 				lastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
 			}
 		}
@@ -1000,7 +978,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		if forceRestFallback || (wsUnhealthy && staleTime > 3*time.Second) {
 			// Note: REST fallback updated to also capture full depth
-			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastUpdateTs, engine, restClient, tui) {
+			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, engine, restClient, tui) {
 				lastUpdate = time.Now()
 			}
 		}
@@ -2016,7 +1994,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	}
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, lastUpdateTs map[string]int64, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
 	success := false
 	for tokenID, outcome := range tokenMap {
 		start := time.Now()
@@ -2034,21 +2012,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			break
 		}
 
-		// Parse timestamp for freshness check
-		var msgTs int64
-		if book.Timestamp != "" {
-			if ts, err := strconv.ParseInt(book.Timestamp, 10, 64); err == nil {
-				msgTs = ts
-			} else if t, err := time.Parse(time.RFC3339Nano, book.Timestamp); err == nil {
-				msgTs = t.UnixNano()
-			}
-		}
-
-		// FRESHNESS CHECK: Only update prices if this REST data is newer than what we have
-		isNewer := msgTs >= lastUpdateTs[outcome]
-		if msgTs > 0 && isNewer {
-			lastUpdateTs[outcome] = msgTs
-		}
+		// Parse timestamp for freshness check (removed logic)
 
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
@@ -2064,35 +2028,30 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			}
 		}
 
-		// Update prices only if newer AND value is valid.
-		// Guard each side separately so a missing bid doesn't zero-out a
-		// previously valid ask and vice-versa.
-		if isNewer {
-			// Reject crossed books from REST
-			if bid > 0 && ask > 0 && bid >= ask {
-				// Clear crossed book state
-				bids[outcome] = 0
-				asks[outcome] = 0
-				fullBids[outcome] = nil
-				fullAsks[outcome] = nil
-				success = true // Important: ensure UI updates to 0 (--.-)
-				continue
-			}
-			
-			// REST is absolute state. If it's missing a side, that side is 0.
-			bids[outcome] = bid
-			asks[outcome] = ask
-			success = true
-			
-			if bid > 0 && ask > 0 {
-				mid := (bid + ask) / 2
-				engine.UpdateMarketData(id, outcome, mid, bid, ask)
-			}
-			// ALWAYS update full depth (liquidity) if newer, as REST is our primary source
-			// for recovering from stale or dropped WS states.
-			fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
-			fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
+		// Reject crossed books from REST
+		if bid > 0 && ask > 0 && bid >= ask {
+			// Clear crossed book state
+			bids[outcome] = 0
+			asks[outcome] = 0
+			fullBids[outcome] = nil
+			fullAsks[outcome] = nil
+			success = true // Important: ensure UI updates to 0 (--.-)
+			continue
 		}
+		
+		// REST is absolute state. If it's missing a side, that side is 0.
+		bids[outcome] = bid
+		asks[outcome] = ask
+		success = true
+		
+		if bid > 0 && ask > 0 {
+			mid := (bid + ask) / 2
+			engine.UpdateMarketData(id, outcome, mid, bid, ask)
+		}
+		// ALWAYS update full depth (liquidity) if newer, as REST is our primary source
+		// for recovering from stale or dropped WS states.
+		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
+		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
