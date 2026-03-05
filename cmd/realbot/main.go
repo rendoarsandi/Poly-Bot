@@ -1818,12 +1818,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						// ═══════════════════════════════════════════════════════════════
-						// LEGGED SHARE RECOVERY: If one side filled and the other didn't,
-						// wait 2 seconds for late settlement, re-verify positions, then
-						// retry the missing side once to prevent a legged position.
+						// LEGGED SHARE VERIFICATION: If one side filled and the other didn't,
+						// wait 2 seconds for late settlement, re-verify positions.
+						// We no longer retry buys here to avoid $1 minimum errors and 
+						// double-spending. We let the auto-cleanup routine handle it.
 						// ═══════════════════════════════════════════════════════════════
 						if side1Success != side2Success {
-							tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then retrying missing side...",
+							tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then re-verifying...",
 								id, outcomes[0], side1Success, outcomes[1], side2Success)
 							time.Sleep(2 * time.Second)
 
@@ -1847,73 +1848,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									outcomes[1], rbal1, prevSide2, side2Success)
 							}
 
-							// If still unbalanced, retry the order for the missing side
-							if !side1Success {
-								rate := tokenFeeRates[outcomes[0]]
-								if rate == 0 {
-									rate = 1000
-								}
-								// Only retry the amount we actually successfully filled on the other side
-								retryShares := filled2
-								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s (%.2f shares)...", id, outcomes[0], retryShares)
-								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, retryShares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-								if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
-									side1Success = true
-									filled1 = retryShares // Optimistic, will rely on auto-cleanup if it partial fills
-									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
-								} else {
-									// Final position check after retry
-									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
-										for _, pos := range retryPos {
-											if pos.TokenID == token0 && pos.Size > 0.01 {
-												side1Success = true
-												filled1 = pos.Size
-											}
-										}
-									}
-									if !side1Success {
-										tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[0], retryErr1)
-									}
-								}
-							}
-							if !side2Success {
-								rate := tokenFeeRates[outcomes[1]]
-								if rate == 0 {
-									rate = 1000
-								}
-								// Only retry the amount we actually successfully filled on the other side
-								retryShares := filled1
-								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s (%.2f shares)...", id, outcomes[1], retryShares)
-								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, retryShares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
-									side2Success = true
-									filled2 = retryShares // Optimistic, will rely on auto-cleanup if it partial fills
-									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])
-								} else {
-									// Final position check after retry
-									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
-										for _, pos := range retryPos {
-											if pos.TokenID == token1 && pos.Size > 0.01 {
-												side2Success = true
-												filled2 = pos.Size
-											}
-										}
-									}
-									if !side2Success {
-										tui.LogEvent("[%s] ❌ Retry %s failed: %v", id, outcomes[1], retryErr2)
-									}
-								}
-							}
-
-							// Final status after recovery
+							// Final status after verification
 							if side1Success != side2Success {
 								failedSide := outcomes[1]
 								if !side1Success {
 									failedSide = outcomes[0]
 								}
-								tui.LogEvent("[%s] ⚠️ ARB UNBALANCED after retry: %s still not filled (legged position recorded)", id, failedSide)
+								tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: %s still not filled (legging to auto-cleanup)", id, failedSide)
 							} else if side1Success && side2Success {
-								tui.LogEvent("[%s] ✅ Legged position recovered — both sides now filled (%.2f vs %.2f)", id, filled1, filled2)
+								tui.LogEvent("[%s] ✅ Legged position recovered via delayed settlement — both sides now filled (%.2f vs %.2f)", id, filled1, filled2)
 							}
 						}
 
