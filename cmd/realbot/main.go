@@ -1326,8 +1326,40 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}()
 							wg.Wait()
 
-							side1Success := err1 == nil && res1 != nil && res1.Success
-							side2Success := err2 == nil && res2 != nil && res2.Success
+							// ROBUSTNESS: Wait for CLOB sync and verify if balance dropped
+							time.Sleep(1500 * time.Millisecond)
+
+							var side1Success, side2Success bool
+							var sold1, sold2 float64
+							verifyPositions, verifyErr := trader.GetPositions(ctx)
+							if verifyErr == nil {
+								var bal0, bal1 float64
+								for _, pos := range verifyPositions {
+									if pos.TokenID == token0 { bal0 = pos.Size }
+									if pos.TokenID == token1 { bal1 = pos.Size }
+								}
+
+								// We started with at least `availableShares` before this sell block
+								// Any drop in balance relative to our known inventory indicates a successful sell
+								sold1 = availableShares - bal0
+								sold2 = availableShares - bal1
+								
+								if sold1 < 0 { sold1 = 0 }
+								if sold2 < 0 { sold2 = 0 }
+
+								side1Success = (err1 == nil && res1 != nil && res1.Success) || sold1 > 0.01
+								side2Success = (err2 == nil && res2 != nil && res2.Success) || sold2 > 0.01
+
+								// Optimistic fallback if API returned true but positions haven't synced
+								if side1Success && sold1 == 0 { sold1 = sharesToSell }
+								if side2Success && sold2 == 0 { sold2 = sharesToSell }
+							} else {
+								tui.LogEvent("[%s] ⚠️ Failed to verify split sell positions: %v", id, verifyErr)
+								side1Success = err1 == nil && res1 != nil && res1.Success
+								side2Success = err2 == nil && res2 != nil && res2.Success
+								if side1Success { sold1 = sharesToSell }
+								if side2Success { sold2 = sharesToSell }
+							}
 
 							// ═══════════════════════════════════════════════════════════════
 							// LEGGED SPLIT SELL RECOVERY: If one side sold and the other
@@ -1338,24 +1370,52 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								failedOutcome := outcomes[0]
 								failedToken := token0
 								failedRate := tokenFeeRates[outcomes[0]]
+								retryShares := sold2 // If 0 failed, retry exactly what 1 sold
+								
 								if side1Success {
 									failedOutcome = outcomes[1]
 									failedToken = token1
 									failedRate = tokenFeeRates[outcomes[1]]
+									retryShares = sold1 // If 1 failed, retry exactly what 0 sold
 								}
 								if failedRate == 0 {
 									failedRate = 1000
 								}
-								tui.LogEvent("[%s] ⚠️ SPLIT LEGGED: %s sold, %s failed — retrying failed side...", id,
-									map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome)
+								tui.LogEvent("[%s] ⚠️ SPLIT LEGGED: %s sold, %s failed — retrying %.2f shares...", id,
+									map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome, retryShares)
+								
 								time.Sleep(1 * time.Second)
-								retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, 0.01, sharesToSell, api.OrderTypeMarket, api.TIFImmediateOrCancel, failedRate)
-								if retryErr == nil && retryRes != nil && retryRes.Success {
+								retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, 0.01, retryShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, failedRate)
+								
+								// Re-verify after retry
+								if retryPos, retryVerErr := trader.GetPositions(ctx); retryVerErr == nil {
+									for _, pos := range retryPos {
+										if pos.TokenID == failedToken {
+											// Sold amount is the difference between available and current
+											retrySold := availableShares - pos.Size
+											if retrySold > 0.01 {
+												if !side1Success {
+													side1Success = true
+													sold1 = retrySold
+												} else {
+													side2Success = true
+													sold2 = retrySold
+												}
+											}
+										}
+									}
+								} else if retryErr == nil && retryRes != nil && retryRes.Success {
+									// Optimistic retry success
 									if !side1Success {
 										side1Success = true
+										sold1 = retryShares
 									} else {
 										side2Success = true
+										sold2 = retryShares
 									}
+								}
+								
+								if side1Success && side2Success {
 									tui.LogEvent("[%s] ✅ SPLIT: Retry %s succeeded", id, failedOutcome)
 								} else {
 									tui.LogEvent("[%s] ❌ SPLIT: Retry %s failed (legged position remains)", id, failedOutcome)
@@ -1363,29 +1423,28 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							if side1Success && side2Success {
-								// Both sides sold - record in split inventory
-								profit1 := splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
-								profit2 := splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
+								// Both sides sold - record in split inventory using actual sold amounts
+								profit1 := splitInventory.RecordSell(id, outcomes[0], sold1, bid1)
+								profit2 := splitInventory.RecordSell(id, outcomes[1], sold2, bid2)
 								totalProfit := profit1 + profit2
 								engine.AddRealizedPnL(totalProfit)
-								tui.LogEvent("[%s] ✅ SPLIT SOLD! Profit: +$%.2f", id, totalProfit)
-								tui.RecordOrder(id, outcomes[0], "SELL", sharesToSell, bid1, sharesToSell*bid1, sellMargin, profit1, "FILLED")
-								tui.RecordOrder(id, outcomes[1], "SELL", sharesToSell, bid2, sharesToSell*bid2, sellMargin, profit2, "FILLED")
+								tui.LogEvent("[%s] ✅ SPLIT SOLD! %s: %.2f, %s: %.2f | Profit: +$%.2f", id, outcomes[0], sold1, outcomes[1], sold2, totalProfit)
+								tui.RecordOrder(id, outcomes[0], "SELL", sold1, bid1, sold1*bid1, sellMargin, profit1, "FILLED")
+								tui.RecordOrder(id, outcomes[1], "SELL", sold2, bid2, sold2*bid2, sellMargin, profit2, "FILLED")
+								
 								// Refresh balance after successful sell (cash increased)
 								_, _ = trader.ForceRefreshBalance(ctx)
 
-								// ONE-SHOT: Exit after successful sell
 								tui.LogEvent("[%s] ✅ Execution complete after successful split sell.", id)
-								// return removed to allow continuous trading
 							} else {
 								// Partial success - record to keep inventory accurate
 								if side1Success {
-									splitInventory.RecordSell(id, outcomes[0], sharesToSell, bid1)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[0])
+									splitInventory.RecordSell(id, outcomes[0], sold1, bid1)
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold %.2f (one-shot)", id, outcomes[0], sold1)
 								}
 								if side2Success {
-									splitInventory.RecordSell(id, outcomes[1], sharesToSell, bid2)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold (one-shot)", id, outcomes[1])
+									splitInventory.RecordSell(id, outcomes[1], sold2, bid2)
+									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold %.2f (one-shot)", id, outcomes[1], sold2)
 								}
 							}
 
