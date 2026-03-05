@@ -85,7 +85,7 @@ type TimeInForce string
 const (
 	TIFGoodTilCancelled  TimeInForce = "GTC"
 	TIFFillOrKill        TimeInForce = "FOK"
-	TIFImmediateOrCancel TimeInForce = "IOC"
+	TIFImmediateOrCancel TimeInForce = "FAK"
 )
 
 // OrderRequest represents a new order request
@@ -419,7 +419,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		}, nil
 	}
 	// CRITICAL: Trust the API's success field initially, but override if Status indicates failure.
-	// FOK/IOC orders can return success=true (request accepted) but status="KILLED" (execution failed).
+	// FOK/FAK orders can return success=true (request accepted) but status="KILLED" (execution failed).
 	if result.Success {
 		switch result.Status {
 		case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
