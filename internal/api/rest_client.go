@@ -117,19 +117,9 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 
 	var markets []Market
 
-	// Check multiple windows to handle edge cases:
-	// - Current window (most likely)
-	// - Next window (might be pre-created near end of current window)
-	// - Window after next (for early creation)
-	// - Previous 4 windows (to support redemption of recently closed markets)
-	windowsToCheck := []int64{
-		currentWindowStart,              // Current window
-		currentWindowStart + interval,   // Next window (might be pre-created)
-		currentWindowStart + 2*interval, // Window after next (early creation)
-		currentWindowStart - interval,   // Previous window
-		currentWindowStart - 2*interval, // 2 windows ago
-		currentWindowStart - 3*interval, // 3 windows ago
-		currentWindowStart - 4*interval, // 4 windows ago
+	var windowsToCheck []int64
+	for i := -300; i <= 2; i++ {
+		windowsToCheck = append(windowsToCheck, currentWindowStart + int64(i)*interval)
 	}
 
 	for _, asset := range assets {

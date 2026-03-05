@@ -63,11 +63,24 @@ func FindMarkets(
 			maxMarkets = 4 // Default to 4
 		}
 
+		var markets []api.Market
 		var exactMarkets []api.Market
-		markets, err := restClient.GetMarketsByTimeframe(ctx, assets, timeframe)
-		if err != nil {
+		
+		// Always fetch both 15m and 5m for maximum coverage, unless a specific timeframe is enforced
+		// The user steering specifically requested adding both 5m and 15m
+		markets15m, err15m := restClient.GetMarketsByTimeframe(ctx, assets, "15m")
+		if err15m == nil {
+			markets = append(markets, markets15m...)
+		}
+		
+		markets5m, err5m := restClient.GetMarketsByTimeframe(ctx, assets, "5m")
+		if err5m == nil {
+			markets = append(markets, markets5m...)
+		}
+
+		if err15m != nil && err5m != nil {
 			if attempts == 0 && logFn != nil {
-				logFn("⚠️ Market fetch error: %v, retrying...", err)
+				logFn("⚠️ Market fetch error: 15m=%v, 5m=%v, retrying...", err15m, err5m)
 			}
 			// Don't immediately continue, allow exact slug fallback
 		}

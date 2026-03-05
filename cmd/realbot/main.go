@@ -372,6 +372,7 @@ func run() error {
 	globalSplitInventories := make(map[string]*paper.SplitInventory)
 	globalInitialSplits := make(map[string]float64)
 	var splitMu sync.Mutex
+	var splitTxMu sync.Mutex
 	currentBalance := balance // Seed with the pre-fetched balance
 
 	for {
@@ -454,7 +455,7 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu)
+				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu)
 			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
@@ -538,7 +539,7 @@ shutdown:
 func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
-	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex) {
+	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex) {
 
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
@@ -1091,13 +1092,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						splitCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 						defer cancel()
 
+						splitTxMu.Lock()
 						txHash, err := trader.SplitOnChain(splitCtx, condID, amt, len(outcomes))
+						splitTxMu.Unlock()
 
 						splitMu.Lock() // Re-acquire lock to update shared state
 						if err != nil {
-							tui.LogEvent("[%s] ⚠️ SPLIT: Background initial split failed: %v (will retry in 60s)", mID, err)
+							tui.LogEvent("[%s] ⚠️ SPLIT: Background initial split failed: %v (will retry in 15s)", mID, err)
 							// Set cooldown on failure to prevent RPC spam and nonce issues
-							nextSplitAttempt = time.Now().Add(60 * time.Second)
+							nextSplitAttempt = time.Now().Add(15 * time.Second)
 
 							// Revert optimistic split status so it can be retried
 							globalSplitStatus[condID] = false
@@ -1161,7 +1164,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Use derived context for proper shutdown propagation
 						bgCtx, bgCancel := context.WithTimeout(ctx, 60*time.Second)
 						defer bgCancel()
+
+						splitTxMu.Lock()
 						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt, len(outcomes))
+						splitTxMu.Unlock()
+
 						if bgErr == nil {
 							// Update engine simulation immediately
 							splitInventory.RecordSplit(mID, out0, out1, amt)

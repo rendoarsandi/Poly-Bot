@@ -224,7 +224,7 @@ func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, cond
 }
 
 func (c *PolygonClient) GetNonce(ctx context.Context, address string) (uint64, error) {
-	result, err := c.call(ctx, "eth_getTransactionCount", []interface{}{address, "latest"})
+	result, err := c.call(ctx, "eth_getTransactionCount", []interface{}{address, "pending"})
 	if err != nil {
 		return 0, err
 	}

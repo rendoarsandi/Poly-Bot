@@ -63,11 +63,26 @@ func main() {
 	fmt.Println(dimSt.Render("  🔑 Wallet: " + address))
 
 	// 1. Scan for markets and On-Chain Positions
-	fmt.Printf("🔄 Scanning blockchain for positions (BTC, ETH, SOL, XRP) in %s timeframe...\n", cfg.Timeframe)
+	fmt.Printf("🔄 Scanning blockchain for positions (BTC, ETH, SOL, XRP) in 5m and 15m timeframes...\n")
 	assets := []string{"btc", "eth", "sol", "xrp"}
-	markets, err := client.GetMarketsByTimeframe(ctx, assets, cfg.Timeframe)
-	if err != nil {
-		log.Fatalf("Failed to fetch markets: %v", err)
+	
+	var markets []api.Market
+	markets5m, err5m := client.GetMarketsByTimeframe(ctx, assets, "5m")
+	if err5m != nil {
+		fmt.Printf("⚠️  Failed to fetch 5m markets: %v\n", err5m)
+	} else {
+		markets = append(markets, markets5m...)
+	}
+
+	markets15m, err15m := client.GetMarketsByTimeframe(ctx, assets, "15m")
+	if err15m != nil {
+		fmt.Printf("⚠️  Failed to fetch 15m markets: %v\n", err15m)
+	} else {
+		markets = append(markets, markets15m...)
+	}
+
+	if len(markets) == 0 {
+		log.Fatalf("Failed to fetch any markets")
 	}
 
 	var positions []OnChainPosition

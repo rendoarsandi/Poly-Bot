@@ -69,8 +69,7 @@ func main() {
 				var events []api.GammaEvent
 				if err := json.NewDecoder(resp.Body).Decode(&events); err == nil && len(events) > 0 {
 					event := events[0]
-					if len(event.Markets) > 0 {
-						gm := event.Markets[0]
+					for _, gm := range event.Markets {
 						var tokenIds []string
 						if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err == nil && len(tokenIds) >= 2 {
 							var outcomes []string
@@ -109,12 +108,27 @@ func main() {
 
 	if len(markets) == 0 {
 		// Smart Discovery: Scan for active/closed markets via Gamma tag
-		fmt.Printf("🔍 Scanning for all recent %s markets (including closed)...\n", cfg.Timeframe)
-		foundMarkets, err := rest.GetMarketsByTimeframe(ctx, nil, cfg.Timeframe)
-		if err != nil {
-			log.Fatalf("Failed to fetch markets: %v", err)
+		fmt.Printf("🔍 Scanning for all recent 5m and 15m markets (including closed)...\n")
+		var allMarkets []api.Market
+		
+		markets5m, err5m := rest.GetMarketsByTimeframe(ctx, nil, "5m")
+		if err5m != nil {
+			fmt.Printf("⚠️  Failed to fetch 5m markets: %v\n", err5m)
+		} else {
+			allMarkets = append(allMarkets, markets5m...)
 		}
-		markets = foundMarkets
+
+		markets15m, err15m := rest.GetMarketsByTimeframe(ctx, nil, "15m")
+		if err15m != nil {
+			fmt.Printf("⚠️  Failed to fetch 15m markets: %v\n", err15m)
+		} else {
+			allMarkets = append(allMarkets, markets15m...)
+		}
+
+		if len(allMarkets) == 0 {
+			log.Fatalf("Failed to fetch any markets")
+		}
+		markets = allMarkets
 	}
 
 	foundAny := false
