@@ -28,14 +28,14 @@ const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     0, // No limit — HTTP/2 multiplexes on one conn
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        500, // Drastically increased to keep connections warm
+		MaxIdleConnsPerHost: 100, // Never drop a connection to CLOB/Gamma
+		MaxConnsPerHost:     0,   // No limit — HTTP/2 multiplexes on one conn
+		IdleConnTimeout:     300 * time.Second, // Keep alive for 5 minutes instead of 90s
 		DisableCompression:  true, // Skip compression for speed on small JSON
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
+			KeepAlive: 120 * time.Second, // More aggressive TCP keep-alive
 		}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
