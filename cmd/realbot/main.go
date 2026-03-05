@@ -917,6 +917,43 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					if foundForThisMarket {
 						lastUpdate = time.Now()
 					}
+				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+					// ── Book snapshot (single object) ──────────────────────
+					bid, ask := 0.0, 0.0
+					for _, b := range book.Bids {
+						p, _ := strconv.ParseFloat(b.Price, 64)
+						if p > 0 && p < 1.0 && p > bid {
+							bid = p
+						}
+					}
+					for _, order := range book.Asks {
+						p, _ := strconv.ParseFloat(order.Price, 64)
+						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+							ask = p
+						}
+					}
+
+					if bid > 0 && ask > 0 && bid >= ask {
+						continue // Reject crossed snapshot
+					}
+
+					outcome := tokenToOutcome[book.AssetID]
+					if outcome != "" {
+						lastUpdate = time.Now()
+						// Guard: only persist valid (non-zero) prices.
+						if bid > 0 {
+							tokenBids[outcome] = bid
+						}
+						if ask > 0 {
+							tokenAsks[outcome] = ask
+						}
+						if bid > 0 && ask > 0 {
+							mid := (bid + ask) / 2
+							engine.UpdateMarketData(id, outcome, mid, bid, ask)
+						}
+						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
+						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
+					}
 				}
 			default:
 				goto doneWS
