@@ -252,6 +252,50 @@ func (t *RealTrader) GetSigner() *api.Signer {
 	return t.clob.GetSigner()
 }
 
+// ExecuteBatch places multiple orders in a single HTTP request (e.g. for panic buys or split sells)
+func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest) ([]*TradeResult, error) {
+	totalCost := 0.0
+	for _, req := range reqs {
+		if req.Side == api.SideBuy {
+			cost := req.Price * req.Size
+			fee := 0.0
+			if req.FeeRateBps > 0 {
+				fee = cost * (float64(req.FeeRateBps) / 10000.0)
+			}
+			totalCost += (cost + fee)
+		}
+	}
+
+	if totalCost > 0 {
+		if err := t.checkSafetyLimits(totalCost); err != nil {
+			return nil, err
+		}
+	}
+
+	resps, err := t.clob.PlaceOrders(ctx, reqs)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]*TradeResult, len(resps))
+	for i, resp := range resps {
+		results[i] = &TradeResult{
+			Success: resp.Success,
+			OrderID: resp.OrderID,
+			Message: resp.ErrorMsg,
+		}
+		
+		// If any buy order was successful, optimistically mark balance as stale
+		if resp.Success && reqs[i].Side == api.SideBuy {
+			t.mu.Lock()
+			t.lastBalanceUpdate = time.Time{}
+			t.mu.Unlock()
+		}
+	}
+
+	return results, nil
+}
+
 func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	// Check safety limits
 	cost := price * size

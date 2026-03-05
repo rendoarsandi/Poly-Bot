@@ -1306,32 +1306,29 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// the CLOB loses sync with on-chain state between startup and trade time.
 							// Background ticker keeps allowance synced.
 
-							var wg sync.WaitGroup
-							wg.Add(2)
-
 							var res1, res2 *trading.TradeResult
 							var err1, err2 error
 
-							// Use market orders for split selling with aggressive $0.10 floor
-							// This ensures immediate fill against any available liquidity
-							go func() {
-								defer wg.Done()
-								rate := tokenFeeRates[outcomes[0]]
-								if rate == 0 {
-									rate = 1000
-								}
-								res1, err1 = trader.Sell(ctx, token0, outcomes[0], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-							}()
+							// Use batch orders for split selling with aggressive $0.10 floor
+							// This ensures atomic execution against any available liquidity
+							rate1 := tokenFeeRates[outcomes[0]]
+							if rate1 == 0 { rate1 = 1000 }
+							rate2 := tokenFeeRates[outcomes[1]]
+							if rate2 == 0 { rate2 = 1000 }
 
-							go func() {
-								defer wg.Done()
-								rate := tokenFeeRates[outcomes[1]]
-								if rate == 0 {
-									rate = 1000
-								}
-								res2, err2 = trader.Sell(ctx, token1, outcomes[1], 0.01, sharesToSell, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-							}()
-							wg.Wait()
+							reqs := []*api.OrderRequest{
+								{TokenID: token0, Price: 0.01, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate1},
+								{TokenID: token1, Price: 0.01, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate2},
+							}
+							
+							results, batchErr := trader.ExecuteBatch(ctx, reqs)
+							if batchErr != nil {
+								tui.LogEvent("[%s] ⚠️ SPLIT: Batch execution failed: %v", id, batchErr)
+								continue
+							}
+							res1, res2 = results[0], results[1]
+							if !res1.Success { err1 = fmt.Errorf(res1.Message) }
+							if !res2.Success { err2 = fmt.Errorf(res2.Message) }
 
 							// ROBUSTNESS: Wait for CLOB sync and verify if balance dropped
 							time.Sleep(1500 * time.Millisecond)
@@ -1710,31 +1707,27 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Root cause of "insufficient balance/allowance" errors in realbot:
 						// allowance synced once at startup can go stale by the time an arb opportunity arrives.
 						// Background ticker keeps allowance synced.
-						var wg sync.WaitGroup
-						wg.Add(2)
-
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
 
-						go func() {
-							defer wg.Done()
-							rate := tokenFeeRates[outcomes[0]]
-							if rate == 0 {
-								rate = 1000
-							}
-							res1, err1 = trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-						}()
+						rate1 := tokenFeeRates[outcomes[0]]
+						if rate1 == 0 { rate1 = 1000 }
+						rate2 := tokenFeeRates[outcomes[1]]
+						if rate2 == 0 { rate2 = 1000 }
 
-						go func() {
-							defer wg.Done()
-							rate := tokenFeeRates[outcomes[1]]
-							if rate == 0 {
-								rate = 1000
-							}
-							res2, err2 = trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-						}()
+						reqs := []*api.OrderRequest{
+							{TokenID: token0, Price: limitPrice1, Size: shares, Side: api.SideBuy, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate1},
+							{TokenID: token1, Price: limitPrice2, Size: shares, Side: api.SideBuy, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate2},
+						}
 
-						wg.Wait()
+						results, batchErr := trader.ExecuteBatch(ctx, reqs)
+						if batchErr != nil {
+							tui.LogEvent("[%s] ⚠️ Panic buy batch failed: %v", id, batchErr)
+							continue
+						}
+						res1, res2 = results[0], results[1]
+						if !res1.Success { err1 = fmt.Errorf(res1.Message) }
+						if !res2.Success { err2 = fmt.Errorf(res2.Message) }
 
 						// Wait for CLOB to sync before verifying positions.
 						// The CLOB can return a 400/error response while the order actually
