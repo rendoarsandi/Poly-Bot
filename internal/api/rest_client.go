@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"Market-bot/internal/core"
@@ -36,6 +37,18 @@ var httpClient = &http.Client{
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: 120 * time.Second, // More aggressive TCP keep-alive
+			Control: func(network, address string, c syscall.RawConn) error {
+				var opErr error
+				err := c.Control(func(fd uintptr) {
+					// Force TCP_NODELAY to bypass Nagle's algorithm at the OS level
+					// This ensures tiny order packets are blasted immediately without buffering
+					opErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+				})
+				if err != nil {
+					return err
+				}
+				return opErr
+			},
 		}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
