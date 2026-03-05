@@ -1665,15 +1665,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// MARKET EXECUTION: Use a small +$0.01 buffer above the ask to ensure
+						// MARKET EXECUTION: Use a small +$0.02 buffer above the ask to ensure
 						// fill while keeping the maker amount as low as possible.
-						// utilbot uses ask price directly; +$0.01 mirrors that closely while
-						// still providing a tiny slippage cushion for fast-moving markets.
+						// utilbot uses ask price directly; +$0.02 mirrors that closely while
+						// still providing a slippage cushion for fast-moving markets.
 						// Keeping this small also reduces the chance of hitting the CLOB $1/side
-						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.25 limit instead
+						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.26 limit instead
 						// of the old $0.29, requiring fewer shares to clear the minimum).
-						limitPrice1 := math.Min(0.99, ask1+0.01)
-						limitPrice2 := math.Min(0.99, ask2+0.01)
+						limitPrice1 := math.Min(0.99, ask1+0.02)
+						limitPrice2 := math.Min(0.99, ask2+0.02)
 
 						// ═══════════════════════════════════════════════════════════════
 						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
