@@ -1696,9 +1696,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
 
 							// Override success flags based on actual inventory
-							// If we have the shares, we consider the side "filled" regardless of API error
-							side1Success = bal0 >= shares
-							side2Success = bal1 >= shares
+							// If we have the shares, we consider the side "filled" regardless of API error.
+							// However, if the API reported success, we also consider it filled even if positions haven't synced.
+							side1Success = (err1 == nil && res1 != nil && res1.Success) || bal0 >= shares
+							side2Success = (err2 == nil && res2 != nil && res2.Success) || bal1 >= shares
 						} else {
 							tui.LogEvent("[%s] ⚠️ Failed to verify positions: %v (relying on API response)", id, verifyErr)
 							side1Success = err1 == nil && res1 != nil && res1.Success

@@ -108,9 +108,9 @@ func main() {
 	}
 
 	if len(markets) == 0 {
-		// Smart Discovery: Scan for active/closed 15m markets via Gamma tag
-		fmt.Println("🔍 Scanning for all recent 15m markets (including closed)...")
-		foundMarkets, err := rest.GetMarketsByTimeframe(ctx, nil, "15m")
+		// Smart Discovery: Scan for active/closed markets via Gamma tag
+		fmt.Printf("🔍 Scanning for all recent %s markets (including closed)...\n", cfg.Timeframe)
+		foundMarkets, err := rest.GetMarketsByTimeframe(ctx, nil, cfg.Timeframe)
 		if err != nil {
 			log.Fatalf("Failed to fetch markets: %v", err)
 		}
