@@ -397,8 +397,9 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
-		// Log API errors through structured logging (avoid stdout pollution in TUI mode)
-		log.Printf("[CLOB] API error: HTTP %d | Body: %s", statusCode, string(bodyBytes))
+		// Suppress raw HTTP logging in TUI mode to avoid breaking the UI layout
+		// The error will be passed back in the ErrorMsg field and logged cleanly by the TUI.
+		// log.Printf("[CLOB] API error: HTTP %d | Body: %s", statusCode, string(bodyBytes))
 
 		var result OrderResponse
 		if err := json.Unmarshal(bodyBytes, &result); err != nil {
