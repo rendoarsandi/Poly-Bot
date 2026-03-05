@@ -1682,6 +1682,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// This catches "Fake Errors" (timeout/400 but actually filled) and
 						// prevents double-buys on retry.
 						var side1Success, side2Success bool
+						var filled1, filled2 float64
 						verifyPositions, verifyErr := trader.GetPositions(ctx)
 						if verifyErr == nil {
 							var bal0, bal1 float64
@@ -1696,24 +1697,36 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
 
 							// Override success flags based on actual inventory
-							// If we have the shares, we consider the side "filled" regardless of API error.
-							// However, if the API reported success, we also consider it filled even if positions haven't synced.
-							side1Success = (err1 == nil && res1 != nil && res1.Success) || bal0 >= shares
-							side2Success = (err2 == nil && res2 != nil && res2.Success) || bal1 >= shares
+							// We consider the side "filled" if we got at least 0.01 shares (partial fill)
+							// OR if the API reported success. 
+							filled1 = bal0
+							filled2 = bal1
+							side1Success = (err1 == nil && res1 != nil && res1.Success) || bal0 > 0.01
+							side2Success = (err2 == nil && res2 != nil && res2.Success) || bal1 > 0.01
+							
+							// If API said success but CLOB is lagging, assume full fill for log metrics initially
+							if side1Success && filled1 == 0 {
+							    filled1 = shares
+							}
+							if side2Success && filled2 == 0 {
+							    filled2 = shares
+							}
 						} else {
 							tui.LogEvent("[%s] ⚠️ Failed to verify positions: %v (relying on API response)", id, verifyErr)
 							side1Success = err1 == nil && res1 != nil && res1.Success
 							side2Success = err2 == nil && res2 != nil && res2.Success
+							if side1Success { filled1 = shares }
+							if side2Success { filled2 = shares }
 						}
 
-						// Calculate costs using the original target price for reporting (actual will be better)
-						cost1 := shares * price1
-						cost2 := shares * price2
+						// Calculate costs using the actual filled size for reporting
+						cost1 := filled1 * price1
+						cost2 := filled2 * price2
 
 						// Log results based on VERIFIED state
 						if side1Success {
-							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f)", id, outcomes[0], price1)
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, 0.0, "FILLED")
+							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], price1, filled1, shares)
+							tui.RecordOrder(id, outcomes[0], "BUY", filled1, price1, cost1, margin, 0.0, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
@@ -1729,8 +1742,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						if side2Success {
-							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f)", id, outcomes[1], price2)
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, 0.0, "FILLED")
+							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], price2, filled2, shares)
+							tui.RecordOrder(id, outcomes[1], "BUY", filled2, price2, cost2, margin, 0.0, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
@@ -1766,8 +1779,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									}
 								}
 								prevSide1, prevSide2 := side1Success, side2Success
-								side1Success = rbal0 >= shares
-								side2Success = rbal1 >= shares
+								side1Success = rbal0 > 0.01
+								side2Success = rbal1 > 0.01
+								if side1Success { filled1 = rbal0 }
+								if side2Success { filled2 = rbal1 }
 								tui.LogEvent("[%s] 🔍 Re-verify after delay: %s=%.4f (%v→%v), %s=%.4f (%v→%v)",
 									id, outcomes[0], rbal0, prevSide1, side1Success,
 									outcomes[1], rbal1, prevSide2, side2Success)
@@ -1779,17 +1794,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								if rate == 0 {
 									rate = 1000
 								}
-								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[0])
-								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+								// Only retry the amount we actually successfully filled on the other side
+								retryShares := filled2
+								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s (%.2f shares)...", id, outcomes[0], retryShares)
+								retryRes1, retryErr1 := trader.Buy(ctx, token0, outcomes[0], limitPrice1, retryShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 								if retryErr1 == nil && retryRes1 != nil && retryRes1.Success {
 									side1Success = true
+									filled1 = retryShares // Optimistic, will rely on auto-cleanup if it partial fills
 									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[0])
 								} else {
 									// Final position check after retry
 									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
 										for _, pos := range retryPos {
-											if pos.TokenID == token0 && pos.Size >= shares {
+											if pos.TokenID == token0 && pos.Size > 0.01 {
 												side1Success = true
+												filled1 = pos.Size
 											}
 										}
 									}
@@ -1803,17 +1822,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								if rate == 0 {
 									rate = 1000
 								}
-								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s...", id, outcomes[1])
-								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, shares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
+								// Only retry the amount we actually successfully filled on the other side
+								retryShares := filled1
+								tui.LogEvent("[%s] 🔄 Retrying buy for missing side: %s (%.2f shares)...", id, outcomes[1], retryShares)
+								retryRes2, retryErr2 := trader.Buy(ctx, token1, outcomes[1], limitPrice2, retryShares, api.OrderTypeMarket, api.TIFImmediateOrCancel, rate)
 								if retryErr2 == nil && retryRes2 != nil && retryRes2.Success {
 									side2Success = true
+									filled2 = retryShares // Optimistic, will rely on auto-cleanup if it partial fills
 									tui.LogEvent("[%s] ✅ Retry %s succeeded", id, outcomes[1])
 								} else {
 									// Final position check after retry
 									if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
 										for _, pos := range retryPos {
-											if pos.TokenID == token1 && pos.Size >= shares {
+											if pos.TokenID == token1 && pos.Size > 0.01 {
 												side2Success = true
+												filled2 = pos.Size
 											}
 										}
 									}
@@ -1831,7 +1854,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 								tui.LogEvent("[%s] ⚠️ ARB UNBALANCED after retry: %s still not filled (legged position recorded)", id, failedSide)
 							} else if side1Success && side2Success {
-								tui.LogEvent("[%s] ✅ Legged position recovered — both sides now filled", id)
+								tui.LogEvent("[%s] ✅ Legged position recovered — both sides now filled (%.2f vs %.2f)", id, filled1, filled2)
 							}
 						}
 
@@ -1839,8 +1862,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// This ensures engine state matches reality for accurate drawdown calculation
 						if side1Success && side2Success {
 						        // Both sides filled (either initially or via recovery) - record both
-						        _, _ = engine.BuyForMarket(id, outcomes[0], price1, shares)
-						        _, _ = engine.BuyForMarket(id, outcomes[1], price2, shares)
+						        _, _ = engine.BuyForMarket(id, outcomes[0], price1, filled1)
+						        _, _ = engine.BuyForMarket(id, outcomes[1], price2, filled2)
 
 						        // ONE-SHOT: Execute merge and then EXIT
 							tui.LogEvent("[%s] ⏳ Waiting 5s for position sync before merge...", id)
