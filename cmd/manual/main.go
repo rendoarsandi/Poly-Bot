@@ -1,401 +1,155 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
-	"math/big"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
+	"Market-bot/internal/marketlookup"
 	"Market-bot/internal/setup"
-	"Market-bot/internal/trading"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
 )
 
-// OnChainPosition represents a holding found on-chain
-type OnChainPosition struct {
-	TokenID     string
-	Outcome     string
-	Size        float64
-	ConditionID string // Needed for split/merge
-	Slug        string
-}
-
 func main() {
-        _ = godotenv.Load()
-        cfg, err := core.LoadConfig()
-        if err != nil {		log.Fatalf("Failed to load config: %v", err)
+	_ = godotenv.Load()
+	cfg, err := core.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Create context for setup
 	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelSetup()
 
-	// Ensure trading mode is set and credentials exist
 	cfg.TradingMode = core.ModeReal
 	trader, err := setup.EnsureRealTradingSetup(setupCtx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to setup or create trader: %v", err)
+		log.Fatalf("Failed to setup trader: %v", err)
 	}
 
-	client := api.NewRestClient("")
-	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 	ctx := context.Background()
 	address := trader.Address()
+	target := firstTargetArg(os.Args[1:])
 
-	titleSt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
-	dimSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-	warnSt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EF4444"))
-	fmt.Println(lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7C3AED")).
-		Padding(0, 2).
-		Render(titleSt.Render("🗂  MANUAL POSITION MANAGER") + "\n" +
-			warnSt.Render("⚠  Executes REAL on-chain transactions") + "\n" +
-			dimSt.Render("Scan · Buy · Sell · Redeem")))
-	fmt.Println(dimSt.Render("  🔑 Wallet: " + address))
+	fmt.Println("🚀 MANUAL DUMP SCRIPT (Sell/Dump Only)")
+	fmt.Println("═══════════════════════════════════════════════════════")
+	fmt.Printf("🔑 Wallet: %s\n", address)
 
-	// 1. Scan for markets and On-Chain Positions
-	fmt.Printf("🔍 Fetching positions from API...\n")
-	
-	apiPositions, err := trader.GetPositions(ctx)
+	if target != "" {
+		fmt.Printf("🔍 Resolving target market: %s\n", target)
+	} else {
+		fmt.Printf("🔍 Fetching positions from API...\n")
+	}
+
+	markets, source, err := marketlookup.ResolveMarkets(ctx, trader, target)
 	if err != nil {
-		log.Fatalf("Failed to fetch positions: %v", err)
-	}
-
-	if len(apiPositions) == 0 {
-		fmt.Println("✅ No positions found via API.")
-		return
-	}
-
-	var markets []api.Market
-	marketMap := make(map[string]bool)
-	for _, p := range apiPositions {
-		if p.Size >= 0.0001 && p.ConditionID != "" {
-			if !marketMap[p.ConditionID] {
-				marketMap[p.ConditionID] = true
-
-				m := api.Market{
-					ConditionID: p.ConditionID,
-					Slug:        p.Slug,
-					Active:      true, // Assume active if we have positions; will be checked during scan
-					Closed:      false,
-					Tokens: []api.Token{
-						{TokenID: p.TokenID, Outcome: core.SanitizeString(p.Outcome)},
-						{TokenID: p.OppositeAsset, Outcome: core.SanitizeString(p.OppositeOutcome)},
-					},
-				}
-				markets = append(markets, m)
-			}
-		}
+		log.Fatalf("Failed to resolve markets: %v", err)
 	}
 	if len(markets) == 0 {
-		fmt.Println("✅ No relevant markets found for your positions.")
-		return
-	}
-
-	var positions []OnChainPosition
-
-	for _, m := range markets {
-		for _, t := range m.Tokens {
-			tid := new(big.Int)
-			tid.SetString(t.TokenID, 10)
-
-			// Query on-chain balance
-			bal, err := polygon.GetCTFBalance(ctx, address, tid)
-			if err != nil {
-				continue
-			}
-
-			// Convert to float shares
-			shares := new(big.Float).SetInt(bal)
-			shares = shares.Quo(shares, big.NewFloat(1e6))
-			s, _ := shares.Float64()
-
-			if s > 0.0001 { // Filter dust
-				positions = append(positions, OnChainPosition{
-					TokenID:     t.TokenID,
-					Outcome:     core.SanitizeString(t.Outcome),
-					Size:        s,
-					ConditionID: m.ConditionID,
-					Slug:        m.Slug,
-				})
-			}
-		}
-	}
-
-	if len(positions) == 0 {
-		fmt.Println("✅ No on-chain positions found.")
-		return
-	}
-
-	fmt.Printf("\nFound %d position(s):\n", len(positions))
-	fmt.Println("   # | Market (Outcome)             | Size")
-	fmt.Println("-----+------------------------------+--------")
-
-	for i, pos := range positions {
-		name := fmt.Sprintf("%s (%s)", pos.Slug, pos.Outcome)
-		if len(name) > 28 {
-			name = name[:25] + "..."
-		}
-		fmt.Printf("   %d | %-28s | %-6.1f\n", i+1, name, pos.Size)
-	}
-	fmt.Println("-----+------------------------------+--------")
-
-	// 2. Select Position
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("\nSelect position # to manage (or '0' to exit): ")
-	text, _ := reader.ReadString('\n')
-	choiceStr := strings.TrimSpace(text)
-	choice, err := strconv.Atoi(choiceStr)
-	if err != nil || choice < 1 || choice > len(positions) {
-		if choiceStr == "0" {
-			return
-		}
-		log.Fatal("Invalid selection.")
-	}
-
-	selectedPos := positions[choice-1]
-	fmt.Printf("\nSelected: %s - %s (Size: %.1f)\n", selectedPos.Slug, selectedPos.Outcome, selectedPos.Size)
-
-	// Check Market Status
-	fmt.Println("🔍 Checking market status...")
-	marketInfo, err := trader.GetMarketInfo(ctx, selectedPos.ConditionID)
-
-	isResolved := false
-	var winnerOutcome string
-
-	if err == nil {
-		isResolved = marketInfo.Closed
-
-		if isResolved {
-			for _, t := range marketInfo.Tokens {
-				if t.Winner {
-					winnerOutcome = t.Outcome
-					break
-				}
-			}
-		}
-	} else {
-		fmt.Printf("⚠️ Failed to fetch market info: %v\n", err)
-	}
-
-	// Double-check on-chain resolution if API says closed or we failed to check
-	onChainResolved, _ := polygon.IsMarketResolved(ctx, selectedPos.ConditionID)
-	if onChainResolved {
-		isResolved = true
-		fmt.Println("✅ Market confirmed RESOLVED on-chain.")
-	}
-
-	if isResolved {
-		fmt.Println("\n⚠️  MARKET IS RESOLVED/CLOSED")
-		fmt.Println("   Trading is disabled. Checking redemption status...")
-
-		if winnerOutcome != "" {
-			fmt.Printf("   🏆 Winner: %s\n", winnerOutcome)
-
-			// Check if selected position is winner
-			cleanSelected := core.SanitizeString(selectedPos.Outcome)
-			cleanWinner := core.SanitizeString(winnerOutcome)
-
-			if strings.EqualFold(cleanSelected, cleanWinner) {
-				fmt.Println("\n🎉 YOU HAVE A WINNING POSITION!")
-				fmt.Println("   1. REDEEM on-chain (Claim USDC)")
-				fmt.Println("   0. Exit")
-				fmt.Print("Choice: ")
-
-				text, _ := reader.ReadString('\n')
-				choice := strings.TrimSpace(text)
-
-				if choice == "1" {
-					fmt.Println("🚀 Sending redemption tx...")
-					tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID, 2)
-					if err != nil {
-						fmt.Printf("❌ Redeem failed: %v\n", err)
-					} else {
-						fmt.Printf("✅ Redeem Sent! Tx: %s\n", tx)
-					}
-				}
-				return
-			} else {
-				fmt.Printf("\n💀 This position (%s) lost against %s. Value is $0.00.\n", selectedPos.Outcome, winnerOutcome)
-				return
-			}
+		if target != "" {
+			fmt.Printf("✅ No markets found for target %s.\n", target)
 		} else {
-			fmt.Println("   ❓ Winner not reported by API yet.")
-			fmt.Println("   Try again later or check Polymarket directly.")
-
-			fmt.Println("\nActions:")
-			fmt.Println("   1. Force REDEEM (If you are sure you won)")
-			fmt.Println("   0. Exit")
-			fmt.Print("Choice: ")
-
-			text, _ := reader.ReadString('\n')
-			if strings.TrimSpace(text) == "1" {
-				fmt.Println("🚀 Sending force redemption tx...")
-				tx, err := trader.RedeemOnChain(ctx, selectedPos.ConditionID, 2)
-				if err != nil {
-					fmt.Printf("❌ Redeem failed: %v\n", err)
-				} else {
-					fmt.Printf("✅ Redeem Sent! Tx: %s\n", tx)
-				}
-			}
-			return
+			fmt.Println("✅ No positions found. Try `manual <slug-or-condition-id>` for a direct lookup.")
 		}
-	}
-
-	// 3. Choose Action
-	fmt.Println("\nActions:")
-	fmt.Println("  1. SELL current position (Dump stuck shares)")
-	fmt.Println("  2. BUY more of current position")
-	fmt.Println("  3. BUY OPPOSITE (Attempt to balance for merge)")
-	fmt.Print("Choice: ")
-
-	text, _ = reader.ReadString('\n')
-	actionStr := strings.TrimSpace(text)
-	actionChoice, _ := strconv.Atoi(actionStr)
-
-	var targetTokenID string
-	var targetOutcome string
-	var executeSide string // "BUY" or "SELL" for execution
-
-	switch actionChoice {
-	case 1:
-		targetTokenID = selectedPos.TokenID
-		targetOutcome = selectedPos.Outcome
-		executeSide = "SELL"
-	case 2:
-		targetTokenID = selectedPos.TokenID
-		targetOutcome = selectedPos.Outcome
-		executeSide = "BUY"
-	case 3:
-		fmt.Println("🔍 Finding opposite token...")
-
-		// We already have the market info from the initial scan!
-		// We just need to find the market in the `markets` list that matches selectedPos.ConditionID
-		var foundMarket *api.Market
-		for _, m := range markets {
-			if m.ConditionID == selectedPos.ConditionID {
-				mCopy := m
-				foundMarket = &mCopy
-				break
-			}
-		}
-
-		if foundMarket == nil {
-			log.Fatal("❌ Could not find market info. Cannot auto-balance.")
-		}
-
-		// Find the opposite token in this market
-		for _, t := range foundMarket.Tokens {
-			if t.TokenID != selectedPos.TokenID {
-				targetTokenID = t.TokenID
-				targetOutcome = t.Outcome
-				break
-			}
-		}
-
-		if targetTokenID == "" {
-			log.Fatal("❌ Could not determine opposite token.")
-		}
-
-		targetOutcome = core.SanitizeString(targetOutcome)
-		fmt.Printf("🎯 Found opposite: %s (%s)\n", targetOutcome, targetTokenID)
-		executeSide = "BUY"
-
-	default:
-		log.Fatal("Invalid action.")
-	}
-
-	// 4. Specify Amount and Price
-	defaultSize := selectedPos.Size
-	fmt.Printf("\n%s %s (Token: %s)\n", executeSide, targetOutcome, targetTokenID)
-	fmt.Printf("Enter shares (default %.1f): ", defaultSize)
-
-	text, _ = reader.ReadString('\n')
-	sizeStr := strings.TrimSpace(text)
-	size := defaultSize
-	if sizeStr != "" {
-		if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
-			size = s
-		}
-	}
-
-	// Price logic
-	var price float64
-	if executeSide == "BUY" {
-		fmt.Print("Enter limit price (default 0.99 for aggressive buy): ")
-		text, _ = reader.ReadString('\n')
-		priceStr := strings.TrimSpace(text)
-		price = 0.99
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				price = p
-			}
-		}
-	} else {
-		// SELL
-		fmt.Print("Enter limit price (default 0.01 for aggressive dump): ")
-		text, _ = reader.ReadString('\n')
-		priceStr := strings.TrimSpace(text)
-		price = 0.01
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				price = p
-			}
-		}
-	}
-
-	// 5. Confirm and Execute
-	totalVal := price * size
-	fmt.Printf("\n🚨 READY TO EXECUTE: %s %.1f %s @ $%.2f (Total: $%.2f)\n", executeSide, size, targetOutcome, price, totalVal)
-	fmt.Print("Type 'YES' to confirm: ")
-	text, _ = reader.ReadString('\n')
-	input := strings.TrimSpace(strings.ToUpper(text))
-	if input != "YES" && input != "Y" {
-		fmt.Println("Cancelled.")
 		return
 	}
+	fmt.Printf("✅ Loaded %d market(s) via %s\n", len(markets), source)
 
-	fmt.Println("🚀 Sending order...")
-
-	// Fetch fee rate
-	rate, _ := client.GetFeeRate(ctx, targetTokenID)
-	if rate == 0 {
-		rate = 1000 // Safe default for 15m
-	}
-
-	// Sync CLOB allowance with on-chain state right before trading.
-	// Manual bot never called this, causing "insufficient balance/allowance" errors.
-	// utilbot calls this at startup; we call it here so it's always fresh.
-	fmt.Println("🔄 Syncing CLOB allowance...")
-	if syncErr := trader.UpdateBalanceAllowance(ctx); syncErr != nil {
-		fmt.Printf("⚠️ Allowance sync failed: %v (continuing)\n", syncErr)
+	fmt.Println("🔌 Preparing User WebSocket for real-time order updates...")
+	if err := trader.StartUserWS(ctx); err != nil {
+		fmt.Printf("⚠️ Failed to prepare User WS: %v\n", err)
 	} else {
-		fmt.Println("✅ Allowance synced")
+		var condIDs []string
+		for _, m := range markets {
+			if m.ConditionID != "" {
+				condIDs = append(condIDs, m.ConditionID)
+			}
+		}
+		if err := trader.SubscribeUserWSMarkets(ctx, condIDs...); err != nil {
+			fmt.Printf("⚠️ Failed to subscribe User WS for current positions: %v\n", err)
+		} else {
+			fmt.Println("✅ User WebSocket ready for current positions")
+		}
 	}
 
-	var res *trading.TradeResult
-	if executeSide == "BUY" {
-		res, err = trader.Buy(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-	} else {
-		res, err = trader.Sell(ctx, targetTokenID, targetOutcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, rate)
+	foundAny := false
+	for _, m := range markets {
+		var balances []float64
+		var outcomes []string
+		var tokenIDs []string
+
+		for _, t := range m.Tokens {
+			bal, err := trader.GetCTFBalanceFloat(ctx, t.TokenID)
+			if err != nil {
+				balances = append(balances, 0)
+			} else {
+				balances = append(balances, bal)
+			}
+			outcomes = append(outcomes, t.Outcome)
+			tokenIDs = append(tokenIDs, t.TokenID)
+		}
+
+		hasBal := false
+		for _, b := range balances {
+			if b >= 0.0001 {
+				hasBal = true
+				break
+			}
+		}
+
+		if !hasBal {
+			continue
+		}
+		foundAny = true
+
+		fmt.Printf("\n📈 Market: %s\n", m.Slug)
+
+		// Check if market is closed
+		info, err := trader.GetMarketInfo(ctx, m.ConditionID)
+		if err == nil && info.Closed {
+			fmt.Println("   ⚠️ MARKET IS RESOLVED/CLOSED. Cannot sell.")
+			continue
+		}
+
+		for i, b := range balances {
+			if b >= 0.0001 {
+				fmt.Printf("   • %s: %.4f shares (Token: %s)\n", outcomes[i], b, tokenIDs[i][:10]+"...")
+				fmt.Printf("   👉 ACTION: DUMP %.4f shares of %s at market?\n", b, outcomes[i])
+				fmt.Print("   Confirm Sell? (y/n): ")
+				var confirm string
+				fmt.Scanln(&confirm)
+				if strings.ToLower(confirm) == "y" {
+					fmt.Printf("   ⏳ Selling %s...\n", outcomes[i])
+					// Using trader.Sell with Market Order
+					// Using trader.Sell with Market Order
+					res, err := trader.Sell(ctx, tokenIDs[i], outcomes[i], 0.01, b, api.OrderTypeMarket, api.TIFFillAndKill, 1000)
+					if err != nil {
+						fmt.Printf("   ❌ Sell error: %v\n", err)
+					} else {
+						fmt.Printf("   ✅ Sell API Result: %v (Message: %s)\n", res.Success, res.Message)
+					}
+				} else {
+					fmt.Println("   ⏭️  Skipped.")
+				}
+			}
+		}
 	}
 
-	if err != nil {
-		fmt.Printf("❌ Execution Error: %v\n", err)
-	} else if res != nil && !res.Success {
-		fmt.Printf("❌ Order Failed: %s (Status: %s)\n", res.Message, res.Status)
-	} else if res != nil {
-		fmt.Printf("✅ Success! OrderID: %s\n", res.OrderID)
-	} else {
-		fmt.Println("❌ Unknown error (nil result)")
+	if !foundAny {
+		fmt.Println("✅ No on-chain shares found to dump.")
 	}
+}
+
+func firstTargetArg(args []string) string {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return arg
+	}
+	return ""
 }

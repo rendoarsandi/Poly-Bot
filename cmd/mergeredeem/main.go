@@ -2,27 +2,25 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
-	"math/big"
-	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
+	"Market-bot/internal/marketlookup"
 	"Market-bot/internal/setup"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-        _ = godotenv.Load()
-        cfg, err := core.LoadConfig()
-        if err != nil {		log.Fatalf("Failed to load config: %v", err)
+	_ = godotenv.Load()
+	cfg, err := core.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	// Create context for setup
@@ -45,104 +43,34 @@ func main() {
 	fmt.Printf("🔑 Wallet: %s\n", address)
 
 	forceRedeem := false
-	for _, arg := range os.Args {
+	target := ""
+	for _, arg := range os.Args[1:] {
 		if arg == "-force" {
 			forceRedeem = true
-			break
+			continue
+		}
+		if target == "" && !strings.HasPrefix(arg, "-") {
+			target = arg
 		}
 	}
 
-	var markets []api.Market
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		specificSlug := os.Args[1]
-		fmt.Printf("🔍 Looking for specific slug: %s\n", specificSlug)
-
-		// Attempt to get market by slug from Gamma
-		lookupURL := fmt.Sprintf("https://gamma-api.polymarket.com/events?slug=%s", url.QueryEscape(specificSlug))
-		req, reqErr := http.NewRequestWithContext(ctx, "GET", lookupURL, nil)
-		if reqErr != nil {
-			fmt.Printf("   ❌ Error creating slug lookup request: %v\n", reqErr)
-		} else {
-			resp, err := http.DefaultClient.Do(req)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				var events []api.GammaEvent
-				if err := json.NewDecoder(resp.Body).Decode(&events); err == nil && len(events) > 0 {
-					event := events[0]
-					for _, gm := range event.Markets {
-						var tokenIds []string
-						if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err == nil && len(tokenIds) >= 2 {
-							var outcomes []string
-							if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
-								outcomes = []string{"Up", "Down"}
-							}
-
-							markets = append(markets, api.Market{
-								ConditionID: gm.ConditionID,
-								Slug:        core.SanitizeString(specificSlug),
-								Active:      gm.Active,
-								Closed:      gm.Closed,
-								Tokens: []api.Token{
-									{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
-									{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
-								},
-							})
-							fmt.Printf("   ✅ Found market: %s\n", gm.ConditionID)
-						}
-					}
-				}
-				resp.Body.Close()
-			} else {
-				if err != nil {
-					fmt.Printf("   ❌ Error looking up slug: %v\n", err)
-					if resp != nil {
-						resp.Body.Close()
-					}
-				} else {
-					fmt.Printf("   ❌ Slug not found (status %d)\n", resp.StatusCode)
-					resp.Body.Close()
-				}
-			}
-		}
+	if target != "" {
+		fmt.Printf("🔍 Resolving target market: %s\n", target)
 	}
 
+	markets, source, err := marketlookup.ResolveMarkets(ctx, trader, target)
+	if err != nil {
+		log.Fatalf("Failed to resolve markets: %v", err)
+	}
 	if len(markets) == 0 {
-		fmt.Printf("🔍 Fetching positions from API...\n")
-		positions, err := trader.GetPositions(ctx)
-		if err != nil {
-			log.Fatalf("Failed to fetch positions: %v", err)
+		if target != "" {
+			fmt.Printf("✅ No markets found for target %s.\n", target)
+		} else {
+			fmt.Println("✅ No relevant markets found for your positions. Try `mergeredeem <slug-or-condition-id>` for a direct lookup.")
 		}
-
-		if len(positions) == 0 {
-			fmt.Println("✅ No positions found via API.")
-			return
-		}
-
-		marketMap := make(map[string]bool)
-		for _, p := range positions {
-			if p.Size >= 0.0001 && p.ConditionID != "" {
-				if !marketMap[p.ConditionID] {
-					marketMap[p.ConditionID] = true
-
-					m := api.Market{
-						ConditionID: p.ConditionID,
-						Slug:        p.Slug,
-						Active:      true,
-						Closed:      false,
-						Tokens: []api.Token{
-							{TokenID: p.TokenID, Outcome: core.SanitizeString(p.Outcome)},
-							{TokenID: p.OppositeAsset, Outcome: core.SanitizeString(p.OppositeOutcome)},
-						},
-					}
-					markets = append(markets, m)
-				}
-			}
-		}
-		
-		if len(markets) == 0 {
-			fmt.Println("✅ No relevant markets found for your positions.")
-			return
-		}
+		return
 	}
+	fmt.Printf("✅ Loaded %d market(s) via %s\n", len(markets), source)
 
 	foundAny := false
 	processed := make(map[string]bool)
@@ -153,22 +81,15 @@ func main() {
 		}
 		processed[m.ConditionID] = true
 
-		// Fetch balances for both tokens in this market
 		var balances []float64
 		var outcomes []string
 
 		for _, t := range m.Tokens {
-			tokenBig := new(big.Int)
-			tokenBig.SetString(t.TokenID, 10)
-
-			bal, err := polygon.GetCTFBalance(ctx, address, tokenBig)
+			bal, err := trader.GetCTFBalanceFloat(ctx, t.TokenID)
 			if err != nil {
 				balances = append(balances, 0)
 			} else {
-				shares := new(big.Float).SetInt(bal)
-				shares = shares.Quo(shares, big.NewFloat(1e6))
-				s, _ := shares.Float64()
-				balances = append(balances, s)
+				balances = append(balances, bal)
 			}
 			outcomes = append(outcomes, t.Outcome)
 		}
@@ -177,7 +98,7 @@ func main() {
 		if len(balances) < 2 {
 			continue
 		}
-		
+
 		hasSignificantBalance := false
 		for _, b := range balances {
 			if b >= 0.0001 {
@@ -185,20 +106,18 @@ func main() {
 				break
 			}
 		}
-		
+
 		if !hasSignificantBalance {
 			continue
 		}
 		foundAny = true
 
 		fmt.Printf("\n📈 Market: %s\n", m.Slug)
-		fmt.Printf("   • %s: %.2f shares\n", outcomes[0], balances[0])
-		fmt.Printf("   • %s: %.2f shares\n", outcomes[1], balances[1])
+		fmt.Printf("   • %s: %.6f shares\n", outcomes[0], balances[0])
+		fmt.Printf("   • %s: %.6f shares\n", outcomes[1], balances[1])
 
-		// Logic 1: MERGE (Balanced pairs)
-		if balances[0] >= 1.0 && balances[1] >= 1.0 {
-			minQty := math.Min(balances[0], balances[1])
-			fmt.Printf("   👉 ACTION: Can MERGE %.0f pairs into $%.2f USDC\n", minQty, minQty)
+		if minQty := mergeablePairs(balances); minQty > 0 {
+			fmt.Printf("   👉 ACTION: Can MERGE %.6f pairs (%.6f shares/side) into $%.2f USDC\n", minQty, minQty, minQty)
 			fmt.Print("   Confirm Merge? (y/n): ")
 			var confirm string
 			_, _ = fmt.Scanln(&confirm)
@@ -301,7 +220,18 @@ func main() {
 	}
 
 	if !foundAny {
-		fmt.Println("✅ No positions found in scanned markets.")
+		fmt.Println("✅ No on-chain balances found in the scanned markets.")
 	}
 	fmt.Println("\n═══════════════════════════════════════════════════════")
+}
+
+func mergeablePairs(balances []float64) float64 {
+	if len(balances) < 2 {
+		return 0
+	}
+	minQty := math.Min(balances[0], balances[1])
+	if minQty < 0.000001 {
+		return 0
+	}
+	return minQty
 }

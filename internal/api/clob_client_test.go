@@ -112,15 +112,62 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 	}
 }
 
+func TestPlaceOrders_FAK_Killed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orders" {
+			t.Errorf("Expected path /orders, got %s", r.URL.Path)
+		}
+		resp := []OrderResponse{{
+			Success: true,
+			Status:  "KILLED",
+			OrderID: "0xabc",
+		}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, err := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	resp, err := client.PlaceOrders(context.Background(), []*OrderRequest{{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10.0,
+		Side:        SideBuy,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillAndKill,
+	}})
+	if err != nil {
+		t.Fatalf("PlaceOrders failed: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("Expected 1 response, got %d", len(resp))
+	}
+	if resp[0].Success {
+		t.Error("Expected Success=false for KILLED batch order, got true")
+	}
+	if resp[0].ErrorMsg != "Order was KILLED" {
+		t.Errorf("Expected ErrorMsg=%q, got %q", "Order was KILLED", resp[0].ErrorMsg)
+	}
+}
+
 func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 	var makerAmount, takerAmount string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody struct {
 			Order OrderPayload `json:"order"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&reqBody)
-			makerAmount = reqBody.Order.MakerAmount
+		}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		makerAmount = reqBody.Order.MakerAmount
 		takerAmount = reqBody.Order.TakerAmount
 
 		resp := OrderResponse{

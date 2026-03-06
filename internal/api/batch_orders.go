@@ -11,6 +11,22 @@ import (
 	"strconv"
 )
 
+func normalizeBatchOrderResponse(resp *OrderResponse) {
+	if resp == nil {
+		return
+	}
+	if !resp.Success && resp.ErrorMsg == "" && resp.OrderID != "" {
+		resp.Success = true
+	}
+	switch resp.Status {
+	case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
+		resp.Success = false
+		if resp.ErrorMsg == "" {
+			resp.ErrorMsg = fmt.Sprintf("Order was %s", resp.Status)
+		}
+	}
+}
+
 // PlaceOrders places multiple new limit/market orders in a single request.
 func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*OrderResponse, error) {
 	if len(reqs) == 0 {
@@ -28,14 +44,25 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 			priceMicro := int64(req.Price*1e6 + 0.5)
 
 			if req.OrderType == OrderTypeMarket {
-				sizeMicro = (sizeMicro / 10000) * 10000
+				// Market Buy Restrictions (per API error):
+				// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
+				// - Taker (Shares): Max 4 decimals (multiple of 100 units)
+
+				// Truncate size (taker) to 4 decimals
+				sizeMicro = (sizeMicro / 100) * 100
+
+				// Calculate USDC cost with truncated size
 				usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 				usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
+
+				// Round up USDC (maker) to nearest 2 decimals (multiple of 10000 units)
+				// to ensure implied price remains >= limit price
 				usdcVal := usdcMicroBig.Int64()
-				if usdcVal%100 != 0 {
-					usdcVal = ((usdcVal / 100) + 1) * 100
+				if usdcVal%10000 != 0 {
+					usdcVal = ((usdcVal / 10000) + 1) * 10000
 				}
 				usdcMicroBig.SetInt64(usdcVal)
+
 				makerAmount = usdcMicroBig.String()
 				takerAmount = strconv.FormatInt(sizeMicro, 10)
 			} else {
@@ -188,7 +215,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		var singleResp OrderResponse
 		if err2 := json.Unmarshal(bodyBytes, &singleResp); err2 == nil {
-			singleResp.Success = (singleResp.ErrorMsg == "")
+			normalizeBatchOrderResponse(&singleResp)
 			return []*OrderResponse{&singleResp}, nil
 		}
 		return nil, fmt.Errorf("failed to decode response: %w (body: %s)", err, string(bodyBytes))
@@ -197,9 +224,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 	resPtrs := make([]*OrderResponse, len(result))
 	for i := range result {
 		resPtrs[i] = &result[i]
-		if resPtrs[i].ErrorMsg == "" && resPtrs[i].OrderID != "" {
-			resPtrs[i].Success = true
-		}
+		normalizeBatchOrderResponse(resPtrs[i])
 	}
 
 	return resPtrs, nil

@@ -215,21 +215,21 @@ func (t *PaperTrader) GetTradingAllowance(ctx context.Context) (float64, error) 
 
 // RealTrader implements Trader for real Polymarket trading
 type RealTrader struct {
-	clob              *api.CLOBClient
-	polygon           *api.PolygonClient
-	config            *core.Config
-	userWS            *api.UserWSClient
-	mu                sync.Mutex
-	onChainMu         sync.Mutex // Mutex for on-chain transactions (Split, Merge, Redeem)
-	
-	dailyLoss         float64
-	startOfDay        time.Time
-	
+	clob      *api.CLOBClient
+	polygon   *api.PolygonClient
+	config    *core.Config
+	userWS    *api.UserWSClient
+	mu        sync.Mutex
+	onChainMu sync.Mutex // Mutex for on-chain transactions (Split, Merge, Redeem)
+
+	dailyLoss  float64
+	startOfDay time.Time
+
 	cachedBalance     float64
 	lastBalanceUpdate time.Time
 
-	livePositions     map[string]float64
-	posMu             sync.Mutex
+	livePositions map[string]float64
+	posMu         sync.Mutex
 }
 
 // NewRealTrader creates a new real trader
@@ -258,7 +258,7 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	trader.userWS.SetOnFill(func(fill api.OrderFillData) {
 		trader.posMu.Lock()
 		defer trader.posMu.Unlock()
-		
+
 		size, _ := strconv.ParseFloat(fill.Size, 64)
 		if fill.Side == "BUY" {
 			trader.livePositions[fill.AssetID] += size
@@ -277,16 +277,30 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 func (t *RealTrader) StartUserWS(ctx context.Context) error {
 	// Prime the cache with a REST call
 	initialPos, err := t.clob.GetPositions(ctx)
+	conditionSet := make(map[string]struct{})
 	if err == nil {
 		t.posMu.Lock()
 		for _, p := range initialPos {
 			t.livePositions[p.TokenID] = p.Size
+			if p.ConditionID != "" {
+				conditionSet[p.ConditionID] = struct{}{}
+			}
 		}
 		t.posMu.Unlock()
 	}
 
-	// Connect WS
-	return t.userWS.Connect(ctx)
+	conditionIDs := make([]string, 0, len(conditionSet))
+	for conditionID := range conditionSet {
+		conditionIDs = append(conditionIDs, conditionID)
+	}
+
+	return t.userWS.SubscribeMarkets(ctx, conditionIDs)
+}
+
+// SubscribeUserWSMarkets ensures the user websocket is subscribed to the
+// provided condition IDs so live trade updates are received for active markets.
+func (t *RealTrader) SubscribeUserWSMarkets(ctx context.Context, conditionIDs ...string) error {
+	return t.userWS.SubscribeMarkets(ctx, conditionIDs)
 }
 
 // SetTestMode enables/disables test mode
@@ -331,7 +345,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			OrderID: resp.OrderID,
 			Message: resp.ErrorMsg,
 		}
-		
+
 		// If any buy order was successful, optimistically mark balance as stale
 		if resp.Success && reqs[i].Side == api.SideBuy {
 			t.mu.Lock()
@@ -990,6 +1004,45 @@ func (t *RealTrader) QueryBalancedCTFBalances(
 			select {
 			case <-ctx.Done():
 				return bal0, bal1, ctx.Err(), ctx.Err()
+			case <-time.After(settleDelay):
+			}
+		}
+	}
+
+	return
+}
+
+// QueryBalancedCTFBalanceDelta polls the on-chain CTF balances and returns both
+// the latest absolute balances and the incremental balances acquired since the
+// provided initial snapshot. This is useful when there is already pre-existing
+// inventory and we only want to merge newly bought balanced pairs.
+func (t *RealTrader) QueryBalancedCTFBalanceDelta(
+	ctx context.Context,
+	token0, token1 string,
+	initial0, initial1, expectedDelta float64,
+) (delta0, delta1, bal0, bal1 float64, err0, err1 error) {
+	const maxAttempts = 20
+	const settleDelay = 1000 * time.Millisecond
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		bal0, err0 = t.GetCTFBalanceFloat(ctx, token0)
+		bal1, err1 = t.GetCTFBalanceFloat(ctx, token1)
+
+		if err0 == nil && err1 == nil {
+			delta0 = math.Max(0, bal0-initial0)
+			delta1 = math.Max(0, bal1-initial1)
+			minDelta := math.Min(delta0, delta1)
+			if minDelta >= 0.000001 {
+				if math.Abs(delta0-delta1) <= 0.000001 || minDelta >= expectedDelta-0.05 {
+					return
+				}
+			}
+		}
+
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return delta0, delta1, bal0, bal1, ctx.Err(), ctx.Err()
 			case <-time.After(settleDelay):
 			}
 		}

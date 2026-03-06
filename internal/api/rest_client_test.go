@@ -10,8 +10,8 @@ import (
 func TestGetMarket(t *testing.T) {
 	// Mock Polymarket API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	        w.WriteHeader(http.StatusOK)
-	        _, _ = w.Write([]byte(`{"active":true,"condition_id":"test-condition","slug":"test-market","tokens":[{"token_id":"yes-token","outcome":"Yes"},{"token_id":"no-token","outcome":"No"}]}`))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"active":true,"condition_id":"test-condition","slug":"test-market","tokens":[{"token_id":"yes-token","outcome":"Yes"},{"token_id":"no-token","outcome":"No"}]}`))
 	}))
 	defer server.Close()
 
@@ -39,8 +39,8 @@ func TestNewRestClientDefault(t *testing.T) {
 
 func TestListMarkets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	        w.WriteHeader(http.StatusOK)
-	        _, _ = w.Write([]byte(`{
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
 	                "data": [				{"market_slug": "market-1", "active": true, "closed": false},
 				{"market_slug": "market-2", "active": true, "closed": false}
 			]
@@ -56,5 +56,38 @@ func TestListMarkets(t *testing.T) {
 
 	if len(markets) != 2 {
 		t.Errorf("Expected 2 markets, got %d", len(markets))
+	}
+}
+
+func TestGetMarketsByEventSlug(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/events" {
+			t.Fatalf("expected /events path, got %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("slug"); got != "btc-updown-15m-123" {
+			t.Fatalf("expected slug query, got %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[
+			{"slug":"btc-updown-15m-123","markets":[{"conditionId":"cond-1","clobTokenIds":"[\"yes-token\",\"no-token\"]","outcomes":"[\"Up\",\"Down\"]","active":true,"closed":false}]}
+		]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient(server.URL)
+	client.GammaURL = server.URL
+
+	markets, err := client.GetMarketsByEventSlug(context.Background(), "btc-updown-15m-123")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(markets) != 1 {
+		t.Fatalf("expected 1 market, got %d", len(markets))
+	}
+	if markets[0].ConditionID != "cond-1" {
+		t.Fatalf("expected cond-1, got %s", markets[0].ConditionID)
+	}
+	if len(markets[0].Tokens) != 2 || markets[0].Tokens[0].TokenID != "yes-token" {
+		t.Fatalf("unexpected market tokens: %+v", markets[0].Tokens)
 	}
 }

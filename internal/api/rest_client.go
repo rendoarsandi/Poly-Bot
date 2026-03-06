@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,11 +30,11 @@ const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        500, // Drastically increased to keep connections warm
-		MaxIdleConnsPerHost: 100, // Never drop a connection to CLOB/Gamma
-		MaxConnsPerHost:     0,   // No limit — HTTP/2 multiplexes on one conn
+		MaxIdleConns:        500,               // Drastically increased to keep connections warm
+		MaxIdleConnsPerHost: 100,               // Never drop a connection to CLOB/Gamma
+		MaxConnsPerHost:     0,                 // No limit — HTTP/2 multiplexes on one conn
 		IdleConnTimeout:     300 * time.Second, // Keep alive for 5 minutes instead of 90s
-		DisableCompression:  true, // Skip compression for speed on small JSON
+		DisableCompression:  true,              // Skip compression for speed on small JSON
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: 120 * time.Second, // More aggressive TCP keep-alive
@@ -136,6 +137,81 @@ func (c *RestClient) GetEventByTokenID(ctx context.Context, tokenID string) (*Ga
 	}
 
 	return &events[0], nil
+}
+
+func (c *RestClient) GetMarketsByEventSlug(ctx context.Context, slug string) ([]Market, error) {
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	lookupURL := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, url.QueryEscape(slug))
+	req, err := http.NewRequestWithContext(ctx, "GET", lookupURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch event by slug: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch event by slug: status %d", resp.StatusCode)
+	}
+
+	var events []GammaEvent
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&events); err != nil {
+		return nil, fmt.Errorf("failed to decode event by slug response: %w", err)
+	}
+	if len(events) == 0 {
+		return nil, fmt.Errorf("no event found for slug: %s", slug)
+	}
+
+	markets, err := marketsFromGammaEvent(events[0], slug)
+	if err != nil {
+		return nil, err
+	}
+	return markets, nil
+}
+
+func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, error) {
+	eventSlug := core.SanitizeString(event.Slug)
+	if eventSlug == "" {
+		eventSlug = core.SanitizeString(fallbackSlug)
+	}
+
+	markets := make([]Market, 0, len(event.Markets))
+	for _, gm := range event.Markets {
+		var tokenIDs []string
+		if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
+			continue
+		}
+
+		var outcomes []string
+		if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+			outcomes = []string{"Up", "Down"}
+		}
+
+		markets = append(markets, Market{
+			ConditionID: gm.ConditionID,
+			Slug:        eventSlug,
+			Active:      gm.Active,
+			Closed:      gm.Closed,
+			Tokens: []Token{
+				{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0])},
+				{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1])},
+			},
+		})
+	}
+
+	if len(markets) == 0 {
+		return nil, fmt.Errorf("no markets found for slug: %s", fallbackSlug)
+	}
+
+	return markets, nil
 }
 
 func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
@@ -543,7 +619,6 @@ func parseFloat(s string) (float64, error) {
 func (c *RestClient) CloseIdleConnections() {
 	httpClient.CloseIdleConnections()
 }
-
 
 // Ping does a lightweight GET /time to measure raw network RTT through the
 // shared httpClient (same transport, connection pool, and HTTP/2 as the bot).
