@@ -19,7 +19,6 @@ import (
 	"Market-bot/internal/core"
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
-	"Market-bot/internal/strategy"
 )
 
 const (
@@ -1328,9 +1327,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							trueCost = trueCost1 + trueCost2
 						}
 
+						// Calculate true net profit based on actual curve fees and instant merge logic
 						feeRateBps := t.Config.FeeRateBps
-						tm := strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
-						_, netProfit := tm.Cost, tm.Net
+						calcNetProfit := func(s, tc1, tc2, tc float64) float64 {
+							if s <= 0 {
+								return 0
+							}
+							avgP1 := tc1 / s
+							avgP2 := tc2 / s
+							feeT1, feeT2 := 0.0, 0.0
+							if feeRateBps > 0 {
+								feeT1 = s * 0.25 * math.Pow(avgP1*(1.0-avgP1), 2.0)
+								feeT2 = s * 0.25 * math.Pow(avgP2*(1.0-avgP2), 2.0)
+							}
+							return math.Min(s-feeT1, s-feeT2) - tc
+						}
+
+						netProfit := calcNetProfit(shares, trueCost1, trueCost2, trueCost)
 						cost := trueCost
 
 						// Skip if net profit is not positive after order cost
@@ -1351,9 +1364,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								continue // Not enough cash/liquidity for even 1 share
 							}
 							shares = maxAffordableShares
-							tm = strategy.CalculateTradeMetricsCurve(shares, ask1, ask2, feeRateBps)
-							_, netProfit = tm.Cost, tm.Net
+							
+							trueCost1 = calcSideCost(shares, asks1)
+							trueCost2 = calcSideCost(shares, asks2)
+							trueCost = trueCost1 + trueCost2
 							cost = trueCost
+							
+							netProfit = calcNetProfit(shares, trueCost1, trueCost2, trueCost)
 
 							// If still over risk limit or not profitable after cost, don't trade
 							if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash || netProfit <= 0 {
@@ -1587,21 +1604,52 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								}
 							}
 
+							// Calculate true proceeds by walking the bids
+							calcSideProceeds := func(reqShares float64, bids []paper.MarketLevel) float64 {
+								rem := reqShares
+								p := 0.0
+								for _, lvl := range bids {
+									if rem <= 0 {
+										break
+									}
+									fill := math.Min(rem, lvl.Size)
+									p += fill * lvl.Price
+									rem -= fill
+								}
+								if rem > 0 && len(bids) > 0 {
+									p += rem * bids[0].Price
+								}
+								return p
+							}
+
+							trueProceeds1 := calcSideProceeds(sharesToSell, sortedBids1)
+							trueProceeds2 := calcSideProceeds(sharesToSell, sortedBids2)
+							
+							avgBid1 := trueProceeds1 / sharesToSell
+							avgBid2 := trueProceeds2 / sharesToSell
+
 							// Calculate fees (collected in USDC for SELL)
 							feeUsdc := 0.0
 							if t.Config.FeeRateBps > 0 {
-								fee1 := sharesToSell * 0.25 * math.Pow(bid1*(1.0-bid1), 2.0) * bid1
-								fee2 := sharesToSell * 0.25 * math.Pow(bid2*(1.0-bid2), 2.0) * bid2
+								fee1 := sharesToSell * 0.25 * math.Pow(avgBid1*(1.0-avgBid1), 2.0) * avgBid1
+								fee2 := sharesToSell * 0.25 * math.Pow(avgBid2*(1.0-avgBid2), 2.0) * avgBid2
 								feeUsdc = fee1 + fee2
 							}
 
-							// Simulate sell: record profit
-							profit1 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[0], sharesToSell, bid1)
-							profit2 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[1], sharesToSell, bid2)
+							// Ensure it's actually profitable after depth slippage and fees
+							// Cost basis of a split share is exactly $1.00 for the pair (1 YES + 1 NO)
+							expectedProfit := (trueProceeds1 + trueProceeds2) - feeUsdc - (sharesToSell * 1.0)
+							if expectedProfit <= 0 {
+								continue
+							}
+
+							// Simulate sell: record profit using actual average fill prices
+							profit1 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[0], sharesToSell, avgBid1)
+							profit2 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[1], sharesToSell, avgBid2)
 							totalProfit := profit1 + profit2 - feeUsdc
 
 							// Add proceeds back to balance
-							proceeds := (sharesToSell * bidSum) - feeUsdc
+							proceeds := (trueProceeds1 + trueProceeds2) - feeUsdc
 							t.Engine.AddBalance(proceeds)
 							t.Engine.AddRealizedPnL(totalProfit)
 							t.Engine.RecalculateDrawdown() // Safe to check drawdown now
