@@ -1370,18 +1370,23 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							if verifyErr == nil {
-								side1Success = (err1 == nil && res1 != nil && res1.Success) || sold1 > 0.01
-								side2Success = (err2 == nil && res2 != nil && res2.Success) || sold2 > 0.01
+								// For FAK orders, a Success response with 0 sold means it was KILLED
+								side1Success = sold1 > 0.01
+								side2Success = sold2 > 0.01
 
-								// Optimistic fallback if API returned true but positions haven't synced
-								if side1Success && sold1 == 0 { sold1 = sharesToSell }
-								if side2Success && sold2 == 0 { sold2 = sharesToSell }
+								// Adjust success messages if API accepted it but it was killed instantly
+								if !side1Success && err1 == nil && res1 != nil && res1.Success {
+									res1.Message = "FAK Missed/Killed (Price moved)"
+								}
+								if !side2Success && err2 == nil && res2 != nil && res2.Success {
+									res2.Message = "FAK Missed/Killed (Price moved)"
+								}
 							} else {
-								tui.LogEvent("[%s] ⚠️ Failed to verify split sell positions: %v", id, verifyErr)
-								side1Success = err1 == nil && res1 != nil && res1.Success
-								side2Success = err2 == nil && res2 != nil && res2.Success
-								if side1Success { sold1 = sharesToSell }
-								if side2Success { sold2 = sharesToSell }
+								tui.LogEvent("[%s] ⚠️ Failed to verify split sell positions: %v (treating as failed)", id, verifyErr)
+								side1Success = false
+								side2Success = false
+								sold1 = 0
+								sold2 = 0
 							}
 
 							// ═══════════════════════════════════════════════════════════════
@@ -1791,27 +1796,31 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
 
-							// Override success flags based on actual inventory
-							// We consider the side "filled" if we got at least 0.01 shares (partial fill)
-							// OR if the API reported success. 
+							// With FAK (Fill-And-Kill) orders, the API can return Success=true 
+							// even if the order filled 0 shares and was instantly killed.
+							// Therefore, we CANNOT assume full fill based on API Success.
+							// The actual inventory received is the ONLY source of truth.
 							filled1 = bal0
 							filled2 = bal1
-							side1Success = (err1 == nil && res1 != nil && res1.Success) || bal0 > 0.01
-							side2Success = (err2 == nil && res2 != nil && res2.Success) || bal1 > 0.01
 							
-							// If API said success but CLOB is lagging, assume full fill for log metrics initially
-							if side1Success && filled1 == 0 {
-							    filled1 = shares
+							// An execution is only "successful" if we actually got shares
+							side1Success = bal0 > 0.01
+							side2Success = bal1 > 0.01
+
+							// If the API reported success but we got 0 shares, the FAK missed.
+							// Explicitly log this so the user knows it was killed.
+							if !side1Success && err1 == nil && res1 != nil && res1.Success {
+								res1.Message = "FAK Missed/Killed (Price moved)"
 							}
-							if side2Success && filled2 == 0 {
-							    filled2 = shares
+							if !side2Success && err2 == nil && res2 != nil && res2.Success {
+								res2.Message = "FAK Missed/Killed (Price moved)"
 							}
 						} else {
-							tui.LogEvent("[%s] ⚠️ Failed to verify positions: %v (relying on API response)", id, verifyErr)
-							side1Success = err1 == nil && res1 != nil && res1.Success
-							side2Success = err2 == nil && res2 != nil && res2.Success
-							if side1Success { filled1 = shares }
-							if side2Success { filled2 = shares }
+							tui.LogEvent("[%s] ⚠️ Failed to verify positions: %v (treating as failed)", id, verifyErr)
+							side1Success = false
+							side2Success = false
+							filled1 = 0
+							filled2 = 0
 						}
 
 						// Calculate costs using the actual filled size for reporting
