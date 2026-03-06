@@ -22,7 +22,6 @@ import (
 	"math"
 	"os"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -222,65 +221,41 @@ func main() {
 	}
 	fmt.Printf("   📊 %s\n\n", orderStats.report())
 
-	// ── 6. Parallel POST /order (simulates panic buy — 2 orders at once) ──
-	fmt.Printf("── 5. Parallel POST /order: 2 simultaneous orders (%d samples) ──\n", samples)
-	fmt.Println("   ℹ️  This is what panic buy actually does — both legs at once")
-	parallelStats := &stats{}
-	leg1Stats := &stats{}
-	leg2Stats := &stats{}
+	// ── 5. Batch POST /orders (Atomic 2-leg execution) ──
+	fmt.Printf("── 5. Batch POST /orders: Atomic execution of 2 legs (%d samples) ──\n", samples)
+	fmt.Println("   ℹ️  This is what the bot uses for synchronized panic buys & split sells")
+	batchStats := &stats{}
 	var errCount int64
 	for i := 0; i < samples; i++ {
-		var d1, d2 time.Duration
-		var wg sync.WaitGroup
-		wg.Add(2)
-
-		overallStart := time.Now()
-		go func() {
-			defer wg.Done()
-			req := &api.OrderRequest{
+		reqs := []*api.OrderRequest{
+			{
 				TokenID: tokenID, Price: 0.01, Size: 5.0,
 				Side: api.SideBuy, OrderType: api.OrderTypeMarket,
 				TimeInForce: api.TIFFillAndKill, FeeRateBps: 100,
-			}
-			s := time.Now()
-			_, err := clob.PlaceOrder(ctx, req)
-			d1 = time.Since(s)
-			if err != nil {
-				atomic.AddInt64(&errCount, 1)
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			req := &api.OrderRequest{
+			},
+			{
 				TokenID: tokenID, Price: 0.01, Size: 5.0,
 				Side: api.SideBuy, OrderType: api.OrderTypeMarket,
 				TimeInForce: api.TIFFillAndKill, FeeRateBps: 100,
-			}
-			s := time.Now()
-			_, err := clob.PlaceOrder(ctx, req)
-			d2 = time.Since(s)
-			if err != nil {
-				atomic.AddInt64(&errCount, 1)
-			}
-		}()
-		wg.Wait()
-		total := time.Since(overallStart)
+			},
+		}
 
-		parallelStats.add(total)
-		leg1Stats.add(d1)
-		leg2Stats.add(d2)
-		fmt.Printf("   %2d: total=%v  leg1=%v  leg2=%v\n", i+1,
-			total.Round(100*time.Microsecond),
-			d1.Round(100*time.Microsecond),
-			d2.Round(100*time.Microsecond))
+		s := time.Now()
+		_, err := clob.PlaceOrders(ctx, reqs)
+		total := time.Since(s)
+
+		if err != nil {
+			atomic.AddInt64(&errCount, 1)
+		}
+
+		batchStats.add(total)
+		fmt.Printf("   %2d: total=%v\n", i+1, total.Round(100*time.Microsecond))
 		time.Sleep(300 * time.Millisecond)
 	}
 	if errCount > 0 {
 		fmt.Printf("   ⚠️  %d errors encountered — results may not reflect real latency\n", errCount)
 	}
-	fmt.Printf("   📊 Wall clock: %s\n", parallelStats.report())
-	fmt.Printf("   📊 Leg 1:      %s\n", leg1Stats.report())
-	fmt.Printf("   📊 Leg 2:      %s\n\n", leg2Stats.report())
+	fmt.Printf("   📊 Batch RTT: %s\n\n", batchStats.report())
 
 	// ── Summary ──
 	fmt.Println("══════════════════════════════════════════════════════════")
@@ -289,7 +264,7 @@ func main() {
 	fmt.Printf("  Raw network RTT:          %s\n", rawStats.report())
 	fmt.Printf("  Auth GET (balance):       %s\n", authGetStats.report())
 	fmt.Printf("  Single POST /order:       %s\n", orderStats.report())
-	fmt.Printf("  Parallel 2x POST /order:  %s\n", parallelStats.report())
+	fmt.Printf("  Batch POST /orders (2x):  %s\n", batchStats.report())
 	fmt.Println("──────────────────────────────────────────────────────────")
 	if len(orderStats.samples) > 0 && len(rawStats.samples) > 0 {
 		sort.Slice(orderStats.samples, func(i, j int) bool { return orderStats.samples[i] < orderStats.samples[j] })
