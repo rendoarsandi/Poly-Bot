@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"Market-bot/internal/core"
@@ -656,11 +657,13 @@ func (c *CLOBClient) WaitForFill(ctx context.Context, orderID string, timeout ti
 		}
 
 		// Check status
-		switch order.Status {
-		case "FILLED", "MATCHED":
+		switch strings.ToUpper(strings.TrimSpace(order.Status)) {
+		case "FILLED", "CONFIRMED":
 			return true, nil
-		case "CANCELLED", "EXPIRED":
+		case "FAILED", "CANCELLED", "EXPIRED":
 			return false, nil
+		case "MATCHED", "MINED", "RETRYING", "DELAYED", "UNMATCHED":
+			// Trade/order is still in flight; keep polling until terminal.
 		case "OPEN", "LIVE":
 			// Check if fully filled (remainingSize == 0)
 			if order.RemainingSize == 0 && order.OriginalSize > 0 {

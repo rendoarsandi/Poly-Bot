@@ -150,7 +150,7 @@ func run() error {
 	} else {
 		fmt.Println("   • Max daily loss: disabled (using 10% drawdown kill switch)")
 	}
-	fmt.Printf("   • Buy execution margin floor: %.1f%%\n", cfg.BuyExecutionMarginFloorPercent)
+	fmt.Printf("   • Buy/sell execution margin floor: %.1f%%\n", cfg.BuyExecutionMarginFloorPercent)
 	fmt.Println()
 
 	// Confirmation prompt
@@ -684,7 +684,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		splitInventory = paper.NewSplitInventory()
 		globalSplitInventories[market.ConditionID] = splitInventory
 	}
-	initialSplitAmount := globalInitialSplits[market.ConditionID]
 	splitMu.Unlock()
 
 	engine.RegisterSplitInventory(splitInventory)   // Register for equity calculation
@@ -1087,7 +1086,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// Only mark as initialized on SUCCESS (globally)
 							globalSplitStatus[condID] = true
 							globalInitialSplits[condID] = amt
-							initialSplitAmount = amt
 						}
 						splitMu.Unlock()
 					}(id, market.ConditionID, outcomes[0], outcomes[1], splitAmount)
@@ -1113,6 +1111,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
+				splitMu.Lock()
+				initialSplitAmount := globalInitialSplits[market.ConditionID]
+				splitMu.Unlock()
 
 				decision := replenishCtrl.CheckReplenish(paper.ReplenishParams{
 					CurrentShares:      currentShares,
@@ -1127,7 +1128,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {
 					tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f/%.0f), replenishing +%.0f shares...", id, currentShares, initialSplitAmount, decision.Amount)
-					go func(mID, condID, out0, out1 string, amt float64) {
+					go func(mID, condID, out0, out1 string, amt float64, targetShares float64) {
 						defer replenishCtrl.MarkComplete()
 						// Use derived context for proper shutdown propagation
 						bgCtx, bgCancel := context.WithTimeout(ctx, 60*time.Second)
@@ -1142,11 +1143,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							splitInventory.RecordSplit(mID, out0, out1, amt)
 							engine.DeductBalance(amt)
 							engine.RecalculateDrawdown()
-							tui.LogEvent("[%s] ✅ SPLIT: Replenished to %.0f shares (+%.0f)", mID, initialSplitAmount, amt)
+							tui.LogEvent("[%s] ✅ SPLIT: Replenished to %.0f shares (+%.0f)", mID, targetShares, amt)
 						} else {
 							tui.LogEvent("[%s] ⚠️ SPLIT: Background replenish failed: %v", mID, bgErr)
 						}
-					}(id, market.ConditionID, outcomes[0], outcomes[1], decision.Amount)
+					}(id, market.ConditionID, outcomes[0], outcomes[1], decision.Amount, initialSplitAmount)
 				}
 
 				if sellMargin >= cfg.SplitMinMarginSell-1e-4 && time.Since(lastSplitSell) > 2*time.Second {
@@ -1182,7 +1183,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						bids1 := tokenFullBids[outcomes[0]]
 						bids2 := tokenFullBids[outcomes[1]]
 						bookDepth1, bookDepth2 := len(bids1), len(bids2)
-						minSum := 1.0 + (cfg.SplitMinMarginSell / 100.0)
+						executionMarginFloor := clampExecutionMarginFloor(liveCfg.SplitMinMarginSell, liveCfg.BuyExecutionMarginFloorPercent)
+						minSum := minExecutablePairSum(executionMarginFloor, liveCfg.MinAskPrice)
 
 						sortedBids1 := make([]paper.MarketLevel, len(bids1))
 						copy(sortedBids1, bids1)
@@ -1217,7 +1219,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						for bi, bj := 0, 0; bi < len(sortedBids1) && bj < len(sortedBids2); {
 							if sortedBids1[bi].Price+sortedBids2[bj].Price < minSum-1e-6 {
-								break // below profitability threshold — stop
+								break // below shared execution floor — stop
 							}
 							if bi+1 > maxValidI {
 								maxValidI = bi + 1
@@ -1255,8 +1257,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
 							// Enhanced log with liquidity and depth info (same format as paper bot)
-							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell,
+							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %.0f shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, sharesToSell,
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 							// Sell both sides in parallel
@@ -2158,6 +2160,20 @@ func maxExecutablePairSum(executionFloorPercent, maxAskPrice float64) float64 {
 		return 0
 	}
 	return maxSum
+}
+
+func minExecutablePairSum(executionFloorPercent, minAskPrice float64) float64 {
+	minSum := 1.0 + (executionFloorPercent / 100.0)
+	if minAskPrice > 0 {
+		floorSum := minAskPrice * 2.0
+		if minSum < floorSum {
+			minSum = floorSum
+		}
+	}
+	if minSum > 2.0 {
+		return 2.0
+	}
+	return minSum
 }
 
 func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {

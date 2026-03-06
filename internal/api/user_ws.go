@@ -193,7 +193,7 @@ func (c *UserWSClient) handleEvent(evt map[string]interface{}) {
 
 func shouldEmitTradeFill(status string) bool {
 	switch strings.ToUpper(strings.TrimSpace(status)) {
-	case "", "MATCHED", "MINED", "CONFIRMED":
+	case "CONFIRMED":
 		return true
 	default:
 		return false

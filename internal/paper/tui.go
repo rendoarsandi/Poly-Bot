@@ -188,7 +188,7 @@ type TUISettings struct {
 	Timeframe                      string  // "5m" or "15m"
 	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
 	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
-	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow execution to slip to -1% pair margin
+	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
 	SplitInitialCapPct             float64 // Initial Split Cap percentage
@@ -2007,7 +2007,7 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
 		{
-			label: "Buy Exec Floor %",
+			label: "Buy/Sell Exec Floor %",
 			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
 			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
 		},

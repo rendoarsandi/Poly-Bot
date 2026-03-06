@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPlaceOrder_FOK_Killed(t *testing.T) {
@@ -247,5 +249,80 @@ func TestSendHeartbeat(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("expected status ok, got %q", resp.Status)
+	}
+}
+
+func TestWaitForFill_IgnoresMatchedUntilConfirmed(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/order/order-1" {
+			t.Fatalf("expected path /order/order-1, got %s", r.URL.Path)
+		}
+
+		status := "CONFIRMED"
+		if requests.Add(1) == 1 {
+			status = "MATCHED"
+		}
+
+		_ = json.NewEncoder(w).Encode(OpenOrder{
+			OrderID:       "order-1",
+			Status:        status,
+			OriginalSize:  5,
+			RemainingSize: 0,
+		})
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, err := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	filled, err := client.WaitForFill(context.Background(), "order-1", 350*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForFill failed: %v", err)
+	}
+	if !filled {
+		t.Fatal("expected fill once order reached CONFIRMED")
+	}
+	if requests.Load() < 2 {
+		t.Fatalf("expected WaitForFill to keep polling after MATCHED, got %d requests", requests.Load())
+	}
+}
+
+func TestWaitForFill_FailedReturnsNotFilled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(OpenOrder{
+			OrderID:       "order-1",
+			Status:        "FAILED",
+			OriginalSize:  5,
+			RemainingSize: 0,
+		})
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, err := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	filled, err := client.WaitForFill(context.Background(), "order-1", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForFill failed: %v", err)
+	}
+	if filled {
+		t.Fatal("expected FAILED order to return not filled")
 	}
 }

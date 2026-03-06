@@ -64,9 +64,10 @@ type Config struct {
 	// Price filters
 	MinAskPrice float64 // Minimum ask price to buy (default: 0.10)
 	MaxAskPrice float64 // Maximum ask price to buy (default: 0.90)
-	// Panic-buy execution tolerance: minimum acceptable combined pair margin while
-	// walking deeper ask liquidity during execution. Can be negative to tolerate a
-	// small loss on the pair if that reduces legging risk.
+	// Shared panic buy/sell execution tolerance: minimum acceptable combined pair
+	// margin while walking deeper book liquidity during execution. Can be negative
+	// to tolerate a small loss on the pair if that reduces legging risk.
+	// Env name is kept as BUY_EXECUTION_MARGIN_FLOOR_PERCENT for backward compatibility.
 	BuyExecutionMarginFloorPercent float64
 
 	// ═══════════════════════════════════════════════════════════════════════════

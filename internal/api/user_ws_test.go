@@ -34,7 +34,7 @@ func TestUserWSClientProcessTradeEvent(t *testing.T) {
 	}
 }
 
-func TestUserWSClientProcessTradeEvent_FirstSuccessfulStatusOnly(t *testing.T) {
+func TestUserWSClientProcessTradeEvent_EmitsOnlyConfirmedTrade(t *testing.T) {
 	client := NewUserWSClient("key", "secret", "pass")
 	callCount := 0
 	var got OrderFillData
@@ -50,8 +50,8 @@ func TestUserWSClientProcessTradeEvent_FirstSuccessfulStatusOnly(t *testing.T) {
 	if callCount != 1 {
 		t.Fatalf("expected one callback for a trade lifecycle, got %d", callCount)
 	}
-	if got.Status != "MATCHED" {
-		t.Fatalf("expected first successful status to be emitted, got %q", got.Status)
+	if got.Status != "CONFIRMED" {
+		t.Fatalf("expected only terminal CONFIRMED status to be emitted, got %q", got.Status)
 	}
 }
 
