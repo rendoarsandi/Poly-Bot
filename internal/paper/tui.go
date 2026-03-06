@@ -183,24 +183,25 @@ type OrderHistoryEntry struct {
 // TUISettings holds runtime-adjustable trading parameters.
 // These can be changed live from the settings panel (press 's').
 type TUISettings struct {
-	MarketSlug           string  // Current selected market slug or ALL or BTC,ETH
-	MaxMarkets           int     // Max concurrent markets to trade
-	Timeframe            string  // "5m" or "15m"
-	TradeScaleFactor     float64 // e.g. 0.05 = 5% of equity per trade
-	MinMarginPercent     float64 // e.g. 2.0 = require 2% arb margin
-	SplitMinMarginSell   float64 // e.g. 3.0 = sell splits at 3% margin
-	SplitStrategyEnabled bool    // toggle split strategy on/off
-	SplitInitialCapPct   float64 // Initial Split Cap percentage
-	SplitReplenishCapPct float64 // Replenishment Cap percentage
-	MinAskPrice          float64 // e.g. 0.10 = minimum ask price filter
-	MaxAskPrice          float64 // e.g. 0.90 = maximum ask price filter
+	MarketSlug                     string  // Current selected market slug or ALL or BTC,ETH
+	MaxMarkets                     int     // Max concurrent markets to trade
+	Timeframe                      string  // "5m" or "15m"
+	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
+	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
+	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow execution to slip to -1% pair margin
+	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
+	SplitStrategyEnabled           bool    // toggle split strategy on/off
+	SplitInitialCapPct             float64 // Initial Split Cap percentage
+	SplitReplenishCapPct           float64 // Replenishment Cap percentage
+	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
+	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -476,11 +477,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 10
+					m.settingsCursor = 11
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 11
+				m.settingsCursor = (m.settingsCursor + 1) % 12
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -527,33 +528,39 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 5:
+					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.5
+					if m.tui.settings.BuyExecutionMarginFloorPercent < -10.0 {
+						m.tui.settings.BuyExecutionMarginFloorPercent = -10.0
+					}
+					changed = true
+				case 6:
 					m.tui.settings.SplitMinMarginSell -= 0.5
 					if m.tui.settings.SplitMinMarginSell < 1.0 {
 						m.tui.settings.SplitMinMarginSell = 1.0
 					}
 					changed = true
-				case 6:
+				case 7:
 					m.tui.settings.SplitStrategyEnabled = false
 					changed = true
-				case 7:
+				case 8:
 					m.tui.settings.SplitInitialCapPct -= 0.05
 					if m.tui.settings.SplitInitialCapPct < 0.05 {
 						m.tui.settings.SplitInitialCapPct = 0.05
 					}
 					changed = true
-				case 8:
+				case 9:
 					m.tui.settings.SplitReplenishCapPct -= 0.05
 					if m.tui.settings.SplitReplenishCapPct < 0.05 {
 						m.tui.settings.SplitReplenishCapPct = 0.05
 					}
 					changed = true
-				case 9:
+				case 10:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
 						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
-				case 10:
+				case 11:
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
@@ -608,33 +615,39 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 5:
+					m.tui.settings.BuyExecutionMarginFloorPercent += 0.5
+					if m.tui.settings.BuyExecutionMarginFloorPercent > 5.0 {
+						m.tui.settings.BuyExecutionMarginFloorPercent = 5.0
+					}
+					changed = true
+				case 6:
 					m.tui.settings.SplitMinMarginSell += 0.5
 					if m.tui.settings.SplitMinMarginSell > 20.0 {
 						m.tui.settings.SplitMinMarginSell = 20.0
 					}
 					changed = true
-				case 6:
+				case 7:
 					m.tui.settings.SplitStrategyEnabled = true
 					changed = true
-				case 7:
+				case 8:
 					m.tui.settings.SplitInitialCapPct += 0.05
 					if m.tui.settings.SplitInitialCapPct > 1.0 {
 						m.tui.settings.SplitInitialCapPct = 1.0
 					}
 					changed = true
-				case 8:
+				case 9:
 					m.tui.settings.SplitReplenishCapPct += 0.05
 					if m.tui.settings.SplitReplenishCapPct > 1.0 {
 						m.tui.settings.SplitReplenishCapPct = 1.0
 					}
 					changed = true
-				case 9:
+				case 10:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
 						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
-				case 10:
+				case 11:
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
@@ -1225,36 +1238,36 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 		// Supplement from order-book depth logic removed to prevent UI from pulling ghost prices from stale depth maps
 		/*
-		if d := depth[id]; d != nil {
-			if bids := d[mkt.Outcomes[0]+"_bids"]; len(bids) > 0 && bids[0].Price > bid1 {
-				bid1 = bids[0].Price
+			if d := depth[id]; d != nil {
+				if bids := d[mkt.Outcomes[0]+"_bids"]; len(bids) > 0 && bids[0].Price > bid1 {
+					bid1 = bids[0].Price
+				}
+				if asks := d[mkt.Outcomes[0]+"_asks"]; len(asks) > 0 && (ask1 == 0 || asks[0].Price < ask1) {
+					ask1 = asks[0].Price
+				}
+				if bids := d[mkt.Outcomes[1]+"_bids"]; len(bids) > 0 && bids[0].Price > bid2 {
+					bid2 = bids[0].Price
+				}
+				if asks := d[mkt.Outcomes[1]+"_asks"]; len(asks) > 0 && (ask2 == 0 || asks[0].Price < ask2) {
+					ask2 = asks[0].Price
+				}
 			}
-			if asks := d[mkt.Outcomes[0]+"_asks"]; len(asks) > 0 && (ask1 == 0 || asks[0].Price < ask1) {
-				ask1 = asks[0].Price
-			}
-			if bids := d[mkt.Outcomes[1]+"_bids"]; len(bids) > 0 && bids[0].Price > bid2 {
-				bid2 = bids[0].Price
-			}
-			if asks := d[mkt.Outcomes[1]+"_asks"]; len(asks) > 0 && (ask2 == 0 || asks[0].Price < ask2) {
-				ask2 = asks[0].Price
-			}
-		}
 		*/
 
 		// Infer from complement logic removed to prevent display artifacts when bot clears orderbook
 		/*
-		if bid1 == 0 && ask2 > 0 {
-			bid1 = 1.0 - ask2
-		}
-		if ask1 == 0 && bid2 > 0 {
-			ask1 = 1.0 - bid2
-		}
-		if bid2 == 0 && ask1 > 0 {
-			bid2 = 1.0 - ask1
-		}
-		if ask2 == 0 && bid1 > 0 {
-			ask2 = 1.0 - bid1
-		}
+			if bid1 == 0 && ask2 > 0 {
+				bid1 = 1.0 - ask2
+			}
+			if ask1 == 0 && bid2 > 0 {
+				ask1 = 1.0 - bid2
+			}
+			if bid2 == 0 && ask1 > 0 {
+				bid2 = 1.0 - ask1
+			}
+			if ask2 == 0 && bid1 > 0 {
+				ask2 = 1.0 - bid1
+			}
 		*/
 
 		fmtP := func(v float64) string {
@@ -1992,6 +2005,11 @@ func (m tuiModel) renderSettings(w int) string {
 			label: "Buy Min Margin %",
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
+		},
+		{
+			label: "Buy Exec Floor %",
+			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
+			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
 		},
 		{
 			label: "Split Min Margin",

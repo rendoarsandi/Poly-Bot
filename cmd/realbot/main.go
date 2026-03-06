@@ -150,6 +150,7 @@ func run() error {
 	} else {
 		fmt.Println("   • Max daily loss: disabled (using 10% drawdown kill switch)")
 	}
+	fmt.Printf("   • Buy execution margin floor: %.1f%%\n", cfg.BuyExecutionMarginFloorPercent)
 	fmt.Println()
 
 	// Confirmation prompt
@@ -321,23 +322,25 @@ func run() error {
 
 	// Seed settings panel with values from config (.env)
 	tui.InitSettings(paper.TUISettings{
-		MarketSlug:           cfg.MarketSlug,
-		MaxMarkets:           cfg.MaxMarkets,
-		Timeframe:            cfg.Timeframe,
-		TradeScaleFactor:     cfg.TradeScaleFactor,
-		MinMarginPercent:     cfg.MinMarginPercent,
-		SplitMinMarginSell:   cfg.SplitMinMarginSell,
-		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:   cfg.SplitInitialCapPct,
-		SplitReplenishCapPct: cfg.SplitReplenishCapPct,
-		MinAskPrice:          cfg.MinAskPrice,
-		MaxAskPrice:          cfg.MaxAskPrice,
+		MarketSlug:                     cfg.MarketSlug,
+		MaxMarkets:                     cfg.MaxMarkets,
+		Timeframe:                      cfg.Timeframe,
+		TradeScaleFactor:               cfg.TradeScaleFactor,
+		MinMarginPercent:               cfg.MinMarginPercent,
+		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
+		SplitMinMarginSell:             cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:             cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:           cfg.SplitReplenishCapPct,
+		MinAskPrice:                    cfg.MinAskPrice,
+		MaxAskPrice:                    cfg.MaxAskPrice,
 	}, func(s paper.TUISettings) {
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
 		cfg.Timeframe = s.Timeframe
 		cfg.TradeScaleFactor = s.TradeScaleFactor
 		cfg.MinMarginPercent = s.MinMarginPercent
+		cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
@@ -1500,13 +1503,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			rMaxAsk := realbotCfg.MaxAskPrice
 
 			if ask1 >= rMinAsk && ask1 <= rMaxAsk && ask2 >= rMinAsk && ask2 <= rMaxAsk {
-				// Slippage buffer: set to 0 to execute exactly at configured MinMarginPercent
-				const slippageBuffer = 0.0
 				sum := ask1 + ask2
-				bufferedSum := (ask1 + slippageBuffer) + (ask2 + slippageBuffer)
-				margin := (1.0 - bufferedSum) * 100 // Use buffered sum for margin check
+				observedMargin := pairMarginPercent(sum)
+				executionMarginFloor := clampExecutionMarginFloor(realbotCfg.MinMarginPercent, realbotCfg.BuyExecutionMarginFloorPercent)
+				maxExecutionSum := maxExecutablePairSum(executionMarginFloor, rMaxAsk)
 
-				if margin >= cfg.MinMarginPercent-1e-4 {
+				if observedMargin >= cfg.MinMarginPercent-1e-4 {
 					// Evaluate risk
 					riskAction, riskReason := riskMgr.Evaluate()
 					if riskAction == paper.RiskActionKillSwitch {
@@ -1542,9 +1544,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					// Fee estimation and balance check logging removed per user request
 
-					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
-					// that maintain minimum margin. This allows "chasing" liquidity deeper into the book.
-					maxSum := 1.0 - (cfg.MinMarginPercent / 100.0) // e.g., 2% margin → max sum = 0.98
+					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across all price levels
+					// that remain acceptable under the configured execution margin floor. This lets
+					// panic buys consume deeper liquidity to reduce misses/legging, while still
+					// stopping before the pair gets worse than the allowed post-slip margin.
+					maxSum := maxExecutionSum
 
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
@@ -1586,9 +1590,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						p1 := asks1[i].Price
 						p2 := asks2[j].Price
 
-						// Check if this combination maintains minimum margin
+						// Check if this combination stays within the allowed execution floor.
 						if p1+p2 > maxSum+1e-6 {
-							break // Can't go deeper, would exceed margin threshold
+							break // Can't go deeper, would exceed the post-slip execution floor.
 						}
 
 						// Get liquidity at current levels
@@ -1634,15 +1638,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					bookDepth1 := len(tokenFullAsks[outcomes[0]])
 					bookDepth2 := len(tokenFullAsks[outcomes[1]])
 
-					// Use 100% of matched liquidity - MarketBuy walks the book atomically for guaranteed fills
-					// No legging risk since we execute both sides simultaneously, not single-level limit orders
+					// Use all matched liquidity that fits inside the execution floor. This improves
+					// fill odds, but does NOT make the two sides atomic: legging is still possible.
 					maxSafeShares := minLiquidity * 1.00
 					if shares > maxSafeShares {
 						shares = maxSafeShares
 					}
 
-					// Calculate metrics for reporting
-					cost := strategy.CalculateTradeMetricsFlat(shares, sum, maxFeeRateBps).Cost
+					// Risk checks should use the worst price sum the bot is willing to execute through.
+					cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
 
 					// REFRESH BALANCE RIGHT BEFORE TRADING to prevent unbalanced fills
 					// This is the "Zero Excuse" check to ensure we have enough for BOTH sides
@@ -1672,14 +1676,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					if true { // Always execute if we got here
-						// Use buffered prices (slippageBuffer already defined above)
-						price1 := ask1 + slippageBuffer
-						price2 := ask2 + slippageBuffer
-
-						// Calculate trade metrics with buffered prices
-
-						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% margin, %.1f%% after slippage) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-							id, outcomes[0], ask1, outcomes[1], ask2, sum, (1.0-sum)*100, margin, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+							id, outcomes[0], ask1, outcomes[1], ask2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -1855,14 +1853,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							filled2 = 0
 						}
 
-						// Calculate costs using the actual filled size for reporting
-						cost1 := filled1 * price1
-						cost2 := filled2 * price2
+						// Calculate costs using the observed trigger prices for reporting.
+						// Polymarket does not expose exact per-leg execution price through this path.
+						cost1 := filled1 * ask1
+						cost2 := filled2 * ask2
 
 						// Log results based on VERIFIED state
 						if side1Success {
-							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Target $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], price1, filled1, shares)
-							tui.RecordOrder(id, outcomes[0], "BUY", filled1, price1, cost1, margin, 0.0, "FILLED")
+							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, shares)
+							tui.RecordOrder(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
@@ -1874,12 +1873,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 							}
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, price1, cost1, margin, 0.0, "FAILED")
+							tui.RecordOrder(id, outcomes[0], "BUY", shares, ask1, cost1, observedMargin, 0.0, "FAILED")
 						}
 
 						if side2Success {
-							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Target $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], price2, filled2, shares)
-							tui.RecordOrder(id, outcomes[1], "BUY", filled2, price2, cost2, margin, 0.0, "FILLED")
+							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, shares)
+							tui.RecordOrder(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
@@ -1891,7 +1890,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 							}
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, price2, cost2, margin, 0.0, "FAILED")
+							tui.RecordOrder(id, outcomes[1], "BUY", shares, ask2, cost2, observedMargin, 0.0, "FAILED")
 						}
 
 						// ═══════════════════════════════════════════════════════════════
@@ -1945,8 +1944,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// This ensures engine state matches reality for accurate drawdown calculation
 						if side1Success && side2Success {
 							// Both sides filled (either initially or via recovery) - record both
-							_, _ = engine.BuyForMarket(id, outcomes[0], price1, filled1)
-							_, _ = engine.BuyForMarket(id, outcomes[1], price2, filled2)
+							_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
+							_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
 
 							// Execute the merge as soon as WS confirms inventory, then let the
 							// on-chain balance query wait only for settlement confirmation.
@@ -2014,11 +2013,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// Only one side filled after retry — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.
 							if side1Success {
-								_, _ = engine.BuyForMarket(id, outcomes[0], price1, shares)
+								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
 							}
 							if side2Success {
-								_, _ = engine.BuyForMarket(id, outcomes[1], price2, shares)
+								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, shares)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
 
@@ -2089,10 +2088,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								// Record estimated loss from cleanup sells (sold at market floor $0.01)
 								cleanupLoss := 0.0
 								if bal0 >= 0.01 && sell0Err == nil {
-									cleanupLoss += bal0 * (price1 - 0.01) // Lost difference vs buy price
+									cleanupLoss += bal0 * (ask1 - 0.01) // Lost difference vs observed buy price
 								}
 								if bal1 >= 0.01 && sell1Err == nil {
-									cleanupLoss += bal1 * (price2 - 0.01)
+									cleanupLoss += bal1 * (ask2 - 0.01)
 								}
 								if cleanupLoss > 0 {
 									trader.RecordLoss(cleanupLoss)
@@ -2134,6 +2133,31 @@ func pairBalancesFromPositions(positions []trading.PositionInfo, token0, token1 
 		}
 	}
 	return bal0, bal1
+}
+
+func pairMarginPercent(sum float64) float64 {
+	return (1.0 - sum) * 100.0
+}
+
+func clampExecutionMarginFloor(minMarginPercent, executionFloorPercent float64) float64 {
+	if executionFloorPercent > minMarginPercent {
+		return minMarginPercent
+	}
+	return executionFloorPercent
+}
+
+func maxExecutablePairSum(executionFloorPercent, maxAskPrice float64) float64 {
+	maxSum := 1.0 - (executionFloorPercent / 100.0)
+	if maxAskPrice > 0 {
+		capSum := maxAskPrice * 2.0
+		if maxSum > capSum {
+			maxSum = capSum
+		}
+	}
+	if maxSum < 0 {
+		return 0
+	}
+	return maxSum
 }
 
 func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {

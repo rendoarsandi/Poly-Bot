@@ -64,6 +64,10 @@ type Config struct {
 	// Price filters
 	MinAskPrice float64 // Minimum ask price to buy (default: 0.10)
 	MaxAskPrice float64 // Maximum ask price to buy (default: 0.90)
+	// Panic-buy execution tolerance: minimum acceptable combined pair margin while
+	// walking deeper ask liquidity during execution. Can be negative to tolerate a
+	// small loss on the pair if that reduces legging risk.
+	BuyExecutionMarginFloorPercent float64
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	// SPLIT STRATEGY SETTINGS (Panic Sell)
@@ -114,8 +118,9 @@ func LoadConfig() (*Config, error) {
 		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
 		MaxAggressionMultiplier: parseEnvFloat("MAX_AGGRESSION_MULTIPLIER", 5.0),
 		// Price filters
-		MinAskPrice: parseEnvFloat("MIN_ASK_PRICE", 0.10),
-		MaxAskPrice: parseEnvFloat("MAX_ASK_PRICE", 0.90),
+		MinAskPrice:                    parseEnvFloat("MIN_ASK_PRICE", 0.10),
+		MaxAskPrice:                    parseEnvFloat("MAX_ASK_PRICE", 0.90),
+		BuyExecutionMarginFloorPercent: parseEnvFloat("BUY_EXECUTION_MARGIN_FLOOR_PERCENT", -1.0),
 		// Split strategy settings (panic sell)
 		SplitStrategyEnabled:     os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
 		SplitMinMarginSell:       parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
@@ -253,6 +258,7 @@ func (c *Config) SaveSettings() error {
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
+	envMap["BUY_EXECUTION_MARGIN_FLOOR_PERCENT"] = strconv.FormatFloat(c.BuyExecutionMarginFloorPercent, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)
 	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
