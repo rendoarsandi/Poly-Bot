@@ -185,11 +185,43 @@ func TestRiskManager_CanPlaceOrder_AfterKillSwitch(t *testing.T) {
 	// Trigger kill switch
 	_, _ = engine.BuyForMarket("", "Up", 0.50, 200)  // 200 Up
 	_, _ = engine.BuyForMarket("", "Down", 0.50, 50) // 50 Down
-	rm.Evaluate()                             // This should trigger kill switch
+	rm.Evaluate()                                    // This should trigger kill switch
 
 	// Now no orders should be allowed
 	if rm.CanPlaceOrder(1.0) {
 		t.Error("Should reject all orders after kill switch")
+	}
+}
+
+// TestRiskManager_KillSwitchDisabled verifies kill switch conditions degrade to non-kill actions when disabled.
+func TestRiskManager_KillSwitchDisabled(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBookWithRealism(0, 0)
+	outcomes := []string{"Up", "Down"}
+
+	config := RiskConfig{
+		DisableKillSwitch:  true,
+		MaxExposure:        100.0,
+		MaxUnmatchedRatio:  0.10,
+		MaxUnmatchedShares: 50.0,
+		SkewThreshold:      0.10,
+		KillSwitchDrawdown: 0.01,
+	}
+
+	rm := NewRiskManager(config, engine, orderBook, outcomes)
+
+	_, _ = engine.BuyForMarket("", "Up", 0.50, 200)
+	_, _ = engine.BuyForMarket("", "Down", 0.50, 50)
+
+	action, _ := rm.Evaluate()
+	if action == RiskActionKillSwitch {
+		t.Fatal("Kill switch should not trigger when disabled")
+	}
+	if rm.IsKillSwitchTriggered() {
+		t.Fatal("Kill switch state should remain inactive when disabled")
+	}
+	if action != RiskActionReduceSize {
+		t.Fatalf("Expected reduce size when kill switch is disabled, got %s", action)
 	}
 }
 
@@ -310,6 +342,9 @@ func TestDefaultRiskConfig(t *testing.T) {
 
 	if config.MaxExposure != 500.0 {
 		t.Errorf("Default MaxExposure should be $500, got $%.2f", config.MaxExposure)
+	}
+	if config.DisableKillSwitch {
+		t.Error("Default DisableKillSwitch should be false")
 	}
 	if config.MaxUnmatchedRatio != 0.20 {
 		t.Errorf("Default MaxUnmatchedRatio should be 0.20, got %.2f", config.MaxUnmatchedRatio)

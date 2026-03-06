@@ -458,6 +458,7 @@ func run() error {
 
 			// Create per-market Risk Manager
 			riskConfig := paper.RiskConfig{
+				DisableKillSwitch:  true,
 				MaxExposure:        math.MaxFloat64, // Unlimited exposure (rely on kill switch for safety)
 				MaxUnmatchedRatio:  0.20,            // 20% max unmatched
 				MaxUnmatchedShares: 500.0,           // 500 shares max on one side

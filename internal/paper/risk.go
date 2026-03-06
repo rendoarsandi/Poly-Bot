@@ -9,6 +9,7 @@ import (
 
 // RiskConfig configures risk management parameters
 type RiskConfig struct {
+	DisableKillSwitch  bool
 	MaxExposure        float64 // Maximum total exposure in dollars
 	MaxUnmatchedRatio  float64 // Maximum unmatched inventory ratio (e.g., 0.20 = 20%)
 	MaxUnmatchedShares float64 // Maximum unmatched shares on one side
@@ -19,6 +20,7 @@ type RiskConfig struct {
 // DefaultRiskConfig returns default risk configuration
 func DefaultRiskConfig() RiskConfig {
 	return RiskConfig{
+		DisableKillSwitch:  false,
 		MaxExposure:        500.0, // $500 max exposure
 		MaxUnmatchedRatio:  0.20,  // 20% max unmatched
 		MaxUnmatchedShares: 500.0, // 500 shares max on one side
@@ -73,7 +75,7 @@ func NewRiskManager(config RiskConfig, engine *Engine, orderBook *OrderBook, out
 func (rm *RiskManager) IsKillSwitchTriggered() bool {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
-	return rm.killSwitchTriggered
+	return !rm.config.DisableKillSwitch && rm.killSwitchTriggered
 }
 
 // Evaluate checks current risk state and returns recommended action
@@ -81,13 +83,13 @@ func (rm *RiskManager) Evaluate() (RiskAction, string) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if rm.killSwitchTriggered {
+	if !rm.config.DisableKillSwitch && rm.killSwitchTriggered {
 		return RiskActionKillSwitch, "kill switch already triggered"
 	}
 
-	// Check drawdown - always triggers kill switch
+	// Check drawdown - always triggers kill switch when enabled
 	stats := rm.engine.GetStats()
-	if stats.MaxDrawdown > rm.config.KillSwitchDrawdown*100 {
+	if !rm.config.DisableKillSwitch && stats.MaxDrawdown > rm.config.KillSwitchDrawdown*100 {
 		rm.triggerKillSwitch(fmt.Sprintf("max drawdown %.2f%% exceeded threshold %.2f%%",
 			stats.MaxDrawdown, rm.config.KillSwitchDrawdown*100))
 		return RiskActionKillSwitch, "max drawdown exceeded"
@@ -114,14 +116,14 @@ func (rm *RiskManager) Evaluate() (RiskAction, string) {
 	}
 
 	// PRD Kill Switch: Open_Positions > $500 AND Unmatched_Sides > 20%
-	if totalExposure > rm.config.MaxExposure && unmatchedRatio > rm.config.MaxUnmatchedRatio {
+	if !rm.config.DisableKillSwitch && totalExposure > rm.config.MaxExposure && unmatchedRatio > rm.config.MaxUnmatchedRatio {
 		rm.triggerKillSwitch(fmt.Sprintf("exposure $%.2f AND unmatched %.1f%% both exceed limits",
 			totalExposure, unmatchedRatio*100))
 		return RiskActionKillSwitch, "exposure AND unmatched both exceeded (PRD kill switch)"
 	}
 
 	// Also trigger if unmatched shares exceed absolute limit
-	if unmatched > rm.config.MaxUnmatchedShares {
+	if !rm.config.DisableKillSwitch && unmatched > rm.config.MaxUnmatchedShares {
 		rm.triggerKillSwitch(fmt.Sprintf("unmatched shares %.0f exceeds max %.0f",
 			unmatched, rm.config.MaxUnmatchedShares))
 		return RiskActionKillSwitch, "unmatched inventory exceeded"

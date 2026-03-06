@@ -515,6 +515,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, orderBook
 	ladderMgr := paper.NewLadderManager(orderBook, ladderConfig)
 
 	riskConfig := paper.RiskConfig{
+		DisableKillSwitch:  true,
 		MaxExposure:        2000.0,
 		MaxUnmatchedRatio:  0.40,
 		MaxUnmatchedShares: 300.0,
@@ -838,12 +839,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									ask = p
 								}
 							}
-							
+
 							outcome := t.TokenMap[b.AssetID]
 							if outcome != "" {
 								foundForThisTrader = true
 								t.mu.Lock()
-								
+
 								// WS Snapshot is absolute state.
 								if bid > 0 && ask > 0 && bid >= ask {
 									// Reject crossed snapshot and clear state
@@ -926,7 +927,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									t.TokenFullAsks[outcome] = nil
 									continue
 								}
-								
+
 								mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
@@ -1364,12 +1365,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								continue // Not enough cash/liquidity for even 1 share
 							}
 							shares = maxAffordableShares
-							
+
 							trueCost1 = calcSideCost(shares, asks1)
 							trueCost2 = calcSideCost(shares, asks2)
 							trueCost = trueCost1 + trueCost2
 							cost = trueCost
-							
+
 							netProfit = calcNetProfit(shares, trueCost1, trueCost2, trueCost)
 
 							// If still over risk limit or not profitable after cost, don't trade
@@ -1624,7 +1625,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 							trueProceeds1 := calcSideProceeds(sharesToSell, sortedBids1)
 							trueProceeds2 := calcSideProceeds(sharesToSell, sortedBids2)
-							
+
 							avgBid1 := trueProceeds1 / sharesToSell
 							avgBid2 := trueProceeds2 / sharesToSell
 
@@ -1784,14 +1785,14 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 			t.TokenFullAsks[outcome] = nil
 			t.mu.Unlock()
 			restSuccess++ // Ensure UI gets updated to 0
-			continue // Reject crossed book
+			continue      // Reject crossed book
 		}
 
 		// Always update with whatever data we got (even partial)
 		t.mu.Lock()
 		t.TokenBids[outcome] = bid
 		t.TokenAsks[outcome] = ask
-		
+
 		if bid > 0 && ask > 0 && ask < 1.0 {
 			mid := (bid + ask) / 2
 			t.FloatPrices[outcome] = mid
