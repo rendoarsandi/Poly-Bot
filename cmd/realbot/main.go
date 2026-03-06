@@ -86,6 +86,14 @@ func run() error {
 		fmt.Println("✅ CLOB balance allowance synced")
 	}
 
+	// Start real-time User WebSocket for instant fill tracking
+	fmt.Println("🔌 Connecting to User WebSocket for real-time fills...")
+	if err := realTrader.StartUserWS(ctx); err != nil {
+		fmt.Printf("⚠️  Failed to connect User WS (falling back to REST polling): %v\n", err)
+	} else {
+		fmt.Println("✅ User WebSocket connected")
+	}
+
 	// Display wallet info
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════")
@@ -1331,26 +1339,37 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if !res2.Success { err2 = fmt.Errorf(res2.Message) }
 
 							// ROBUSTNESS: Wait for CLOB sync and verify if balance dropped
-							time.Sleep(1500 * time.Millisecond)
-
+							// UserWS channel provides instant fills. We poll for up to 1.5s,
+							// but break early as soon as we detect a balance drop.
 							var side1Success, side2Success bool
 							var sold1, sold2 float64
-							verifyPositions, verifyErr := trader.GetPositions(ctx)
-							if verifyErr == nil {
-								var bal0, bal1 float64
-								for _, pos := range verifyPositions {
-									if pos.TokenID == token0 { bal0 = pos.Size }
-									if pos.TokenID == token1 { bal1 = pos.Size }
+							var verifyErr error
+							var verifyPositions []trading.PositionInfo
+
+							for poll := 0; poll < 30; poll++ {
+								verifyPositions, verifyErr = trader.GetPositions(ctx)
+								if verifyErr == nil {
+									var bal0, bal1 float64
+									for _, pos := range verifyPositions {
+										if pos.TokenID == token0 { bal0 = pos.Size }
+										if pos.TokenID == token1 { bal1 = pos.Size }
+									}
+
+									sold1 = availableShares - bal0
+									sold2 = availableShares - bal1
+									
+									if sold1 < 0 { sold1 = 0 }
+									if sold2 < 0 { sold2 = 0 }
+
+									// Break early if we detect that our shares have been sold
+									if sold1 > 0.01 || sold2 > 0.01 {
+										break
+									}
 								}
+								time.Sleep(50 * time.Millisecond)
+							}
 
-								// We started with at least `availableShares` before this sell block
-								// Any drop in balance relative to our known inventory indicates a successful sell
-								sold1 = availableShares - bal0
-								sold2 = availableShares - bal1
-								
-								if sold1 < 0 { sold1 = 0 }
-								if sold2 < 0 { sold2 = 0 }
-
+							if verifyErr == nil {
 								side1Success = (err1 == nil && res1 != nil && res1.Success) || sold1 > 0.01
 								side2Success = (err2 == nil && res2 != nil && res2.Success) || sold2 > 0.01
 
@@ -1730,19 +1749,36 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if !res2.Success { err2 = fmt.Errorf(res2.Message) }
 
 						// Wait for CLOB to sync before verifying positions.
-						// The CLOB can return a 400/error response while the order actually
-						// went through (race between execution and response) — "fake error".
-						// Without this delay both positions show 0.0000 immediately, the bot
-						// thinks both sides failed, and we end up with a legged position
-						// (e.g. 2 Up filled silently, 0 Down). 1.5s is enough for CLOB sync.
-						time.Sleep(1500 * time.Millisecond)
+						// The UserWS channel provides instant fills. We poll for up to 1.5s,
+						// but break early as soon as we detect the expected balances.
+						var side1Success, side2Success bool
+						var filled1, filled2 float64
+						var verifyErr error
+						var verifyPositions []trading.PositionInfo
+
+						for poll := 0; poll < 30; poll++ {
+							verifyPositions, verifyErr = trader.GetPositions(ctx)
+							if verifyErr == nil {
+								var bal0, bal1 float64
+								for _, pos := range verifyPositions {
+									if pos.TokenID == token0 {
+										bal0 = pos.Size
+									} else if pos.TokenID == token1 {
+										bal1 = pos.Size
+									}
+								}
+								
+								// If we have any shares, consider it a success and break early
+								if bal0 > 0.01 || bal1 > 0.01 {
+									break
+								}
+							}
+							time.Sleep(50 * time.Millisecond)
+						}
 
 						// ROBUSTNESS: Verify actual positions from CLOB after sync delay.
 						// This catches "Fake Errors" (timeout/400 but actually filled) and
 						// prevents double-buys on retry.
-						var side1Success, side2Success bool
-						var filled1, filled2 float64
-						verifyPositions, verifyErr := trader.GetPositions(ctx)
 						if verifyErr == nil {
 							var bal0, bal1 float64
 							for _, pos := range verifyPositions {

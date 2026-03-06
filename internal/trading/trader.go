@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -213,12 +214,18 @@ type RealTrader struct {
 	clob              *api.CLOBClient
 	polygon           *api.PolygonClient
 	config            *core.Config
+	userWS            *api.UserWSClient
 	mu                sync.Mutex
 	onChainMu         sync.Mutex // Mutex for on-chain transactions (Split, Merge, Redeem)
+	
 	dailyLoss         float64
 	startOfDay        time.Time
+	
 	cachedBalance     float64
 	lastBalanceUpdate time.Time
+
+	livePositions     map[string]float64
+	posMu             sync.Mutex
 }
 
 // NewRealTrader creates a new real trader
@@ -234,12 +241,48 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
-	return &RealTrader{
-		clob:       clob,
-		polygon:    polygon,
-		config:     cfg,
-		startOfDay: time.Now().Truncate(24 * time.Hour),
-	}, nil
+	trader := &RealTrader{
+		clob:          clob,
+		polygon:       polygon,
+		config:        cfg,
+		startOfDay:    time.Now().Truncate(24 * time.Hour),
+		livePositions: make(map[string]float64),
+	}
+
+	// Initialize User WebSocket for real-time fills
+	trader.userWS = api.NewUserWSClient(cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
+	trader.userWS.SetOnFill(func(fill api.OrderFillData) {
+		trader.posMu.Lock()
+		defer trader.posMu.Unlock()
+		
+		size, _ := strconv.ParseFloat(fill.Size, 64)
+		if fill.Side == "BUY" {
+			trader.livePositions[fill.AssetID] += size
+		} else if fill.Side == "SELL" {
+			trader.livePositions[fill.AssetID] -= size
+			if trader.livePositions[fill.AssetID] < 0 {
+				trader.livePositions[fill.AssetID] = 0
+			}
+		}
+	})
+
+	return trader, nil
+}
+
+// StartUserWS connects the user websocket and primes the position cache
+func (t *RealTrader) StartUserWS(ctx context.Context) error {
+	// Prime the cache with a REST call
+	initialPos, err := t.clob.GetPositions(ctx)
+	if err == nil {
+		t.posMu.Lock()
+		for _, p := range initialPos {
+			t.livePositions[p.TokenID] = p.Size
+		}
+		t.posMu.Unlock()
+	}
+
+	// Connect WS
+	return t.userWS.Connect(ctx)
 }
 
 // SetTestMode enables/disables test mode
@@ -474,6 +517,23 @@ func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
 }
 
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
+	t.posMu.Lock()
+	if len(t.livePositions) > 0 {
+		var result []PositionInfo
+		for tokenID, size := range t.livePositions {
+			if size > 0 {
+				result = append(result, PositionInfo{
+					TokenID: tokenID,
+					Size:    size,
+				})
+			}
+		}
+		t.posMu.Unlock()
+		return result, nil
+	}
+	t.posMu.Unlock()
+
+	// Fallback to REST
 	positions, err := t.clob.GetPositions(ctx)
 	if err != nil {
 		return nil, err
