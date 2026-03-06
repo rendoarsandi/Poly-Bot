@@ -1317,7 +1317,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							var res1, res2 *trading.TradeResult
 							var err1, err2 error
 
-							// Use batch orders for split selling with aggressive $0.10 floor
+							// Use batch orders for split selling with limit price based on TUI settings
 							// This ensures atomic execution against any available liquidity
 							rate1 := tokenFeeRates[outcomes[0]]
 							if rate1 == 0 { rate1 = 1000 }
@@ -1325,8 +1325,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if rate2 == 0 { rate2 = 1000 }
 
 							reqs := []*api.OrderRequest{
-								{TokenID: token0, Price: 0.01, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate1},
-								{TokenID: token1, Price: 0.01, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate2},
+								{TokenID: token0, Price: liveCfg.MinAskPrice, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate1},
+								{TokenID: token1, Price: liveCfg.MinAskPrice, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate2},
 							}
 							
 							results, batchErr := trader.ExecuteBatch(ctx, reqs)
@@ -1700,8 +1700,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Keeping this small also reduces the chance of hitting the CLOB $1/side
 						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.26 limit instead
 						// of the old $0.29, requiring fewer shares to clear the minimum).
-						limitPrice1 := math.Min(0.99, ask1+0.02)
-						limitPrice2 := math.Min(0.99, ask2+0.02)
+						limitPrice1 := rMaxAsk
+						limitPrice2 := rMaxAsk
 
 						// ═══════════════════════════════════════════════════════════════
 						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
