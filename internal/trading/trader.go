@@ -597,11 +597,9 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 
 	// Retry up to 3 times with exponential backoff
 	for attempt := 1; attempt <= 3; attempt++ {
-		fmt.Printf("⛓️ [%s] on-chain attempt %d/3 starting...\n", txName, attempt)
 		// Check context before each attempt
 		select {
 		case <-ctx.Done():
-			fmt.Printf("⛓️ [%s] aborted before send: %v\n", txName, ctx.Err())
 			return "", ctx.Err()
 		default:
 		}
@@ -612,25 +610,20 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 		t.onChainMu.Unlock()
 
 		if lastErr != nil {
-			fmt.Printf("⛓️ [%s] send failed on attempt %d: %v\n", txName, attempt, lastErr)
 			// Failed to send tx - retry after backoff
 			if attempt < 3 {
-				fmt.Printf("⛓️ [%s] retrying in %ds...\n", txName, attempt*2)
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
 				continue
 			}
 			return "", fmt.Errorf("failed to send %s tx after %d attempts: %w", txName, attempt, lastErr)
 		}
-		fmt.Printf("⛓️ [%s] tx submitted: %s (waiting for confirmation)\n", txName, txHash)
 
 		// Wait for transaction confirmation
 		success, err := t.polygon.WaitForTransaction(ctx, txHash)
 		if err != nil {
-			fmt.Printf("⛓️ [%s] confirmation error for tx %s on attempt %d: %v\n", txName, txHash, attempt, err)
 			lastErr = fmt.Errorf("%s tx %s failed: %w", txName, txHash, err)
 			// Tx sent but failed on-chain - don't retry same tx, try new one
 			if attempt < 3 {
-				fmt.Printf("⛓️ [%s] retrying in %ds with a fresh tx...\n", txName, attempt*2)
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
 				continue
 			}
@@ -638,10 +631,8 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 		}
 
 		if !success {
-			fmt.Printf("⛓️ [%s] tx %s reverted on-chain (attempt %d)\n", txName, txHash, attempt)
 			lastErr = fmt.Errorf("%s tx %s reverted on-chain", txName, txHash)
 			if attempt < 3 {
-				fmt.Printf("⛓️ [%s] retrying in %ds with a fresh tx...\n", txName, attempt*2)
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
 				continue
 			}
@@ -649,7 +640,6 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 		}
 
 		// Success!
-		fmt.Printf("⛓️ [%s] tx confirmed: %s\n", txName, txHash)
 		return txHash, nil
 	}
 
