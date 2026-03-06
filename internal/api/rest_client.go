@@ -109,6 +109,35 @@ type GammaMarket struct {
 	Closed       bool   `json:"closed"`
 }
 
+func (c *RestClient) GetEventByTokenID(ctx context.Context, tokenID string) (*GammaEvent, error) {
+	url := fmt.Sprintf("%s/events?clobTokenIds=%s", c.GammaURL, tokenID)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get event by token id, status code: %d", resp.StatusCode)
+	}
+
+	var events []GammaEvent
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		return nil, err
+	}
+
+	if len(events) == 0 {
+		return nil, fmt.Errorf("no events found for token id: %s", tokenID)
+	}
+
+	return &events[0], nil
+}
+
 func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
 	if len(assets) == 0 {
 		assets = []string{"btc", "eth"}

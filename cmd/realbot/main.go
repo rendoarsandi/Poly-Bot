@@ -769,8 +769,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Check if market ended
 		if time.Now().After(endTime.Add(5 * time.Second)) {
 			tui.LogEvent("[%s] ⏰ Market ended", id)
-			// Run redemption check in background so we can find next market immediately
-			go checkRedemption(ctx, id, market.ConditionID, trader, engine, tui)
+			// Redemption disabled: Use manual tools to check and redeem
 			return
 		}
 
@@ -1317,6 +1316,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							var res1, res2 *trading.TradeResult
 							var err1, err2 error
 
+							// Fetch initial positions to accurately calculate sold amount
+							var initialBal0, initialBal1 float64
+							if initialPos, err := trader.GetPositions(ctx); err == nil {
+								for _, pos := range initialPos {
+									if pos.TokenID == token0 { initialBal0 = pos.Size }
+									if pos.TokenID == token1 { initialBal1 = pos.Size }
+								}
+							}
+
 							// Use batch orders for split selling with limit price based on TUI settings
 							// This ensures atomic execution against any available liquidity
 							rate1 := tokenFeeRates[outcomes[0]]
@@ -1355,8 +1363,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 										if pos.TokenID == token1 { bal1 = pos.Size }
 									}
 
-									sold1 = availableShares - bal0
-									sold2 = availableShares - bal1
+									sold1 = initialBal0 - bal0
+									sold2 = initialBal1 - bal1
 									
 									if sold1 < 0 { sold1 = 0 }
 									if sold2 < 0 { sold2 = 0 }
@@ -1419,8 +1427,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								if retryPos, retryVerErr := trader.GetPositions(ctx); retryVerErr == nil {
 									for _, pos := range retryPos {
 										if pos.TokenID == failedToken {
-											// Sold amount is the difference between available and current
-											retrySold := availableShares - pos.Size
+											// Sold amount is the difference between initial and current
+											var initialFailedBal float64
+											if failedToken == token0 {
+												initialFailedBal = initialBal0
+											} else {
+												initialFailedBal = initialBal1
+											}
+											retrySold := initialFailedBal - pos.Size
 											if retrySold > 0.01 {
 												if !side1Success {
 													side1Success = true
@@ -1734,6 +1748,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
 
+						// Fetch initial positions to accurately calculate bought amount
+						var initialBal0, initialBal1 float64
+						if initialPos, err := trader.GetPositions(ctx); err == nil {
+							for _, pos := range initialPos {
+								if pos.TokenID == token0 { initialBal0 = pos.Size }
+								if pos.TokenID == token1 { initialBal1 = pos.Size }
+							}
+						}
+
 						rate1 := tokenFeeRates[outcomes[0]]
 						if rate1 == 0 { rate1 = 1000 }
 						rate2 := tokenFeeRates[outcomes[1]]
@@ -1773,8 +1796,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									}
 								}
 								
-								// If we have any shares, consider it a success and break early
-								if bal0 > 0.01 || bal1 > 0.01 {
+								// If we have any NEW shares, consider it a success and break early
+								if (bal0 - initialBal0) > 0.01 || (bal1 - initialBal1) > 0.01 {
 									break
 								}
 							}
@@ -1800,12 +1823,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// even if the order filled 0 shares and was instantly killed.
 							// Therefore, we CANNOT assume full fill based on API Success.
 							// The actual inventory received is the ONLY source of truth.
-							filled1 = bal0
-							filled2 = bal1
+							filled1 = bal0 - initialBal0
+							if filled1 < 0 { filled1 = 0 }
+							filled2 = bal1 - initialBal1
+							if filled2 < 0 { filled2 = 0 }
 							
-							// An execution is only "successful" if we actually got shares
-							side1Success = bal0 > 0.01
-							side2Success = bal1 > 0.01
+							// An execution is only "successful" if we actually got NEW shares
+							side1Success = filled1 > 0.01
+							side2Success = filled2 > 0.01
 
 							// If the API reported success but we got 0 shares, the FAK missed.
 							// Explicitly log this so the user knows it was killed.

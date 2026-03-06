@@ -107,28 +107,59 @@ func main() {
 	}
 
 	if len(markets) == 0 {
-		// Smart Discovery: Scan for active/closed markets via Gamma tag
-		fmt.Printf("🔍 Scanning for all recent 5m and 15m markets (including closed)...\n")
-		var allMarkets []api.Market
+		fmt.Printf("🔍 Fetching positions from API...\n")
+		positions, err := trader.GetPositions(ctx)
+		if err != nil {
+			log.Fatalf("Failed to fetch positions: %v", err)
+		}
+
+		if len(positions) == 0 {
+			fmt.Println("✅ No positions found via API.")
+			return
+		}
+
+		marketMap := make(map[string]bool)
+		for _, p := range positions {
+			if p.Size >= 0.0001 {
+				event, err := rest.GetEventByTokenID(ctx, p.TokenID)
+				if err != nil {
+					continue
+				}
+				for _, gm := range event.Markets {
+					if strings.Contains(gm.ClobTokenIds, p.TokenID) {
+						if !marketMap[gm.ConditionID] {
+							marketMap[gm.ConditionID] = true
+							var tokenIds []string
+							json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds)
+							if len(tokenIds) >= 2 {
+								var outcomes []string
+								json.Unmarshal([]byte(gm.Outcomes), &outcomes)
+								if len(outcomes) < 2 {
+									outcomes = []string{"Up", "Down"} // fallback
+								}
+
+								m := api.Market{
+									ConditionID: gm.ConditionID,
+									Slug:        event.Slug,
+									Active:      gm.Active,
+									Closed:      gm.Closed,
+									Tokens: []api.Token{
+										{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
+										{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
+									},
+								}
+								markets = append(markets, m)
+							}
+						}
+					}
+				}
+			}
+		}
 		
-		markets5m, err5m := rest.GetMarketsByTimeframe(ctx, nil, "5m")
-		if err5m != nil {
-			fmt.Printf("⚠️  Failed to fetch 5m markets: %v\n", err5m)
-		} else {
-			allMarkets = append(allMarkets, markets5m...)
+		if len(markets) == 0 {
+			fmt.Println("✅ No relevant markets found for your positions.")
+			return
 		}
-
-		markets15m, err15m := rest.GetMarketsByTimeframe(ctx, nil, "15m")
-		if err15m != nil {
-			fmt.Printf("⚠️  Failed to fetch 15m markets: %v\n", err15m)
-		} else {
-			allMarkets = append(allMarkets, markets15m...)
-		}
-
-		if len(allMarkets) == 0 {
-			log.Fatalf("Failed to fetch any markets")
-		}
-		markets = allMarkets
 	}
 
 	foundAny := false
@@ -160,8 +191,20 @@ func main() {
 			outcomes = append(outcomes, t.Outcome)
 		}
 
-		// Skip if no tokens found in this market
-		if len(balances) < 2 || (balances[0] < 0.01 && balances[1] < 0.01) {
+		// Skip if no tokens found in this market or all are dust
+		if len(balances) < 2 {
+			continue
+		}
+		
+		hasSignificantBalance := false
+		for _, b := range balances {
+			if b >= 0.0001 {
+				hasSignificantBalance = true
+				break
+			}
+		}
+		
+		if !hasSignificantBalance {
 			continue
 		}
 		foundAny = true

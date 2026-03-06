@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
@@ -63,26 +64,66 @@ func main() {
 	fmt.Println(dimSt.Render("  🔑 Wallet: " + address))
 
 	// 1. Scan for markets and On-Chain Positions
-	fmt.Printf("🔄 Scanning blockchain for positions (BTC, ETH, SOL, XRP) in 5m and 15m timeframes...\n")
-	assets := []string{"btc", "eth", "sol", "xrp"}
+	fmt.Printf("🔍 Fetching positions from API...\n")
 	
-	var markets []api.Market
-	markets5m, err5m := client.GetMarketsByTimeframe(ctx, assets, "5m")
-	if err5m != nil {
-		fmt.Printf("⚠️  Failed to fetch 5m markets: %v\n", err5m)
-	} else {
-		markets = append(markets, markets5m...)
+	apiPositions, err := trader.GetPositions(ctx)
+	if err != nil {
+		log.Fatalf("Failed to fetch positions: %v", err)
 	}
 
-	markets15m, err15m := client.GetMarketsByTimeframe(ctx, assets, "15m")
-	if err15m != nil {
-		fmt.Printf("⚠️  Failed to fetch 15m markets: %v\n", err15m)
-	} else {
-		markets = append(markets, markets15m...)
+	if len(apiPositions) == 0 {
+		fmt.Println("✅ No positions found via API.")
+		return
+	}
+
+	var markets []api.Market
+	marketMap := make(map[string]bool)
+	for _, p := range apiPositions {
+		if p.Size >= 0.0001 {
+			event, err := client.GetEventByTokenID(ctx, p.TokenID)
+			if err != nil {
+				continue
+			}
+			for _, gm := range event.Markets {
+				if strings.Contains(gm.ClobTokenIds, p.TokenID) {
+					if !marketMap[gm.ConditionID] {
+						marketMap[gm.ConditionID] = true
+						
+						// We need to properly decode the token IDs and outcomes from Gamma API
+						// Gamma API provides them as JSON encoded strings inside the object
+						// but since we only need ConditionID, Slug, and Token objects for manual bot
+						// we can simplify the market creation.
+						
+						var tokenIds []string
+						json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds)
+						if len(tokenIds) >= 2 {
+							var outcomes []string
+							json.Unmarshal([]byte(gm.Outcomes), &outcomes)
+							if len(outcomes) < 2 {
+								outcomes = []string{"Up", "Down"} // fallback
+							}
+
+							m := api.Market{
+								ConditionID: gm.ConditionID,
+								Slug:        event.Slug,
+								Active:      gm.Active,
+								Closed:      gm.Closed,
+								Tokens: []api.Token{
+									{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
+									{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
+								},
+							}
+							markets = append(markets, m)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	if len(markets) == 0 {
-		log.Fatalf("Failed to fetch any markets")
+		fmt.Println("✅ No relevant markets found for your positions.")
+		return
 	}
 
 	var positions []OnChainPosition
