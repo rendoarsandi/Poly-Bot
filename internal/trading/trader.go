@@ -256,21 +256,25 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	// Initialize User WebSocket for real-time fills
 	trader.userWS = api.NewUserWSClient(cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
 	trader.userWS.SetOnFill(func(fill api.OrderFillData) {
-		trader.posMu.Lock()
-		defer trader.posMu.Unlock()
-
-		size, _ := strconv.ParseFloat(fill.Size, 64)
-		if fill.Side == "BUY" {
-			trader.livePositions[fill.AssetID] += size
-		} else if fill.Side == "SELL" {
-			trader.livePositions[fill.AssetID] -= size
-			if trader.livePositions[fill.AssetID] < 0 {
-				trader.livePositions[fill.AssetID] = 0
-			}
-		}
+		trader.applyLiveFill(fill)
 	})
 
 	return trader, nil
+}
+
+func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+
+	size, _ := strconv.ParseFloat(fill.Size, 64)
+	if fill.Side == "BUY" {
+		t.livePositions[fill.AssetID] += size
+	} else if fill.Side == "SELL" {
+		t.livePositions[fill.AssetID] -= size
+		if t.livePositions[fill.AssetID] < 0 {
+			t.livePositions[fill.AssetID] = 0
+		}
+	}
 }
 
 // StartUserWS connects the user websocket and primes the position cache

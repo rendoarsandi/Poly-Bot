@@ -293,8 +293,9 @@ func BenchmarkPaperTrader_Buy(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-	        _, _ = trader.Buy(ctx, "token", "Up", 0.50, 1, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
-	}}
+		_, _ = trader.Buy(ctx, "token", "Up", 0.50, 1, api.OrderTypeMarket, api.TIFGoodTilCancelled, 0)
+	}
+}
 
 // TestRealTrader_SafetyLimits tests the checkSafetyLimits function
 // Note: We can't create a full RealTrader without credentials, but we can test the logic
@@ -314,5 +315,54 @@ func TestRealTrader_DailyLossReset(t *testing.T) {
 	tomorrow := now.Add(24 * time.Hour).Truncate(24 * time.Hour)
 	if tomorrow == startOfDay {
 		t.Error("Tomorrow should not equal today's start of day")
+	}
+}
+
+func TestRealTrader_ApplyLiveFill_UpdatesCacheAndClampsAtZero(t *testing.T) {
+	trader := &RealTrader{
+		livePositions: map[string]float64{
+			"asset-1": 2,
+		},
+	}
+
+	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-1", Side: "BUY", Size: "3"})
+	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-1", Side: "SELL", Size: "4"})
+	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-2", Side: "BUY", Size: "1.5"})
+	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-2", Side: "SELL", Size: "10"})
+
+	positions, err := trader.GetPositions(context.Background())
+	if err != nil {
+		t.Fatalf("GetPositions failed: %v", err)
+	}
+
+	if got := trader.livePositions["asset-1"]; got != 1 {
+		t.Fatalf("expected asset-1 cached size 1, got %.2f", got)
+	}
+	if got := trader.livePositions["asset-2"]; got != 0 {
+		t.Fatalf("expected asset-2 cached size clamped to 0, got %.2f", got)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("expected only one positive position from cache, got %d", len(positions))
+	}
+	if positions[0].TokenID != "asset-1" || positions[0].Size != 1 {
+		t.Fatalf("unexpected cached position payload: %+v", positions[0])
+	}
+}
+
+func TestRealTrader_ApplyLiveFill_InvalidSizeDoesNotMutateCache(t *testing.T) {
+	trader := &RealTrader{
+		livePositions: map[string]float64{
+			"asset-1": 2,
+		},
+	}
+
+	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-1", Side: "BUY", Size: "bad-size"})
+
+	positions, err := trader.GetPositions(context.Background())
+	if err != nil {
+		t.Fatalf("GetPositions failed: %v", err)
+	}
+	if len(positions) != 1 || positions[0].TokenID != "asset-1" || positions[0].Size != 2 {
+		t.Fatalf("expected unchanged cached position, got %+v", positions)
 	}
 }

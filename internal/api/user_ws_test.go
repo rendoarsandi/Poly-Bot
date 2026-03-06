@@ -70,6 +70,44 @@ func TestUserWSClientIgnoresRetryingAndFailedTrades(t *testing.T) {
 	}
 }
 
+func TestUserWSClientIgnoresDuplicateConfirmedTradeEvents(t *testing.T) {
+	client := NewUserWSClient("key", "secret", "pass")
+	callCount := 0
+	client.SetOnFill(func(fill OrderFillData) {
+		callCount++
+	})
+
+	msg := []byte(`{"event_type":"trade","id":"trade-1","type":"TRADE","status":"CONFIRMED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"}`)
+	client.processMessage(msg)
+	client.processMessage(msg)
+
+	if callCount != 1 {
+		t.Fatalf("expected duplicate CONFIRMED trade to be delivered once, got %d callbacks", callCount)
+	}
+}
+
+func TestUserWSClientProcessMessage_BatchedTradeArrayEmitsUniqueConfirmedOnly(t *testing.T) {
+	client := NewUserWSClient("key", "secret", "pass")
+	var got []OrderFillData
+	client.SetOnFill(func(fill OrderFillData) {
+		got = append(got, fill)
+	})
+
+	client.processMessage([]byte(`[
+		{"event_type":"trade","id":"trade-1","type":"TRADE","status":"MATCHED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"},
+		{"event_type":"trade","id":"trade-1","type":"TRADE","status":"CONFIRMED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"},
+		{"event_type":"trade","id":"trade-1","type":"TRADE","status":"CONFIRMED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"},
+		{"event_type":"trade","id":"trade-2","type":"TRADE","status":"CONFIRMED","taker_order_id":"order-2","asset_id":"asset-2","side":"SELL","size":"2","price":"0.55","market":"cond-2"}
+	]`))
+
+	if len(got) != 2 {
+		t.Fatalf("expected two unique confirmed fills from batch, got %d", len(got))
+	}
+	if got[0].TradeID != "trade-1" || got[1].TradeID != "trade-2" {
+		t.Fatalf("unexpected confirmed trade sequence: %+v", got)
+	}
+}
+
 func TestUserWSClientSubscribeMarketsSendsAuthAndDynamicSubscribe(t *testing.T) {
 	messages := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
