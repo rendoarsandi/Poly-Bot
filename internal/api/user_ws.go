@@ -47,6 +47,7 @@ type UserWSClient struct {
 	listenStarted     bool
 	authRecorded      bool
 	authSent          bool
+	deliveredTrades   map[string]struct{}
 	subscribedMarkets map[string]struct{}
 }
 
@@ -56,6 +57,7 @@ func NewUserWSClient(apiKey, apiSec, apiPass string) *UserWSClient {
 		apiKey:            apiKey,
 		apiSec:            apiSec,
 		apiPass:           apiPass,
+		deliveredTrades:   make(map[string]struct{}),
 		subscribedMarkets: make(map[string]struct{}),
 	}
 }
@@ -145,32 +147,56 @@ func (c *UserWSClient) processMessage(msg []byte) {
 }
 
 func (c *UserWSClient) handleEvent(evt map[string]interface{}) {
-	evtType, ok := evt["event_type"].(string)
-	if !ok {
+	evtType, _ := evt["event_type"].(string)
+	rawType, _ := evt["type"].(string)
+	if !strings.EqualFold(evtType, "trade") && !strings.EqualFold(rawType, "TRADE") {
 		return
 	}
 
-	if evtType == "trade" {
-		c.mu.Lock()
-		cb := c.onFill
-		c.mu.Unlock()
+	var fill OrderFillData
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return
+	}
+	if err := json.Unmarshal(data, &fill); err != nil {
+		return
+	}
+	if fill.TakerOrderID != "" {
+		fill.OrderID = fill.TakerOrderID
+	} else if len(fill.MakerOrders) > 0 {
+		fill.OrderID = fill.MakerOrders[0].OrderID
+	}
+	if !shouldEmitTradeFill(fill.Status) {
+		return
+	}
 
-		if cb != nil {
-			var fill OrderFillData
-			data, err := json.Marshal(evt)
-			if err == nil {
-				if err2 := json.Unmarshal(data, &fill); err2 == nil {
-					if fill.TakerOrderID != "" {
-						fill.OrderID = fill.TakerOrderID
-					} else if len(fill.MakerOrders) > 0 {
-						fill.OrderID = fill.MakerOrders[0].OrderID
-					}
-					if fill.Status == "" || fill.Status == "CONFIRMED" {
-						cb(fill)
-					}
-				}
-			}
+	c.mu.Lock()
+	cb := c.onFill
+	if cb == nil {
+		c.mu.Unlock()
+		return
+	}
+	if fill.TradeID != "" {
+		if _, exists := c.deliveredTrades[fill.TradeID]; exists {
+			c.mu.Unlock()
+			return
 		}
+		if len(c.deliveredTrades) >= 4096 {
+			c.deliveredTrades = make(map[string]struct{})
+		}
+		c.deliveredTrades[fill.TradeID] = struct{}{}
+	}
+	c.mu.Unlock()
+
+	cb(fill)
+}
+
+func shouldEmitTradeFill(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "", "MATCHED", "MINED", "CONFIRMED":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -253,6 +279,7 @@ func (c *UserWSClient) Close() error {
 	c.mu.Lock()
 	c.authSent = false
 	c.listenStarted = false
+	c.deliveredTrades = make(map[string]struct{})
 	c.mu.Unlock()
 	return c.manager.Close()
 }

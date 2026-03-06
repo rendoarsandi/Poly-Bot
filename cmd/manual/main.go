@@ -32,6 +32,7 @@ func main() {
 	}
 
 	ctx := context.Background()
+	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 	address := trader.Address()
 	target := firstTargetArg(os.Args[1:])
 
@@ -45,7 +46,7 @@ func main() {
 		fmt.Printf("🔍 Fetching positions from API...\n")
 	}
 
-	markets, source, err := marketlookup.ResolveMarkets(ctx, trader, target)
+	markets, source, err := marketlookup.ResolveMarkets(ctx, trader, polygon, target)
 	if err != nil {
 		log.Fatalf("Failed to resolve markets: %v", err)
 	}

@@ -34,6 +34,42 @@ func TestUserWSClientProcessTradeEvent(t *testing.T) {
 	}
 }
 
+func TestUserWSClientProcessTradeEvent_FirstSuccessfulStatusOnly(t *testing.T) {
+	client := NewUserWSClient("key", "secret", "pass")
+	callCount := 0
+	var got OrderFillData
+	client.SetOnFill(func(fill OrderFillData) {
+		callCount++
+		got = fill
+	})
+
+	client.processMessage([]byte(`{"event_type":"trade","id":"trade-1","type":"TRADE","status":"MATCHED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"}`))
+	client.processMessage([]byte(`{"event_type":"trade","id":"trade-1","type":"TRADE","status":"MINED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"}`))
+	client.processMessage([]byte(`{"event_type":"trade","id":"trade-1","type":"TRADE","status":"CONFIRMED","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"}`))
+
+	if callCount != 1 {
+		t.Fatalf("expected one callback for a trade lifecycle, got %d", callCount)
+	}
+	if got.Status != "MATCHED" {
+		t.Fatalf("expected first successful status to be emitted, got %q", got.Status)
+	}
+}
+
+func TestUserWSClientIgnoresRetryingAndFailedTrades(t *testing.T) {
+	client := NewUserWSClient("key", "secret", "pass")
+	called := false
+	client.SetOnFill(func(fill OrderFillData) {
+		called = true
+	})
+
+	client.processMessage([]byte(`{"event_type":"trade","id":"trade-1","type":"TRADE","status":"RETRYING","taker_order_id":"order-1","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"}`))
+	client.processMessage([]byte(`{"event_type":"trade","id":"trade-2","type":"TRADE","status":"FAILED","taker_order_id":"order-2","asset_id":"asset-1","side":"BUY","size":"4","price":"0.45","market":"cond-1"}`))
+
+	if called {
+		t.Fatal("expected no callback for RETRYING/FAILED trade events")
+	}
+}
+
 func TestUserWSClientSubscribeMarketsSendsAuthAndDynamicSubscribe(t *testing.T) {
 	messages := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

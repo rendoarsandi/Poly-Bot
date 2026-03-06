@@ -255,11 +255,18 @@ func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string)
 }
 
 // TransactionReceipt represents the result of a mined transaction
+type TransactionLog struct {
+	Address string   `json:"address"`
+	Topics  []string `json:"topics"`
+	Data    string   `json:"data"`
+}
+
 type TransactionReceipt struct {
-	Status      string `json:"status"`      // "0x1" = success, "0x0" = reverted
-	BlockNumber string `json:"blockNumber"` // Block where tx was mined
-	GasUsed     string `json:"gasUsed"`     // Actual gas consumed
-	TxHash      string `json:"transactionHash"`
+	Status      string           `json:"status"`      // "0x1" = success, "0x0" = reverted
+	BlockNumber string           `json:"blockNumber"` // Block where tx was mined
+	GasUsed     string           `json:"gasUsed"`     // Actual gas consumed
+	TxHash      string           `json:"transactionHash"`
+	Logs        []TransactionLog `json:"logs"`
 }
 
 // GetTransactionReceipt fetches the receipt for a mined transaction

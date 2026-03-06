@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -211,5 +212,40 @@ func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 	// Round up to nearest 4 decimals = 5.06 USDC -> 5060000 micro
 	if takerAmount != "5060000" {
 		t.Errorf("Expected takerAmount (USDC) 5060000, got %s", takerAmount)
+	}
+}
+
+func TestSendHeartbeat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/heartbeats" {
+			t.Fatalf("expected path /heartbeats, got %s", r.URL.Path)
+		}
+		if strings.TrimSpace(r.Header.Get("POLY_API_KEY")) == "" {
+			t.Fatal("expected POLY_API_KEY header")
+		}
+		_ = json.NewEncoder(w).Encode(HeartbeatResponse{Status: "ok"})
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, err := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	resp, err := client.SendHeartbeat(context.Background())
+	if err != nil {
+		t.Fatalf("SendHeartbeat failed: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status ok, got %q", resp.Status)
 	}
 }

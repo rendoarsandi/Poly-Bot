@@ -58,7 +58,7 @@ func main() {
 		fmt.Printf("🔍 Resolving target market: %s\n", target)
 	}
 
-	markets, source, err := marketlookup.ResolveMarkets(ctx, trader, target)
+	markets, source, err := marketlookup.ResolveMarkets(ctx, trader, polygon, target)
 	if err != nil {
 		log.Fatalf("Failed to resolve markets: %v", err)
 	}

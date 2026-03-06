@@ -82,9 +82,9 @@ const (
 type TimeInForce string
 
 const (
-	TIFGoodTilCancelled  TimeInForce = "GTC"
-	TIFFillOrKill        TimeInForce = "FOK"
-	TIFFillAndKill TimeInForce = "FAK"
+	TIFGoodTilCancelled TimeInForce = "GTC"
+	TIFFillOrKill       TimeInForce = "FOK"
+	TIFFillAndKill      TimeInForce = "FAK"
 )
 
 // OrderRequest represents a new order request
@@ -129,6 +129,11 @@ type OrderResponse struct {
 	Status   string `json:"status"`
 	ErrorMsg string `json:"error,omitempty"`
 	Success  bool   `json:"success"`
+}
+
+// HeartbeatResponse represents the authenticated open-order heartbeat response.
+type HeartbeatResponse struct {
+	Status string `json:"status"`
 }
 
 // PlaceOrder places a new limit order
@@ -497,6 +502,48 @@ func (c *CLOBClient) CancelAllOrders(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// SendHeartbeat keeps authenticated order sessions alive for open orders.
+func (c *CLOBClient) SendHeartbeat(ctx context.Context) (*HeartbeatResponse, error) {
+	if c.testMode {
+		return &HeartbeatResponse{Status: "ok"}, nil
+	}
+
+	path := "/heartbeats"
+	timestamp, signature := c.auth.SignL2Request("POST", path, "")
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+	req.Header.Set("POLY_ADDRESS", c.signer.Address())
+	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+	req.Header.Set("POLY_TIMESTAMP", timestamp)
+	req.Header.Set("POLY_SIGNATURE", signature)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send heartbeat: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("send heartbeat failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result HeartbeatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("failed to decode heartbeat response: %w", err)
+	}
+	if result.Status == "" {
+		result.Status = "ok"
+	}
+
+	return &result, nil
 }
 
 // OpenOrder represents an open order
