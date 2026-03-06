@@ -155,7 +155,10 @@ func (m *WSManager) heartbeatLoop() {
 				// 5s timeout balances Android throttle concerns vs stale-data detection speed
 				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 				pingStart := time.Now()
-				err := conn.Ping(pingCtx)
+				
+				// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame)
+				err := conn.Write(pingCtx, websocket.MessageText, []byte("PING"))
+				
 				pingLatency := time.Since(pingStart)
 				pingCancel()
 				if err != nil {
@@ -495,6 +498,12 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 			consecutiveErrors = 0
 			m.lastMessage.Store(time.Now().Unix())
 			m.messageCount.Add(1)
+
+			// Polymarket responds to PING with literal "PONG" strings
+			// Filter these out so JSON parsers downstream don't crash
+			if string(p) == "PONG" {
+				continue
+			}
 
 			// Send to channel - prioritize newest message
 			// Uses labeled loop for clarity (avoids goto)

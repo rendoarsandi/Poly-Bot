@@ -37,7 +37,6 @@ func main() {
 	}
 
 	ctx := context.Background()
-	rest := api.NewRestClient("")
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 	address := trader.Address()
 
@@ -120,38 +119,21 @@ func main() {
 
 		marketMap := make(map[string]bool)
 		for _, p := range positions {
-			if p.Size >= 0.0001 {
-				event, err := rest.GetEventByTokenID(ctx, p.TokenID)
-				if err != nil {
-					continue
-				}
-				for _, gm := range event.Markets {
-					if strings.Contains(gm.ClobTokenIds, p.TokenID) {
-						if !marketMap[gm.ConditionID] {
-							marketMap[gm.ConditionID] = true
-							var tokenIds []string
-							json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds)
-							if len(tokenIds) >= 2 {
-								var outcomes []string
-								json.Unmarshal([]byte(gm.Outcomes), &outcomes)
-								if len(outcomes) < 2 {
-									outcomes = []string{"Up", "Down"} // fallback
-								}
+			if p.Size >= 0.0001 && p.ConditionID != "" {
+				if !marketMap[p.ConditionID] {
+					marketMap[p.ConditionID] = true
 
-								m := api.Market{
-									ConditionID: gm.ConditionID,
-									Slug:        event.Slug,
-									Active:      gm.Active,
-									Closed:      gm.Closed,
-									Tokens: []api.Token{
-										{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
-										{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
-									},
-								}
-								markets = append(markets, m)
-							}
-						}
+					m := api.Market{
+						ConditionID: p.ConditionID,
+						Slug:        p.Slug,
+						Active:      true,
+						Closed:      false,
+						Tokens: []api.Token{
+							{TokenID: p.TokenID, Outcome: core.SanitizeString(p.Outcome)},
+							{TokenID: p.OppositeAsset, Outcome: core.SanitizeString(p.OppositeOutcome)},
+						},
 					}
+					markets = append(markets, m)
 				}
 			}
 		}

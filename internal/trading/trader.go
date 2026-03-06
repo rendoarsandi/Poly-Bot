@@ -64,12 +64,16 @@ type TradeResult struct {
 	Timestamp  time.Time
 }
 
-// PositionInfo represents a position
+// PositionInfo represents a held position
 type PositionInfo struct {
-	TokenID  string
-	Outcome  string
-	Size     float64
-	AvgPrice float64
+	TokenID         string
+	Outcome         string
+	Size            float64
+	AvgPrice        float64
+	ConditionID     string
+	Slug            string
+	OppositeOutcome string
+	OppositeAsset   string
 }
 
 // PaperTrader implements Trader for paper trading
@@ -530,9 +534,14 @@ func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo,
 	for i, pos := range positions {
 		t.livePositions[pos.TokenID] = pos.Size
 		result[i] = PositionInfo{
-			TokenID:  pos.TokenID,
-			Size:     pos.Size,
-			AvgPrice: pos.AvgPrice,
+			TokenID:         pos.TokenID,
+			Size:            pos.Size,
+			AvgPrice:        pos.AvgPrice,
+			Outcome:         pos.Outcome,
+			ConditionID:     pos.ConditionID,
+			Slug:            pos.Slug,
+			OppositeOutcome: pos.OppositeOutcome,
+			OppositeAsset:   pos.OppositeAsset,
 		}
 	}
 	t.posMu.Unlock()
@@ -566,9 +575,14 @@ func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
 	result := make([]PositionInfo, len(positions))
 	for i, pos := range positions {
 		result[i] = PositionInfo{
-			TokenID:  pos.TokenID,
-			Size:     pos.Size,
-			AvgPrice: pos.AvgPrice,
+			TokenID:         pos.TokenID,
+			Size:            pos.Size,
+			AvgPrice:        pos.AvgPrice,
+			Outcome:         pos.Outcome,
+			ConditionID:     pos.ConditionID,
+			Slug:            pos.Slug,
+			OppositeOutcome: pos.OppositeOutcome,
+			OppositeAsset:   pos.OppositeAsset,
 		}
 	}
 	return result, nil
@@ -954,7 +968,7 @@ func (t *RealTrader) QueryBalancedCTFBalances(
 	expectedShares float64,
 ) (bal0, bal1 float64, err0, err1 error) {
 	// Increase attempts from 8 to 20, wait 1 second between attempts (total 20s timeout)
-	// Polygon RPCs can be heavily delayed during network congestion
+	// Position updates via REST/WS might be slightly delayed after on-chain mints
 	const maxAttempts = 20
 	const settleDelay = 1000 * time.Millisecond
 

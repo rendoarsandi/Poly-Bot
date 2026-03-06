@@ -1343,8 +1343,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								continue
 							}
 							res1, res2 = results[0], results[1]
-							if !res1.Success { err1 = fmt.Errorf(res1.Message) }
-							if !res2.Success { err2 = fmt.Errorf(res2.Message) }
+							if !res1.Success { err1 = fmt.Errorf("%s", res1.Message) }
+							if !res2.Success { err2 = fmt.Errorf("%s", res2.Message) }
 
 							// ROBUSTNESS: Wait for CLOB sync and verify if balance dropped
 							// UserWS channel provides instant fills. We poll for up to 1.5s,
@@ -1720,8 +1720,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Keeping this small also reduces the chance of hitting the CLOB $1/side
 						// minimum on cheap outcome tokens (e.g. $0.24 ask → $0.26 limit instead
 						// of the old $0.29, requiring fewer shares to clear the minimum).
-						limitPrice1 := rMaxAsk
-						limitPrice2 := rMaxAsk
+						limitPrice1 := math.Min(rMaxAsk, ask1+0.02)
+						limitPrice2 := math.Min(rMaxAsk, ask2+0.02)
 
 						// ═══════════════════════════════════════════════════════════════
 						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
@@ -1779,8 +1779,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							continue
 						}
 						res1, res2 = results[0], results[1]
-						if !res1.Success { err1 = fmt.Errorf(res1.Message) }
-						if !res2.Success { err2 = fmt.Errorf(res2.Message) }
+						if !res1.Success { err1 = fmt.Errorf("%s", res1.Message) }
+						if !res2.Success { err2 = fmt.Errorf("%s", res2.Message) }
 
 						// Wait for CLOB to sync before verifying positions.
 						// The UserWS channel provides instant fills. We poll for up to 1.5s,

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
@@ -79,48 +78,24 @@ func main() {
 	var markets []api.Market
 	marketMap := make(map[string]bool)
 	for _, p := range apiPositions {
-		if p.Size >= 0.0001 {
-			event, err := client.GetEventByTokenID(ctx, p.TokenID)
-			if err != nil {
-				continue
-			}
-			for _, gm := range event.Markets {
-				if strings.Contains(gm.ClobTokenIds, p.TokenID) {
-					if !marketMap[gm.ConditionID] {
-						marketMap[gm.ConditionID] = true
-						
-						// We need to properly decode the token IDs and outcomes from Gamma API
-						// Gamma API provides them as JSON encoded strings inside the object
-						// but since we only need ConditionID, Slug, and Token objects for manual bot
-						// we can simplify the market creation.
-						
-						var tokenIds []string
-						json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds)
-						if len(tokenIds) >= 2 {
-							var outcomes []string
-							json.Unmarshal([]byte(gm.Outcomes), &outcomes)
-							if len(outcomes) < 2 {
-								outcomes = []string{"Up", "Down"} // fallback
-							}
+		if p.Size >= 0.0001 && p.ConditionID != "" {
+			if !marketMap[p.ConditionID] {
+				marketMap[p.ConditionID] = true
 
-							m := api.Market{
-								ConditionID: gm.ConditionID,
-								Slug:        event.Slug,
-								Active:      gm.Active,
-								Closed:      gm.Closed,
-								Tokens: []api.Token{
-									{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
-									{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
-								},
-							}
-							markets = append(markets, m)
-						}
-					}
+				m := api.Market{
+					ConditionID: p.ConditionID,
+					Slug:        p.Slug,
+					Active:      true, // Assume active if we have positions; will be checked during scan
+					Closed:      false,
+					Tokens: []api.Token{
+						{TokenID: p.TokenID, Outcome: core.SanitizeString(p.Outcome)},
+						{TokenID: p.OppositeAsset, Outcome: core.SanitizeString(p.OppositeOutcome)},
+					},
 				}
+				markets = append(markets, m)
 			}
 		}
 	}
-
 	if len(markets) == 0 {
 		fmt.Println("✅ No relevant markets found for your positions.")
 		return

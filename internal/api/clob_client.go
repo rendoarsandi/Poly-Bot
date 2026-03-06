@@ -147,22 +147,22 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
 		if req.OrderType == OrderTypeMarket {
-			// Market Buy Restrictions:
-			// - Taker (Shares): Max 2 decimals (multiple of 10000 units)
-			// - Maker (USDC): Max 4 decimals (multiple of 100 units) to ensure exact price match
+			// Market Buy Restrictions (per API error):
+			// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
+			// - Taker (Shares): Max 4 decimals (multiple of 100 units)
 
-			// Truncate size to 2 decimals
-			sizeMicro = (sizeMicro / 10000) * 10000
+			// Truncate size (taker) to 4 decimals
+			sizeMicro = (sizeMicro / 100) * 100
 
 			// Calculate USDC cost with truncated size
 			usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 			usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
 
-			// Round up USDC to nearest 4 decimals (multiple of 100 units)
+			// Round up USDC (maker) to nearest 2 decimals (multiple of 10000 units)
 			// to ensure implied price remains >= limit price
 			usdcVal := usdcMicroBig.Int64()
-			if usdcVal%100 != 0 {
-				usdcVal = ((usdcVal / 100) + 1) * 100
+			if usdcVal%10000 != 0 {
+				usdcVal = ((usdcVal / 10000) + 1) * 10000
 			}
 			usdcMicroBig.SetInt64(usdcVal)
 
@@ -629,10 +629,14 @@ func (c *CLOBClient) WaitForFill(ctx context.Context, orderID string, timeout ti
 
 // Position represents a position in a market
 type Position struct {
-	TokenID  string  `json:"asset"`
-	Size     float64 `json:"size,string"`
-	AvgPrice float64 `json:"avgPrice,string"`
-	Outcome  string  `json:"outcome"` // Mapped from token lookup
+	TokenID         string  `json:"asset"`
+	Size            float64 `json:"size"`
+	AvgPrice        float64 `json:"avgPrice"`
+	Outcome         string  `json:"outcome"`
+	ConditionID     string  `json:"conditionId"`
+	Slug            string  `json:"slug"`
+	OppositeOutcome string  `json:"oppositeOutcome"`
+	OppositeAsset   string  `json:"oppositeAsset"`
 }
 
 // BalanceAllowance represents USDC balance and allowance info
@@ -708,28 +712,21 @@ func (c *CLOBClient) UpdateBalanceAllowance(ctx context.Context) error {
 
 // GetPositions retrieves all positions
 func (c *CLOBClient) GetPositions(ctx context.Context) ([]Position, error) {
-	path := "/positions"
-	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+	url := fmt.Sprintf("https://data-api.polymarket.com/positions?user=%s", c.signer.Address())
 
-	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
-	req.Header.Set("POLY_ADDRESS", c.signer.Address())
-	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
-	req.Header.Set("POLY_TIMESTAMP", timestamp)
-	req.Header.Set("POLY_SIGNATURE", signature)
-
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get positions: %w", err)
+		return nil, fmt.Errorf("failed to get positions from Data API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return []Position{}, nil // 404 means no positions found for this account
+		return []Position{}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
