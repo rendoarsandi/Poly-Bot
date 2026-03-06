@@ -516,6 +516,30 @@ func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
 	return t.clob.UpdateBalanceAllowance(ctx)
 }
 
+// ForceRefreshPositions clears the local position cache and fetches fresh data from REST
+func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo, error) {
+	positions, err := t.clob.GetPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	t.posMu.Lock()
+	// Clear and rebuild cache
+	t.livePositions = make(map[string]float64)
+	result := make([]PositionInfo, len(positions))
+	for i, pos := range positions {
+		t.livePositions[pos.TokenID] = pos.Size
+		result[i] = PositionInfo{
+			TokenID:  pos.TokenID,
+			Size:     pos.Size,
+			AvgPrice: pos.AvgPrice,
+		}
+	}
+	t.posMu.Unlock()
+
+	return result, nil
+}
+
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
 	t.posMu.Lock()
 	if len(t.livePositions) > 0 {

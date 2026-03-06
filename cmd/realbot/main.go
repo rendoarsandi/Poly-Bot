@@ -1354,8 +1354,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							var verifyErr error
 							var verifyPositions []trading.PositionInfo
 
-							for poll := 0; poll < 30; poll++ {
-								verifyPositions, verifyErr = trader.GetPositions(ctx)
+							for poll := 0; poll < 60; poll++ {
+								if poll == 59 {
+									// Force a REST refresh on the final poll if WS hasn't updated yet
+									verifyPositions, verifyErr = trader.ForceRefreshPositions(ctx)
+								} else {
+									verifyPositions, verifyErr = trader.GetPositions(ctx)
+								}
+								
 								if verifyErr == nil {
 									var bal0, bal1 float64
 									for _, pos := range verifyPositions {
@@ -1784,8 +1790,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						var verifyErr error
 						var verifyPositions []trading.PositionInfo
 
-						for poll := 0; poll < 30; poll++ {
-							verifyPositions, verifyErr = trader.GetPositions(ctx)
+						for poll := 0; poll < 60; poll++ {
+							if poll == 59 {
+								// Force a REST refresh on the final poll if WS hasn't updated yet
+								verifyPositions, verifyErr = trader.ForceRefreshPositions(ctx)
+							} else {
+								verifyPositions, verifyErr = trader.GetPositions(ctx)
+							}
+							
 							if verifyErr == nil {
 								var bal0, bal1 float64
 								for _, pos := range verifyPositions {
