@@ -66,6 +66,13 @@ func main() {
 		fmt.Println("✅ CLOB balance allowance synced")
 	}
 
+	fmt.Println("🔌 Connecting to User WebSocket for real-time fills...")
+	if err := trader.StartUserWS(ctx); err != nil {
+		fmt.Printf("⚠️ Failed to connect User WS (falling back to REST): %v\n", err)
+	} else {
+		fmt.Println("✅ User WebSocket connected")
+	}
+
 	// 1. Find markets
 	fmt.Println("Select timeframe:")
 	fmt.Println("1. 5m")
