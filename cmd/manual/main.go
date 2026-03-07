@@ -105,16 +105,15 @@ func main() {
 		if !hasBal {
 			continue
 		}
-		foundAny = true
-
-		fmt.Printf("\n📈 Market: %s\n", m.Slug)
 
 		// Check if market is closed
 		info, err := trader.GetMarketInfo(ctx, m.ConditionID)
 		if err == nil && info.Closed {
-			fmt.Println("   ⚠️ MARKET IS RESOLVED/CLOSED. Cannot sell.")
 			continue
 		}
+
+		foundAny = true
+		fmt.Printf("\n📈 Market: %s\n", m.Slug)
 
 		for i, b := range balances {
 			if b >= 0.0001 {
@@ -141,7 +140,7 @@ func main() {
 	}
 
 	if !foundAny {
-		fmt.Println("✅ No on-chain shares found to dump.")
+		fmt.Println("✅ No actionable open shares found to dump.")
 	}
 }
 

@@ -373,14 +373,35 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 
 	results := make([]*TradeResult, len(resps))
 	for i, resp := range resps {
+		success := resp.Success
+		message := strings.TrimSpace(resp.ErrorMsg)
+		status := strings.TrimSpace(resp.Status)
+		if success && strings.TrimSpace(resp.OrderID) == "" && status == "" {
+			success = false
+			if message == "" {
+				message = "empty batch response from exchange"
+			}
+		}
+		fee := 0.0
+		if reqs[i].FeeRateBps > 0 {
+			fee = reqs[i].Price * reqs[i].Size * (float64(reqs[i].FeeRateBps) / 10000.0)
+		}
+
 		results[i] = &TradeResult{
-			Success: resp.Success,
-			OrderID: resp.OrderID,
-			Message: resp.ErrorMsg,
+			Success:   success,
+			OrderID:   resp.OrderID,
+			Status:    status,
+			Message:   message,
+			Price:     reqs[i].Price,
+			Size:      reqs[i].Size,
+			Side:      string(reqs[i].Side),
+			TokenID:   reqs[i].TokenID,
+			Fee:       fee,
+			Timestamp: time.Now(),
 		}
 
 		// If any buy order was successful, optimistically mark balance as stale
-		if resp.Success && reqs[i].Side == api.SideBuy {
+		if success && reqs[i].Side == api.SideBuy {
 			t.mu.Lock()
 			t.lastBalanceUpdate = time.Time{}
 			t.mu.Unlock()

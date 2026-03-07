@@ -110,6 +110,21 @@ const (
 	TIFFillAndKill      TimeInForce = "FAK"
 )
 
+func usesMarketLikePrecision(req *OrderRequest) bool {
+	if req == nil {
+		return false
+	}
+	if req.OrderType == OrderTypeMarket {
+		return true
+	}
+	switch req.TimeInForce {
+	case TIFFillAndKill, TIFFillOrKill:
+		return true
+	default:
+		return false
+	}
+}
+
 // OrderRequest represents a new order request
 type OrderRequest struct {
 	TokenID     string      `json:"tokenID"`
@@ -148,10 +163,50 @@ type OrderPayload struct {
 
 // OrderResponse represents the API response for order placement
 type OrderResponse struct {
-	OrderID  string `json:"orderID"`
-	Status   string `json:"status"`
-	ErrorMsg string `json:"error,omitempty"`
-	Success  bool   `json:"success"`
+	OrderID            string   `json:"orderID"`
+	Status             string   `json:"status"`
+	ErrorMsg           string   `json:"errorMsg,omitempty"`
+	Success            bool     `json:"success"`
+	MakingAmount       string   `json:"makingAmount,omitempty"`
+	TakingAmount       string   `json:"takingAmount,omitempty"`
+	TransactionsHashes []string `json:"transactionsHashes,omitempty"`
+	TradeIDs           []string `json:"tradeIDs,omitempty"`
+}
+
+// UnmarshalJSON accepts the documented Polymarket response schema plus a few
+// observed field-name variants so single and batch order decoding stay robust.
+func (r *OrderResponse) UnmarshalJSON(data []byte) error {
+	type rawOrderResponse OrderResponse
+	var aux struct {
+		rawOrderResponse
+		OrderIDAlt            string   `json:"orderId"`
+		ErrorMsgAlt           string   `json:"errorMsg"`
+		ErrorAlt              string   `json:"error"`
+		TransactionsHashesAlt []string `json:"transactionHashes"`
+		TradeIDsAlt           []string `json:"tradeIds"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = OrderResponse(aux.rawOrderResponse)
+	if r.OrderID == "" {
+		r.OrderID = aux.OrderIDAlt
+	}
+	if r.ErrorMsg == "" {
+		switch {
+		case aux.ErrorMsgAlt != "":
+			r.ErrorMsg = aux.ErrorMsgAlt
+		case aux.ErrorAlt != "":
+			r.ErrorMsg = aux.ErrorAlt
+		}
+	}
+	if len(r.TransactionsHashes) == 0 && len(aux.TransactionsHashesAlt) > 0 {
+		r.TransactionsHashes = aux.TransactionsHashesAlt
+	}
+	if len(r.TradeIDs) == 0 && len(aux.TradeIDsAlt) > 0 {
+		r.TradeIDs = aux.TradeIDsAlt
+	}
+	return nil
 }
 
 // HeartbeatResponse represents the authenticated open-order heartbeat response.
@@ -174,7 +229,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
-		if req.OrderType == OrderTypeMarket {
+		if usesMarketLikePrecision(req) {
 			// Market Buy Restrictions (per API error):
 			// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
 			// - Taker (Shares): Max 4 decimals (multiple of 100 units)
@@ -212,7 +267,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		sizeMicro := int64(req.Size*1e6 + 0.5)
 		priceMicro := int64(req.Price*1e6 + 0.5)
 
-		if req.OrderType == OrderTypeMarket {
+		if usesMarketLikePrecision(req) {
 			// Market Sell Restrictions (per API error):
 			// - Maker (Shares): Max 2 decimals (multiple of 10,000 units)
 			// - Taker (USDC): Max 4 decimals (multiple of 100 units)

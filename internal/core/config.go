@@ -259,6 +259,8 @@ func (c *Config) SaveSettings() error {
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
+	envMap["MIN_ASK_PRICE"] = strconv.FormatFloat(c.MinAskPrice, 'f', -1, 64)
+	envMap["MAX_ASK_PRICE"] = strconv.FormatFloat(c.MaxAskPrice, 'f', -1, 64)
 	envMap["BUY_EXECUTION_MARGIN_FLOOR_PERCENT"] = strconv.FormatFloat(c.BuyExecutionMarginFloorPercent, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)

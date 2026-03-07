@@ -64,12 +64,13 @@ type Token struct {
 }
 
 type Market struct {
-	Active      bool    `json:"active"`
-	Closed      bool    `json:"closed"`
-	ConditionID string  `json:"condition_id"`
-	Slug        string  `json:"slug"`
-	MarketSlug  string  `json:"market_slug"` // Used in list response
-	Tokens      []Token `json:"tokens"`
+	Active      bool      `json:"active"`
+	Closed      bool      `json:"closed"`
+	ConditionID string    `json:"condition_id"`
+	Slug        string    `json:"slug"`
+	MarketSlug  string    `json:"market_slug"` // Used in list response
+	EndTime     time.Time `json:"-"`
+	Tokens      []Token   `json:"tokens"`
 }
 
 type ListMarketsResponse struct {
@@ -182,6 +183,7 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 	if eventSlug == "" {
 		eventSlug = core.SanitizeString(fallbackSlug)
 	}
+	eventEndTime := parseGammaEventEndTime(event.EndDate)
 
 	markets := make([]Market, 0, len(event.Markets))
 	for _, gm := range event.Markets {
@@ -200,6 +202,7 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 			Slug:        eventSlug,
 			Active:      gm.Active,
 			Closed:      gm.Closed,
+			EndTime:     eventEndTime,
 			Tokens: []Token{
 				{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0])},
 				{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1])},
@@ -290,6 +293,7 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 
 			event := events[0]
 			gm := event.Markets[0]
+			eventEndTime := parseGammaEventEndTime(event.EndDate)
 
 			// Parse clobTokenIds (it's a JSON-encoded string array)
 			var tokenIds []string
@@ -310,6 +314,7 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 				Slug:        core.SanitizeString(slug),
 				Active:      gm.Active,
 				Closed:      gm.Closed,
+				EndTime:     eventEndTime,
 				Tokens: []Token{
 					{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
 					{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
@@ -321,6 +326,20 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 	}
 
 	return markets, nil
+}
+
+func parseGammaEventEndTime(endDate string) time.Time {
+	endDate = strings.TrimSpace(endDate)
+	if endDate == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339Nano, endDate); err == nil {
+		return t.UTC()
+	}
+	if t, err := time.Parse(time.RFC3339, endDate); err == nil {
+		return t.UTC()
+	}
+	return time.Time{}
 }
 
 func (c *RestClient) ListMarkets(ctx context.Context) ([]Market, error) {

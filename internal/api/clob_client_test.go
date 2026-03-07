@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -122,12 +123,7 @@ func TestPlaceOrders_FAK_Killed(t *testing.T) {
 		if r.URL.Path != "/orders" {
 			t.Errorf("Expected path /orders, got %s", r.URL.Path)
 		}
-		resp := []OrderResponse{{
-			Success: true,
-			Status:  "KILLED",
-			OrderID: "0xabc",
-		}}
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write([]byte(`[{"success":true,"status":"KILLED","orderID":"0xabc","errorMsg":""}]`))
 	}))
 	defer server.Close()
 
@@ -161,6 +157,153 @@ func TestPlaceOrders_FAK_Killed(t *testing.T) {
 	}
 	if resp[0].ErrorMsg != "Order was KILLED" {
 		t.Errorf("Expected ErrorMsg=%q, got %q", "Order was KILLED", resp[0].ErrorMsg)
+	}
+}
+
+func TestOrderResponseUnmarshal_PolymarketSchema(t *testing.T) {
+	var resp OrderResponse
+	if err := json.Unmarshal([]byte(`{
+		"success": true,
+		"orderID": "0xabcdef1234",
+		"status": "matched",
+		"makingAmount": "100000000",
+		"takingAmount": "200000000",
+		"transactionsHashes": ["0xhash"],
+		"tradeIDs": ["trade-123"],
+		"errorMsg": ""
+	}`), &resp); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if !resp.Success || resp.OrderID != "0xabcdef1234" || resp.Status != "matched" {
+		t.Fatalf("unexpected decoded response: %+v", resp)
+	}
+	if resp.MakingAmount != "100000000" || resp.TakingAmount != "200000000" {
+		t.Fatalf("unexpected amounts: %+v", resp)
+	}
+	if len(resp.TransactionsHashes) != 1 || resp.TransactionsHashes[0] != "0xhash" {
+		t.Fatalf("unexpected tx hashes: %+v", resp.TransactionsHashes)
+	}
+	if len(resp.TradeIDs) != 1 || resp.TradeIDs[0] != "trade-123" {
+		t.Fatalf("unexpected trade ids: %+v", resp.TradeIDs)
+	}
+}
+
+func TestPlaceOrders_DocBatchResponseDecodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orders" {
+			t.Fatalf("Expected path /orders, got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`[
+			{"success":true,"orderID":"0xabcdef1234567890abcdef1234567890abcdef12","status":"live","makingAmount":"100000000","takingAmount":"200000000","errorMsg":""},
+			{"success":true,"orderID":"0xfedcba0987654321fedcba0987654321fedcba09","status":"matched","makingAmount":"200000000","takingAmount":"100000000","transactionsHashes":["0x1234567890abcdef1234567890abcdef12345678"],"tradeIDs":["trade-123"],"errorMsg":""}
+		]`))
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	resp, err := client.PlaceOrders(context.Background(), []*OrderRequest{{
+		TokenID:     "123456",
+		Price:       0.48,
+		Size:        5,
+		Side:        SideBuy,
+		OrderType:   OrderTypeLimit,
+		TimeInForce: TIFGoodTilCancelled,
+	}, {
+		TokenID:     "654321",
+		Price:       0.52,
+		Size:        5,
+		Side:        SideSell,
+		OrderType:   OrderTypeLimit,
+		TimeInForce: TIFGoodTilCancelled,
+	}})
+	if err != nil {
+		t.Fatalf("PlaceOrders failed: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(resp))
+	}
+	if resp[0].OrderID == "" || resp[0].Status != "live" {
+		t.Fatalf("first batch response did not decode correctly: %+v", resp[0])
+	}
+	if resp[1].OrderID == "" || resp[1].Status != "matched" {
+		t.Fatalf("second batch response did not decode correctly: %+v", resp[1])
+	}
+	if len(resp[1].TransactionsHashes) != 1 || len(resp[1].TradeIDs) != 1 {
+		t.Fatalf("matched batch metadata missing: %+v", resp[1])
+	}
+}
+
+func TestPlaceOrders_SignatureUsesPayloadSalt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload []struct {
+			Order OrderPayload `json:"order"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request failed: %v", err)
+		}
+		if len(payload) != 1 {
+			t.Fatalf("expected 1 order in batch payload, got %d", len(payload))
+		}
+
+		order := payload[0].Order
+		expectedSigner, err := NewSigner(strings.Repeat("1", 64))
+		if err != nil {
+			t.Fatalf("NewSigner failed: %v", err)
+		}
+		expectedSig, err := expectedSigner.SignOrder(&OrderData{
+			Salt:          strconv.FormatInt(order.Salt, 10),
+			Maker:         order.Maker,
+			Signer:        order.Signer,
+			Taker:         order.Taker,
+			TokenID:       order.TokenID,
+			MakerAmount:   order.MakerAmount,
+			TakerAmount:   order.TakerAmount,
+			Expiration:    order.Expiration,
+			Nonce:         order.Nonce,
+			FeeRateBps:    order.FeeRateBps,
+			Side:          0,
+			SignatureType: order.SignatureType,
+		})
+		if err != nil {
+			t.Fatalf("SignOrder failed: %v", err)
+		}
+		if order.Signature != expectedSig {
+			t.Fatalf("expected signature to match payload salt; got %s want %s", order.Signature, expectedSig)
+		}
+
+		_, _ = w.Write([]byte(`[{"success":true,"orderID":"0xabc","status":"matched","errorMsg":""}]`))
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	_, err = client.PlaceOrders(context.Background(), []*OrderRequest{{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        1,
+		Side:        SideBuy,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillAndKill,
+	}})
+	if err != nil {
+		t.Fatalf("PlaceOrders failed: %v", err)
 	}
 }
 
@@ -216,6 +359,61 @@ func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 	// Round up to nearest 4 decimals = 5.06 USDC -> 5060000 micro
 	if takerAmount != "5060000" {
 		t.Errorf("Expected takerAmount (USDC) 5060000, got %s", takerAmount)
+	}
+}
+
+func TestUsesMarketLikePrecision(t *testing.T) {
+	if !usesMarketLikePrecision(&OrderRequest{OrderType: OrderTypeLimit, TimeInForce: TIFFillAndKill}) {
+		t.Fatal("expected LIMIT+FAK to use market-like precision")
+	}
+	if !usesMarketLikePrecision(&OrderRequest{OrderType: OrderTypeLimit, TimeInForce: TIFFillOrKill}) {
+		t.Fatal("expected LIMIT+FOK to use market-like precision")
+	}
+	if usesMarketLikePrecision(&OrderRequest{OrderType: OrderTypeLimit, TimeInForce: TIFGoodTilCancelled}) {
+		t.Fatal("expected LIMIT+GTC to keep limit precision")
+	}
+}
+
+func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {
+	var makerAmount, takerAmount string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody struct {
+			Order OrderPayload `json:"order"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		makerAmount = reqBody.Order.MakerAmount
+		takerAmount = reqBody.Order.TakerAmount
+
+		resp := OrderResponse{Success: true, Status: "MATCHED", OrderID: "0x123"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, _ := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	client.BaseURL = server.URL
+
+	_, err := client.PlaceOrder(context.Background(), &OrderRequest{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10.123456,
+		Side:        SideBuy,
+		OrderType:   OrderTypeLimit,
+		TimeInForce: TIFFillAndKill,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder failed: %v", err)
+	}
+
+	if takerAmount != "10123400" {
+		t.Fatalf("expected takerAmount (shares) 10123400, got %s", takerAmount)
+	}
+	if makerAmount != "5070000" {
+		t.Fatalf("expected makerAmount (USDC) 5070000, got %s", makerAmount)
 	}
 }
 

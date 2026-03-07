@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -262,8 +261,12 @@ func main() {
 			// Render
 			fmt.Print("\033[H\033[2J")
 			fmt.Printf("🚀 Market: %s\n", market.Slug)
-			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
-			fmt.Printf("⏰ Time Left: %v\n\n", time.Until(endTime).Round(time.Second))
+			endTime, err := resolveUtilbotMarketEndTime(market)
+			if err != nil {
+				fmt.Printf("⏰ Time Left: unknown (%v)\n\n", err)
+			} else {
+				fmt.Printf("⏰ Time Left: %v\n\n", time.Until(endTime).Round(time.Second))
+			}
 			fmt.Println("Outcome      | Bid (Size)       | Ask (Size)       | Spread")
 			fmt.Println("-------------|------------------|------------------|-------")
 			for _, out := range outcomes {
@@ -301,59 +304,130 @@ takeAction:
 	if choice == 1 {
 		fmt.Print("Pairs to Panic Buy (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, market, outcomes, "BUY", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	} else if choice == 2 {
 		fmt.Print("Pairs to Panic Sell (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, market, outcomes, "SELL", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
 	} else {
 		log.Fatal("Invalid choice.")
 	}
 }
 
 func findMarkets(ctx context.Context, restClient *api.RestClient, timeframe string) map[string]*api.Market {
-	found := make(map[string]*api.Market)
 	assets := []string{"btc", "eth"}
-
-	// We want the market that is actively resolving soon (but not too soon)
-	// so prices are volatile and not just sitting at 0.5.
-	minSpareTime := 1 * time.Minute
-	maxSpareTime := 10 * time.Minute
-	if timeframe == "5m" {
-		maxSpareTime = 5 * time.Minute
-	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return found
+			return nil
 		default:
 			if ms, err := restClient.GetMarketsByTimeframe(ctx, nil, timeframe); err == nil {
-				for _, m := range ms {
-					et, _ := paper.ParseEndTimeFromSlug(m.Slug)
-					if time.Now().After(et) || time.Until(et) < minSpareTime || time.Until(et) > maxSpareTime {
-						continue
-					}
-					for _, a := range assets {
-						if strings.Contains(strings.ToLower(m.Slug), a) {
-							mCopy := m
-							found[strings.ToUpper(a)] = &mCopy
-						}
-					}
+				found := pickUtilbotMarkets(time.Now(), ms, timeframe, assets)
+				if len(found) > 0 {
+					return found
 				}
 			}
-			if len(found) > 0 {
-				return found
-			}
 			fmt.Print(".")
-			time.Sleep(2 * time.Second)
+			time.Sleep(utilbotFinderPollInterval(timeframe))
 		}
 	}
 }
 
-func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
+func pickUtilbotMarkets(now time.Time, markets []api.Market, timeframe string, assets []string) map[string]*api.Market {
+	type candidate struct {
+		market   *api.Market
+		timeLeft time.Duration
+	}
+
+	best := make(map[string]candidate)
+	for _, market := range markets {
+		if !market.Active || market.Closed {
+			continue
+		}
+
+		endTime, err := resolveUtilbotMarketEndTime(&market)
+		if err != nil || !isUtilbotMarketInEntryWindow(now, endTime, timeframe) {
+			continue
+		}
+
+		timeLeft := endTime.Sub(now)
+		slug := strings.ToLower(market.Slug)
+		for _, asset := range assets {
+			if !strings.Contains(slug, strings.ToLower(asset)) {
+				continue
+			}
+
+			key := strings.ToUpper(asset)
+			existing, ok := best[key]
+			if ok && existing.timeLeft <= timeLeft {
+				continue
+			}
+
+			marketCopy := market
+			marketCopy.EndTime = endTime
+			best[key] = candidate{market: &marketCopy, timeLeft: timeLeft}
+		}
+	}
+
+	found := make(map[string]*api.Market, len(best))
+	for key, candidate := range best {
+		found[key] = candidate.market
+	}
+	return found
+}
+
+func resolveUtilbotMarketEndTime(market *api.Market) (time.Time, error) {
+	if market == nil {
+		return time.Time{}, fmt.Errorf("market is nil")
+	}
+	if !market.EndTime.IsZero() {
+		return market.EndTime, nil
+	}
+	return paper.ParseEndTimeFromSlug(market.Slug)
+}
+
+func isUtilbotMarketInEntryWindow(now, endTime time.Time, timeframe string) bool {
+	if !now.Before(endTime) {
+		return false
+	}
+
+	timeLeft := endTime.Sub(now)
+	minTimeLeft, maxTimeLeft, hasUpperBound := utilbotEntryWindow(timeframe)
+	if timeLeft < minTimeLeft {
+		return false
+	}
+	if hasUpperBound && timeLeft > maxTimeLeft {
+		return false
+	}
+
+	return true
+}
+
+func utilbotEntryWindow(timeframe string) (minTimeLeft, maxTimeLeft time.Duration, hasUpperBound bool) {
+	switch strings.ToLower(strings.TrimSpace(timeframe)) {
+	case "15m":
+		// Utility bot should prefer 15m markets after the opening noise but before
+		// the final rush, focusing on the 3m-14m pre-expiry range.
+		return 3 * time.Minute, 14 * time.Minute, true
+	default:
+		return 1 * time.Minute, 0, false
+	}
+}
+
+func utilbotFinderPollInterval(timeframe string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(timeframe)) {
+	case "15m":
+		return 500 * time.Millisecond
+	default:
+		return 1 * time.Second
+	}
+}
+
+func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
 	// Determine execution pricing
 	prices := make(map[string]float64, len(outcomes))
+	buyCaps := make(map[string]float64, len(outcomes))
 	token0 := mkt.GetTokenIDForOutcome(market, outcomes[0])
 	token1 := mkt.GetTokenIDForOutcome(market, outcomes[1])
 	var initialBal0, initialBal1 float64
@@ -373,28 +447,12 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		var price float64
 		if side == "BUY" {
 			price = 0.99
-			bestAsk := 1.0
-			found := false
-			for _, lvl := range tokenFullAsks[out] {
-				if lvl.Price > 0 && lvl.Price < bestAsk {
-					bestAsk = lvl.Price
-					found = true
-				}
-			}
-			if found {
+			if bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[out]); found {
 				price = bestAsk
 			}
 		} else {
 			price = 0.01
-			bestBid := 0.0
-			found := false
-			for _, lvl := range tokenFullBids[out] {
-				if lvl.Price > bestBid {
-					bestBid = lvl.Price
-					found = true
-				}
-			}
-			if found {
+			if bestBid, found := utilbotBestBidFromLevels(tokenFullBids[out]); found {
 				price = bestBid
 			}
 			if price >= 1.0 {
@@ -405,32 +463,58 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		}
 		prices[out] = price
 	}
+	refreshBuyCaps := func() error {
+		if side != "BUY" {
+			return nil
+		}
+		cap0, cap1, err := core.BuyExecutionLimitPrices(
+			prices[outcomes[0]], prices[outcomes[1]],
+			cfg.MinAskPrice, cfg.MaxAskPrice, cfg.BuyExecutionMarginFloorPercent,
+		)
+		if err != nil {
+			return err
+		}
+		buyCaps[outcomes[0]] = cap0
+		buyCaps[outcomes[1]] = cap1
+		return nil
+	}
+	if err := refreshBuyCaps(); err != nil {
+		fmt.Printf("❌ Buy pricing rejected by config: %v\n", err)
+		return
+	}
 
 	shares := targetShares
 
 	if side == "BUY" {
-		adjustedShares, bumped := normalizePanicBuySharesPerSide(shares)
-		if bumped {
-			fmt.Printf("ℹ️ Raised buy target from %.6f to %.6f pairs (shares per side) to satisfy Polymarket's ~$1 minimum order size.\n", shares, adjustedShares)
-		}
-		shares = adjustedShares
-
+		buyMaxSum := core.MaxExecutablePairSum(cfg.BuyExecutionMarginFloorPercent, cfg.MaxAskPrice)
 		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullAsks[outcomes[1]]...),
 			func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price < levels[j].Price },
-			func(p1, p2 float64) bool { return p1+p2 <= 1.10 },
+			func(p1, p2 float64) bool { return p1+p2 <= buyMaxSum },
 		)
 		if shares > totalLiq {
 			fmt.Printf("⚠️  Capping by liquidity: %.6f -> %.6f pairs\n", shares, totalLiq)
 			shares = totalLiq
 		}
+
+		adjustedShares, bumped := normalizePanicBuySharesPerSide(shares, prices[outcomes[0]], prices[outcomes[1]])
+		if bumped {
+			if totalLiq > 0 && adjustedShares > totalLiq {
+				fmt.Printf("⚠️ Need %.6f shares/side to satisfy Polymarket's ~$1 minimum per leg, but only %.6f pair liquidity is currently available. Keeping liquidity cap.\n", adjustedShares, totalLiq)
+			} else {
+				fmt.Printf("ℹ️ Raised buy target from %.6f to %.6f pairs (shares per side) to satisfy Polymarket's ~$1 minimum per leg. Very cheap asks are floored at $0.10 for sizing so utilbot doesn't overshoot into huge imbalances.\n", shares, adjustedShares)
+				shares = adjustedShares
+			}
+		}
 	} else {
+		sellExecutionFloor := core.ClampExecutionMarginFloor(cfg.SplitMinMarginSell, cfg.BuyExecutionMarginFloorPercent)
+		sellMinSum := core.MinExecutablePairSum(sellExecutionFloor, cfg.MinAskPrice)
 		totalLiq := mkt.EstimateMatchedLiquidity(
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[0]]...),
 			append([]paper.MarketLevel(nil), tokenFullBids[outcomes[1]]...),
 			func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price > levels[j].Price },
-			func(p1, p2 float64) bool { return p1+p2 >= 0.90 },
+			func(p1, p2 float64) bool { return p1+p2 >= sellMinSum },
 		)
 		if shares > totalLiq {
 			fmt.Printf("⚠️  Capping by liquidity: %.6f -> %.6f pairs\n", shares, totalLiq)
@@ -457,6 +541,24 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 		log.Fatal("Cancelled.")
 	}
+	if side == "BUY" {
+		fmt.Println("🔄 Re-quoting both legs just before submission...")
+		requoteCtx, cancelRequote := context.WithTimeout(ctx, 5*time.Second)
+		err := utilbotRefreshExecutionBooks(requoteCtx, restClient, market, outcomes, side, tokenFullBids, tokenFullAsks, prices)
+		cancelRequote()
+		if err != nil {
+			fmt.Printf("❌ Re-quote failed: %v. Aborting before submission.\n", err)
+			return
+		}
+		if err := refreshBuyCaps(); err != nil {
+			fmt.Printf("❌ Fresh quote rejected by config: %v. Aborting before submission.\n", err)
+			return
+		}
+		cap0 := buyCaps[outcomes[0]]
+		cap1 := buyCaps[outcomes[1]]
+		updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
+		fmt.Printf("✅ Fresh asks: %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Updated est. total: $%.2f\n", outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue)
+	}
 
 	var initialUSDC float64
 	if side == "SELL" {
@@ -474,162 +576,84 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 		fmt.Println("⏳ Waiting for on-chain settlement...")
 		time.Sleep(3 * time.Second)
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
 	results, errs := make([]*trading.TradeResult, 2), make([]error, 2)
-	for idx, out := range outcomes {
-		go func(o string, i int) {
-			defer wg.Done()
-			tid := mkt.GetTokenIDForOutcome(market, o)
-			execShares := shares
-			rate := tokenFeeRates[o]
-			if rate == -1 {
-				rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
-				log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", o)
-			}
+	batchReqs := make([]*api.OrderRequest, 0, len(outcomes))
+	batchMeta := make([]struct {
+		outcome string
+		shares  float64
+		rate    int
+	}, 0, len(outcomes))
 
-			startReq := time.Now()
-
-			if side == "BUY" {
-				// Use 0.99 for Market Buys to ensure fill and bypass limits if needed
-				price := 0.99
-				results[i], errs[i] = trader.Buy(ctx, tid, o, price, execShares, api.OrderTypeLimit, api.TIFFillAndKill, rate)
-			} else {
-				// Use 0.01 for Market Sells to ensure fill and bypass 5-share limit
-				price := 0.01
-				// Use FOK for Panic Sell to match realbot behavior and avoid GTC price validation issues
-				results[i], errs[i] = trader.Sell(ctx, tid, o, price, execShares, api.OrderTypeLimit, api.TIFFillAndKill, rate)
-			}
-			latency := time.Since(startReq)
-			printTradeResult(side+" "+o, results[i], errs[i], rate, execShares, latency)
-		}(out, idx)
-	}
-	wg.Wait()
-
-	if (errs[0] == nil && results[0].Success) != (errs[1] == nil && results[1].Success) {
-		fmt.Println("⚠️  UNBALANCED FILL! Attempting aggressive recovery...")
-		failedIdx := 0
-		if errs[0] == nil && results[0].Success {
-			failedIdx = 1
-		}
-		failedOutcome := outcomes[failedIdx]
-		tid := mkt.GetTokenIDForOutcome(market, failedOutcome)
-
-		rate := tokenFeeRates[failedOutcome]
-		if rate == 0 {
-			rate = 1000
+	for _, out := range outcomes {
+		tid := mkt.GetTokenIDForOutcome(market, out)
+		rate := tokenFeeRates[out]
+		if rate == -1 {
+			rate = 0 // Default to 0 (fee-free) if fetch failed, safer than 1000
+			log.Printf("⚠️ Fee rate fetch failed for %s, using 0 bps", out)
 		}
 
-		retryCount := 0
-		for retryCount < 10 { // Max 10 retries
-			retryCount++
-			fmt.Printf("🔄 Recovery attempt #%d for %s...\n", retryCount, failedOutcome)
-
-			var retryRes *trading.TradeResult
-			var retryErr error
-
-			startReq := time.Now()
-
-			if side == "BUY" {
-				// Use $0.99 cap for buy recovery to guarantee fill
-				retryRes, retryErr = trader.Buy(ctx, tid, failedOutcome, 0.99, shares, api.OrderTypeLimit, api.TIFFillAndKill, rate)
-			} else {
-				// Use 0.01 for market sell recovery to guarantee fill and bypass 5-share limit
-				retryPrice := 0.01
-				retryRes, retryErr = trader.Sell(ctx, tid, failedOutcome, retryPrice, shares, api.OrderTypeLimit, api.TIFFillAndKill, rate)
-			}
-
-			latency := time.Since(startReq)
-
-			if retryErr == nil && retryRes != nil && retryRes.Success {
-				fmt.Printf("✅ Recovery SUCCESS for %s after %d retries! (Latency: %v)\n", failedOutcome, retryCount, latency)
-				results[failedIdx] = retryRes
-				errs[failedIdx] = nil
-				break
-			}
-
-			msg := "Unknown error"
-			if retryErr != nil {
-				msg = retryErr.Error()
-			} else if retryRes != nil {
-				msg = retryRes.Message
-			}
-			fmt.Printf("❌ Recovery attempt #%d failed: %s (Latency: %v)\n", retryCount, msg, latency)
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		if (errs[0] == nil && results[0].Success) != (errs[1] == nil && results[1].Success) {
-			log.Fatal("🚨 CRITICAL: Failed to balance positions after recovery attempts. Manual intervention required!")
-		}
-	}
-
-	if (errs[0] == nil && results[0].Success) && (errs[1] == nil && results[1].Success) {
+		price := 0.01
 		if side == "BUY" {
-			fmt.Println("💰 Buy success! Querying on-chain balances for merge...")
-			time.Sleep(3 * time.Second) // Initial wait for on-chain state to settle
+			price = buyCaps[out]
+			if price <= 0 {
+				idx := len(batchMeta)
+				errs[idx] = fmt.Errorf("missing configured buy cap for %s", out)
+				batchMeta = append(batchMeta, struct {
+					outcome string
+					shares  float64
+					rate    int
+				}{outcome: out, shares: shares, rate: rate})
+				continue
+			}
+		}
 
-			fmt.Printf("🔍 Querying balances for tokens: %s (%s), %s (%s)\n", outcomes[0], token0, outcomes[1], token1)
+		batchReqs = append(batchReqs, &api.OrderRequest{
+			TokenID:     tid,
+			Price:       price,
+			Size:        shares,
+			Side:        map[string]api.Side{"BUY": api.SideBuy, "SELL": api.SideSell}[side],
+			OrderType:   api.OrderTypeLimit,
+			TimeInForce: api.TIFFillAndKill,
+			FeeRateBps:  rate,
+		})
+		batchMeta = append(batchMeta, struct {
+			outcome string
+			shares  float64
+			rate    int
+		}{outcome: out, shares: shares, rate: rate})
+	}
 
-			var bal0, bal1, mergeBal0, mergeBal1 float64
-			var err0, err1 error
-			if haveInitialSnapshot {
-				mergeBal0, mergeBal1, bal0, bal1, err0, err1 = trader.QueryBalancedCTFBalanceDelta(context.Background(), token0, token1, initialBal0, initialBal1, shares)
+	startReq := time.Now()
+	if len(batchReqs) > 0 {
+		batchResults, batchErr := trader.ExecuteBatch(ctx, batchReqs)
+		latency := time.Since(startReq)
+		resultIdx := 0
+		for i := range batchMeta {
+			if errs[i] != nil {
+				printTradeResult(side+" "+batchMeta[i].outcome, results[i], errs[i], batchMeta[i].rate, batchMeta[i].shares, latency)
+				continue
+			}
+			if batchErr != nil {
+				errs[i] = batchErr
+			} else if resultIdx < len(batchResults) {
+				results[i] = batchResults[resultIdx]
 			} else {
-				bal0, bal1, err0, err1 = trader.QueryBalancedCTFBalances(context.Background(), token0, token1, shares)
-				mergeBal0 = bal0
-				mergeBal1 = bal1
+				errs[i] = fmt.Errorf("missing batch result for %s", batchMeta[i].outcome)
 			}
-			if err0 != nil || err1 != nil {
-				feeRate0 := float64(tokenFeeRates[outcomes[0]]) / 10000.0
-				feeRate1 := float64(tokenFeeRates[outcomes[1]]) / 10000.0
-				mergeBal0 = shares * (1.0 - feeRate0)
-				mergeBal1 = shares * (1.0 - feeRate1)
-				if haveInitialSnapshot {
-					bal0 = initialBal0 + mergeBal0
-					bal1 = initialBal1 + mergeBal1
-				} else {
-					bal0 = mergeBal0
-					bal1 = mergeBal1
-				}
-				fmt.Printf("⚠️ Failed to query balances (err0=%v, err1=%v), falling back to estimated newly acquired shares (%.6f, %.6f)\n", err0, err1, mergeBal0, mergeBal1)
-			}
+			printTradeResult(side+" "+batchMeta[i].outcome, results[i], errs[i], batchMeta[i].rate, batchMeta[i].shares, latency)
+			resultIdx++
+		}
+	}
 
-			actualFee0 := shares - mergeBal0
-			actualFee1 := shares - mergeBal1
-			if actualFee0 < 0 {
-				actualFee0 = 0
-			}
-			if actualFee1 < 0 {
-				actualFee1 = 0
-			}
-
-			fmt.Printf("📊 On-chain balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
-			if haveInitialSnapshot {
-				fmt.Printf("🆕 Newly acquired since pre-buy snapshot: %s=%.4f, %s=%.4f\n", outcomes[0], mergeBal0, outcomes[1], mergeBal1)
-				preExistingPairs := math.Min(initialBal0, initialBal1)
-				if preExistingPairs >= 0.000001 {
-					fmt.Printf("ℹ️ Pre-existing balanced inventory left untouched: %.6f pairs\n", preExistingPairs)
-				}
-			}
-			fmt.Printf("💸 ACTUAL DEDUCTED FEE: %s=%.4f shares, %s=%.4f shares\n", outcomes[0], actualFee0, outcomes[1], actualFee1)
-
-			minQty := math.Min(mergeBal0, mergeBal1)
-
-			// Only filter out tiny dust (< 0.000001)
-			if minQty >= 0.000001 {
-				fmt.Printf("🔄 Merging %.6f pairs...\n", minQty)
-				mergeCtx, cancelMerge := context.WithTimeout(context.Background(), 90*time.Second)
-				tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
-				cancelMerge()
-				if mergeErr != nil {
-					fmt.Printf("❌ Merge failed: %v\n", mergeErr)
-				} else {
-					fmt.Printf("✅ Merge successful! Tx: %s\n", tx)
-				}
-			} else {
-				fmt.Printf("⚠️ Not enough balanced pairs to merge (min=%.6f)\n", minQty)
-			}
-		} else if side == "SELL" {
+	if side == "BUY" && utilbotAnyTradeSucceeded(results, errs) {
+		if tradeSucceeded(results[0], errs[0]) && tradeSucceeded(results[1], errs[1]) {
+			fmt.Println("💰 Buy success! Querying on-chain balances for merge/cleanup...")
+		} else {
+			fmt.Println("⚠️ Partial/unbalanced buy detected. Using live balances to clean up actual filled shares...")
+		}
+		finalizeUtilbotBuy(ctx, trader, cfg, market, outcomes, [2]string{token0, token1}, tokenFeeRates, shares, haveInitialSnapshot, initialBal0, initialBal1)
+	} else if side == "SELL" {
+		if tradeSucceeded(results[0], errs[0]) && tradeSucceeded(results[1], errs[1]) {
 			fmt.Println("💰 Sell success! Waiting for on-chain balances to update...")
 			time.Sleep(3 * time.Second)
 
@@ -657,12 +681,114 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, market *api.Ma
 	}
 }
 
-func normalizePanicBuySharesPerSide(requested float64) (float64, bool) {
-	minShares := 1.05 / 0.99
-	if requested < minShares {
+func normalizePanicBuySharesPerSide(requested float64, bookAsks ...float64) (float64, bool) {
+	minShares := requested
+	for _, ask := range bookAsks {
+		effectiveAsk := ask
+		if effectiveAsk < 0.10 {
+			effectiveAsk = 0.10
+		}
+		if effectiveAsk <= 0 || effectiveAsk >= 1 {
+			continue
+		}
+		requiredShares := math.Ceil((1.0/effectiveAsk)*10000) / 10000
+		if requiredShares > minShares {
+			minShares = requiredShares
+		}
+	}
+	if minShares > requested+0.0000001 {
 		return minShares, true
 	}
 	return requested, false
+}
+
+func utilbotBestAskFromLevels(levels []paper.MarketLevel) (float64, bool) {
+	bestAsk := 1.0
+	found := false
+	for _, lvl := range levels {
+		if lvl.Price > 0 && lvl.Price < bestAsk {
+			bestAsk = lvl.Price
+			found = true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return bestAsk, true
+}
+
+func utilbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
+	bestBid := 0.0
+	found := false
+	for _, lvl := range levels {
+		if lvl.Price > bestBid {
+			bestBid = lvl.Price
+			found = true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return bestBid, true
+}
+
+func utilbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, side string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, prices map[string]float64) error {
+	for _, out := range outcomes {
+		tokenID := mkt.GetTokenIDForOutcome(market, out)
+		if tokenID == "" {
+			return fmt.Errorf("missing token id for outcome %s", out)
+		}
+		book, err := restClient.GetOrderBook(ctx, tokenID)
+		if err != nil {
+			return fmt.Errorf("fetching fresh order book for %s failed: %w", out, err)
+		}
+		tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids, true)
+		tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks, false)
+
+		if side == "BUY" {
+			bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[out])
+			if !found {
+				return fmt.Errorf("no live ask found for %s", out)
+			}
+			prices[out] = bestAsk
+			continue
+		}
+
+		bestBid, found := utilbotBestBidFromLevels(tokenFullBids[out])
+		if !found {
+			return fmt.Errorf("no live bid found for %s", out)
+		}
+		prices[out] = bestBid
+	}
+	return nil
+}
+
+func utilbotBuyLimitPrice(bookAsk, pairedAsk float64, cfg *core.Config) (float64, error) {
+	price, _, err := core.BuyExecutionLimitPrices(bookAsk, pairedAsk, cfg.MinAskPrice, cfg.MaxAskPrice, cfg.BuyExecutionMarginFloorPercent)
+	if err != nil {
+		return 0, err
+	}
+	return price, nil
+}
+
+func tradeSucceeded(res *trading.TradeResult, err error) bool {
+	if err != nil || res == nil || !res.Success {
+		return false
+	}
+	return strings.TrimSpace(res.OrderID) != "" || strings.TrimSpace(res.Status) != ""
+}
+
+func utilbotAnyTradeSucceeded(results []*trading.TradeResult, errs []error) bool {
+	for i, res := range results {
+		var err error
+		if i < len(errs) {
+			err = errs[i]
+		}
+		if tradeSucceeded(res, err) {
+			return true
+		}
+	}
+	return false
 }
 
 func incrementalBalance(initial, current float64) float64 {
@@ -673,30 +799,154 @@ func incrementalBalancedPairs(initial0, initial1, current0, current1 float64) fl
 	return math.Min(incrementalBalance(initial0, current0), incrementalBalance(initial1, current1))
 }
 
+func utilbotBalancedAndExcessShares(acquired0, acquired1 float64) (balanced, excess0, excess1 float64) {
+	balanced = math.Min(acquired0, acquired1)
+	excess0 = math.Max(0, acquired0-balanced)
+	excess1 = math.Max(0, acquired1-balanced)
+	return balanced, excess0, excess1
+}
+
+func utilbotAcquiredShares(bal0, bal1, initial0, initial1 float64, haveInitialSnapshot bool) (float64, float64) {
+	if haveInitialSnapshot {
+		return incrementalBalance(initial0, bal0), incrementalBalance(initial1, bal1)
+	}
+	return math.Max(0, bal0), math.Max(0, bal1)
+}
+
+func utilbotQueryBuyBalanceDelta(ctx context.Context, trader *trading.RealTrader, tokenIDs [2]string, initialBal0, initialBal1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, err0, err1 error) {
+	const maxAttempts = 5
+	const settleDelay = 750 * time.Millisecond
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		bal0, err0 = trader.GetCTFBalanceFloat(ctx, tokenIDs[0])
+		bal1, err1 = trader.GetCTFBalanceFloat(ctx, tokenIDs[1])
+		if err0 == nil && err1 == nil {
+			acquired0, acquired1 = utilbotAcquiredShares(bal0, bal1, initialBal0, initialBal1, haveInitialSnapshot)
+			if acquired0 >= 0.000001 || acquired1 >= 0.000001 || attempt == maxAttempts {
+				return acquired0, acquired1, bal0, bal1, nil, nil
+			}
+		}
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return acquired0, acquired1, bal0, bal1, ctx.Err(), ctx.Err()
+			case <-time.After(settleDelay):
+			}
+		}
+	}
+
+	return acquired0, acquired1, bal0, bal1, err0, err1
+}
+
+func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *core.Config, market *api.Market, outcomes []string, tokenIDs [2]string, tokenFeeRates map[string]int, requestedShares float64, haveInitialSnapshot bool, initialBal0, initialBal1 float64) {
+	time.Sleep(3 * time.Second)
+	fmt.Printf("🔍 Querying balances for tokens: %s (%s), %s (%s)\n", outcomes[0], tokenIDs[0], outcomes[1], tokenIDs[1])
+
+	queryCtx, cancelQuery := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelQuery()
+	acquired0, acquired1, bal0, bal1, err0, err1 := utilbotQueryBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot)
+	if err0 != nil || err1 != nil {
+		fmt.Printf("⚠️ Failed to verify buy balances (err0=%v, err1=%v). Skipping merge/cleanup.\n", err0, err1)
+		return
+	}
+
+	shortfall0 := math.Max(0, requestedShares-acquired0)
+	shortfall1 := math.Max(0, requestedShares-acquired1)
+	fmt.Printf("📊 On-chain balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
+	if haveInitialSnapshot {
+		fmt.Printf("🆕 Newly acquired since pre-buy snapshot: %s=%.4f, %s=%.4f\n", outcomes[0], acquired0, outcomes[1], acquired1)
+		preExistingPairs := math.Min(initialBal0, initialBal1)
+		if preExistingPairs >= 0.000001 {
+			fmt.Printf("ℹ️ Pre-existing balanced inventory left untouched: %.6f pairs\n", preExistingPairs)
+		}
+	}
+	fmt.Printf("📉 Shortfall vs requested size: %s=%.4f shares, %s=%.4f shares\n", outcomes[0], shortfall0, outcomes[1], shortfall1)
+
+	minQty, excess0, excess1 := utilbotBalancedAndExcessShares(acquired0, acquired1)
+	if excess0 >= 0.000001 || excess1 >= 0.000001 {
+		fmt.Printf("⚖️ Share imbalance detected: %s excess=%.4f, %s excess=%.4f\n", outcomes[0], excess0, outcomes[1], excess1)
+	}
+
+	if minQty >= 0.000001 {
+		fmt.Printf("🔄 Merging %.6f balanced pairs...\n", minQty)
+		mergeCtx, cancelMerge := context.WithTimeout(ctx, 90*time.Second)
+		tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
+		cancelMerge()
+		if mergeErr != nil {
+			fmt.Printf("❌ Merge failed: %v\n", mergeErr)
+		} else {
+			fmt.Printf("✅ Merge successful! Tx: %s\n", tx)
+		}
+	} else {
+		fmt.Printf("ℹ️ No balanced pairs available to merge (min=%.6f).\n", minQty)
+	}
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelCleanup()
+	cleanupUtilbotExcessShares(cleanupCtx, trader, cfg, outcomes, tokenIDs, [2]float64{excess0, excess1}, tokenFeeRates)
+}
+
+func cleanupUtilbotExcessShares(ctx context.Context, trader *trading.RealTrader, cfg *core.Config, outcomes []string, tokenIDs [2]string, excesses [2]float64, tokenFeeRates map[string]int) {
+	sellPrice := core.CleanupSellLimitPrice(cfg.MinAskPrice)
+	for i, excess := range excesses {
+		if excess < 0.01 {
+			continue
+		}
+
+		outcome := outcomes[i]
+		rate := tokenFeeRates[outcome]
+		if rate == -1 {
+			rate = 0
+		}
+
+		fmt.Printf("🧹 Auto-cleanup: selling %.4f excess %s shares...\n", excess, outcome)
+		res, err := trader.Sell(ctx, tokenIDs[i], outcome, sellPrice, excess, api.OrderTypeLimit, api.TIFFillAndKill, rate)
+		if err != nil {
+			fmt.Printf("⚠️ Auto-cleanup sell failed for %s: %v\n", outcome, err)
+			continue
+		}
+		if res == nil || !res.Success {
+			msg := "unknown error"
+			if res != nil && strings.TrimSpace(res.Message) != "" {
+				msg = res.Message
+			}
+			fmt.Printf("⚠️ Auto-cleanup sell not filled for %s: %s\n", outcome, msg)
+			continue
+		}
+
+		fmt.Printf("✅ Auto-cleanup sold excess %s shares. OrderID: %s\n", outcome, res.OrderID)
+	}
+}
+
 func printTradeResult(act string, res *trading.TradeResult, err error, rate int, shares float64, latency time.Duration) {
-	if err != nil || (res != nil && !res.Success) {
+	if !tradeSucceeded(res, err) {
 		msg := "Error"
 		if err != nil {
 			msg = err.Error()
 		} else if res != nil {
-			msg = res.Message
+			msg = strings.TrimSpace(res.Message)
+			if msg == "" && strings.TrimSpace(res.Status) != "" {
+				msg = fmt.Sprintf("status=%s", res.Status)
+			}
+		}
+		if msg == "" {
+			msg = "empty order response"
 		}
 		fmt.Printf("FAILED: %s - %s (Latency: %v)\n", act, msg, latency)
 	} else {
 		actualFeeRate := float64(rate) / 10000.0
 		feePercentage := float64(rate) / 100.0 // bps to percentage
+		orderLabel := strings.TrimSpace(res.OrderID)
+		if orderLabel == "" {
+			orderLabel = fmt.Sprintf("status=%s", res.Status)
+		}
 		if strings.HasPrefix(act, "BUY") {
 			// For BUY, fee is deducted from the shares you receive.
-			// However, since we executed at price 0.99 for Market Buy, the actual shares matched might differ.
-			// The API charges fee on the matched shares. For simplicity and estimation parity, we show the expected fee based on the requested shares.
 			feeShares := shares * actualFeeRate
-			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares (Latency: %v)\n", act, res.OrderID, feePercentage, feeShares, latency)
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares (Latency: %v)\n", act, orderLabel, feePercentage, feeShares, latency)
 		} else {
-			// For SELL, fee is deducted from the USDC you receive.
-			// Since we executed at price 0.01 for Market Sell, the actual USDC matched might differ.
-			// For simplicity and estimation parity, we show the expected fee based on the requested shares.
 			feeUSDC := shares * actualFeeRate
-			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC (Latency: %v)\n", act, res.OrderID, feePercentage, feeUSDC, latency)
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC (Latency: %v)\n", act, orderLabel, feePercentage, feeUSDC, latency)
 		}
 	}
 }

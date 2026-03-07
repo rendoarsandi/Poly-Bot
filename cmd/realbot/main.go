@@ -474,12 +474,12 @@ func run() error {
 		for assetID, market := range markets {
 			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
 			if mInfo, err := realTrader.GetMarketInfo(ctx, market.ConditionID); err == nil && mInfo.EndDateISO != "" {
-			        if parsed, err := time.Parse(time.RFC3339, mInfo.EndDateISO); err == nil {
-			                // Only override with API date if it's actually in the future OR if the market is already marked closed
-			                if parsed.After(time.Now()) || mInfo.Closed {
-			                        endTime = parsed
-			                }
-			        }
+				if parsed, err := time.Parse(time.RFC3339, mInfo.EndDateISO); err == nil {
+					// Only override with API date if it's actually in the future OR if the market is already marked closed
+					if parsed.After(time.Now()) || mInfo.Closed {
+						endTime = parsed
+					}
+				}
 			}
 			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
@@ -1581,8 +1581,55 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					if true { // Always execute if we got here
-						tui.LogEvent("[%s] 🎯 ARB! %s@$%.3f + %s@$%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-							id, outcomes[0], ask1, outcomes[1], ask2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+						limitPrice1, limitPrice2, capErr := core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
+						if capErr != nil {
+							tui.LogEvent("[%s] ⚠️ Skipping trade: %v", id, capErr)
+							continue
+						}
+						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+
+						requoteCtx, cancelRequote := context.WithTimeout(ctx, 750*time.Millisecond)
+						freshPrices, requoteLatency, requoteErr := realbotRefreshBuyExecutionBooks(requoteCtx, restClient, market, outcomes, tokenFullBids, tokenFullAsks)
+						cancelRequote()
+						if requoteLatency > 0 {
+							tui.UpdateRestLatency(requoteLatency)
+						}
+						if requoteErr != nil {
+							tui.LogEvent("[%s] ⚠️ JIT re-quote failed before submit: %v", id, requoteErr)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+
+						ask1 = freshPrices[outcomes[0]]
+						ask2 = freshPrices[outcomes[1]]
+						sum = ask1 + ask2
+						observedMargin = pairMarginPercent(sum)
+						if observedMargin < cfg.MinMarginPercent-1e-4 {
+							tui.LogEvent("[%s] ⚠️ JIT re-quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+
+						limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
+						if capErr != nil {
+							tui.LogEvent("[%s] ⚠️ JIT re-quote rejected before submit: %v", id, capErr)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+
+						freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
+						if shares > freshMatchedLiquidity {
+							tui.LogEvent("[%s] 🔄 JIT re-quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
+							shares = freshMatchedLiquidity
+						}
+						if shares < 1.0 {
+							tui.LogEvent("[%s] ⚠️ JIT re-quote left less than 1 share actionable liquidity: %.2f", id, shares)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+						tui.LogEvent("[%s] 🔄 JIT re-quote: %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%) | rest=%s",
+							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, requoteLatency.Round(time.Millisecond))
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -1594,18 +1641,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// MARKET EXECUTION: limit prices are simply set to your maximum
-						// allowed ask price (rMaxAsk) from settings.
-						buyCap := rMaxAsk
-						if buyCap <= 0 {
-							tui.LogEvent("[%s] ⚠️ Invalid Max Ask Price %.3f — skipping trade", id, buyCap)
-							continue
-						}
-						
-						// We use buyCap strictly for the limit prices
-						limitPrice1 := buyCap
-						limitPrice2 := buyCap
-						
 						// Ensure total locked balance does not exceed current available balance
 						totalMaxCost := shares * (limitPrice1 + limitPrice2)
 						if totalMaxCost > currentBalance {
@@ -1806,6 +1841,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								// Clean up only the excess shares from THIS execution, not the
 								// entire market inventory. WS fill deltas are the fast source of truth.
 								tui.LogEvent("[%s] 📊 Settled balances: %s=%.6f, %s=%.6f", id, outcomes[0], settled0, outcomes[1], settled1)
+								cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
 								excess0 := math.Max(0, filled1-mergeQty)
 								excess1 := math.Max(0, filled2-mergeQty)
 								if excess0 >= 0.01 {
@@ -1814,7 +1850,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									// Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
 									// If it fails, we catch the error and log it clearly.
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
-									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], rMinAsk, excess0, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
+									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], cleanupSellPrice, excess0, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
 										if strings.Contains(sellErr.Error(), "min size") {
 											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
@@ -1825,7 +1861,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 								if excess1 >= 0.01 {
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
-									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], rMinAsk, excess1, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
+									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], cleanupSellPrice, excess1, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
 										if strings.Contains(sellErr.Error(), "min size") {
 											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
@@ -1905,10 +1941,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// If not settled via merge, or if dust remains, clean it up via Market Sell
 							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking for unbalanced shares to sell... Balances: %s=%.2f, %s=%.2f", id, outcomes[0], bal0, outcomes[1], bal1)
 
+							cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
 							var sell0Exec, sell1Exec directMarketExecution
 							if bal0 >= 0.01 {
 								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
-								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], rMinAsk, bal0, cfg.FeeRateBps, bal0, 2*time.Second)
+								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, bal0, cfg.FeeRateBps, bal0, 2*time.Second)
 								if sell0Exec.Result != nil && strings.Contains(sell0Exec.Result.Message, "min size") {
 									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal0, outcomes[0])
 									sell0Exec.Success = true // Treat dust as handled so we don't spam retries
@@ -1916,7 +1953,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 							if bal1 >= 0.01 {
 								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
-								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], rMinAsk, bal1, cfg.FeeRateBps, bal1, 2*time.Second)
+								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, bal1, cfg.FeeRateBps, bal1, 2*time.Second)
 								if sell1Exec.Result != nil && strings.Contains(sell1Exec.Result.Message, "min size") {
 									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal1, outcomes[1])
 									sell1Exec.Success = true // Treat dust as handled so we don't spam retries
@@ -1924,13 +1961,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							if (bal0 < 0.01 || sell0Exec.Success) && (bal1 < 0.01 || sell1Exec.Success) {
-								// Record estimated loss from cleanup sells (sold at market floor $0.01)
+								// Record estimated loss from cleanup sells versus the configured cleanup floor.
 								cleanupLoss := 0.0
 								if sell0Exec.ExecutedQty > 0.01 {
-									cleanupLoss += sell0Exec.ExecutedQty * (ask1 - rMinAsk) // Lost difference vs configured cleanup floor
+									cleanupLoss += sell0Exec.ExecutedQty * (ask1 - cleanupSellPrice)
 								}
 								if sell1Exec.ExecutedQty > 0.01 {
-									cleanupLoss += sell1Exec.ExecutedQty * (ask2 - rMinAsk)
+									cleanupLoss += sell1Exec.ExecutedQty * (ask2 - cleanupSellPrice)
 								}
 								if cleanupLoss > 0 {
 									trader.RecordLoss(cleanupLoss)
@@ -2179,6 +2216,96 @@ func minExecutablePairSum(executionFloorPercent, minAskPrice float64) float64 {
 	return minSum
 }
 
+func realbotBestAskFromLevels(levels []paper.MarketLevel) (float64, bool) {
+	bestAsk := 1.0
+	found := false
+	for _, lvl := range levels {
+		if lvl.Price > 0 && lvl.Price < bestAsk {
+			bestAsk = lvl.Price
+			found = true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return bestAsk, true
+}
+
+func realbotMatchedAskLiquidity(asks0, asks1 []paper.MarketLevel, maxExecutionSum float64) float64 {
+	return mkt.EstimateMatchedLiquidity(
+		append([]paper.MarketLevel(nil), asks0...),
+		append([]paper.MarketLevel(nil), asks1...),
+		func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price < levels[j].Price },
+		func(p1, p2 float64) bool { return p1+p2 <= maxExecutionSum },
+	)
+}
+
+func realbotRefreshBuyExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel) (map[string]float64, time.Duration, error) {
+	type quoteResult struct {
+		outcome string
+		bids    []paper.MarketLevel
+		asks    []paper.MarketLevel
+		latency time.Duration
+		err     error
+	}
+
+	results := make(chan quoteResult, len(outcomes))
+	var wg sync.WaitGroup
+	for _, out := range outcomes {
+		tokenID := mkt.GetTokenIDForOutcome(market, out)
+		if tokenID == "" {
+			return nil, 0, fmt.Errorf("missing token id for outcome %s", out)
+		}
+		wg.Add(1)
+		go func(outcome, token string) {
+			defer wg.Done()
+			start := time.Now()
+			book, err := restClient.GetOrderBook(ctx, token)
+			latency := time.Since(start)
+			if err != nil {
+				results <- quoteResult{outcome: outcome, latency: latency, err: err}
+				return
+			}
+			results <- quoteResult{
+				outcome: outcome,
+				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
+				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
+				latency: latency,
+			}
+		}(out, tokenID)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	prices := make(map[string]float64, len(outcomes))
+	var maxLatency time.Duration
+	for res := range results {
+		if res.latency > maxLatency {
+			maxLatency = res.latency
+		}
+		if res.err != nil {
+			return nil, maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
+		}
+		tokenFullBids[res.outcome] = res.bids
+		tokenFullAsks[res.outcome] = res.asks
+		bestAsk, found := realbotBestAskFromLevels(res.asks)
+		if !found {
+			return nil, maxLatency, fmt.Errorf("no live ask found for %s", res.outcome)
+		}
+		prices[res.outcome] = bestAsk
+	}
+	return prices, maxLatency, nil
+}
+
+func subtractMergedPairBalances(bal0, bal1, mergeQty float64) (float64, float64) {
+	if mergeQty <= 0 {
+		return bal0, bal1
+	}
+	return math.Max(0, bal0-mergeQty), math.Max(0, bal1-mergeQty)
+}
+
 func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {
 	positions, err := trader.GetPositions(ctx)
 	if err != nil {
@@ -2246,6 +2373,7 @@ func settleMarketInventory(
 		} else {
 			result := engine.MergeForMarket(id, outcomes[0], outcomes[1], mergeQty)
 			splitInventory.RecordMerge(id, outcomes[0], outcomes[1], mergeQty)
+			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, mergeQty)
 			if txHash != "" && len(txHash) >= 10 {
 				tui.LogEvent("[%s] 🔀 %s merged %.6f sets | Tx: %s...", id, reason, mergeQty, txHash[:10])
 			} else {
@@ -2255,8 +2383,6 @@ func settleMarketInventory(
 				tui.LogEvent("[%s] 💰 %s merge realized PnL: $%.2f", id, reason, result.PnL)
 			}
 		}
-		bal0 = math.Max(0, bal0-minQty)
-		bal1 = math.Max(0, bal1-minQty)
 	}
 
 	if !allowSell {
@@ -2280,12 +2406,11 @@ func settleMarketInventory(
 		if rate == 0 {
 			rate = 1000
 		}
-		
-		// Use an extremely aggressive limit price ($0.01) to ensure the IOC Limit order 
-		// actually sweeps whatever bids exist to dump the dust. If we use sellCap (MinAskPrice),
-		// the order will just self-cancel because it's higher than the bids.
-		aggressiveDumpPrice := 0.01
-		
+
+		// Use the configured cleanup floor from settings/.env so sell cleanup behavior
+		// stays aligned with runtime execution controls instead of a hidden dump price.
+		aggressiveDumpPrice := core.CleanupSellLimitPrice(sellCap)
+
 		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, aggressiveDumpPrice, side.qty, rate, side.qty, 2*time.Second)
 		if !exec.Success {
 			if exec.Result != nil && strings.Contains(exec.Result.Message, "min size") {

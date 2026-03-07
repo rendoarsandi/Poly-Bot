@@ -43,7 +43,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 			sizeMicro := int64(req.Size*1e6 + 0.5)
 			priceMicro := int64(req.Price*1e6 + 0.5)
 
-			if req.OrderType == OrderTypeMarket {
+			if usesMarketLikePrecision(req) {
 				// Market Buy Restrictions (per API error):
 				// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
 				// - Taker (Shares): Max 4 decimals (multiple of 100 units)
@@ -75,7 +75,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 			sizeMicro := int64(req.Size*1e6 + 0.5)
 			priceMicro := int64(req.Price*1e6 + 0.5)
 
-			if req.OrderType == OrderTypeMarket {
+			if usesMarketLikePrecision(req) {
 				sizeMicro = (sizeMicro / 10000) * 10000
 				usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
 				divisor := big.NewInt(1e6)
@@ -115,6 +115,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 		}
 
 		orderData := &OrderData{
+			Salt:          strconv.FormatInt(salt, 10),
 			Maker:         c.signer.Address(),
 			Signer:        c.signer.Address(),
 			Taker:         "0x0000000000000000000000000000000000000000",

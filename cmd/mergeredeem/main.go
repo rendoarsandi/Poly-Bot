@@ -110,13 +110,27 @@ func main() {
 		if !hasSignificantBalance {
 			continue
 		}
-		foundAny = true
+		minQty := mergeablePairs(balances)
+		remainingBalances := append([]float64(nil), balances...)
+		if minQty > 0 {
+			remainingBalances[0] -= minQty
+			remainingBalances[1] -= minQty
+		}
 
-		fmt.Printf("\n📈 Market: %s\n", m.Slug)
-		fmt.Printf("   • %s: %.6f shares\n", outcomes[0], balances[0])
-		fmt.Printf("   • %s: %.6f shares\n", outcomes[1], balances[1])
+		marketLabelPrinted := false
+		printMarketHeader := func() {
+			if marketLabelPrinted {
+				return
+			}
+			foundAny = true
+			fmt.Printf("\n📈 Market: %s\n", m.Slug)
+			fmt.Printf("   • %s: %.6f shares\n", outcomes[0], balances[0])
+			fmt.Printf("   • %s: %.6f shares\n", outcomes[1], balances[1])
+			marketLabelPrinted = true
+		}
 
-		if minQty := mergeablePairs(balances); minQty > 0 {
+		if minQty > 0 {
+			printMarketHeader()
 			fmt.Printf("   👉 ACTION: Can MERGE %.6f pairs (%.6f shares/side) into $%.2f USDC\n", minQty, minQty, minQty)
 			fmt.Print("   Confirm Merge? (y/n): ")
 			var confirm string
@@ -131,14 +145,17 @@ func main() {
 					fmt.Printf("   ✅ Merge successful! Tx: %s\n", tx)
 					balances[0] -= minQty
 					balances[1] -= minQty
+					remainingBalances[0] = balances[0]
+					remainingBalances[1] = balances[1]
 				}
 			}
 		}
 
 		// Logic 2: REDEEM
-		if balances[0] >= 0.01 || balances[1] >= 0.01 {
+		if remainingBalances[0] >= 0.01 || remainingBalances[1] >= 0.01 {
 			info, err := trader.GetMarketInfo(ctx, m.ConditionID)
 			if err != nil {
+				printMarketHeader()
 				fmt.Printf("   ⚠️ Resolution status pending or unavailable.\n")
 				continue
 			}
@@ -152,16 +169,17 @@ func main() {
 				}
 
 				if winnerOutcome != "" {
-					fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
 					hasWinner := false
-					if outcomes[0] == winnerOutcome && balances[0] >= 0.01 {
+					if outcomes[0] == winnerOutcome && remainingBalances[0] >= 0.01 {
 						hasWinner = true
 					}
-					if outcomes[1] == winnerOutcome && balances[1] >= 0.01 {
+					if outcomes[1] == winnerOutcome && remainingBalances[1] >= 0.01 {
 						hasWinner = true
 					}
 
 					if hasWinner {
+						printMarketHeader()
+						fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
 						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")
 
 						// Automatic wait for resolution
@@ -191,18 +209,17 @@ func main() {
 							cancelRedeem()
 
 							if err != nil {
-								fmt.Printf("   ❌ Redeem failed: %v\n", err)
+								if !isSkippableRedeemError(err) {
+									fmt.Printf("   ❌ Redeem failed: %v\n", err)
+								}
 							} else {
 								fmt.Printf("   ✅ Redeem successful! Tx: %s\n", tx)
 							}
 						}
-					} else {
-						fmt.Printf("   💀 Market ended. Shares are losers.\n")
 					}
-				} else {
-					fmt.Printf("   ⏳ Market closed, resolution pending.\n")
 				}
 			} else {
+				printMarketHeader()
 				fmt.Printf("   ⏳ Market still active in API. If resolution is ready on-chain, you can force redeem.\n")
 				fmt.Print("   Try Force Redeem? (y/n): ")
 				var confirm string
@@ -210,7 +227,9 @@ func main() {
 				if strings.ToLower(confirm) == "y" {
 					tx, err := trader.RedeemOnChain(ctx, m.ConditionID, len(m.Tokens))
 					if err != nil {
-						fmt.Printf("   ❌ Force Redeem failed: %v\n", err)
+						if !isSkippableRedeemError(err) {
+							fmt.Printf("   ❌ Force Redeem failed: %v\n", err)
+						}
 					} else {
 						fmt.Printf("   ✅ Force Redeem successful! Tx: %s\n", tx)
 					}
@@ -220,7 +239,7 @@ func main() {
 	}
 
 	if !foundAny {
-		fmt.Println("✅ No on-chain balances found in the scanned markets.")
+		fmt.Println("✅ No actionable merge/redeem positions found.")
 	}
 	fmt.Println("\n═══════════════════════════════════════════════════════")
 }
@@ -234,4 +253,15 @@ func mergeablePairs(balances []float64) float64 {
 		return 0
 	}
 	return minQty
+}
+
+func isSkippableRedeemError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "market not yet resolved on-chain") ||
+		strings.Contains(msg, "payouts not reported") ||
+		strings.Contains(msg, "reverted on-chain") ||
+		strings.Contains(msg, "execution reverted")
 }
