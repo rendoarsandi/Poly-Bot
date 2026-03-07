@@ -1591,14 +1591,28 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// MARKET EXECUTION: follow the configured max ask price directly.
+						// MARKET EXECUTION: limit prices are simply set to your maximum
+						// allowed ask price (rMaxAsk) from settings.
 						buyCap := rMaxAsk
 						if buyCap <= 0 {
 							tui.LogEvent("[%s] ⚠️ Invalid Max Ask Price %.3f — skipping trade", id, buyCap)
 							continue
 						}
+						
+						// We use buyCap strictly for the limit prices
 						limitPrice1 := buyCap
 						limitPrice2 := buyCap
+						
+						// Ensure total locked balance does not exceed current available balance
+						totalMaxCost := shares * (limitPrice1 + limitPrice2)
+						if totalMaxCost > currentBalance {
+							// Downscale shares so we don't hit an insufficient balance error
+							safeShares := math.Floor(currentBalance / (limitPrice1 + limitPrice2))
+							if safeShares < shares {
+								tui.LogEvent("[%s] 📉 Downscaling from %.0f to %.0f shares to fit $%.2f balance limit (locked cost: $%.2f)", id, shares, safeShares, currentBalance, safeShares*(limitPrice1+limitPrice2))
+								shares = safeShares
+							}
+						}
 
 						// ═══════════════════════════════════════════════════════════════
 						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
@@ -2007,9 +2021,9 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 
 func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*trading.TradeResult, error) {
 	if side == api.SideSell {
-		return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, feeRateBps)
+		return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
 	}
-	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, feeRateBps)
+	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
 }
 
 func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, side api.Side, orderID, tokenID string, initialBalance, requestedSize float64, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {
