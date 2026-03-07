@@ -1302,9 +1302,63 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
 							// Enhanced log with liquidity and depth info (same format as paper bot)
-							tui.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %.0f shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+							tui.LogEvent("[%s] 📈 SPLIT SELL candidate %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %.0f shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, sharesToSell,
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+
+							if fresh, maxAge, reason := realbotCanUseLocalSellQuote(time.Now(), outcomes, tokenBids, tokenFullBids, quoteState, realbotLocalQuoteMaxAge); fresh {
+								bid1 = tokenBids[outcomes[0]]
+								bid2 = tokenBids[outcomes[1]]
+								bidSum = bid1 + bid2
+								sellMargin = (bidSum - 1.0) * 100
+								if sellMargin < cfg.SplitMinMarginSell-1e-4 {
+									tui.LogEvent("[%s] ⚠️ Local sell quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], bid1, outcomes[1], bid2, sellMargin, cfg.SplitMinMarginSell)
+									continue
+								}
+								freshMatchedLiquidity := realbotMatchedBidLiquidity(tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]], minSum)
+								if sharesToSell > freshMatchedLiquidity {
+									tui.LogEvent("[%s] ⚡ Local sell quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, sharesToSell, freshMatchedLiquidity, freshMatchedLiquidity)
+									sharesToSell = freshMatchedLiquidity
+								}
+								sharesToSell = math.Floor(sharesToSell)
+								if sharesToSell < 1.0 {
+									tui.LogEvent("[%s] ⚠️ Local sell quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
+									continue
+								}
+								tui.LogEvent("[%s] ⚡ Using fresh local sell quote (max age %s): %s@%.3f + %s@%.3f = $%.3f (%.1f%%) | %.0f shares",
+									id, maxAge.Round(time.Millisecond), outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell)
+							} else {
+								requoteCtx, cancelRequote := context.WithTimeout(ctx, 750*time.Millisecond)
+								freshPrices, requoteLatency, requoteErr := realbotRefreshSellExecutionBooks(requoteCtx, restClient, market, outcomes, tokenFullBids, tokenFullAsks)
+								cancelRequote()
+								if requoteLatency > 0 {
+									tui.UpdateRestLatency(requoteLatency)
+								}
+								if requoteErr != nil {
+									tui.LogEvent("[%s] ⚠️ Sell JIT re-quote failed before submit: %v", id, requoteErr)
+									continue
+								}
+								bid1 = freshPrices[outcomes[0]]
+								bid2 = freshPrices[outcomes[1]]
+								bidSum = bid1 + bid2
+								sellMargin = (bidSum - 1.0) * 100
+								if sellMargin < cfg.SplitMinMarginSell-1e-4 {
+									tui.LogEvent("[%s] ⚠️ Sell JIT re-quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], bid1, outcomes[1], bid2, sellMargin, cfg.SplitMinMarginSell)
+									continue
+								}
+								freshMatchedLiquidity := realbotMatchedBidLiquidity(tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]], minSum)
+								if sharesToSell > freshMatchedLiquidity {
+									tui.LogEvent("[%s] 🔄 Sell JIT re-quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, sharesToSell, freshMatchedLiquidity, freshMatchedLiquidity)
+									sharesToSell = freshMatchedLiquidity
+								}
+								sharesToSell = math.Floor(sharesToSell)
+								if sharesToSell < 1.0 {
+									tui.LogEvent("[%s] ⚠️ Sell JIT re-quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
+									continue
+								}
+								tui.LogEvent("[%s] 🔄 Sell JIT re-quote (%s): %s@%.3f + %s@%.3f = $%.3f (%.1f%%) | %.0f shares | rest=%s",
+									id, reason, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell, requoteLatency.Round(time.Millisecond))
+							}
 
 							// Sell both sides in parallel
 							token0 := getTokenID(outcomes[0])
@@ -2271,6 +2325,21 @@ func realbotBestAskFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	return bestAsk, true
 }
 
+func realbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
+	bestBid := 0.0
+	found := false
+	for _, lvl := range levels {
+		if lvl.Price > bestBid {
+			bestBid = lvl.Price
+			found = true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return bestBid, true
+}
+
 func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
 	maxObservedAge := time.Duration(0)
 	for _, out := range outcomes {
@@ -2295,12 +2364,45 @@ func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenAsks map[
 	return true, maxObservedAge, ""
 }
 
+func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
+	maxObservedAge := time.Duration(0)
+	for _, out := range outcomes {
+		if tokenBids[out] <= 0 {
+			return false, maxObservedAge, fmt.Sprintf("missing local bid for %s", out)
+		}
+		if len(tokenFullBids[out]) == 0 {
+			return false, maxObservedAge, fmt.Sprintf("missing local bid depth for %s", out)
+		}
+		state, ok := quoteState[out]
+		if !ok || state.UpdatedAt.IsZero() {
+			return false, maxObservedAge, fmt.Sprintf("missing quote timestamp for %s", out)
+		}
+		age := now.Sub(state.UpdatedAt)
+		if age > maxObservedAge {
+			maxObservedAge = age
+		}
+		if age > maxAge {
+			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
+		}
+	}
+	return true, maxObservedAge, ""
+}
+
 func realbotMatchedAskLiquidity(asks0, asks1 []paper.MarketLevel, maxExecutionSum float64) float64 {
 	return mkt.EstimateMatchedLiquidity(
 		append([]paper.MarketLevel(nil), asks0...),
 		append([]paper.MarketLevel(nil), asks1...),
 		func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price < levels[j].Price },
 		func(p1, p2 float64) bool { return p1+p2 <= maxExecutionSum },
+	)
+}
+
+func realbotMatchedBidLiquidity(bids0, bids1 []paper.MarketLevel, minExecutionSum float64) float64 {
+	return mkt.EstimateMatchedLiquidity(
+		append([]paper.MarketLevel(nil), bids0...),
+		append([]paper.MarketLevel(nil), bids1...),
+		func(i, j int, levels []paper.MarketLevel) bool { return levels[i].Price > levels[j].Price },
+		func(p1, p2 float64) bool { return p1+p2 >= minExecutionSum },
 	)
 }
 
@@ -2359,6 +2461,65 @@ func realbotRefreshBuyExecutionBooks(ctx context.Context, restClient *api.RestCl
 			return nil, maxLatency, fmt.Errorf("no live ask found for %s", res.outcome)
 		}
 		prices[res.outcome] = bestAsk
+	}
+	return prices, maxLatency, nil
+}
+
+func realbotRefreshSellExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel) (map[string]float64, time.Duration, error) {
+	type quoteResult struct {
+		outcome string
+		bids    []paper.MarketLevel
+		asks    []paper.MarketLevel
+		latency time.Duration
+		err     error
+	}
+
+	results := make(chan quoteResult, len(outcomes))
+	var wg sync.WaitGroup
+	for _, out := range outcomes {
+		tokenID := mkt.GetTokenIDForOutcome(market, out)
+		if tokenID == "" {
+			return nil, 0, fmt.Errorf("missing token id for outcome %s", out)
+		}
+		wg.Add(1)
+		go func(outcome, token string) {
+			defer wg.Done()
+			start := time.Now()
+			book, err := restClient.GetOrderBook(ctx, token)
+			latency := time.Since(start)
+			if err != nil {
+				results <- quoteResult{outcome: outcome, latency: latency, err: err}
+				return
+			}
+			results <- quoteResult{
+				outcome: outcome,
+				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
+				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
+				latency: latency,
+			}
+		}(out, tokenID)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	prices := make(map[string]float64, len(outcomes))
+	var maxLatency time.Duration
+	for res := range results {
+		if res.latency > maxLatency {
+			maxLatency = res.latency
+		}
+		if res.err != nil {
+			return nil, maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
+		}
+		tokenFullBids[res.outcome] = res.bids
+		tokenFullAsks[res.outcome] = res.asks
+		bestBid, found := realbotBestBidFromLevels(res.bids)
+		if !found {
+			return nil, maxLatency, fmt.Errorf("no live bid found for %s", res.outcome)
+		}
+		prices[res.outcome] = bestBid
 	}
 	return prices, maxLatency, nil
 }
