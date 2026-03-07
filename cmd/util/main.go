@@ -315,10 +315,12 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, timeframe stri
 	found := make(map[string]*api.Market)
 	assets := []string{"btc", "eth"}
 
-	// Set dynamic spare time based on timeframe to prevent volatility
-	spareTime := 31 * time.Minute
+	// We want the market that is actively resolving soon (but not too soon)
+	// so prices are volatile and not just sitting at 0.5.
+	minSpareTime := 1 * time.Minute
+	maxSpareTime := 10 * time.Minute
 	if timeframe == "5m" {
-		spareTime = 11 * time.Minute // 5m markets are created closer to expiration, use 11m
+		maxSpareTime = 5 * time.Minute
 	}
 
 	for {
@@ -329,7 +331,7 @@ func findMarkets(ctx context.Context, restClient *api.RestClient, timeframe stri
 			if ms, err := restClient.GetMarketsByTimeframe(ctx, nil, timeframe); err == nil {
 				for _, m := range ms {
 					et, _ := paper.ParseEndTimeFromSlug(m.Slug)
-					if time.Now().After(et) || time.Until(et) < spareTime {
+					if time.Now().After(et) || time.Until(et) < minSpareTime || time.Until(et) > maxSpareTime {
 						continue
 					}
 					for _, a := range assets {
