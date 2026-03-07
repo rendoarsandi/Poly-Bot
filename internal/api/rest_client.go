@@ -225,6 +225,8 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 	var interval int64 = 900 // 15 minutes by default
 	if timeframe == "5m" {
 		interval = 300 // 5 minutes
+	} else if timeframe == "1d" {
+		interval = 86400 // 1 day
 	}
 
 	now := time.Now().UTC()
