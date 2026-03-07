@@ -78,19 +78,16 @@ func main() {
 	fmt.Println("Select timeframe:")
 	fmt.Println("1. 5m")
 	fmt.Println("2. 15m")
-	fmt.Println("3. 1d")
-	fmt.Print("Choice [default 3]: ")
+	fmt.Print("Choice [default 2]: ")
 	var tfChoice string
 	_, _ = fmt.Scanln(&tfChoice)
 	tfChoice = strings.TrimSpace(tfChoice)
 
-	timeframe := "1d"
+	timeframe := "15m"
 	if tfChoice == "1" {
 		timeframe = "5m"
-	} else if tfChoice == "2" {
+	} else if tfChoice == "2" || tfChoice == "" {
 		timeframe = "15m"
-	} else if tfChoice == "3" || tfChoice == "" {
-		timeframe = "1d"
 	} else {
 		log.Fatalf("❌ Invalid choice.")
 	}
