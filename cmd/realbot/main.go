@@ -28,8 +28,14 @@ import (
 )
 
 const (
-	UseLiveUI = true // Set to false for traditional logging
+	UseLiveUI               = true // Set to false for traditional logging
+	realbotLocalQuoteMaxAge = 250 * time.Millisecond
 )
+
+type realbotQuoteState struct {
+	UpdatedAt time.Time
+	Source    string
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -665,6 +671,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
+	quoteState := make(map[string]realbotQuoteState)
 	lastUpdate := time.Now()
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
@@ -857,6 +864,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Always update full depth from snapshots
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks, false)
+						quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "ws"}
 
 						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
@@ -867,6 +875,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 					// ── Price-change delta ─────────────────────────────────
 					foundForThisMarket := false
+					touchedOutcomes := make(map[string]bool)
 
 					for _, pc := range update.PriceChanges {
 						outcome := tokenToOutcome[pc.AssetID]
@@ -874,6 +883,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							continue
 						}
 						foundForThisMarket = true
+						touchedOutcomes[outcome] = true
 						p, errP := strconv.ParseFloat(pc.Price, 64)
 						s, errS := strconv.ParseFloat(pc.Size, 64)
 						if errP != nil || errS != nil || p <= 0 {
@@ -924,7 +934,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					if foundForThisMarket {
-						lastUpdate = time.Now()
+						now := time.Now()
+						for outcome := range touchedOutcomes {
+							quoteState[outcome] = realbotQuoteState{UpdatedAt: now, Source: "ws"}
+						}
+						lastUpdate = now
 					}
 				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 					// ── Book snapshot (single object) ──────────────────────
@@ -962,6 +976,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
+						quoteState[outcome] = realbotQuoteState{UpdatedAt: lastUpdate, Source: "ws"}
 					}
 				}
 			default:
@@ -1024,7 +1039,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		if forceRestFallback || (wsUnhealthy && staleTime > 3*time.Second) {
 			// Note: REST fallback updated to also capture full depth
-			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, engine, restClient, tui) {
+			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui) {
 				lastUpdate = time.Now()
 			}
 		}
@@ -1589,47 +1604,72 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
-						requoteCtx, cancelRequote := context.WithTimeout(ctx, 750*time.Millisecond)
-						freshPrices, requoteLatency, requoteErr := realbotRefreshBuyExecutionBooks(requoteCtx, restClient, market, outcomes, tokenFullBids, tokenFullAsks)
-						cancelRequote()
-						if requoteLatency > 0 {
-							tui.UpdateRestLatency(requoteLatency)
-						}
-						if requoteErr != nil {
-							tui.LogEvent("[%s] ⚠️ JIT re-quote failed before submit: %v", id, requoteErr)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
+						if fresh, maxAge, reason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenAsks, tokenFullAsks, quoteState, realbotLocalQuoteMaxAge); fresh {
+							ask1 = tokenAsks[outcomes[0]]
+							ask2 = tokenAsks[outcomes[1]]
+							sum = ask1 + ask2
+							observedMargin = pairMarginPercent(sum)
+							limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
+							if capErr != nil {
+								tui.LogEvent("[%s] ⚠️ Local quote rejected before submit: %v", id, capErr)
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
+							freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
+							if shares > freshMatchedLiquidity {
+								tui.LogEvent("[%s] ⚡ Local quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
+								shares = freshMatchedLiquidity
+							}
+							if shares < 1.0 {
+								tui.LogEvent("[%s] ⚠️ Local quote left less than 1 share actionable liquidity: %.2f", id, shares)
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
+							tui.LogEvent("[%s] ⚡ Using fresh local quote (max age %s): %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%)",
+								id, maxAge.Round(time.Millisecond), outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin)
+						} else {
+							requoteCtx, cancelRequote := context.WithTimeout(ctx, 750*time.Millisecond)
+							freshPrices, requoteLatency, requoteErr := realbotRefreshBuyExecutionBooks(requoteCtx, restClient, market, outcomes, tokenFullBids, tokenFullAsks)
+							cancelRequote()
+							if requoteLatency > 0 {
+								tui.UpdateRestLatency(requoteLatency)
+							}
+							if requoteErr != nil {
+								tui.LogEvent("[%s] ⚠️ JIT re-quote failed before submit: %v", id, requoteErr)
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
 
-						ask1 = freshPrices[outcomes[0]]
-						ask2 = freshPrices[outcomes[1]]
-						sum = ask1 + ask2
-						observedMargin = pairMarginPercent(sum)
-						if observedMargin < cfg.MinMarginPercent-1e-4 {
-							tui.LogEvent("[%s] ⚠️ JIT re-quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
+							ask1 = freshPrices[outcomes[0]]
+							ask2 = freshPrices[outcomes[1]]
+							sum = ask1 + ask2
+							observedMargin = pairMarginPercent(sum)
+							if observedMargin < cfg.MinMarginPercent-1e-4 {
+								tui.LogEvent("[%s] ⚠️ JIT re-quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
 
-						limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
-						if capErr != nil {
-							tui.LogEvent("[%s] ⚠️ JIT re-quote rejected before submit: %v", id, capErr)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
+							limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
+							if capErr != nil {
+								tui.LogEvent("[%s] ⚠️ JIT re-quote rejected before submit: %v", id, capErr)
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
 
-						freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
-						if shares > freshMatchedLiquidity {
-							tui.LogEvent("[%s] 🔄 JIT re-quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
-							shares = freshMatchedLiquidity
+							freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
+							if shares > freshMatchedLiquidity {
+								tui.LogEvent("[%s] 🔄 JIT re-quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
+								shares = freshMatchedLiquidity
+							}
+							if shares < 1.0 {
+								tui.LogEvent("[%s] ⚠️ JIT re-quote left less than 1 share actionable liquidity: %.2f", id, shares)
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
+							tui.LogEvent("[%s] 🔄 JIT re-quote (%s): %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%) | rest=%s",
+								id, reason, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, requoteLatency.Round(time.Millisecond))
 						}
-						if shares < 1.0 {
-							tui.LogEvent("[%s] ⚠️ JIT re-quote left less than 1 share actionable liquidity: %.2f", id, shares)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
-						tui.LogEvent("[%s] 🔄 JIT re-quote: %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%) | rest=%s",
-							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, requoteLatency.Round(time.Millisecond))
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -2231,6 +2271,30 @@ func realbotBestAskFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	return bestAsk, true
 }
 
+func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
+	maxObservedAge := time.Duration(0)
+	for _, out := range outcomes {
+		if tokenAsks[out] <= 0 {
+			return false, maxObservedAge, fmt.Sprintf("missing local ask for %s", out)
+		}
+		if len(tokenFullAsks[out]) == 0 {
+			return false, maxObservedAge, fmt.Sprintf("missing local ask depth for %s", out)
+		}
+		state, ok := quoteState[out]
+		if !ok || state.UpdatedAt.IsZero() {
+			return false, maxObservedAge, fmt.Sprintf("missing quote timestamp for %s", out)
+		}
+		age := now.Sub(state.UpdatedAt)
+		if age > maxObservedAge {
+			maxObservedAge = age
+		}
+		if age > maxAge {
+			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
+		}
+	}
+	return true, maxObservedAge, ""
+}
+
 func realbotMatchedAskLiquidity(asks0, asks1 []paper.MarketLevel, maxExecutionSum float64) float64 {
 	return mkt.EstimateMatchedLiquidity(
 		append([]paper.MarketLevel(nil), asks0...),
@@ -2432,7 +2496,7 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
 	success := false
 	for tokenID, outcome := range tokenMap {
 		start := time.Now()
@@ -2473,6 +2537,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 			asks[outcome] = 0
 			fullBids[outcome] = nil
 			fullAsks[outcome] = nil
+			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
 			success = true // Important: ensure UI updates to 0 (--.-)
 			continue
 		}
@@ -2490,6 +2555,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		// for recovering from stale or dropped WS states.
 		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
+		quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")

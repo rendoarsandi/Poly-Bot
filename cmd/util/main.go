@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,6 +33,69 @@ const (
 type utilbotQuoteState struct {
 	UpdatedAt time.Time
 	Source    string
+}
+
+type utilbotQuoteSnapshot struct {
+	TokenBids     map[string]float64
+	TokenAsks     map[string]float64
+	TokenFullBids map[string][]paper.MarketLevel
+	TokenFullAsks map[string][]paper.MarketLevel
+	QuoteState    map[string]utilbotQuoteState
+}
+
+type utilbotQuoteStore struct {
+	mu            sync.RWMutex
+	tokenBids     map[string]float64
+	tokenAsks     map[string]float64
+	tokenFullBids map[string][]paper.MarketLevel
+	tokenFullAsks map[string][]paper.MarketLevel
+	quoteState    map[string]utilbotQuoteState
+}
+
+func newUtilbotQuoteStore() *utilbotQuoteStore {
+	return &utilbotQuoteStore{
+		tokenBids:     make(map[string]float64),
+		tokenAsks:     make(map[string]float64),
+		tokenFullBids: make(map[string][]paper.MarketLevel),
+		tokenFullAsks: make(map[string][]paper.MarketLevel),
+		quoteState:    make(map[string]utilbotQuoteState),
+	}
+}
+
+func (s *utilbotQuoteStore) Update(out string, bid, ask float64, fullBids, fullAsks []paper.MarketLevel, source string, updatedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if bid > 0 {
+		s.tokenBids[out] = bid
+	}
+	if ask > 0 {
+		s.tokenAsks[out] = ask
+	}
+	s.tokenFullBids[out] = append([]paper.MarketLevel(nil), fullBids...)
+	s.tokenFullAsks[out] = append([]paper.MarketLevel(nil), fullAsks...)
+	s.quoteState[out] = utilbotQuoteState{UpdatedAt: updatedAt, Source: source}
+}
+
+func (s *utilbotQuoteStore) Snapshot(outcomes []string) utilbotQuoteSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snap := utilbotQuoteSnapshot{
+		TokenBids:     make(map[string]float64, len(outcomes)),
+		TokenAsks:     make(map[string]float64, len(outcomes)),
+		TokenFullBids: make(map[string][]paper.MarketLevel, len(outcomes)),
+		TokenFullAsks: make(map[string][]paper.MarketLevel, len(outcomes)),
+		QuoteState:    make(map[string]utilbotQuoteState, len(outcomes)),
+	}
+	for _, out := range outcomes {
+		snap.TokenBids[out] = s.tokenBids[out]
+		snap.TokenAsks[out] = s.tokenAsks[out]
+		snap.TokenFullBids[out] = append([]paper.MarketLevel(nil), s.tokenFullBids[out]...)
+		snap.TokenFullAsks[out] = append([]paper.MarketLevel(nil), s.tokenFullAsks[out]...)
+		if state, ok := s.quoteState[out]; ok {
+			snap.QuoteState[out] = state
+		}
+	}
+	return snap
 }
 
 func main() {
@@ -158,12 +222,7 @@ func main() {
 	}
 	wsMsgChan := wsMgr.StartStreaming(ctx)
 
-	// Price and Liquidity state
-	tokenBids := make(map[string]float64)
-	tokenAsks := make(map[string]float64)
-	tokenFullBids := make(map[string][]paper.MarketLevel)
-	tokenFullAsks := make(map[string][]paper.MarketLevel)
-	quoteState := make(map[string]utilbotQuoteState)
+	quoteStore := newUtilbotQuoteStore()
 	tokenFeeRates := make(map[string]int)
 	for tid, out := range tokenMap {
 		var rate int
@@ -200,80 +259,15 @@ func main() {
 	}()
 
 	fmt.Print("\033[?25l") // Hide cursor
+	go utilbotRunQuotePump(ctx, client, tokenMap, tokenToOutcome, wsMsgChan, quoteStore)
 	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case msg := <-wsMsgChan:
-			if books, err := api.ParseOrderBooks(msg); err == nil {
-				for _, b := range books {
-					updatedAt := time.Now()
-					out := tokenToOutcome[b.AssetID]
-					if out == "" {
-						continue
-					}
-					// Find best bid (highest) and best ask (lowest) like realbot
-					bid, ask := 0.0, 1.0
-					for _, order := range b.Bids {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > bid {
-							bid = p
-						}
-					}
-					for _, order := range b.Asks {
-						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p < ask && p > 0 {
-							ask = p
-						}
-					}
-					if ask >= 1.0 {
-						ask = 0
-					}
-					if bid > 0 {
-						tokenBids[out] = bid
-					}
-					if ask > 0 {
-						tokenAsks[out] = ask
-					}
-					tokenFullBids[out] = mkt.LevelsToPriceDepth(b.Bids, true)
-					tokenFullAsks[out] = mkt.LevelsToPriceDepth(b.Asks, false)
-					quoteState[out] = utilbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
-				}
-			}
 		case <-ticker.C:
-			// REST Refresh: always poll for fresh prices and depth
-			for tid, out := range tokenMap {
-				if book, err := client.GetOrderBook(ctx, tid); err == nil {
-					updatedAt := time.Now()
-					bid, ask := 0.0, 1.0
-					for _, b := range book.Bids {
-						p, _ := strconv.ParseFloat(b.Price, 64)
-						if p > bid {
-							bid = p
-						}
-					}
-					for _, a := range book.Asks {
-						p, _ := strconv.ParseFloat(a.Price, 64)
-						if p < ask && p > 0 {
-							ask = p
-						}
-					}
-					if ask >= 1.0 {
-						ask = 0
-					}
-					if bid > 0 {
-						tokenBids[out] = bid
-					}
-					if ask > 0 {
-						tokenAsks[out] = ask
-					}
-					tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids, true)
-					tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks, false)
-					quoteState[out] = utilbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
-				}
-			}
-
 			// Render
+			snap := quoteStore.Snapshot(outcomes)
 			fmt.Print("\033[H\033[2J")
 			fmt.Printf("🚀 Market: %s\n", market.Slug)
 			endTime, err := resolveUtilbotMarketEndTime(market)
@@ -285,17 +279,17 @@ func main() {
 			fmt.Println("Outcome      | Bid (Size)       | Ask (Size)       | Spread")
 			fmt.Println("-------------|------------------|------------------|-------")
 			for _, out := range outcomes {
-				b, a := tokenBids[out], tokenAsks[out]
+				b, a := snap.TokenBids[out], snap.TokenAsks[out]
 				bs, as := 0.0, 0.0
-				if len(tokenFullBids[out]) > 0 {
-					bs = tokenFullBids[out][0].Size
+				if len(snap.TokenFullBids[out]) > 0 {
+					bs = snap.TokenFullBids[out][0].Size
 				}
-				if len(tokenFullAsks[out]) > 0 {
-					as = tokenFullAsks[out][0].Size
+				if len(snap.TokenFullAsks[out]) > 0 {
+					as = snap.TokenFullAsks[out][0].Size
 				}
 				fmt.Printf("%-12s | %5.3f (%-6.0f) | %5.3f (%-6.0f) | %5.3f\n", out, b, bs, a, as, a-b)
 			}
-			sum := tokenAsks[outcomes[0]] + tokenAsks[outcomes[1]]
+			sum := snap.TokenAsks[outcomes[0]] + snap.TokenAsks[outcomes[1]]
 			if sum < 1.0 && sum > 0.1 {
 				fmt.Printf("\n💰 ARB: %.3f (%.1f%%)\n", sum, (1-sum)*100)
 			}
@@ -319,11 +313,11 @@ takeAction:
 	if choice == 1 {
 		fmt.Print("Pairs to Panic Buy (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, quoteStore, tokenFeeRates)
 	} else if choice == 2 {
 		fmt.Print("Pairs to Panic Sell (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, quoteStore, tokenFeeRates)
 	} else {
 		log.Fatal("Invalid choice.")
 	}
@@ -439,7 +433,11 @@ func utilbotFinderPollInterval(timeframe string) time.Duration {
 	}
 }
 
-func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]utilbotQuoteState, tokenFeeRates map[string]int) {
+func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, quoteStore *utilbotQuoteStore, tokenFeeRates map[string]int) {
+	snapshot := quoteStore.Snapshot(outcomes)
+	tokenFullBids := snapshot.TokenFullBids
+	tokenFullAsks := snapshot.TokenFullAsks
+	quoteState := snapshot.QuoteState
 	// Determine execution pricing
 	prices := make(map[string]float64, len(outcomes))
 	buyCaps := make(map[string]float64, len(outcomes))
@@ -557,6 +555,15 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		log.Fatal("Cancelled.")
 	}
 	if side == "BUY" {
+		latestSnapshot := quoteStore.Snapshot(outcomes)
+		tokenFullBids = latestSnapshot.TokenFullBids
+		tokenFullAsks = latestSnapshot.TokenFullAsks
+		quoteState = latestSnapshot.QuoteState
+		for _, out := range outcomes {
+			if bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[out]); found {
+				prices[out] = bestAsk
+			}
+		}
 		if fresh, maxAge, reason := utilbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenFullAsks, quoteState, utilbotLocalQuoteMaxAge); fresh {
 			if err := refreshBuyCaps(); err != nil {
 				fmt.Printf("❌ Local quote rejected by config: %v. Aborting before submission.\n", err)
@@ -756,6 +763,76 @@ func utilbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
 		return 0, false
 	}
 	return bestBid, true
+}
+
+func utilbotRunQuotePump(ctx context.Context, client *api.RestClient, tokenMap, tokenToOutcome map[string]string, wsMsgChan <-chan []byte, store *utilbotQuoteStore) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-wsMsgChan:
+			if !ok {
+				wsMsgChan = nil
+				continue
+			}
+			books, err := api.ParseOrderBooks(msg)
+			if err != nil {
+				continue
+			}
+			updatedAt := time.Now()
+			for _, b := range books {
+				out := tokenToOutcome[b.AssetID]
+				if out == "" {
+					continue
+				}
+				bid, ask := 0.0, 1.0
+				for _, order := range b.Bids {
+					p, _ := strconv.ParseFloat(order.Price, 64)
+					if p > bid {
+						bid = p
+					}
+				}
+				for _, order := range b.Asks {
+					p, _ := strconv.ParseFloat(order.Price, 64)
+					if p < ask && p > 0 {
+						ask = p
+					}
+				}
+				if ask >= 1.0 {
+					ask = 0
+				}
+				store.Update(out, bid, ask, mkt.LevelsToPriceDepth(b.Bids, true), mkt.LevelsToPriceDepth(b.Asks, false), "ws", updatedAt)
+			}
+		case <-ticker.C:
+			for tid, out := range tokenMap {
+				book, err := client.GetOrderBook(ctx, tid)
+				if err != nil {
+					continue
+				}
+				updatedAt := time.Now()
+				bid, ask := 0.0, 1.0
+				for _, b := range book.Bids {
+					p, _ := strconv.ParseFloat(b.Price, 64)
+					if p > bid {
+						bid = p
+					}
+				}
+				for _, a := range book.Asks {
+					p, _ := strconv.ParseFloat(a.Price, 64)
+					if p < ask && p > 0 {
+						ask = p
+					}
+				}
+				if ask >= 1.0 {
+					ask = 0
+				}
+				store.Update(out, bid, ask, mkt.LevelsToPriceDepth(book.Bids, true), mkt.LevelsToPriceDepth(book.Asks, false), "rest", updatedAt)
+			}
+		}
+	}
 }
 
 func utilbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]utilbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
