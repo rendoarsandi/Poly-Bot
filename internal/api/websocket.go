@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,8 @@ const (
 	// Ping failures before triggering reconnect
 	maxPingFailures = 2
 )
+
+var ErrWSConnectionUnhealthy = errors.New("websocket connection unhealthy")
 
 type WSManager struct {
 	URL  string
@@ -155,10 +158,10 @@ func (m *WSManager) heartbeatLoop() {
 				// 5s timeout balances Android throttle concerns vs stale-data detection speed
 				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 				pingStart := time.Now()
-				
+
 				// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame)
 				err := conn.Write(pingCtx, websocket.MessageText, []byte("PING"))
-				
+
 				pingLatency := time.Since(pingStart)
 				pingCancel()
 				if err != nil {
@@ -263,6 +266,27 @@ attemptLoop:
 	}
 }
 
+func (m *WSManager) handleConnectionFailure(failedConn *websocket.Conn, code websocket.StatusCode, reason string) {
+	m.connected.Store(false)
+	m.pingLatencyNs.Store(0)
+
+	var connToClose *websocket.Conn
+	m.mu.Lock()
+	switch {
+	case failedConn == nil:
+		connToClose = m.conn
+		m.conn = nil
+	case m.conn == failedConn:
+		connToClose = m.conn
+		m.conn = nil
+	}
+	m.mu.Unlock()
+
+	if connToClose != nil {
+		_ = connToClose.Close(code, reason)
+	}
+}
+
 func (m *WSManager) Close() error {
 	m.mu.Lock()
 	if m.cancel != nil {
@@ -270,15 +294,19 @@ func (m *WSManager) Close() error {
 	}
 	m.mu.Unlock()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.connected.Store(false)
+	m.pingLatencyNs.Store(0)
 
-	if m.conn != nil {
-		return m.conn.Close(websocket.StatusNormalClosure, "")
+	var connToClose *websocket.Conn
+	m.mu.Lock()
+	connToClose = m.conn
+	m.conn = nil
+	m.mu.Unlock()
+
+	if connToClose == nil {
+		return nil
 	}
-	return nil
+	return connToClose.Close(websocket.StatusNormalClosure, "")
 }
 
 func (m *WSManager) Subscribe(ctx context.Context, payload interface{}) error {
@@ -288,12 +316,13 @@ func (m *WSManager) Subscribe(ctx context.Context, payload interface{}) error {
 func (m *WSManager) subscribeInternal(ctx context.Context, payload interface{}, record bool) error {
 	conn := m.getConn()
 	if conn == nil {
-		return fmt.Errorf("not connected")
+		return fmt.Errorf("%w: not connected", ErrWSConnectionUnhealthy)
 	}
 
 	err := wsjson.Write(ctx, conn, payload)
 	if err != nil {
-		return err
+		m.handleConnectionFailure(conn, websocket.StatusGoingAway, "write failed")
+		return fmt.Errorf("%w: %v", ErrWSConnectionUnhealthy, err)
 	}
 
 	if record {
@@ -309,11 +338,12 @@ func (m *WSManager) subscribeInternal(ctx context.Context, payload interface{}, 
 func (m *WSManager) ReadMessage(ctx context.Context) ([]byte, error) {
 	conn := m.getConn()
 	if conn == nil {
-		return nil, fmt.Errorf("not connected")
+		return nil, fmt.Errorf("%w: not connected", ErrWSConnectionUnhealthy)
 	}
 
 	_, p, err := conn.Read(ctx)
 	if err != nil {
+		m.handleConnectionFailure(conn, websocket.StatusGoingAway, "read failed")
 		// Trigger reconnection on read error
 		go m.tryReconnect()
 		return nil, err
@@ -361,6 +391,7 @@ func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Dur
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			return nil, nil
 		}
+		m.handleConnectionFailure(conn, websocket.StatusGoingAway, "read timeout loop failed")
 		// On other errors, trigger reconnection
 		go m.tryReconnect()
 		return nil, err
@@ -378,16 +409,7 @@ func (m *WSManager) IsConnected() bool {
 
 // ForceReconnect triggers a reconnection attempt from external code
 func (m *WSManager) ForceReconnect() {
-	// Close existing connection to force a fresh dial
-	m.mu.Lock()
-	if m.conn != nil {
-		m.conn.Close(websocket.StatusGoingAway, "force reconnect")
-		m.conn = nil
-	}
-	m.mu.Unlock()
-
-	// Mark as disconnected to trigger tryReconnect's logic
-	m.connected.Store(false)
+	m.handleConnectionFailure(nil, websocket.StatusGoingAway, "force reconnect")
 	// Trigger reconnection in background
 	go m.tryReconnect()
 }
