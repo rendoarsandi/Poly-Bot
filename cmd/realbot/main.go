@@ -1814,7 +1814,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									// Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
 									// If it fails, we catch the error and log it clearly.
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
-									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], rMinAsk, excess0, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
+									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], rMinAsk, excess0, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
 										if strings.Contains(sellErr.Error(), "min size") {
 											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
@@ -1825,7 +1825,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 								if excess1 >= 0.01 {
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
-									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], rMinAsk, excess1, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
+									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], rMinAsk, excess1, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
 										if strings.Contains(sellErr.Error(), "min size") {
 											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
