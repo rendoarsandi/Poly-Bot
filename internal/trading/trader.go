@@ -282,9 +282,6 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 		}
 	}
 	if fill.OrderID != "" {
-		if len(t.confirmedOrderFills) >= 4096 {
-			t.confirmedOrderFills = make(map[string]float64)
-		}
 		t.confirmedOrderFills[fill.OrderID] += size
 	}
 }

@@ -209,70 +209,70 @@ func run() error {
 		if err != nil {
 			fmt.Printf("⚠️  Could not fetch positions for merge: %v\n", err)
 		} else if len(positions) > 0 {
-			// Map positions to their markets to find ConditionIDs
-			markets, err := restClient.GetMarketsByTimeframe(overallCtx, nil, "15m")
-			if err == nil {
-				// Group tokens by ConditionID
-				condToTokens := make(map[string][]string)
-				for _, m := range markets {
-					for _, t := range m.Tokens {
-						condToTokens[m.ConditionID] = append(condToTokens[m.ConditionID], t.TokenID)
+			// Map positions by ConditionID
+			condToPos := make(map[string][]trading.PositionInfo)
+			for _, pos := range positions {
+				if pos.ConditionID != "" {
+					condToPos[pos.ConditionID] = append(condToPos[pos.ConditionID], pos)
+				}
+			}
+
+			var wg sync.WaitGroup
+			for condID, poses := range condToPos {
+				if len(poses) < 2 {
+					continue
+				}
+
+				minQty := poses[0].Size
+				for _, p := range poses {
+					if p.Size < minQty {
+						minQty = p.Size
 					}
 				}
 
-				var wg sync.WaitGroup
-				// Find balanced pairs for each market
-				for condID, tokens := range condToTokens {
-					if len(tokens) != 2 {
+				if minQty >= 0.000001 {
+					// We need the number of outcomes to merge, fetch market info
+					mInfo, err := realTrader.GetMarketInfo(overallCtx, condID)
+					if err != nil {
+						fmt.Printf("⚠️  Could not fetch market info for %s: %v\n", condID[:10], err)
 						continue
 					}
 
-					var qty1, qty2 float64
-					for _, pos := range positions {
-						if pos.TokenID == tokens[0] {
-							qty1 = pos.Size
-						} else if pos.TokenID == tokens[1] {
-							qty2 = pos.Size
+					// Realbot primarily trades markets where we hold all outcomes to merge
+					if len(poses) < len(mInfo.Tokens) {
+						continue
+					}
+
+					wg.Add(1)
+					go func(cID string, mq float64, numOutcomes int) {
+						defer wg.Done()
+						fmt.Printf("💰 Merging %.6f pairs for market %s...\n", mq, cID[:10])
+						// Independent 30s timeout per merge
+						mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer mergeCancel()
+
+						_, err := realTrader.MergeOnChain(mergeCtx, cID, mq, numOutcomes)
+						if err != nil {
+							fmt.Printf("❌ Merge failed for %s: %v\n", cID[:10], err)
+						} else {
+							fmt.Printf("✅ Merge successful for %s\n", cID[:10])
 						}
-					}
-
-					minQty := qty1
-					if qty2 < minQty {
-						minQty = qty2
-					}
-
-					if minQty >= 0.000001 {
-						wg.Add(1)
-						go func(cID string, tks []string, mq float64) {
-							defer wg.Done()
-							fmt.Printf("💰 Merging %.6f pairs for market %s...\n", mq, cID[:10])
-							// Independent 30s timeout per merge
-							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 30*time.Second)
-							defer mergeCancel()
-
-							_, err := realTrader.MergeOnChain(mergeCtx, cID, mq, len(tks))
-							if err != nil {
-								fmt.Printf("❌ Merge failed for %s: %v\n", cID[:10], err)
-							} else {
-								fmt.Printf("✅ Merge successful for %s\n", cID[:10])
-							}
-						}(condID, tokens, minQty)
-					}
+					}(condID, minQty, len(mInfo.Tokens))
 				}
+			}
 
-				// Wait for all concurrent merges to finish or overall timeout
-				done := make(chan struct{})
-				go func() {
-					wg.Wait()
-					close(done)
-				}()
+			// Wait for all concurrent merges to finish or overall timeout
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
 
-				select {
-				case <-done:
-					fmt.Println("✅ All emergency merges completed")
-				case <-overallCtx.Done():
-					fmt.Println("⚠️ Emergency cleanup timed out waiting for some merges")
-				}
+			select {
+			case <-done:
+				fmt.Println("✅ All emergency merges completed")
+			case <-overallCtx.Done():
+				fmt.Println("⚠️ Emergency cleanup timed out waiting for some merges")
 			}
 		}
 	}
@@ -473,6 +473,11 @@ func run() error {
 		var wg sync.WaitGroup
 		for assetID, market := range markets {
 			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
+			if mInfo, err := realTrader.GetMarketInfo(ctx, market.ConditionID); err == nil && mInfo.EndDateISO != "" {
+				if parsed, err := time.Parse(time.RFC3339, mInfo.EndDateISO); err == nil {
+					endTime = parsed
+				}
+			}
 			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
@@ -2218,7 +2223,7 @@ func settleMarketInventory(
 
 	minQty := math.Min(bal0, bal1)
 	if minQty >= 0.000001 {
-		mergeQty, settled0, settled1, txHash, mergeErr := mergeBalancedPositionWSFirst(ctx, trader, market.ConditionID, token0, token1, minQty, len(market.Tokens))
+		mergeQty, _, _, txHash, mergeErr := mergeBalancedPositionWSFirst(ctx, trader, market.ConditionID, token0, token1, minQty, len(market.Tokens))
 		if mergeErr != nil {
 			tui.LogEvent("[%s] ⚠️ %s merge skipped: %v", id, reason, mergeErr)
 		} else {
@@ -2232,9 +2237,9 @@ func settleMarketInventory(
 			if result != nil && result.PnL != 0 {
 				tui.LogEvent("[%s] 💰 %s merge realized PnL: $%.2f", id, reason, result.PnL)
 			}
-			bal0 = math.Max(0, settled0-mergeQty)
-			bal1 = math.Max(0, settled1-mergeQty)
 		}
+		bal0 = math.Max(0, bal0-minQty)
+		bal1 = math.Max(0, bal1-minQty)
 	}
 
 	if !allowSell {
