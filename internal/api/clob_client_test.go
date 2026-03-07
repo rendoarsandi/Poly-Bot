@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -249,6 +251,57 @@ func TestSendHeartbeat(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("expected status ok, got %q", resp.Status)
+	}
+}
+
+func TestPlaceOrder_WritesRawDebugLogOnKilled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := OrderResponse{Success: true, Status: "KILLED", OrderID: "0x123"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "api-key-12345678", "secret", "pass")
+	if err != nil {
+		t.Fatalf("NewCLOBClient failed: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	logPath := filepath.Join(t.TempDir(), "raw.jsonl")
+	if err := client.EnableRawAPILog(logPath); err != nil {
+		t.Fatalf("EnableRawAPILog failed: %v", err)
+	}
+	defer func() { _ = client.CloseRawAPILog() }()
+
+	_, err = client.PlaceOrder(context.Background(), &OrderRequest{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10,
+		Side:        SideBuy,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillAndKill,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder failed: %v", err)
+	}
+
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `"path":"/order"`) {
+		t.Fatalf("expected raw log to include /order path, got %s", text)
+	}
+	if !strings.Contains(text, `"outcome":"KILLED"`) {
+		t.Fatalf("expected raw log to include killed outcome, got %s", text)
+	}
+	if !strings.Contains(text, `[redacted-signature]`) {
+		t.Fatalf("expected raw log to redact signature, got %s", text)
 	}
 }
 

@@ -1,7 +1,13 @@
 package paper
 
 import (
+	"encoding/csv"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"Market-bot/internal/core"
 )
 
 func TestTUI_RegisterSplitInventory(t *testing.T) {
@@ -20,6 +26,69 @@ func TestTUI_RegisterSplitInventory(t *testing.T) {
 	if len(tui.splitInventories) != 2 {
 		t.Errorf("Expected 2 split inventories, got %d", len(tui.splitInventories))
 	}
+}
+
+func TestShouldPersistIssueEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{name: "critical reject", msg: "[12:00:00] [BTC] ❌ Side 1 MARKET Fail: order rejected", want: true},
+		{name: "unbalanced cleanup", msg: "[12:00:00] [ETH] ⚠️ ARB UNBALANCED: YES still not filled (legging to auto-cleanup)", want: true},
+		{name: "normal info", msg: "[12:00:00] [BTC] ✅ Side 1 MARKET: YES (Observed $0.42, Filled: 5.00/5.00)", want: false},
+		{name: "discovery noise", msg: "[12:00:00] 🔍 Searching for active markets based on live settings...", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldPersistIssueEvent(tt.msg); got != tt.want {
+				t.Fatalf("shouldPersistIssueEvent(%q) = %v, want %v", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTUILogEvent_WritesOnlyCriticalEventsToIssueLog(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "realbot-issues.csv")
+	logger, err := core.NewCSVLogger(logPath)
+	if err != nil {
+		t.Fatalf("NewCSVLogger() error = %v", err)
+	}
+	tui.SetIssueLogger(logger)
+
+	tui.LogEvent("[%s] ✅ benign event", "BTC")
+	tui.LogEvent("[%s] ❌ order rejected by exchange", "BTC")
+	tui.CloseIssueLogger()
+
+	file, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("Open(%s) error = %v", logPath, err)
+	}
+	defer file.Close()
+
+	records, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected header + 1 critical record, got %d rows", len(records))
+	}
+	if got := records[1][2]; got != "BTC" {
+		t.Fatalf("expected asset BTC, got %q", got)
+	}
+	if got := records[1][4]; got == "" || got == records[0][4] {
+		t.Fatalf("expected critical message in details column, got %q", got)
+	}
+	if got := records[1][1]; got != "ERROR" {
+		t.Fatalf("expected ERROR level, got %q", got)
+	}
+	_ = time.Now()
 }
 
 func TestTUI_getSplitPositions(t *testing.T) {

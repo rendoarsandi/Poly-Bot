@@ -966,6 +966,14 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 	return t.clob.WaitForFill(ctx, orderID, timeout)
 }
 
+func (t *RealTrader) EnableRawAPILog(path string) error {
+	return t.clob.EnableRawAPILog(path)
+}
+
+func (t *RealTrader) CloseRawAPILog() error {
+	return t.clob.CloseRawAPILog()
+}
+
 // GetOpenOrders returns all open orders
 func (t *RealTrader) GetOpenOrders(ctx context.Context) ([]api.OpenOrder, error) {
 	return t.clob.GetOpenOrders(ctx)

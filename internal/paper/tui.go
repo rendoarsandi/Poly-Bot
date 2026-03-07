@@ -251,7 +251,8 @@ type TUI struct {
 
 	restartReq bool
 
-	program *tea.Program
+	program     *tea.Program
+	issueLogger *core.CSVLogger
 }
 
 // GetAndClearRestart returns true if a restart was requested via settings and clears the flag
@@ -820,6 +821,22 @@ func (t *TUI) Stop() {
 	}
 }
 
+func (t *TUI) SetIssueLogger(logger *core.CSVLogger) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.issueLogger = logger
+}
+
+func (t *TUI) CloseIssueLogger() {
+	t.mu.Lock()
+	logger := t.issueLogger
+	t.issueLogger = nil
+	t.mu.Unlock()
+	if logger != nil {
+		logger.Close()
+	}
+}
+
 func (t *TUI) UpdateLatency(d time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -991,15 +1008,79 @@ func (t *TUI) SetPendingOrders(orders map[string][]PendingOrder) {
 }
 
 func (t *TUI) LogEvent(format string, args ...interface{}) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	timestamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf("[%s] %s", timestamp, fmt.Sprintf(format, args...))
 	msg = core.SanitizeString(msg)
+
+	var issueLogger *core.CSVLogger
+	equity := 0.0
+
+	t.mu.Lock()
 	t.eventLog = append(t.eventLog, msg)
 	if len(t.eventLog) > t.maxEvents {
 		t.eventLog = t.eventLog[1:]
 	}
+	if shouldPersistIssueEvent(msg) {
+		issueLogger = t.issueLogger
+		if t.engine != nil {
+			equity = t.engine.GetEquity()
+		}
+	}
+	t.mu.Unlock()
+
+	if issueLogger != nil {
+		issueLogger.Log(issueLogLevel(msg), extractIssueAsset(msg), "REALBOT_ISSUE", msg, equity)
+	}
+}
+
+func shouldPersistIssueEvent(msg string) bool {
+	lower := strings.ToLower(msg)
+	criticalPhrases := []string{
+		"❌",
+		"rejected",
+		" failed",
+		"failed:",
+		"unbalanced",
+		"legged",
+		"kill switch",
+		"cleanup failed",
+		"merge failed",
+		"merge skipped",
+		"no confirmed fill",
+		"snapshot unavailable",
+		"still pending",
+		"could not get resolution",
+	}
+	for _, phrase := range criticalPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func issueLogLevel(msg string) string {
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "❌") || strings.Contains(lower, "rejected") {
+		return "ERROR"
+	}
+	return "WARN"
+}
+
+func extractIssueAsset(msg string) string {
+	closeTimeIdx := strings.Index(msg, "]")
+	if closeTimeIdx == -1 || closeTimeIdx+1 >= len(msg) {
+		return ""
+	}
+	remainder := strings.TrimSpace(msg[closeTimeIdx+1:])
+	if !strings.HasPrefix(remainder, "[") {
+		return ""
+	}
+	closeAssetIdx := strings.Index(remainder, "]")
+	if closeAssetIdx <= 1 {
+		return ""
+	}
+	return remainder[1:closeAssetIdx]
 }
 
 func (t *TUI) SetKillSwitch(reason string) {

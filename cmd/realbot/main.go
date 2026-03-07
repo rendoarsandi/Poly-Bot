@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -319,6 +320,26 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
+	if err := os.MkdirAll("logs", 0o755); err != nil {
+		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
+	} else {
+		issueLogPath := filepath.Join("logs", "realbot-issues.csv")
+		issueLogger, logErr := core.NewCSVLogger(issueLogPath)
+		if logErr != nil {
+			fmt.Printf("⚠️  Could not start critical issue logger: %v\n", logErr)
+		} else {
+			tui.SetIssueLogger(issueLogger)
+			defer tui.CloseIssueLogger()
+			fmt.Printf("📝 Critical issue log: %s\n", issueLogPath)
+		}
+	}
+	rawAPILogPath := filepath.Join("logs", "realbot-polymarket-raw.jsonl")
+	if err := realTrader.EnableRawAPILog(rawAPILogPath); err != nil {
+		fmt.Printf("⚠️  Could not start raw Polymarket API log: %v\n", err)
+	} else {
+		defer func() { _ = realTrader.CloseRawAPILog() }()
+		fmt.Printf("🧾 Raw Polymarket debug log: %s\n", rawAPILogPath)
+	}
 
 	// Seed settings panel with values from config (.env)
 	tui.InitSettings(paper.TUISettings{

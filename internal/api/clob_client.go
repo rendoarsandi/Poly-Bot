@@ -18,10 +18,11 @@ import (
 
 // CLOBClient handles authenticated trading operations on Polymarket CLOB
 type CLOBClient struct {
-	BaseURL  string
-	signer   *Signer
-	auth     *APIAuth
-	testMode bool
+	BaseURL   string
+	signer    *Signer
+	auth      *APIAuth
+	testMode  bool
+	rawLogger *rawAPILogger
 }
 
 // NewCLOBClient creates a new authenticated CLOB client
@@ -51,6 +52,27 @@ func (c *CLOBClient) SetTestMode(enabled bool) {
 // IsTestMode returns whether test mode is enabled
 func (c *CLOBClient) IsTestMode() bool {
 	return c.testMode
+}
+
+func (c *CLOBClient) EnableRawAPILog(path string) error {
+	logger, err := newRawAPILogger(path)
+	if err != nil {
+		return err
+	}
+	if c.rawLogger != nil {
+		_ = c.rawLogger.Close()
+	}
+	c.rawLogger = logger
+	return nil
+}
+
+func (c *CLOBClient) CloseRawAPILog() error {
+	if c.rawLogger == nil {
+		return nil
+	}
+	err := c.rawLogger.Close()
+	c.rawLogger = nil
+	return err
 }
 
 // Address returns the wallet address
@@ -398,10 +420,12 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	statusCode, bodyBytes, err := doSubmit(body)
 	if err != nil {
+		c.logRawOrderDebug("POST", path, body, nil, 0, err, "submit_error")
 		return nil, err
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
+		c.logRawOrderDebug("POST", path, body, bodyBytes, statusCode, nil, "http_error")
 		// Suppress raw HTTP logging in TUI mode to avoid breaking the UI layout
 		// The error will be passed back in the ErrorMsg field and logged cleanly by the TUI.
 		// log.Printf("[CLOB] API error: HTTP %d | Body: %s", statusCode, string(bodyBytes))
@@ -419,6 +443,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	var result OrderResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		c.logRawOrderDebug("POST", path, body, bodyBytes, statusCode, err, "decode_error")
 		return &OrderResponse{
 			Success:  true,
 			ErrorMsg: fmt.Sprintf("Success but decode failed: %v", err),
@@ -435,8 +460,34 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 			}
 		}
 	}
+	if !result.Success {
+		outcome := result.Status
+		if outcome == "" {
+			outcome = "order_unsuccessful"
+		}
+		c.logRawOrderDebug("POST", path, body, bodyBytes, statusCode, nil, outcome)
+	}
 
 	return &result, nil
+}
+
+func (c *CLOBClient) logRawOrderDebug(method, path string, requestBody, responseBody []byte, statusCode int, err error, outcome string) {
+	if c.rawLogger == nil {
+		return
+	}
+	entry := rawAPILogEntry{
+		Source:       "clob",
+		Method:       method,
+		Path:         path,
+		StatusCode:   statusCode,
+		RequestBody:  string(requestBody),
+		ResponseBody: string(responseBody),
+		Outcome:      outcome,
+	}
+	if err != nil {
+		entry.Error = err.Error()
+	}
+	c.rawLogger.Log(entry)
 }
 
 // CancelOrder cancels an existing order
@@ -611,9 +662,11 @@ func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, 
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		c.logRawOrderDebug("GET", path, nil, nil, 0, err, "get_order_error")
 		return nil, fmt.Errorf("failed to get order: %w", err)
 	}
 	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		// Order not found usually means it was filled and removed
@@ -621,12 +674,17 @@ func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get order failed with status %d", resp.StatusCode)
+		c.logRawOrderDebug("GET", path, nil, bodyBytes, resp.StatusCode, nil, "get_order_http_error")
+		return nil, fmt.Errorf("get order failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var order OpenOrder
-	if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
+	if err := json.Unmarshal(bodyBytes, &order); err != nil {
+		c.logRawOrderDebug("GET", path, nil, bodyBytes, resp.StatusCode, err, "get_order_decode_error")
 		return nil, fmt.Errorf("failed to decode order: %w", err)
+	}
+	if order.Status == "FAILED" || order.Status == "CANCELLED" || order.Status == "EXPIRED" || order.Status == "REJECTED" {
+		c.logRawOrderDebug("GET", path, nil, bodyBytes, resp.StatusCode, nil, "order_"+strings.ToLower(order.Status))
 	}
 
 	return &order, nil
