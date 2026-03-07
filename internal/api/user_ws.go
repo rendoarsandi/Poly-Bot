@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -102,10 +103,16 @@ func (c *UserWSClient) SubscribeMarkets(ctx context.Context, markets []string) e
 		return nil
 	}
 
-	return c.manager.Subscribe(ctx, map[string]interface{}{
+	err := c.manager.Subscribe(ctx, map[string]interface{}{
 		"markets":   newMarkets,
 		"operation": "subscribe",
 	})
+	if err == nil || !errors.Is(err, ErrWSConnectionUnhealthy) {
+		return err
+	}
+
+	c.markAuthStale()
+	return c.ensureConnected(ctx, allMarkets)
 }
 
 func (c *UserWSClient) listenLoop() {
@@ -201,6 +208,16 @@ func shouldEmitTradeFill(status string) bool {
 }
 
 func (c *UserWSClient) ensureConnected(ctx context.Context, markets []string) error {
+	err := c.ensureConnectedOnce(ctx, markets)
+	if err == nil || !errors.Is(err, ErrWSConnectionUnhealthy) {
+		return err
+	}
+
+	c.markAuthStale()
+	return c.ensureConnectedOnce(ctx, markets)
+}
+
+func (c *UserWSClient) ensureConnectedOnce(ctx context.Context, markets []string) error {
 	if len(markets) == 0 {
 		return nil
 	}
@@ -218,9 +235,6 @@ func (c *UserWSClient) ensureConnected(ctx context.Context, markets []string) er
 	needAuth := !c.authSent
 	recordAuth := !c.authRecorded
 	startListener := !c.listenStarted
-	if startListener {
-		c.listenStarted = true
-	}
 	c.mu.Unlock()
 
 	if needAuth {
@@ -245,9 +259,23 @@ func (c *UserWSClient) ensureConnected(ctx context.Context, markets []string) er
 	}
 
 	if startListener {
-		go c.listenLoop()
+		c.mu.Lock()
+		shouldStart := !c.listenStarted
+		if shouldStart {
+			c.listenStarted = true
+		}
+		c.mu.Unlock()
+		if shouldStart {
+			go c.listenLoop()
+		}
 	}
 	return nil
+}
+
+func (c *UserWSClient) markAuthStale() {
+	c.mu.Lock()
+	c.authSent = false
+	c.mu.Unlock()
 }
 
 func (c *UserWSClient) snapshotMarketsLocked() []string {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,6 +159,67 @@ func TestUserWSClientSubscribeMarketsSendsAuthAndDynamicSubscribe(t *testing.T) 
 	moreMarkets, ok := second["markets"].([]any)
 	if !ok || len(moreMarkets) != 1 || moreMarkets[0] != "cond-2" {
 		t.Fatalf("unexpected dynamic markets payload: %+v", second["markets"])
+	}
+
+	_ = client.Close()
+}
+
+func TestUserWSClientSubscribeMarketsReconnectsAfterClosedConn(t *testing.T) {
+	messages := make(chan map[string]any, 2)
+	var connCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept failed: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+
+		idx := connCount.Add(1)
+		var msg map[string]any
+		if err := wsjson.Read(r.Context(), conn, &msg); err != nil {
+			t.Errorf("read failed: %v", err)
+			return
+		}
+		messages <- msg
+
+		if idx == 1 {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewUserWSClient("key", "secret", "pass")
+	client.manager = NewWSManager("ws" + strings.TrimPrefix(server.URL, "http"))
+	client.listenStarted = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.SubscribeMarkets(ctx, []string{"cond-1"}); err != nil {
+		t.Fatalf("initial subscribe failed: %v", err)
+	}
+	first := <-messages
+	if first["type"] != "user" {
+		t.Fatalf("expected initial auth payload, got %+v", first)
+	}
+
+	if client.manager.conn == nil {
+		t.Fatal("expected manager connection after initial subscribe")
+	}
+	_ = client.manager.conn.Close(websocket.StatusGoingAway, "simulate dropped conn")
+
+	if err := client.SubscribeMarkets(ctx, []string{"cond-1", "cond-2"}); err != nil {
+		t.Fatalf("expected closed connection to recover, got error: %v", err)
+	}
+	second := <-messages
+	if second["type"] != "user" {
+		t.Fatalf("expected reconnect auth payload, got %+v", second)
+	}
+	markets, ok := second["markets"].([]any)
+	if !ok || len(markets) != 2 || markets[0] != "cond-1" || markets[1] != "cond-2" {
+		t.Fatalf("unexpected reconnect markets payload: %+v", second["markets"])
 	}
 
 	_ = client.Close()
