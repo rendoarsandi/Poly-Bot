@@ -474,9 +474,12 @@ func run() error {
 		for assetID, market := range markets {
 			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
 			if mInfo, err := realTrader.GetMarketInfo(ctx, market.ConditionID); err == nil && mInfo.EndDateISO != "" {
-				if parsed, err := time.Parse(time.RFC3339, mInfo.EndDateISO); err == nil {
-					endTime = parsed
-				}
+			        if parsed, err := time.Parse(time.RFC3339, mInfo.EndDateISO); err == nil {
+			                // Only override with API date if it's actually in the future OR if the market is already marked closed
+			                if parsed.After(time.Now()) || mInfo.Closed {
+			                        endTime = parsed
+			                }
+			        }
 			}
 			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
@@ -2277,7 +2280,13 @@ func settleMarketInventory(
 		if rate == 0 {
 			rate = 1000
 		}
-		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, sellCap, side.qty, rate, side.qty, 2*time.Second)
+		
+		// Use an extremely aggressive limit price ($0.01) to ensure the IOC Limit order 
+		// actually sweeps whatever bids exist to dump the dust. If we use sellCap (MinAskPrice),
+		// the order will just self-cancel because it's higher than the bids.
+		aggressiveDumpPrice := 0.01
+		
+		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, aggressiveDumpPrice, side.qty, rate, side.qty, 2*time.Second)
 		if !exec.Success {
 			if exec.Result != nil && strings.Contains(exec.Result.Message, "min size") {
 				tui.LogEvent("[%s] ⚠️ %s kept %.2f %s shares as dust", id, reason, side.qty, side.outcome)
