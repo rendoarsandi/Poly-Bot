@@ -6,6 +6,7 @@ import (
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,6 +192,39 @@ func TestUtilbotBestPriceFromLevels(t *testing.T) {
 	}
 	if _, ok := utilbotBestBidFromLevels(nil); ok {
 		t.Fatal("expected empty bid levels to return false")
+	}
+}
+
+func TestUtilbotCanUseLocalBuyQuote(t *testing.T) {
+	now := time.Date(2026, 3, 8, 0, 0, 0, 0, time.UTC)
+	outcomes := []string{"Down", "Up"}
+	asks := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.36, Size: 10}},
+		"Up":   {{Price: 0.64, Size: 12}},
+	}
+	states := map[string]utilbotQuoteState{
+		"Down": {UpdatedAt: now.Add(-50 * time.Millisecond), Source: "ws"},
+		"Up":   {UpdatedAt: now.Add(-90 * time.Millisecond), Source: "rest"},
+	}
+
+	fresh, age, reason := utilbotCanUseLocalBuyQuote(now, outcomes, asks, states, 250*time.Millisecond)
+	if !fresh || reason != "" {
+		t.Fatalf("expected fresh local quote, got fresh=%v age=%v reason=%q", fresh, age, reason)
+	}
+	if age != 90*time.Millisecond {
+		t.Fatalf("max age got %v want %v", age, 90*time.Millisecond)
+	}
+
+	states["Up"] = utilbotQuoteState{UpdatedAt: now.Add(-400 * time.Millisecond), Source: "rest"}
+	fresh, _, reason = utilbotCanUseLocalBuyQuote(now, outcomes, asks, states, 250*time.Millisecond)
+	if fresh || !strings.Contains(reason, "quote age") {
+		t.Fatalf("expected stale quote rejection, got fresh=%v reason=%q", fresh, reason)
+	}
+
+	delete(asks, "Down")
+	fresh, _, reason = utilbotCanUseLocalBuyQuote(now, outcomes, asks, states, 250*time.Millisecond)
+	if fresh || !strings.Contains(reason, "missing local ask depth") {
+		t.Fatalf("expected missing depth rejection, got fresh=%v reason=%q", fresh, reason)
 	}
 }
 

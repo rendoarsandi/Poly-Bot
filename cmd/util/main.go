@@ -24,6 +24,16 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	utilbotLocalQuoteMaxAge  = 250 * time.Millisecond
+	utilbotJITRequoteTimeout = 750 * time.Millisecond
+)
+
+type utilbotQuoteState struct {
+	UpdatedAt time.Time
+	Source    string
+}
+
 func main() {
 	// Styled startup banner
 	titleSt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
@@ -153,6 +163,7 @@ func main() {
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
+	quoteState := make(map[string]utilbotQuoteState)
 	tokenFeeRates := make(map[string]int)
 	for tid, out := range tokenMap {
 		var rate int
@@ -196,6 +207,7 @@ func main() {
 		case msg := <-wsMsgChan:
 			if books, err := api.ParseOrderBooks(msg); err == nil {
 				for _, b := range books {
+					updatedAt := time.Now()
 					out := tokenToOutcome[b.AssetID]
 					if out == "" {
 						continue
@@ -225,12 +237,14 @@ func main() {
 					}
 					tokenFullBids[out] = mkt.LevelsToPriceDepth(b.Bids, true)
 					tokenFullAsks[out] = mkt.LevelsToPriceDepth(b.Asks, false)
+					quoteState[out] = utilbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
 				}
 			}
 		case <-ticker.C:
 			// REST Refresh: always poll for fresh prices and depth
 			for tid, out := range tokenMap {
 				if book, err := client.GetOrderBook(ctx, tid); err == nil {
+					updatedAt := time.Now()
 					bid, ask := 0.0, 1.0
 					for _, b := range book.Bids {
 						p, _ := strconv.ParseFloat(b.Price, 64)
@@ -255,6 +269,7 @@ func main() {
 					}
 					tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids, true)
 					tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks, false)
+					quoteState[out] = utilbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 				}
 			}
 
@@ -304,11 +319,11 @@ takeAction:
 	if choice == 1 {
 		fmt.Print("Pairs to Panic Buy (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates)
 	} else if choice == 2 {
 		fmt.Print("Pairs to Panic Sell (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, tokenFullBids, tokenFullAsks, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates)
 	} else {
 		log.Fatal("Invalid choice.")
 	}
@@ -424,7 +439,7 @@ func utilbotFinderPollInterval(timeframe string) time.Duration {
 	}
 }
 
-func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, tokenFeeRates map[string]int) {
+func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]utilbotQuoteState, tokenFeeRates map[string]int) {
 	// Determine execution pricing
 	prices := make(map[string]float64, len(outcomes))
 	buyCaps := make(map[string]float64, len(outcomes))
@@ -542,22 +557,33 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		log.Fatal("Cancelled.")
 	}
 	if side == "BUY" {
-		fmt.Println("🔄 Re-quoting both legs just before submission...")
-		requoteCtx, cancelRequote := context.WithTimeout(ctx, 5*time.Second)
-		err := utilbotRefreshExecutionBooks(requoteCtx, restClient, market, outcomes, side, tokenFullBids, tokenFullAsks, prices)
-		cancelRequote()
-		if err != nil {
-			fmt.Printf("❌ Re-quote failed: %v. Aborting before submission.\n", err)
-			return
+		if fresh, maxAge, reason := utilbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenFullAsks, quoteState, utilbotLocalQuoteMaxAge); fresh {
+			if err := refreshBuyCaps(); err != nil {
+				fmt.Printf("❌ Local quote rejected by config: %v. Aborting before submission.\n", err)
+				return
+			}
+			cap0 := buyCaps[outcomes[0]]
+			cap1 := buyCaps[outcomes[1]]
+			updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
+			fmt.Printf("⚡ Using fresh local quote (max age %s): %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Est. total: $%.2f\n", maxAge.Round(time.Millisecond), outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue)
+		} else {
+			fmt.Printf("🔄 Local quote not fresh enough (%s). Re-quoting both legs just before submission...\n", reason)
+			requoteCtx, cancelRequote := context.WithTimeout(ctx, utilbotJITRequoteTimeout)
+			latency, err := utilbotRefreshExecutionBooks(requoteCtx, restClient, market, outcomes, side, tokenFullBids, tokenFullAsks, prices)
+			cancelRequote()
+			if err != nil {
+				fmt.Printf("❌ Re-quote failed: %v. Aborting before submission.\n", err)
+				return
+			}
+			if err := refreshBuyCaps(); err != nil {
+				fmt.Printf("❌ Fresh quote rejected by config: %v. Aborting before submission.\n", err)
+				return
+			}
+			cap0 := buyCaps[outcomes[0]]
+			cap1 := buyCaps[outcomes[1]]
+			updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
+			fmt.Printf("✅ Fresh asks: %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Updated est. total: $%.2f | rest=%s\n", outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue, latency.Round(time.Millisecond))
 		}
-		if err := refreshBuyCaps(); err != nil {
-			fmt.Printf("❌ Fresh quote rejected by config: %v. Aborting before submission.\n", err)
-			return
-		}
-		cap0 := buyCaps[outcomes[0]]
-		cap1 := buyCaps[outcomes[1]]
-		updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
-		fmt.Printf("✅ Fresh asks: %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Updated est. total: $%.2f\n", outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue)
 	}
 
 	var initialUSDC float64
@@ -732,35 +758,87 @@ func utilbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	return bestBid, true
 }
 
-func utilbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, side string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, prices map[string]float64) error {
+func utilbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]utilbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
+	maxObservedAge := time.Duration(0)
+	for _, out := range outcomes {
+		if len(tokenFullAsks[out]) == 0 {
+			return false, maxObservedAge, fmt.Sprintf("missing local ask depth for %s", out)
+		}
+		state, ok := quoteState[out]
+		if !ok || state.UpdatedAt.IsZero() {
+			return false, maxObservedAge, fmt.Sprintf("missing quote timestamp for %s", out)
+		}
+		age := now.Sub(state.UpdatedAt)
+		if age > maxObservedAge {
+			maxObservedAge = age
+		}
+		if age > maxAge {
+			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
+		}
+	}
+	return true, maxObservedAge, ""
+}
+
+func utilbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, side string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, prices map[string]float64) (time.Duration, error) {
+	type quoteResult struct {
+		outcome string
+		bids    []paper.MarketLevel
+		asks    []paper.MarketLevel
+		latency time.Duration
+		err     error
+	}
+
+	results := make(chan quoteResult, len(outcomes))
 	for _, out := range outcomes {
 		tokenID := mkt.GetTokenIDForOutcome(market, out)
 		if tokenID == "" {
-			return fmt.Errorf("missing token id for outcome %s", out)
+			return 0, fmt.Errorf("missing token id for outcome %s", out)
 		}
-		book, err := restClient.GetOrderBook(ctx, tokenID)
-		if err != nil {
-			return fmt.Errorf("fetching fresh order book for %s failed: %w", out, err)
+		go func(outcome, token string) {
+			start := time.Now()
+			book, err := restClient.GetOrderBook(ctx, token)
+			latency := time.Since(start)
+			if err != nil {
+				results <- quoteResult{outcome: outcome, latency: latency, err: err}
+				return
+			}
+			results <- quoteResult{
+				outcome: outcome,
+				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
+				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
+				latency: latency,
+			}
+		}(out, tokenID)
+	}
+
+	maxLatency := time.Duration(0)
+	for i := 0; i < len(outcomes); i++ {
+		res := <-results
+		if res.latency > maxLatency {
+			maxLatency = res.latency
 		}
-		tokenFullBids[out] = mkt.LevelsToPriceDepth(book.Bids, true)
-		tokenFullAsks[out] = mkt.LevelsToPriceDepth(book.Asks, false)
+		if res.err != nil {
+			return maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
+		}
+		tokenFullBids[res.outcome] = res.bids
+		tokenFullAsks[res.outcome] = res.asks
 
 		if side == "BUY" {
-			bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[out])
+			bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[res.outcome])
 			if !found {
-				return fmt.Errorf("no live ask found for %s", out)
+				return maxLatency, fmt.Errorf("no live ask found for %s", res.outcome)
 			}
-			prices[out] = bestAsk
+			prices[res.outcome] = bestAsk
 			continue
 		}
 
-		bestBid, found := utilbotBestBidFromLevels(tokenFullBids[out])
+		bestBid, found := utilbotBestBidFromLevels(tokenFullBids[res.outcome])
 		if !found {
-			return fmt.Errorf("no live bid found for %s", out)
+			return maxLatency, fmt.Errorf("no live bid found for %s", res.outcome)
 		}
-		prices[out] = bestBid
+		prices[res.outcome] = bestBid
 	}
-	return nil
+	return maxLatency, nil
 }
 
 func utilbotBuyLimitPrice(bookAsk, pairedAsk float64, cfg *core.Config) (float64, error) {
