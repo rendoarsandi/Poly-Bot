@@ -323,12 +323,13 @@ func TestRealTrader_ApplyLiveFill_UpdatesCacheAndClampsAtZero(t *testing.T) {
 		livePositions: map[string]float64{
 			"asset-1": 2,
 		},
+		confirmedOrderFills: make(map[string]float64),
 	}
 
-	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-1", Side: "BUY", Size: "3"})
-	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-1", Side: "SELL", Size: "4"})
-	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-2", Side: "BUY", Size: "1.5"})
-	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-2", Side: "SELL", Size: "10"})
+	trader.applyLiveFill(api.OrderFillData{OrderID: "buy-1", AssetID: "asset-1", Side: "BUY", Size: "3"})
+	trader.applyLiveFill(api.OrderFillData{OrderID: "sell-1", AssetID: "asset-1", Side: "SELL", Size: "4"})
+	trader.applyLiveFill(api.OrderFillData{OrderID: "buy-2", AssetID: "asset-2", Side: "BUY", Size: "1.5"})
+	trader.applyLiveFill(api.OrderFillData{OrderID: "sell-2", AssetID: "asset-2", Side: "SELL", Size: "10"})
 
 	positions, err := trader.GetPositions(context.Background())
 	if err != nil {
@@ -340,6 +341,12 @@ func TestRealTrader_ApplyLiveFill_UpdatesCacheAndClampsAtZero(t *testing.T) {
 	}
 	if got := trader.livePositions["asset-2"]; got != 0 {
 		t.Fatalf("expected asset-2 cached size clamped to 0, got %.2f", got)
+	}
+	if got := trader.GetConfirmedFillSize("buy-1"); got != 3 {
+		t.Fatalf("expected confirmed buy-1 fill of 3, got %.2f", got)
+	}
+	if got := trader.GetConfirmedFillSize("sell-1"); got != 4 {
+		t.Fatalf("expected confirmed sell-1 fill of 4, got %.2f", got)
 	}
 	if len(positions) != 1 {
 		t.Fatalf("expected only one positive position from cache, got %d", len(positions))
@@ -354,9 +361,10 @@ func TestRealTrader_ApplyLiveFill_InvalidSizeDoesNotMutateCache(t *testing.T) {
 		livePositions: map[string]float64{
 			"asset-1": 2,
 		},
+		confirmedOrderFills: make(map[string]float64),
 	}
 
-	trader.applyLiveFill(api.OrderFillData{AssetID: "asset-1", Side: "BUY", Size: "bad-size"})
+	trader.applyLiveFill(api.OrderFillData{OrderID: "bad-order", AssetID: "asset-1", Side: "BUY", Size: "bad-size"})
 
 	positions, err := trader.GetPositions(context.Background())
 	if err != nil {
@@ -364,5 +372,21 @@ func TestRealTrader_ApplyLiveFill_InvalidSizeDoesNotMutateCache(t *testing.T) {
 	}
 	if len(positions) != 1 || positions[0].TokenID != "asset-1" || positions[0].Size != 2 {
 		t.Fatalf("expected unchanged cached position, got %+v", positions)
+	}
+	if got := trader.GetConfirmedFillSize("bad-order"); got != 0 {
+		t.Fatalf("expected invalid fill not to be recorded, got %.2f", got)
+	}
+}
+
+func TestRealTrader_ResetConfirmedFill(t *testing.T) {
+	trader := &RealTrader{
+		livePositions:       make(map[string]float64),
+		confirmedOrderFills: map[string]float64{"order-1": 2.5},
+	}
+
+	trader.ResetConfirmedFill("order-1")
+
+	if got := trader.GetConfirmedFillSize("order-1"); got != 0 {
+		t.Fatalf("expected cleared confirmed fill, got %.2f", got)
 	}
 }

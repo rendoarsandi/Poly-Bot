@@ -706,7 +706,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancelCleanup()
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, timeToExpiry > 2*time.Second, "EMERGENCY EXIT"); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT"); err != nil {
 				tui.LogEvent("[%s] ⚠️ Emergency cleanup failed: %v", id, err)
 			}
 			return
@@ -717,7 +717,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if time.Now().After(endTime.Add(5 * time.Second)) {
 			tui.LogEvent("[%s] ⏰ Market ended — running final cleanup and resolution check", id)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, false, "POST CLOSE"); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, false, tui.GetSettings().MinAskPrice, "POST CLOSE"); err != nil {
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
 			}
 			cleanupCancel()
@@ -735,7 +735,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			if time.Now().After(nextNearCloseCleanup) {
 				tui.LogEvent("[%s] ⏳ Near expiry (%.0fs left): pausing new trades and settling inventory...", id, timeToExpiry.Seconds())
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, true, "NEAR EXPIRY"); err != nil {
+				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY"); err != nil {
 					tui.LogEvent("[%s] ⚠️ Near-expiry cleanup failed: %v", id, err)
 				}
 				cleanupCancel()
@@ -1277,9 +1277,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// the CLOB loses sync with on-chain state between startup and trade time.
 							// Background ticker keeps allowance synced.
 
-							var res1, res2 *trading.TradeResult
-							var err1, err2 error
-
 							// Fetch initial positions to accurately calculate sold amount
 							var initialBal0, initialBal1 float64
 							if initialPos, err := trader.GetPositions(ctx); err == nil {
@@ -1293,8 +1290,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 							}
 
-							// Use batch orders for split selling with limit price based on TUI settings
-							// This ensures atomic execution against any available liquidity
 							rate1 := tokenFeeRates[outcomes[0]]
 							if rate1 == 0 {
 								rate1 = 1000
@@ -1304,154 +1299,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								rate2 = 1000
 							}
 
-							reqs := []*api.OrderRequest{
-								{TokenID: token0, Price: liveCfg.MinAskPrice, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate1},
-								{TokenID: token1, Price: liveCfg.MinAskPrice, Size: sharesToSell, Side: api.SideSell, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate2},
-							}
+							var exec1, exec2 directMarketExecution
+							var wg sync.WaitGroup
+							wg.Add(2)
+							go func() {
+								defer wg.Done()
+								exec1 = executeMarketOrderWithSignals(ctx, trader, api.SideSell, token0, outcomes[0], liveCfg.MinAskPrice, sharesToSell, rate1, initialBal0, 2*time.Second)
+							}()
+							go func() {
+								defer wg.Done()
+								exec2 = executeMarketOrderWithSignals(ctx, trader, api.SideSell, token1, outcomes[1], liveCfg.MinAskPrice, sharesToSell, rate2, initialBal1, 2*time.Second)
+							}()
+							wg.Wait()
 
-							results, batchErr := trader.ExecuteBatch(ctx, reqs)
-							if batchErr != nil {
-								tui.LogEvent("[%s] ⚠️ SPLIT: Batch execution failed: %v", id, batchErr)
-								continue
-							}
-							res1, res2 = results[0], results[1]
-							if !res1.Success {
-								err1 = fmt.Errorf("%s", res1.Message)
-							}
-							if !res2.Success {
-								err2 = fmt.Errorf("%s", res2.Message)
-							}
-
-							// ROBUSTNESS: Wait for CLOB sync and verify if balance dropped
-							// UserWS channel provides instant fills. We poll for up to 1.5s,
-							// but break early as soon as we detect a balance drop.
-							var side1Success, side2Success bool
-							var sold1, sold2 float64
-							var verifyErr error
-							var verifyPositions []trading.PositionInfo
-
-							for poll := 0; poll < 60; poll++ {
-								if poll == 59 {
-									// Force a REST refresh on the final poll if WS hasn't updated yet
-									verifyPositions, verifyErr = trader.ForceRefreshPositions(ctx)
-								} else {
-									verifyPositions, verifyErr = trader.GetPositions(ctx)
-								}
-
-								if verifyErr == nil {
-									var bal0, bal1 float64
-									for _, pos := range verifyPositions {
-										if pos.TokenID == token0 {
-											bal0 = pos.Size
-										}
-										if pos.TokenID == token1 {
-											bal1 = pos.Size
-										}
-									}
-
-									sold1 = initialBal0 - bal0
-									sold2 = initialBal1 - bal1
-
-									if sold1 < 0 {
-										sold1 = 0
-									}
-									if sold2 < 0 {
-										sold2 = 0
-									}
-
-									// Break early if we detect that our shares have been sold
-									if sold1 > 0.01 || sold2 > 0.01 {
-										break
-									}
-								}
-								time.Sleep(50 * time.Millisecond)
-							}
-
-							if verifyErr == nil {
-								// For FAK orders, a Success response with 0 sold means it was KILLED
-								side1Success = sold1 > 0.01
-								side2Success = sold2 > 0.01
-
-								// Adjust success messages if API accepted it but it was killed instantly
-								if !side1Success && err1 == nil && res1 != nil && res1.Success {
-									res1.Message = "FAK Missed/Killed (Price moved)"
-								}
-								if !side2Success && err2 == nil && res2 != nil && res2.Success {
-									res2.Message = "FAK Missed/Killed (Price moved)"
-								}
-							} else {
-								tui.LogEvent("[%s] ⚠️ Failed to verify split sell positions: %v (treating as failed)", id, verifyErr)
-								side1Success = false
-								side2Success = false
-								sold1 = 0
-								sold2 = 0
-							}
+							sold1, sold2 := exec1.ExecutedQty, exec2.ExecutedQty
+							side1Success, side2Success := exec1.Success, exec2.Success
 
 							// ═══════════════════════════════════════════════════════════════
-							// LEGGED SPLIT SELL RECOVERY: If one side sold and the other
-							// didn't, retry the failed side once to avoid an unbalanced
-							// split inventory (which causes permanent exposure).
+							// LEGGED SPLIT SELL VERIFICATION: If one side sold and the other
+							// didn't, do not retry here. Leave the remainder for cleanup.
 							// ═══════════════════════════════════════════════════════════════
 							if side1Success != side2Success {
-								failedOutcome := outcomes[0]
-								failedToken := token0
-								failedRate := tokenFeeRates[outcomes[0]]
-								retryShares := sold2 // If 0 failed, retry exactly what 1 sold
-
-								if side1Success {
-									failedOutcome = outcomes[1]
-									failedToken = token1
-									failedRate = tokenFeeRates[outcomes[1]]
-									retryShares = sold1 // If 1 failed, retry exactly what 0 sold
+								failedOutcome := outcomes[1]
+								if !side1Success {
+									failedOutcome = outcomes[0]
 								}
-								if failedRate == 0 {
-									failedRate = 1000
-								}
-								tui.LogEvent("[%s] ⚠️ SPLIT LEGGED: %s sold, %s failed — retrying %.2f shares...", id,
-									map[bool]string{true: outcomes[0], false: outcomes[1]}[side1Success], failedOutcome, retryShares)
-
-								time.Sleep(1 * time.Second)
-								retryRes, retryErr := trader.Sell(ctx, failedToken, failedOutcome, 0.01, retryShares, api.OrderTypeMarket, api.TIFFillAndKill, failedRate)
-
-								// Re-verify after retry
-								if retryPos, retryVerErr := trader.GetPositions(ctx); retryVerErr == nil {
-									for _, pos := range retryPos {
-										if pos.TokenID == failedToken {
-											// Sold amount is the difference between initial and current
-											var initialFailedBal float64
-											if failedToken == token0 {
-												initialFailedBal = initialBal0
-											} else {
-												initialFailedBal = initialBal1
-											}
-											retrySold := initialFailedBal - pos.Size
-											if retrySold > 0.01 {
-												if !side1Success {
-													side1Success = true
-													sold1 = retrySold
-												} else {
-													side2Success = true
-													sold2 = retrySold
-												}
-											}
-										}
-									}
-								} else if retryErr == nil && retryRes != nil && retryRes.Success {
-									// Optimistic retry success
-									if !side1Success {
-										side1Success = true
-										sold1 = retryShares
-									} else {
-										side2Success = true
-										sold2 = retryShares
-									}
-								}
-
-								if side1Success && side2Success {
-									tui.LogEvent("[%s] ✅ SPLIT: Retry %s succeeded", id, failedOutcome)
-								} else {
-									tui.LogEvent("[%s] ❌ SPLIT: Retry %s failed (legged position remains)", id, failedOutcome)
-								}
+								tui.LogEvent("[%s] ⚠️ SPLIT LEGGED: %s still not sold (leaving for cleanup path)", id, failedOutcome)
 							}
 
 							if side1Success && side2Success {
@@ -1692,9 +1565,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// MARKET EXECUTION: use the configured max ask cap directly from the
-						// current TUI/env settings instead of a tight ask+$0.02 buffer. This
-						// lets execution follow the user's configured price ceiling exactly.
+						// MARKET EXECUTION: follow the configured max ask price directly.
 						buyCap := rMaxAsk
 						if buyCap <= 0 {
 							tui.LogEvent("[%s] ⚠️ Invalid Max Ask Price %.3f — skipping trade", id, buyCap)
@@ -1756,104 +1627,27 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							rate2 = 1000
 						}
 
-						reqs := []*api.OrderRequest{
-							{TokenID: token0, Price: limitPrice1, Size: shares, Side: api.SideBuy, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate1},
-							{TokenID: token1, Price: limitPrice2, Size: shares, Side: api.SideBuy, OrderType: api.OrderTypeMarket, TimeInForce: api.TIFFillAndKill, FeeRateBps: rate2},
-						}
+						var exec1, exec2 directMarketExecution
+						var wg sync.WaitGroup
+						wg.Add(2)
+						go func() {
+							defer wg.Done()
+							exec1 = executeMarketOrderWithSignals(ctx, trader, api.SideBuy, token0, outcomes[0], limitPrice1, shares, rate1, initialBal0, 2*time.Second)
+						}()
+						go func() {
+							defer wg.Done()
+							exec2 = executeMarketOrderWithSignals(ctx, trader, api.SideBuy, token1, outcomes[1], limitPrice2, shares, rate2, initialBal1, 2*time.Second)
+						}()
+						wg.Wait()
 
-						results, batchErr := trader.ExecuteBatch(ctx, reqs)
-						if batchErr != nil {
-							tui.LogEvent("[%s] ⚠️ Panic buy batch failed: %v", id, batchErr)
-							continue
-						}
-						res1, res2 = results[0], results[1]
-						if !res1.Success {
-							err1 = fmt.Errorf("%s", res1.Message)
-						}
-						if !res2.Success {
-							err2 = fmt.Errorf("%s", res2.Message)
-						}
-
-						// Wait for CLOB to sync before verifying positions.
-						// The UserWS channel provides instant fills. We poll for up to 1.5s,
-						// but break early as soon as we detect the expected balances.
-						var side1Success, side2Success bool
-						var filled1, filled2 float64
-						var verifyErr error
-						var verifyPositions []trading.PositionInfo
-
-						for poll := 0; poll < 60; poll++ {
-							if poll == 59 {
-								// Force a REST refresh on the final poll if WS hasn't updated yet
-								verifyPositions, verifyErr = trader.ForceRefreshPositions(ctx)
-							} else {
-								verifyPositions, verifyErr = trader.GetPositions(ctx)
-							}
-
-							if verifyErr == nil {
-								var bal0, bal1 float64
-								for _, pos := range verifyPositions {
-									if pos.TokenID == token0 {
-										bal0 = pos.Size
-									} else if pos.TokenID == token1 {
-										bal1 = pos.Size
-									}
-								}
-
-								// If we have any NEW shares, consider it a success and break early
-								if (bal0-initialBal0) > 0.01 || (bal1-initialBal1) > 0.01 {
-									break
-								}
-							}
-							time.Sleep(50 * time.Millisecond)
-						}
-
-						// ROBUSTNESS: Verify actual positions from CLOB after sync delay.
-						// This catches "Fake Errors" (timeout/400 but actually filled) and
-						// prevents double-buys on retry.
-						if verifyErr == nil {
-							var bal0, bal1 float64
-							for _, pos := range verifyPositions {
-								if pos.TokenID == token0 {
-									bal0 = pos.Size
-								} else if pos.TokenID == token1 {
-									bal1 = pos.Size
-								}
-							}
-
+						res1, err1 = exec1.Result, exec1.Err
+						res2, err2 = exec2.Result, exec2.Err
+						filled1, filled2 := exec1.ExecutedQty, exec2.ExecutedQty
+						side1Success, side2Success := exec1.Success, exec2.Success
+						if bal0, bal1, verifyErr := loadPairBalances(ctx, trader, token0, token1); verifyErr == nil {
 							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
-
-							// With FAK (Fill-And-Kill) orders, the API can return Success=true
-							// even if the order filled 0 shares and was instantly killed.
-							// Therefore, we CANNOT assume full fill based on API Success.
-							// The actual inventory received is the ONLY source of truth.
-							filled1 = bal0 - initialBal0
-							if filled1 < 0 {
-								filled1 = 0
-							}
-							filled2 = bal1 - initialBal1
-							if filled2 < 0 {
-								filled2 = 0
-							}
-
-							// An execution is only "successful" if we actually got NEW shares
-							side1Success = filled1 > 0.01
-							side2Success = filled2 > 0.01
-
-							// If the API reported success but we got 0 shares, the FAK missed.
-							// Explicitly log this so the user knows it was killed.
-							if !side1Success && err1 == nil && res1 != nil && res1.Success {
-								res1.Message = "FAK Missed/Killed (Price moved)"
-							}
-							if !side2Success && err2 == nil && res2 != nil && res2.Success {
-								res2.Message = "FAK Missed/Killed (Price moved)"
-							}
 						} else {
-							tui.LogEvent("[%s] ⚠️ Failed to verify positions: %v (treating as failed)", id, verifyErr)
-							side1Success = false
-							side2Success = false
-							filled1 = 0
-							filled2 = 0
+							tui.LogEvent("[%s] ⚠️ Position snapshot unavailable after direct buy: %v", id, verifyErr)
 						}
 
 						// Calculate costs using the observed trigger prices for reporting.
@@ -1898,9 +1692,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// ═══════════════════════════════════════════════════════════════
 						// LEGGED SHARE VERIFICATION: If one side filled and the other didn't,
-						// wait 2 seconds for late settlement, re-verify positions.
-						// We no longer retry buys here to avoid $1 minimum errors and
-						// double-spending. We let the auto-cleanup routine handle it.
+						// wait 2 seconds for late settlement and re-verify only.
+						// Do not retry buys here to avoid accidental spam-buys.
 						// ═══════════════════════════════════════════════════════════════
 						if side1Success != side2Success {
 							tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then re-verifying...",
@@ -1978,7 +1771,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									// Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
 									// If it fails, we catch the error and log it clearly.
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
-									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], 0.01, excess0, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
+									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], rMinAsk, excess0, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
 										if strings.Contains(sellErr.Error(), "min size") {
 											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
@@ -1989,7 +1782,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 								if excess1 >= 0.01 {
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
-									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], 0.01, excess1, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
+									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], rMinAsk, excess1, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
 										if strings.Contains(sellErr.Error(), "min size") {
 											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
@@ -2013,14 +1806,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 							time.Sleep(5 * time.Second)
 						} else if side1Success || side2Success {
-							// Only one side filled after retry — record the unbalanced position and
+							// Only one side filled — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.
 							if side1Success {
-								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, shares)
+								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
 							}
 							if side2Success {
-								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, shares)
+								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
 								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 							}
 
@@ -2069,32 +1862,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// If not settled via merge, or if dust remains, clean it up via Market Sell
 							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking for unbalanced shares to sell... Balances: %s=%.2f, %s=%.2f", id, outcomes[0], bal0, outcomes[1], bal1)
 
-							var sell0Err, sell1Err error
+							var sell0Exec, sell1Exec directMarketExecution
 							if bal0 >= 0.01 {
 								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
-								_, sell0Err = trader.Sell(cleanupCtx, token0, outcomes[0], 0.01, bal0, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
-								if sell0Err != nil && strings.Contains(sell0Err.Error(), "min size") {
+								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], rMinAsk, bal0, cfg.FeeRateBps, bal0, 2*time.Second)
+								if sell0Exec.Result != nil && strings.Contains(sell0Exec.Result.Message, "min size") {
 									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal0, outcomes[0])
-									sell0Err = nil // Treat dust as 'successfully handled' so we don't spam retries
+									sell0Exec.Success = true // Treat dust as handled so we don't spam retries
 								}
 							}
 							if bal1 >= 0.01 {
 								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
-								_, sell1Err = trader.Sell(cleanupCtx, token1, outcomes[1], 0.01, bal1, api.OrderTypeMarket, api.TIFFillAndKill, cfg.FeeRateBps)
-								if sell1Err != nil && strings.Contains(sell1Err.Error(), "min size") {
+								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], rMinAsk, bal1, cfg.FeeRateBps, bal1, 2*time.Second)
+								if sell1Exec.Result != nil && strings.Contains(sell1Exec.Result.Message, "min size") {
 									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal1, outcomes[1])
-									sell1Err = nil // Treat dust as 'successfully handled' so we don't spam retries
+									sell1Exec.Success = true // Treat dust as handled so we don't spam retries
 								}
 							}
 
-							if (bal0 < 0.01 || sell0Err == nil) && (bal1 < 0.01 || sell1Err == nil) {
+							if (bal0 < 0.01 || sell0Exec.Success) && (bal1 < 0.01 || sell1Exec.Success) {
 								// Record estimated loss from cleanup sells (sold at market floor $0.01)
 								cleanupLoss := 0.0
-								if bal0 >= 0.01 && sell0Err == nil {
-									cleanupLoss += bal0 * (ask1 - 0.01) // Lost difference vs observed buy price
+								if sell0Exec.ExecutedQty > 0.01 {
+									cleanupLoss += sell0Exec.ExecutedQty * (ask1 - rMinAsk) // Lost difference vs configured cleanup floor
 								}
-								if bal1 >= 0.01 && sell1Err == nil {
-									cleanupLoss += bal1 * (ask2 - 0.01)
+								if sell1Exec.ExecutedQty > 0.01 {
+									cleanupLoss += sell1Exec.ExecutedQty * (ask2 - rMinAsk)
 								}
 								if cleanupLoss > 0 {
 									trader.RecordLoss(cleanupLoss)
@@ -2103,6 +1896,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] ✅ Auto-cleanup routine finished! Applying 30s cooldown before unblocking.", id)
 								panicBuyCooldown = time.Now().Add(30 * time.Second)
 							} else {
+								if bal0 >= 0.01 && !sell0Exec.Success && sell0Exec.Result != nil && sell0Exec.Result.Message != "" {
+									tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[0], sell0Exec.Result.Message)
+								}
+								if bal1 >= 0.01 && !sell1Exec.Success && sell1Exec.Result != nil && sell1Exec.Result.Message != "" {
+									tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[1], sell1Exec.Result.Message)
+								}
 								tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Applying 2m cooldown to prevent immediate retry loops.", id)
 								panicBuyCooldown = time.Now().Add(120 * time.Second)
 							}
@@ -2123,6 +1922,166 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+type directMarketExecution struct {
+	Result         *trading.TradeResult
+	Err            error
+	ExecutedQty    float64
+	Success        bool
+	WSConfirmed    bool
+	OrderConfirmed bool
+	VerifyErr      error
+}
+
+func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
+	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
+	orderID := ""
+	if result != nil {
+		orderID = result.OrderID
+	}
+	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, side, orderID, tokenID, initialBalance, size, confirmTimeout)
+	success := executedQty > 0.01 || orderConfirmed
+
+	if result == nil {
+		result = &trading.TradeResult{
+			Price:     price,
+			Size:      size,
+			Side:      string(side),
+			TokenID:   tokenID,
+			Outcome:   outcome,
+			Timestamp: time.Now(),
+		}
+	}
+	if success {
+		result.Success = true
+		if orderConfirmed {
+			result.Status = "FILLED"
+		} else if wsConfirmed {
+			result.Status = "CONFIRMED"
+		}
+	} else if err == nil && result.Message == "" {
+		if verifyErr != nil {
+			result.Message = fmt.Sprintf("No confirmed fill before timeout (%v)", verifyErr)
+		} else {
+			result.Message = "No confirmed fill before timeout at configured cap"
+		}
+	}
+
+	return directMarketExecution{
+		Result:         result,
+		Err:            err,
+		ExecutedQty:    executedQty,
+		Success:        success,
+		WSConfirmed:    wsConfirmed,
+		OrderConfirmed: orderConfirmed,
+		VerifyErr:      verifyErr,
+	}
+}
+
+func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*trading.TradeResult, error) {
+	if side == api.SideSell {
+		return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, feeRateBps)
+	}
+	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeMarket, api.TIFFillAndKill, feeRateBps)
+}
+
+func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, side api.Side, orderID, tokenID string, initialBalance, requestedSize float64, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {
+	if orderID != "" {
+		defer trader.ResetConfirmedFill(orderID)
+	}
+
+	type orderFillResult struct {
+		filled bool
+		err    error
+	}
+	orderFilledCh := make(chan orderFillResult, 1)
+	if orderID != "" {
+		waitCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			filled, err := trader.WaitForFill(waitCtx, orderID, timeout)
+			orderFilledCh <- orderFillResult{filled: filled, err: err}
+		}()
+	}
+
+	pollInterval := 50 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for {
+		select {
+		case orderFill := <-orderFilledCh:
+			if orderFill.filled {
+				orderConfirmed = true
+			}
+			if orderFill.err != nil && verifyErr == nil && !strings.Contains(orderFill.err.Error(), "context canceled") {
+				verifyErr = orderFill.err
+			}
+		default:
+		}
+
+		if orderID != "" {
+			if wsQty := trader.GetConfirmedFillSize(orderID); wsQty > executedQty {
+				executedQty = wsQty
+				wsConfirmed = wsQty > 0.01
+			}
+		}
+
+		positions, err := trader.GetPositions(ctx)
+		if err == nil {
+			if delta := executionDeltaFromPositions(positions, tokenID, initialBalance, side); delta > executedQty {
+				executedQty = delta
+			}
+		} else if verifyErr == nil {
+			verifyErr = err
+		}
+
+		if executedQty > 0.01 || orderConfirmed || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(pollInterval)
+	}
+
+	if positions, err := trader.ForceRefreshPositions(ctx); err == nil {
+		if delta := executionDeltaFromPositions(positions, tokenID, initialBalance, side); delta > executedQty {
+			executedQty = delta
+		}
+		verifyErr = nil
+	}
+	if orderID != "" {
+		if wsQty := trader.GetConfirmedFillSize(orderID); wsQty > executedQty {
+			executedQty = wsQty
+			wsConfirmed = wsQty > 0.01
+		}
+	}
+	if orderConfirmed && executedQty <= 0.01 {
+		executedQty = requestedSize
+	}
+	if executedQty > 0.01 || orderConfirmed {
+		verifyErr = nil
+	}
+	return executedQty, wsConfirmed, orderConfirmed, verifyErr
+}
+
+func executionDeltaFromPositions(positions []trading.PositionInfo, tokenID string, initialBalance float64, side api.Side) float64 {
+	current := 0.0
+	for _, pos := range positions {
+		if pos.TokenID == tokenID {
+			current = pos.Size
+			break
+		}
+	}
+	if side == api.SideSell {
+		delta := initialBalance - current
+		if delta < 0 {
+			return 0
+		}
+		return delta
+	}
+	delta := current - initialBalance
+	if delta < 0 {
+		return 0
+	}
+	return delta
 }
 
 func pairBalancesFromPositions(positions []trading.PositionInfo, token0, token1 string) (float64, float64) {
@@ -2222,6 +2181,7 @@ func settleMarketInventory(
 	splitInventory *paper.SplitInventory,
 	tui *paper.TUI,
 	allowSell bool,
+	sellCap float64,
 	reason string,
 ) error {
 	if len(outcomes) != 2 || len(market.Tokens) != 2 {
@@ -2277,16 +2237,22 @@ func settleMarketInventory(
 		if rate == 0 {
 			rate = 1000
 		}
-		_, sellErr := trader.Sell(ctx, side.tokenID, side.outcome, 0.01, side.qty, api.OrderTypeMarket, api.TIFFillAndKill, rate)
-		if sellErr != nil {
-			if strings.Contains(sellErr.Error(), "min size") {
+		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, sellCap, side.qty, rate, side.qty, 2*time.Second)
+		if !exec.Success {
+			if exec.Result != nil && strings.Contains(exec.Result.Message, "min size") {
 				tui.LogEvent("[%s] ⚠️ %s kept %.2f %s shares as dust", id, reason, side.qty, side.outcome)
 				continue
 			}
-			tui.LogEvent("[%s] ⚠️ %s sell cleanup failed for %s: %v", id, reason, side.outcome, sellErr)
+			if exec.Err != nil {
+				tui.LogEvent("[%s] ⚠️ %s sell cleanup failed for %s: %v", id, reason, side.outcome, exec.Err)
+			} else if exec.Result != nil && exec.Result.Message != "" {
+				tui.LogEvent("[%s] ⚠️ %s sell cleanup failed for %s: %s", id, reason, side.outcome, exec.Result.Message)
+			} else {
+				tui.LogEvent("[%s] ⚠️ %s sell cleanup failed for %s", id, reason, side.outcome)
+			}
 			continue
 		}
-		tui.LogEvent("[%s] 📉 %s sold %.2f unbalanced shares of %s", id, reason, side.qty, side.outcome)
+		tui.LogEvent("[%s] 📉 %s sold %.2f unbalanced shares of %s", id, reason, exec.ExecutedQty, side.outcome)
 	}
 
 	return nil

@@ -228,8 +228,9 @@ type RealTrader struct {
 	cachedBalance     float64
 	lastBalanceUpdate time.Time
 
-	livePositions map[string]float64
-	posMu         sync.Mutex
+	livePositions       map[string]float64
+	confirmedOrderFills map[string]float64
+	posMu               sync.Mutex
 }
 
 // NewRealTrader creates a new real trader
@@ -246,11 +247,12 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
 	trader := &RealTrader{
-		clob:          clob,
-		polygon:       polygon,
-		config:        cfg,
-		startOfDay:    time.Now().Truncate(24 * time.Hour),
-		livePositions: make(map[string]float64),
+		clob:                clob,
+		polygon:             polygon,
+		config:              cfg,
+		startOfDay:          time.Now().Truncate(24 * time.Hour),
+		livePositions:       make(map[string]float64),
+		confirmedOrderFills: make(map[string]float64),
 	}
 
 	// Initialize User WebSocket for real-time fills
@@ -263,10 +265,14 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 }
 
 func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
+	size, err := strconv.ParseFloat(fill.Size, 64)
+	if err != nil || size <= 0 {
+		return
+	}
+
 	t.posMu.Lock()
 	defer t.posMu.Unlock()
 
-	size, _ := strconv.ParseFloat(fill.Size, 64)
 	if fill.Side == "BUY" {
 		t.livePositions[fill.AssetID] += size
 	} else if fill.Side == "SELL" {
@@ -275,6 +281,32 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 			t.livePositions[fill.AssetID] = 0
 		}
 	}
+	if fill.OrderID != "" {
+		if len(t.confirmedOrderFills) >= 4096 {
+			t.confirmedOrderFills = make(map[string]float64)
+		}
+		t.confirmedOrderFills[fill.OrderID] += size
+	}
+}
+
+// GetConfirmedFillSize returns the cumulative WS-confirmed fill quantity for an order.
+func (t *RealTrader) GetConfirmedFillSize(orderID string) float64 {
+	if orderID == "" {
+		return 0
+	}
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	return t.confirmedOrderFills[orderID]
+}
+
+// ResetConfirmedFill forgets any cached WS-confirmed fill quantity for an order.
+func (t *RealTrader) ResetConfirmedFill(orderID string) {
+	if orderID == "" {
+		return
+	}
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	delete(t.confirmedOrderFills, orderID)
 }
 
 // StartUserWS connects the user websocket and primes the position cache
