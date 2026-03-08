@@ -962,6 +962,25 @@ func utilbotPreferLivePairBalances(live0, live1, backup0, backup1 float64) (floa
 	return math.Max(live0, backup0), math.Max(live1, backup1)
 }
 
+func utilbotCombineBalanceSnapshots(liveAcquired0, liveAcquired1, liveBal0, liveBal1, backupAcquired0, backupAcquired1, backupBal0, backupBal1 float64) (acquired0, acquired1, bal0, bal1 float64, source string) {
+	acquired0, acquired1 = utilbotPreferLivePairBalances(liveAcquired0, liveAcquired1, backupAcquired0, backupAcquired1)
+	bal0, bal1 = utilbotPreferLivePairBalances(liveBal0, liveBal1, backupBal0, backupBal1)
+
+	hasLive := utilbotShouldAttemptCleanupSell(liveAcquired0) || utilbotShouldAttemptCleanupSell(liveAcquired1)
+	hasBackup := utilbotShouldAttemptCleanupSell(backupAcquired0) || utilbotShouldAttemptCleanupSell(backupAcquired1)
+	switch {
+	case hasLive && hasBackup:
+		source = "Live WS + on-chain backup"
+	case hasBackup:
+		source = "On-chain backup"
+	case hasLive:
+		source = "Live WS"
+	default:
+		source = "On-chain backup"
+	}
+	return acquired0, acquired1, bal0, bal1, source
+}
+
 func utilbotQueryLiveBuyBalanceDelta(ctx context.Context, trader *trading.RealTrader, tokenIDs [2]string, initialBal0, initialBal1 float64, haveInitialSnapshot bool, timeout time.Duration) (acquired0, acquired1, bal0, bal1 float64, ready bool, err error) {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
@@ -1027,14 +1046,14 @@ func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *co
 		fmt.Printf("⚠️ Live WS balance watch failed: %v\n", liveErr)
 	}
 	if !liveReady {
-		fmt.Println("⚠️ Live WS positions did not update in time. Falling back to on-chain balances...")
-		var err0, err1 error
-		acquired0, acquired1, bal0, bal1, err0, err1 = utilbotQueryBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot)
+		fmt.Println("ℹ️ Confirmed WS positions were not visible within 2s yet. Checking on-chain backup balances...")
+		liveAcquired0, liveAcquired1, liveBal0, liveBal1 := acquired0, acquired1, bal0, bal1
+		backupAcquired0, backupAcquired1, backupBal0, backupBal1, err0, err1 := utilbotQueryBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot)
 		if err0 != nil || err1 != nil {
 			fmt.Printf("⚠️ Failed to verify buy balances (err0=%v, err1=%v). Skipping merge/cleanup.\n", err0, err1)
 			return
 		}
-		balanceSource = "On-chain backup"
+		acquired0, acquired1, bal0, bal1, balanceSource = utilbotCombineBalanceSnapshots(liveAcquired0, liveAcquired1, liveBal0, liveBal1, backupAcquired0, backupAcquired1, backupBal0, backupBal1)
 	}
 
 	shortfall0 := math.Max(0, requestedShares-acquired0)
@@ -1067,9 +1086,7 @@ func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *co
 				if err0 != nil || err1 != nil {
 					fmt.Printf("⚠️ On-chain backup merge check failed (err0=%v, err1=%v). Continuing with live cleanup snapshot.\n", err0, err1)
 				} else {
-					acquired0, acquired1 = utilbotPreferLivePairBalances(acquired0, acquired1, backupAcquired0, backupAcquired1)
-					bal0, bal1 = utilbotPreferLivePairBalances(bal0, bal1, backupBal0, backupBal1)
-					balanceSource = "Live WS + on-chain backup"
+					acquired0, acquired1, bal0, bal1, balanceSource = utilbotCombineBalanceSnapshots(acquired0, acquired1, bal0, bal1, backupAcquired0, backupAcquired1, backupBal0, backupBal1)
 					minQty, excess0, excess1 = utilbotBalancedAndExcessShares(acquired0, acquired1)
 					fmt.Printf("📊 Combined cleanup balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
 					if minQty >= 0.000001 {

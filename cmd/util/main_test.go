@@ -162,6 +162,32 @@ func TestUtilbotPreferLivePairBalancesAllowsBackupToFillMissingSide(t *testing.T
 	}
 }
 
+func TestUtilbotCombineBalanceSnapshotsUsesBothSourcesWhenHelpful(t *testing.T) {
+	acquired0, acquired1, bal0, bal1, source := utilbotCombineBalanceSnapshots(0.1748, 0, 0.1748, 0, 0.1500, 0.2250, 0.1500, 0.2250)
+	if math.Abs(acquired0-0.1748) > 0.000001 || math.Abs(acquired1-0.2250) > 0.000001 {
+		t.Fatalf("got acquired %.4f/%.4f want 0.1748/0.2250", acquired0, acquired1)
+	}
+	if math.Abs(bal0-0.1748) > 0.000001 || math.Abs(bal1-0.2250) > 0.000001 {
+		t.Fatalf("got balances %.4f/%.4f want 0.1748/0.2250", bal0, bal1)
+	}
+	if source != "Live WS + on-chain backup" {
+		t.Fatalf("source got %q want %q", source, "Live WS + on-chain backup")
+	}
+}
+
+func TestUtilbotCombineBalanceSnapshotsFallsBackToBackupWhenLiveIsEmpty(t *testing.T) {
+	acquired0, acquired1, bal0, bal1, source := utilbotCombineBalanceSnapshots(0, 0, 0, 0, 0.2500, 0.5000, 0.2500, 0.5000)
+	if math.Abs(acquired0-0.2500) > 0.000001 || math.Abs(acquired1-0.5000) > 0.000001 {
+		t.Fatalf("got acquired %.4f/%.4f want 0.2500/0.5000", acquired0, acquired1)
+	}
+	if math.Abs(bal0-0.2500) > 0.000001 || math.Abs(bal1-0.5000) > 0.000001 {
+		t.Fatalf("got balances %.4f/%.4f want 0.2500/0.5000", bal0, bal1)
+	}
+	if source != "On-chain backup" {
+		t.Fatalf("source got %q want %q", source, "On-chain backup")
+	}
+}
+
 func TestNormalizePanicBuySharesPerSideBumpsNearMinimum(t *testing.T) {
 	got, bumped := normalizePanicBuySharesPerSide(1.0, 0.99, 0.02)
 	if !bumped {
