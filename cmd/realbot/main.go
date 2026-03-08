@@ -32,6 +32,7 @@ const (
 	realbotLocalQuoteMaxAge = 250 * time.Millisecond
 	realbotExecQuoteTimeout = 1500 * time.Millisecond
 	realbotRestBookMaxAge   = 2 * time.Second
+	realbotCleanupVerifyTTL = 20 * time.Second
 	minOnChainActionShares  = 0.01
 )
 
@@ -1954,7 +1955,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									}
 								}
 								if hasActionableCleanupRemainder(excess0) || hasActionableCleanupRemainder(excess1) {
-									verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 8*time.Second)
+									verifyCtx, cancelVerify := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
 									remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
 									cancelVerify()
 									if verifyErr != nil && (hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1)) {
@@ -2060,7 +2061,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 							}
 
-							verifyCleanupCtx, cancelVerifyCleanup := context.WithTimeout(context.Background(), 8*time.Second)
+							verifyCleanupCtx, cancelVerifyCleanup := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
 							remaining0, remaining1, resolvedBal0, resolvedBal1, resolvedSource, resolvedErr := waitForAcquiredCleanupResolution(verifyCleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
 							cancelVerifyCleanup()
 							actualSold0 := math.Max(0, acquired0-remaining0)
@@ -2164,8 +2165,40 @@ func normalizeMarketSellShares(qty float64) float64 {
 	return math.Floor((qty*100)+1e-9) / 100
 }
 
+func combineCleanupVerificationBalances(live0, live1, pos0, pos1, onChain0, onChain1 float64, posErr, onChainErr error) (bal0, bal1 float64, source string, err error) {
+	hasLive := shouldAttemptCleanupSell(live0) || shouldAttemptCleanupSell(live1)
+	hasPos := posErr == nil && (shouldAttemptCleanupSell(pos0) || shouldAttemptCleanupSell(pos1))
+
+	if onChainErr == nil {
+		return onChain0, onChain1, "on-chain truth", nil
+	}
+	if posErr == nil {
+		bal0, bal1 = preferLivePairBalances(live0, live1, pos0, pos1)
+		source = "position snapshot"
+		switch {
+		case hasLive && hasPos:
+			source = "live WS + position snapshot"
+		case hasLive:
+			source = "live WS"
+		}
+		return bal0, bal1, source, nil
+	}
+	if hasLive {
+		return live0, live1, "live WS", nil
+	}
+	return 0, 0, "", fmt.Errorf("position snapshot failed (%v); on-chain truth failed (%v)", posErr, onChainErr)
+}
+
+func loadPairBalancesForCleanupVerification(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, err error) {
+	live0 := trader.GetLivePositionSize(token0)
+	live1 := trader.GetLivePositionSize(token1)
+	pos0, pos1, posErr := loadPairPositionBalances(ctx, trader, token0, token1)
+	onChain0, onChain1, onChainErr := loadPairOnChainBalances(ctx, trader, token0, token1)
+	return combineCleanupVerificationBalances(live0, live1, pos0, pos1, onChain0, onChain1, posErr, onChainErr)
+}
+
 func loadAcquiredPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, source string, err error) {
-	bal0, bal1, source, err = loadPairBalancesWSFirst(ctx, trader, token0, token1)
+	bal0, bal1, source, err = loadPairBalancesForCleanupVerification(ctx, trader, token0, token1)
 	if err != nil {
 		return 0, 0, 0, 0, source, err
 	}
@@ -2189,7 +2222,7 @@ func waitForAcquiredCleanupResolution(ctx context.Context, trader *trading.RealT
 
 func waitForPairFlatBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, err error) {
 	for {
-		bal0, bal1, source, err = loadPairBalancesWSFirst(ctx, trader, token0, token1)
+		bal0, bal1, source, err = loadPairBalancesForCleanupVerification(ctx, trader, token0, token1)
 		if err == nil && !hasActionableCleanupRemainder(bal0) && !hasActionableCleanupRemainder(bal1) {
 			return bal0, bal1, source, nil
 		}
@@ -3194,7 +3227,7 @@ func settleMarketInventory(
 		tui.LogEvent("[%s] 📉 %s sold %s unbalanced shares of %s", id, reason, formatShareQty(exec.ExecutedQty), side.outcome)
 	}
 
-	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 8*time.Second)
+	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
 	remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
 	cancelVerify()
 	if (hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1)) && verifyErr != nil {
