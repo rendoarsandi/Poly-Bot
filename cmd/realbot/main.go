@@ -733,6 +733,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	defer tui.ClearWalletTruthPositions(id)
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
+	var nearExpiryNoticeSent bool
 
 	refreshWalletTruth := func(timeout time.Duration) {
 		truthCtx, truthCancel := context.WithTimeout(ctx, timeout)
@@ -794,7 +795,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 		if timeToExpiry > 0 && timeToExpiry <= mergeBuffer {
 			if time.Now().After(nextNearCloseCleanup) {
-				tui.LogEvent("[%s] ⏳ Near expiry (%.0fs left): pausing new trades and settling inventory...", id, timeToExpiry.Seconds())
+				if !nearExpiryNoticeSent {
+					tui.LogEvent("[%s] ⏳ Near expiry: settling only", id)
+					nearExpiryNoticeSent = true
+				}
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY"); err != nil {
 					tui.LogEvent("[%s] ⚠️ Near-expiry cleanup failed: %v", id, err)
