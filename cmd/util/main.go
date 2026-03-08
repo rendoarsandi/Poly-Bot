@@ -568,8 +568,8 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		}
 		cap0 := buyCaps[outcomes[0]]
 		cap1 := buyCaps[outcomes[1]]
-		updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
-		fmt.Printf("⚡ Using local quote: %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Est. total: $%.2f\n", outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue)
+		_ = cap0
+		_ = cap1
 	}
 
 	var initialUSDC float64

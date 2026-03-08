@@ -30,6 +30,8 @@ import (
 const (
 	UseLiveUI               = true // Set to false for traditional logging
 	realbotLocalQuoteMaxAge = 250 * time.Millisecond
+	realbotExecQuoteTimeout = 1500 * time.Millisecond
+	realbotRestBookMaxAge   = 2 * time.Second
 	minOnChainActionShares  = 0.01
 )
 
@@ -1329,6 +1331,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, sharesToSell,
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
+							execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+							quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshSellExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+							cancelExecQuote()
+							if quoteErr != nil {
+								tui.LogEvent("[%s] ⚠️ Split-sell execution quote unavailable: %v", id, quoteErr)
+								continue
+							}
+							if quoteSource == "rest" {
+								tui.LogEvent("[%s] 📡 Refreshed split-sell books via REST in %s after %s", id, quoteMetric.Round(time.Millisecond), quoteDetail)
+							}
 							bid1 = tokenBids[outcomes[0]]
 							bid2 = tokenBids[outcomes[1]]
 							bidSum = bid1 + bid2
@@ -1347,8 +1359,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] ⚠️ Local sell quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
 								continue
 							}
-							tui.LogEvent("[%s] ⚡ Using local sell quote: %s@%.3f + %s@%.3f = $%.3f (%.1f%%) | %.0f shares",
-								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell)
 
 							// Sell both sides in parallel
 							token0 := getTokenID(outcomes[0])
@@ -1648,6 +1658,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
+						execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+						quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshBuyExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+						cancelExecQuote()
+						if quoteErr != nil {
+							tui.LogEvent("[%s] ⚠️ Execution quote unavailable before submit: %v", id, quoteErr)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+						if quoteSource == "rest" {
+							tui.LogEvent("[%s] 📡 Refreshed buy books via REST in %s after %s", id, quoteMetric.Round(time.Millisecond), quoteDetail)
+						}
 						ask1 = tokenAsks[outcomes[0]]
 						ask2 = tokenAsks[outcomes[1]]
 						sum = ask1 + ask2
@@ -1656,6 +1677,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] ⚠️ Local quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
 							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 							continue
+						}
+						refreshedTargetShares := math.Floor(tradeSize / sum)
+						if refreshedTargetShares > 0 && refreshedTargetShares < shares {
+							tui.LogEvent("[%s] 📉 Refreshed pair cost resized shares %.0f→%.0f using live pair=$%.3f", id, shares, refreshedTargetShares, sum)
+							shares = refreshedTargetShares
 						}
 
 						limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
@@ -1675,8 +1701,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 							continue
 						}
-						tui.LogEvent("[%s] ⚡ Using local quote: %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%)",
-							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -2434,6 +2458,102 @@ func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids map
 		}
 	}
 	return true, maxObservedAge, ""
+}
+
+func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (time.Duration, error) {
+	type quoteResult struct {
+		outcome string
+		bids    []paper.MarketLevel
+		asks    []paper.MarketLevel
+		latency time.Duration
+		err     error
+	}
+
+	results := make(chan quoteResult, len(outcomes))
+	var wg sync.WaitGroup
+	for _, out := range outcomes {
+		tokenID := mkt.GetTokenIDForOutcome(market, out)
+		if tokenID == "" {
+			return 0, fmt.Errorf("missing token id for outcome %s", out)
+		}
+		wg.Add(1)
+		go func(outcome, token string) {
+			defer wg.Done()
+			start := time.Now()
+			book, err := restClient.GetOrderBook(ctx, token)
+			latency := time.Since(start)
+			if err != nil {
+				results <- quoteResult{outcome: outcome, latency: latency, err: err}
+				return
+			}
+			age, ageErr := api.OrderBookAgeAt(book, time.Now())
+			if ageErr != nil {
+				results <- quoteResult{outcome: outcome, latency: latency, err: fmt.Errorf("invalid order book timestamp: %w", ageErr)}
+				return
+			}
+			if age > realbotRestBookMaxAge {
+				results <- quoteResult{outcome: outcome, latency: latency, err: fmt.Errorf("stale order book age %s > %s", age.Round(time.Millisecond), realbotRestBookMaxAge)}
+				return
+			}
+			results <- quoteResult{
+				outcome: outcome,
+				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
+				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
+				latency: latency,
+			}
+		}(out, tokenID)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var maxLatency time.Duration
+	for res := range results {
+		if res.latency > maxLatency {
+			maxLatency = res.latency
+		}
+		if res.err != nil {
+			return maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
+		}
+		tokenFullBids[res.outcome] = res.bids
+		tokenFullAsks[res.outcome] = res.asks
+		bestBid, hasBid := realbotBestBidFromLevels(res.bids)
+		bestAsk, hasAsk := realbotBestAskFromLevels(res.asks)
+		if !hasBid || !hasAsk || bestBid <= 0 || bestAsk <= 0 || bestBid >= bestAsk {
+			return maxLatency, fmt.Errorf("invalid refreshed book for %s", res.outcome)
+		}
+		tokenBids[res.outcome] = bestBid
+		tokenAsks[res.outcome] = bestAsk
+		quoteState[res.outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest-exec"}
+	}
+	return maxLatency, nil
+}
+
+func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (source string, metric time.Duration, detail string, err error) {
+	now := time.Now()
+	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenAsks, tokenFullAsks, quoteState, realbotLocalQuoteMaxAge)
+	if fresh {
+		return "local", age, "", nil
+	}
+	latency, refreshErr := realbotRefreshExecutionBooks(ctx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+	if refreshErr != nil {
+		return "rest", latency, reason, fmt.Errorf("local quote unavailable (%s): %w", reason, refreshErr)
+	}
+	return "rest", latency, reason, nil
+}
+
+func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (source string, metric time.Duration, detail string, err error) {
+	now := time.Now()
+	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenFullBids, quoteState, realbotLocalQuoteMaxAge)
+	if fresh {
+		return "local", age, "", nil
+	}
+	latency, refreshErr := realbotRefreshExecutionBooks(ctx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+	if refreshErr != nil {
+		return "rest", latency, reason, fmt.Errorf("local quote unavailable (%s): %w", reason, refreshErr)
+	}
+	return "rest", latency, reason, nil
 }
 
 func realbotMatchedAskLiquidity(asks0, asks1 []paper.MarketLevel, maxExecutionSum float64) float64 {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,12 @@ import (
 	"Market-bot/internal/marketlookup"
 	"Market-bot/internal/setup"
 	"github.com/joho/godotenv"
+)
+
+const (
+	manualbotEmergencySellFloor = 0.03
+	manualbotQuoteTimeout       = 1500 * time.Millisecond
+	manualbotQuoteMaxAge        = 2 * time.Second
 )
 
 func main() {
@@ -33,6 +40,7 @@ func main() {
 
 	ctx := context.Background()
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
+	rest := api.NewRestClient("")
 	address := trader.Address()
 	target := firstTargetArg(os.Args[1:])
 
@@ -123,10 +131,24 @@ func main() {
 				var confirm string
 				fmt.Scanln(&confirm)
 				if strings.ToLower(confirm) == "y" {
-					fmt.Printf("   ⏳ Selling %s...\n", outcomes[i])
+					quoteCtx, cancelQuote := context.WithTimeout(ctx, manualbotQuoteTimeout)
+					bestBid, latency, age, quoteErr := manualbotFetchFreshBestBid(quoteCtx, rest, tokenIDs[i], manualbotQuoteMaxAge)
+					cancelQuote()
+					if quoteErr != nil {
+						fmt.Printf("   ⚠️ Fresh live bid unavailable for %s: %v\n", outcomes[i], quoteErr)
+						fmt.Println("   ⏭️  Skipped to avoid dumping against a stale/empty book.")
+						continue
+					}
+					if bestBid < manualbotEmergencySellFloor {
+						fmt.Printf("   ⚠️ Live best bid %.3f is below dump floor %.3f (age %s, latency %s).\n", bestBid, manualbotEmergencySellFloor, age.Round(time.Millisecond), latency.Round(time.Millisecond))
+						fmt.Println("   ⏭️  Skipped to avoid sending a guaranteed-kill FAK dump.")
+						continue
+					}
+					fmt.Printf("   📡 Live best bid: %.3f (age %s, latency %s)\n", bestBid, age.Round(time.Millisecond), latency.Round(time.Millisecond))
+					fmt.Printf("   ⏳ Selling %s with FAK floor %.3f...\n", outcomes[i], manualbotEmergencySellFloor)
 					// Using trader.Sell with Market Order
 					// Using trader.Sell with Market Order
-					res, err := trader.Sell(ctx, tokenIDs[i], outcomes[i], 0.01, b, api.OrderTypeMarket, api.TIFFillAndKill, 1000)
+					res, err := trader.Sell(ctx, tokenIDs[i], outcomes[i], manualbotEmergencySellFloor, b, api.OrderTypeMarket, api.TIFFillAndKill, 1000)
 					if err != nil {
 						fmt.Printf("   ❌ Sell error: %v\n", err)
 					} else {
@@ -152,4 +174,33 @@ func firstTargetArg(args []string) string {
 		return arg
 	}
 	return ""
+}
+
+func manualbotFetchFreshBestBid(ctx context.Context, restClient *api.RestClient, tokenID string, maxAge time.Duration) (bestBid float64, latency time.Duration, age time.Duration, err error) {
+	start := time.Now()
+	book, err := restClient.GetOrderBook(ctx, tokenID)
+	latency = time.Since(start)
+	if err != nil {
+		return 0, latency, 0, err
+	}
+	age, err = api.OrderBookAgeAt(book, time.Now())
+	if err != nil {
+		return 0, latency, 0, err
+	}
+	if age > maxAge {
+		return 0, latency, age, fmt.Errorf("stale order book age %s > %s", age.Round(time.Millisecond), maxAge)
+	}
+	for _, level := range book.Bids {
+		price, parseErr := strconv.ParseFloat(level.Price, 64)
+		if parseErr != nil {
+			continue
+		}
+		if price > bestBid && price > 0 && price < 1.0 {
+			bestBid = price
+		}
+	}
+	if bestBid <= 0 {
+		return 0, latency, age, fmt.Errorf("no live bid found in order book")
+	}
+	return bestBid, latency, age, nil
 }

@@ -415,6 +415,44 @@ type OrderBookResponse struct {
 	Asks      []PriceLevel `json:"asks"`
 }
 
+func ParseOrderBookTimestamp(raw string) (time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("missing order book timestamp")
+	}
+	if unix, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		switch {
+		case unix >= 1_000_000_000_000:
+			return time.UnixMilli(unix), nil
+		case unix >= 1_000_000_000:
+			return time.Unix(unix, 0), nil
+		default:
+			return time.Time{}, fmt.Errorf("unsupported numeric order book timestamp %q", raw)
+		}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return ts, nil
+	}
+	if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return ts, nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported order book timestamp %q", raw)
+}
+
+func OrderBookAgeAt(book *OrderBookResponse, now time.Time) (time.Duration, error) {
+	if book == nil {
+		return 0, fmt.Errorf("nil order book")
+	}
+	ts, err := ParseOrderBookTimestamp(book.Timestamp)
+	if err != nil {
+		return 0, err
+	}
+	if now.Before(ts) {
+		return 0, nil
+	}
+	return now.Sub(ts), nil
+}
+
 // GetOrderBook fetches the current order book for a token from REST API
 func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBookResponse, error) {
 	// Rate limit check

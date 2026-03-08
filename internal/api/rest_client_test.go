@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestGetMarket(t *testing.T) {
@@ -89,5 +90,39 @@ func TestGetMarketsByEventSlug(t *testing.T) {
 	}
 	if len(markets[0].Tokens) != 2 || markets[0].Tokens[0].TokenID != "yes-token" {
 		t.Fatalf("unexpected market tokens: %+v", markets[0].Tokens)
+	}
+}
+
+func TestParseOrderBookTimestamp(t *testing.T) {
+	msTs, err := ParseOrderBookTimestamp("1710000000123")
+	if err != nil {
+		t.Fatalf("expected millisecond timestamp to parse, got %v", err)
+	}
+	if msTs.UnixMilli() != 1710000000123 {
+		t.Fatalf("unexpected millisecond timestamp %d", msTs.UnixMilli())
+	}
+
+	rfcTs, err := ParseOrderBookTimestamp("2026-03-08T12:34:56.789Z")
+	if err != nil {
+		t.Fatalf("expected RFC3339 timestamp to parse, got %v", err)
+	}
+	if rfcTs.UTC().Format(time.RFC3339Nano) != "2026-03-08T12:34:56.789Z" {
+		t.Fatalf("unexpected RFC timestamp %s", rfcTs.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+func TestOrderBookAgeAt(t *testing.T) {
+	now := time.UnixMilli(1710000000500)
+	book := &OrderBookResponse{Timestamp: "1710000000123"}
+	age, err := OrderBookAgeAt(book, now)
+	if err != nil {
+		t.Fatalf("expected age calculation to succeed, got %v", err)
+	}
+	if age != 377*time.Millisecond {
+		t.Fatalf("unexpected age %v", age)
+	}
+
+	if _, err := OrderBookAgeAt(&OrderBookResponse{Timestamp: "bad"}, now); err == nil {
+		t.Fatal("expected invalid timestamp to fail")
 	}
 }

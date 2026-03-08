@@ -324,6 +324,8 @@ type tuiModel struct {
 	// Settings overlay state (immediate, not snapshotted)
 	showSettings   bool
 	settingsCursor int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
+	scrollOffset   int
+	contentLines   int
 }
 
 type WalletTruthPosition struct {
@@ -346,6 +348,142 @@ func (m tuiModel) Init() tea.Cmd {
 	return tickCmd(m.interval)
 }
 
+func normalizeTUIWidth(w int) int {
+	if w < 60 {
+		return 80
+	}
+	return w
+}
+
+func (m tuiModel) bodyViewportHeight() int {
+	h := m.snap.height
+	if h <= 1 {
+		return 20
+	}
+	return h - 1
+}
+
+func (m *tuiModel) maxScrollOffset() int {
+	maxOffset := m.contentLines - m.bodyViewportHeight()
+	if maxOffset < 0 {
+		return 0
+	}
+	return maxOffset
+}
+
+func (m *tuiModel) clampScrollOffset() {
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+	maxOffset := m.maxScrollOffset()
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+}
+
+func (m *tuiModel) scrollBy(delta int) {
+	m.scrollOffset += delta
+	m.clampScrollOffset()
+}
+
+func (m *tuiModel) scrollTo(offset int) {
+	m.scrollOffset = offset
+	m.clampScrollOffset()
+}
+
+func viewportLines(lines []string, offset, height int) ([]string, int, int) {
+	if height < 1 {
+		height = 1
+	}
+	maxOffset := len(lines) - height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	end := offset + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	visible := append([]string(nil), lines[offset:end]...)
+	for len(visible) < height {
+		visible = append(visible, "")
+	}
+	return visible, offset, maxOffset
+}
+
+func (m tuiModel) renderMainContent(w int) string {
+	if m.showSettings {
+		return m.renderSettings(w)
+	}
+
+	s := m.snap
+	var rows []string
+
+	rows = append(rows, m.renderHeader(w))
+	rows = append(rows, "")
+
+	if w > 100 {
+		leftW := (w - 2) / 2
+		rightW := w - leftW - 2
+
+		var leftRows []string
+		leftRows = append(leftRows, m.renderMarketInfo(leftW))
+		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
+		leftRows = append(leftRows, m.renderPositions(leftW, s.positions))
+		if ord := m.renderOrders(leftW, s.orders); ord != "" {
+			leftRows = append(leftRows, ord)
+		}
+
+		var rightRows []string
+		rightRows = append(rightRows, m.renderOrderHistory(rightW, m.orderHistoryRows(true)))
+		rightRows = append(rightRows, m.renderEventLog(rightW, m.eventLogRows(true)))
+
+		leftCol := strings.Join(leftRows, "\n\n")
+		rightCol := strings.Join(rightRows, "\n\n")
+
+		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "  ", rightCol)
+		rows = append(rows, content)
+	} else {
+		rows = append(rows, m.renderMarketInfo(w))
+		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity,
+			s.multiplier, s.rounds, s.profitable, s.enginePositions))
+		rows = append(rows, "")
+		rows = append(rows, m.renderPositions(w, s.positions))
+
+		if ord := m.renderOrders(w, s.orders); ord != "" {
+			rows = append(rows, ord)
+		}
+
+		rows = append(rows, m.renderOrderHistory(w, m.orderHistoryRows(false)))
+		rows = append(rows, "")
+		rows = append(rows, m.renderEventLog(w, m.eventLogRows(false)))
+	}
+
+	if s.isKilled {
+		rows = append(rows, "")
+		rows = append(rows, m.renderKillBanner(w))
+	}
+
+	return strings.Join(rows, "\n")
+}
+
+func (m *tuiModel) refreshScrollMetrics() {
+	if m.showSettings {
+		m.contentLines = 0
+		m.scrollOffset = 0
+		return
+	}
+	w := normalizeTUIWidth(m.snap.width)
+	content := m.renderMainContent(w)
+	m.contentLines = lipgloss.Height(content)
+	m.clampScrollOffset()
+}
+
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -357,6 +495,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update the snapshot immediately so the next View() call is perfectly sized
 		m.snap.width = msg.Width
 		m.snap.height = msg.Height
+		m.refreshScrollMetrics()
 
 		// Clear screen on resize to prevent rendering artifacts
 		return m, tea.ClearScreen
@@ -478,6 +617,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			enginePositions: enginePositions,
 		}
 		m.tui.mu.Unlock()
+		m.refreshScrollMetrics()
 
 		return m, tickCmd(m.interval)
 
@@ -492,9 +632,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.restartReq = true
 				m.tui.mu.Unlock()
 				m.showSettings = false
+				m.refreshScrollMetrics()
 				return m, nil
 			case "esc":
 				m.showSettings = false
+				m.refreshScrollMetrics()
 				return m, nil
 			case "up", "k":
 				m.settingsCursor--
@@ -707,13 +849,33 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Normal key handling ──────────────────────────────────────────────
 		switch key {
+		case "up", "k":
+			m.scrollBy(-1)
+			return m, nil
+		case "down", "j":
+			m.scrollBy(1)
+			return m, nil
+		case "pgup", "b":
+			m.scrollBy(-(m.bodyViewportHeight() - 2))
+			return m, nil
+		case "pgdown", "f", " ":
+			m.scrollBy(m.bodyViewportHeight() - 2)
+			return m, nil
+		case "g", "home":
+			m.scrollTo(0)
+			return m, nil
+		case "G", "end":
+			m.scrollTo(m.maxScrollOffset())
+			return m, nil
 		case "s", "S":
 			m.showSettings = true
+			m.refreshScrollMetrics()
 			return m, nil
 		case "c", "C":
 			m.tui.mu.Lock()
 			m.tui.eventLog = []string{}
 			m.tui.mu.Unlock()
+			m.refreshScrollMetrics()
 			return m, nil
 		case "q", "Q", "ctrl+c":
 			// Call the parent cancel func FIRST so the trading loop shuts down
@@ -730,68 +892,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View composes all panels into the final frame. Pure and lock-free.
 func (m tuiModel) View() string {
 	s := m.snap
-	w := s.width
-	if w < 60 {
-		w = 80
-	}
+	w := normalizeTUIWidth(s.width)
 
 	// Settings overlay: replace entire view while open.
 	if m.showSettings {
 		return m.renderSettings(w)
 	}
-
-	var rows []string
-
-	rows = append(rows, m.renderHeader(w))
-	rows = append(rows, "")
-
-	if w > 100 {
-		// Responsive two-column layout
-		leftW := (w - 2) / 2
-		rightW := w - leftW - 2
-
-		var leftRows []string
-		leftRows = append(leftRows, m.renderMarketInfo(leftW))
-		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
-		leftRows = append(leftRows, m.renderPositions(leftW, s.positions))
-		if ord := m.renderOrders(leftW, s.orders); ord != "" {
-			leftRows = append(leftRows, ord)
-		}
-
-		var rightRows []string
-		rightRows = append(rightRows, m.renderOrderHistory(rightW, m.orderHistoryRows(true)))
-		rightRows = append(rightRows, m.renderEventLog(rightW, m.eventLogRows(true)))
-
-		leftCol := strings.Join(leftRows, "\n\n")
-		rightCol := strings.Join(rightRows, "\n\n")
-
-		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "  ", rightCol)
-		rows = append(rows, content)
-	} else {
-		// Single column layout
-		rows = append(rows, m.renderMarketInfo(w))
-		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity,
-			s.multiplier, s.rounds, s.profitable, s.enginePositions))
-		rows = append(rows, "")
-		rows = append(rows, m.renderPositions(w, s.positions))
-
-		if ord := m.renderOrders(w, s.orders); ord != "" {
-			rows = append(rows, ord)
-		}
-
-		rows = append(rows, m.renderOrderHistory(w, m.orderHistoryRows(false)))
-		rows = append(rows, "")
-		rows = append(rows, m.renderEventLog(w, m.eventLogRows(false)))
-	}
-
-	rows = append(rows, m.renderFooter(w))
-
-	if s.isKilled {
-		rows = append(rows, "")
-		rows = append(rows, m.renderKillBanner(w))
-	}
-
-	return strings.Join(rows, "\n")
+	body := m.renderMainContent(w)
+	lines := strings.Split(body, "\n")
+	visibleHeight := m.bodyViewportHeight()
+	visibleLines, effectiveOffset, maxOffset := viewportLines(lines, m.scrollOffset, visibleHeight)
+	footer := m.renderFooter(w, effectiveOffset, maxOffset)
+	return strings.Join(append(visibleLines, footer), "\n")
 }
 
 // ─── TUI Public API ───────────────────────────────────────────────────────────
@@ -2127,7 +2239,7 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 }
 
 // renderFooter: slim status bar.
-func (m tuiModel) renderFooter(w int) string {
+func (m tuiModel) renderFooter(w int, scrollOffset, maxOffset int) string {
 	m.tui.mu.Lock()
 	mode := m.tui.mode
 	m.tui.mu.Unlock()
@@ -2137,10 +2249,22 @@ func (m tuiModel) renderFooter(w int) string {
 	}
 
 	modeText := mode + " Trading Mode"
-	left := styleMuted.Render("  Polyarb-15m  ·  " + modeText)
-	right := styleMuted.Render("Press [q] to quit  ")
-	leftLen := len("  Polyarb-15m  ·  ") + len(modeText)
-	rightLen := len("Press [q] to quit  ")
+	scrollText := "Top"
+	if maxOffset > 0 {
+		scrollText = fmt.Sprintf("Scroll %d/%d", scrollOffset, maxOffset)
+	}
+	leftText := "  Polyarb-15m  ·  " + modeText + "  ·  " + scrollText
+	rightText := "[↑↓/jk] scroll  [PgUp/PgDn] page  [g/G] top/btm  [q] quit  "
+	if w < 120 {
+		rightText = "[↑↓/jk] scroll  [PgUp/PgDn] page  [q] quit  "
+	}
+	if w < 92 {
+		rightText = "[↑↓] scroll  [q] quit  "
+	}
+	left := styleMuted.Render(leftText)
+	right := styleMuted.Render(rightText)
+	leftLen := len(leftText)
+	rightLen := len(rightText)
 	gap := w - 2 - leftLen - rightLen
 	if gap < 1 {
 		gap = 1

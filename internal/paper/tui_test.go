@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"Market-bot/internal/core"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestTUI_RegisterSplitInventory(t *testing.T) {
@@ -338,5 +339,68 @@ func TestRenderEventLogShowsVisibleVsRetainedCount(t *testing.T) {
 	}
 	if strings.Contains(rendered, "one") {
 		t.Fatalf("expected render to omit trimmed events, got %q", rendered)
+	}
+}
+
+func TestViewportLinesClampsOffsetAndPads(t *testing.T) {
+	visible, offset, maxOffset := viewportLines([]string{"a", "b", "c", "d", "e"}, 99, 3)
+	if offset != 2 || maxOffset != 2 {
+		t.Fatalf("expected offset/maxOffset 2/2, got %d/%d", offset, maxOffset)
+	}
+	joined := strings.Join(visible, ",")
+	if joined != "c,d,e" {
+		t.Fatalf("unexpected visible lines %q", joined)
+	}
+
+	visible, offset, maxOffset = viewportLines([]string{"only"}, 0, 3)
+	if offset != 0 || maxOffset != 0 {
+		t.Fatalf("expected offset/maxOffset 0/0, got %d/%d", offset, maxOffset)
+	}
+	if len(visible) != 3 || visible[0] != "only" || visible[1] != "" || visible[2] != "" {
+		t.Fatalf("expected padded viewport, got %#v", visible)
+	}
+}
+
+func TestTUIUpdateScrollKeys(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	model := tuiModel{
+		tui:          tui,
+		snap:         tuiSnapshot{height: 10, width: 120},
+		contentLines: 40,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated := next.(tuiModel)
+	if updated.scrollOffset != 1 {
+		t.Fatalf("expected down key to scroll to 1, got %d", updated.scrollOffset)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	updated = next.(tuiModel)
+	if updated.scrollOffset <= 1 {
+		t.Fatalf("expected pgdown to advance scroll, got %d", updated.scrollOffset)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	updated = next.(tuiModel)
+	if updated.scrollOffset != 0 {
+		t.Fatalf("expected g to jump to top, got %d", updated.scrollOffset)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	updated = next.(tuiModel)
+	if updated.scrollOffset != updated.maxScrollOffset() {
+		t.Fatalf("expected G to jump to bottom, got %d want %d", updated.scrollOffset, updated.maxScrollOffset())
+	}
+}
+
+func TestRenderFooterShowsScrollStatus(t *testing.T) {
+	model := tuiModel{tui: NewTUI(NewEngine(1000.0), NewOrderBook())}
+	rendered := model.renderFooter(140, 12, 50)
+	if !strings.Contains(rendered, "Scroll 12/50") {
+		t.Fatalf("expected footer scroll status, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "[↑↓/jk] scroll") {
+		t.Fatalf("expected footer controls, got %q", rendered)
 	}
 }
