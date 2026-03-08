@@ -1085,33 +1085,40 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg := tui.GetSettings()
 
-		if len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) && hasPendingBoughtPairInventory(engine, id, outcomes[0], outcomes[1]) {
-			tui.LogEvent("[%s] 🔄 Pending bought inventory detected — attempting live recovery...", id)
-			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
-			recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY")
-			trimmed, trimErr := reconcileLocalBoughtPositionsToWalletTruth(recoveryCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory, tui)
-			cancelRecovery()
-			refreshWalletTruth(5 * time.Second)
-			if newBal, err := trader.GetBalance(ctx); err == nil {
-				currentBalance = newBal
-				engine.SetBalance(currentBalance)
-				engine.RecalculateDrawdown()
-			}
-			switch {
-			case trimErr != nil:
-				tui.LogEvent("[%s] ⚠️ Live recovery wallet-truth sync failed: %v", id, trimErr)
-			case trimmed:
-				tui.LogEvent("[%s] ✅ Live recovery synchronized local inventory to wallet truth.", id)
-			}
-			if recoveryErr != nil {
-				tui.LogEvent("[%s] ⚠️ Live recovery incomplete: %v", id, recoveryErr)
-				nextLiveRecoveryAttempt = time.Now().Add(10 * time.Second)
-				if panicBuyCooldown.Before(time.Now().Add(15 * time.Second)) {
-					panicBuyCooldown = time.Now().Add(15 * time.Second)
+		if len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
+			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
+			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
+			cancelRecoveryCheck()
+			if recoveryCheckErr == nil && (shouldAttemptCleanupSell(pendingRecovery0) || shouldAttemptCleanupSell(pendingRecovery1)) {
+				tui.LogEvent("[%s] 🔄 Pending inventory detected (%s): %s=%.4f, %s=%.4f — attempting live recovery...", id, recoverySource, outcomes[0], pendingRecovery0, outcomes[1], pendingRecovery1)
+				recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
+				recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY")
+				trimmed, trimErr := reconcileLocalBoughtPositionsToWalletTruth(recoveryCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory, tui)
+				cancelRecovery()
+				refreshWalletTruth(5 * time.Second)
+				if newBal, err := trader.GetBalance(ctx); err == nil {
+					currentBalance = newBal
+					engine.SetBalance(currentBalance)
+					engine.RecalculateDrawdown()
+				}
+				switch {
+				case trimErr != nil:
+					tui.LogEvent("[%s] ⚠️ Live recovery wallet-truth sync failed: %v", id, trimErr)
+				case trimmed:
+					tui.LogEvent("[%s] ✅ Live recovery synchronized local inventory to wallet truth.", id)
+				}
+				if recoveryErr != nil {
+					tui.LogEvent("[%s] ⚠️ Live recovery incomplete: %v", id, recoveryErr)
+					nextLiveRecoveryAttempt = time.Now().Add(10 * time.Second)
+					if panicBuyCooldown.Before(time.Now().Add(15 * time.Second)) {
+						panicBuyCooldown = time.Now().Add(15 * time.Second)
+					}
+				} else {
+					nextLiveRecoveryAttempt = time.Now().Add(15 * time.Second)
+					continue
 				}
 			} else {
-				nextLiveRecoveryAttempt = time.Now().Add(15 * time.Second)
-				continue
+				nextLiveRecoveryAttempt = time.Now().Add(5 * time.Second)
 			}
 		}
 
@@ -1909,6 +1916,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] 📊 Settled balances: %s=%.6f, %s=%.6f", id, outcomes[0], settled0, outcomes[1], settled1)
 								cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
 								excess0, excess1 := subtractMergedPairBalances(settled0, settled1, mergeQty)
+								residualMergeQty := math.Min(excess0, excess1)
+								if residualMergeQty >= minOnChainActionShares {
+									residualTxHash, residualErr := trader.MergeOnChain(mergeCtx, market.ConditionID, residualMergeQty, len(market.Tokens))
+									if residualErr != nil {
+										tui.LogEvent("[%s] ⚠️ Residual merge after primary merge failed: %v", id, residualErr)
+									} else {
+										engine.MergeForMarket(id, outcomes[0], outcomes[1], residualMergeQty)
+										excess0, excess1 = subtractMergedPairBalances(excess0, excess1, residualMergeQty)
+										if residualTxHash != "" && len(residualTxHash) >= 10 {
+											tui.LogEvent("[%s] 🔀 Residual merge cleared %.6f extra balanced shares | Tx: %s...", id, residualMergeQty, residualTxHash[:10])
+										} else {
+											tui.LogEvent("[%s] 🔀 Residual merge cleared %.6f extra balanced shares", id, residualMergeQty)
+										}
+									}
+								}
 								var cleanup0Exec, cleanup1Exec directMarketExecution
 								if shouldAttemptCleanupSell(excess0) {
 									quoteCtx, cancelQuote := context.WithTimeout(mergeCtx, realbotExecQuoteTimeout)
@@ -3178,9 +3200,24 @@ func localBoughtPairBalances(engine *paper.Engine, marketID, outcome0, outcome1 
 	return bal0, bal1
 }
 
-func hasPendingBoughtPairInventory(engine *paper.Engine, marketID, outcome0, outcome1 string) bool {
-	bal0, bal1 := localBoughtPairBalances(engine, marketID, outcome0, outcome1)
-	return shouldAttemptCleanupSell(bal0) || shouldAttemptCleanupSell(bal1)
+func pendingPairRecoveryBalances(ctx context.Context, marketID, token0, token1 string, outcomes []string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory) (bal0, bal1 float64, source string, err error) {
+	if len(outcomes) != 2 {
+		return 0, 0, "", nil
+	}
+	local0, local1 := localBoughtPairBalances(engine, marketID, outcomes[0], outcomes[1])
+	if shouldAttemptCleanupSell(local0) || shouldAttemptCleanupSell(local1) {
+		return local0, local1, "local engine", nil
+	}
+	onChain0, onChain1, err := loadPairOnChainBalances(ctx, trader, token0, token1)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	split0, split1 := 0.0, 0.0
+	if splitInventory != nil {
+		split0 = splitInventory.GetSplitShares(marketID, outcomes[0])
+		split1 = splitInventory.GetSplitShares(marketID, outcomes[1])
+	}
+	return math.Max(0, onChain0-split0), math.Max(0, onChain1-split1), "on-chain truth", nil
 }
 
 func localInventorySyncPrice(engine *paper.Engine, marketID, outcome string) float64 {
