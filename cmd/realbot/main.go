@@ -37,6 +37,16 @@ type realbotQuoteState struct {
 	Source    string
 }
 
+func startupPositionsSummary(positions []trading.PositionInfo) string {
+	totalShares := 0.0
+	for _, pos := range positions {
+		if pos.Size > 0 {
+			totalShares += pos.Size
+		}
+	}
+	return fmt.Sprintf("📊 Open positions: %d token(s), %.2f total shares", len(positions), totalShares)
+}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("Error: %v", err)
@@ -120,15 +130,7 @@ func run() error {
 		fmt.Printf("⚠️  Could not fetch positions: %v\n", err)
 	} else if len(positions) > 0 {
 		fmt.Println()
-		fmt.Println("📊 Current Positions:")
-		for _, pos := range positions {
-			outcomeDisplay := pos.Outcome
-			if outcomeDisplay == "" {
-				outcomeDisplay = pos.TokenID
-			}
-			outcomeDisplay = core.SanitizeString(outcomeDisplay)
-			fmt.Printf("   • %s: %.2f shares @ $%.4f avg\n", outcomeDisplay, pos.Size, pos.AvgPrice)
-		}
+		fmt.Println(startupPositionsSummary(positions))
 	} else {
 		fmt.Println("📊 No open positions")
 	}
