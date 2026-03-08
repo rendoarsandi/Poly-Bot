@@ -766,7 +766,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancelCleanup()
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT"); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT"); err != nil {
 				tui.LogEvent("[%s] ⚠️ Emergency cleanup failed: %v", id, err)
 			}
 			return
@@ -777,7 +777,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if time.Now().After(endTime.Add(5 * time.Second)) {
 			tui.LogEvent("[%s] ⏰ Closed", id)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, false, tui.GetSettings().MinAskPrice, "POST CLOSE"); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, false, tui.GetSettings().MinAskPrice, "POST CLOSE"); err != nil {
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
 			}
 			cleanupCancel()
@@ -798,7 +798,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					nearExpiryNoticeSent = true
 				}
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY"); err != nil {
+				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY"); err != nil {
 					tui.LogEvent("[%s] ⚠️ Near-expiry cleanup failed: %v", id, err)
 				}
 				cleanupCancel()
@@ -1902,12 +1902,38 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								excess0, excess1 := subtractMergedPairBalances(settled0, settled1, mergeQty)
 								var cleanup0Exec, cleanup1Exec directMarketExecution
 								if shouldAttemptCleanupSell(excess0) {
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(excess0), outcomes[0])
-									cleanup0Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, excess0, cfg.FeeRateBps, excess0, 2*time.Second)
+									quoteCtx, cancelQuote := context.WithTimeout(mergeCtx, realbotExecQuoteTimeout)
+									cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token0, excess0, rMinAsk)
+									cancelQuote()
+									if quoteErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[0], quoteErr)
+									} else {
+										if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
+											tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+										}
+										if cleanupQuote.ExecutableQty+1e-9 < excess0 {
+											tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[0], formatShareQty(excess0), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+										}
+										tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[0])
+										cleanup0Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token0, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, excess0, 2*time.Second)
+									}
 								}
 								if shouldAttemptCleanupSell(excess1) {
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(excess1), outcomes[1])
-									cleanup1Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, excess1, cfg.FeeRateBps, excess1, 2*time.Second)
+									quoteCtx, cancelQuote := context.WithTimeout(mergeCtx, realbotExecQuoteTimeout)
+									cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token1, excess1, rMinAsk)
+									cancelQuote()
+									if quoteErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[1], quoteErr)
+									} else {
+										if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
+											tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+										}
+										if cleanupQuote.ExecutableQty+1e-9 < excess1 {
+											tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[1], formatShareQty(excess1), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+										}
+										tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[1])
+										cleanup1Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token1, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, excess1, 2*time.Second)
+									}
 								}
 								if shouldAttemptCleanupSell(excess0) && !cleanup0Exec.Success {
 									if cleanup0Exec.Result != nil && isMinSizeRejectionMessage(cleanup0Exec.Result.Message) {
@@ -2000,12 +2026,38 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							attemptSell0 := shouldAttemptCleanupSell(acquired0)
 							attemptSell1 := shouldAttemptCleanupSell(acquired1)
 							if attemptSell0 {
-								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(acquired0), outcomes[0])
-								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, acquired0, cfg.FeeRateBps, acquired0, 2*time.Second)
+								quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
+								cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token0, acquired0, rMinAsk)
+								cancelQuote()
+								if quoteErr != nil {
+									tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[0], quoteErr)
+								} else {
+									if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
+										tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+									}
+									if cleanupQuote.ExecutableQty+1e-9 < acquired0 {
+										tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[0], formatShareQty(acquired0), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+									}
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[0])
+									sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, acquired0, 2*time.Second)
+								}
 							}
 							if attemptSell1 {
-								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(acquired1), outcomes[1])
-								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, acquired1, cfg.FeeRateBps, acquired1, 2*time.Second)
+								quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
+								cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token1, acquired1, rMinAsk)
+								cancelQuote()
+								if quoteErr != nil {
+									tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[1], quoteErr)
+								} else {
+									if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
+										tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+									}
+									if cleanupQuote.ExecutableQty+1e-9 < acquired1 {
+										tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[1], formatShareQty(acquired1), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+									}
+									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[1])
+									sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, acquired1, 2*time.Second)
+								}
 							}
 
 							verifyCleanupCtx, cancelVerifyCleanup := context.WithTimeout(context.Background(), 8*time.Second)
@@ -2610,6 +2662,58 @@ func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.R
 	return "rest", latency, reason, nil
 }
 
+type realbotCleanupSellQuote struct {
+	SubmitPrice       float64
+	BestBid           float64
+	ExecutableQty     float64
+	BookAge           time.Duration
+	FetchLatency      time.Duration
+	TotalBidLiquidity float64
+}
+
+func realbotBuildCleanupSellQuote(ctx context.Context, restClient *api.RestClient, tokenID string, requestedQty, configuredFloor float64) (realbotCleanupSellQuote, error) {
+	start := time.Now()
+	book, err := restClient.GetOrderBook(ctx, tokenID)
+	latency := time.Since(start)
+	if err != nil {
+		return realbotCleanupSellQuote{}, err
+	}
+	age, err := api.OrderBookAgeAt(book, time.Now())
+	if err != nil {
+		return realbotCleanupSellQuote{}, err
+	}
+	if age > realbotRestBookMaxAge {
+		return realbotCleanupSellQuote{}, fmt.Errorf("stale order book age %s > %s", age.Round(time.Millisecond), realbotRestBookMaxAge)
+	}
+	bids := mkt.LevelsToPriceDepth(book.Bids, true)
+	bestBid, hasBid := realbotBestBidFromLevels(bids)
+	if !hasBid || bestBid <= 0 {
+		return realbotCleanupSellQuote{}, fmt.Errorf("no live bid found")
+	}
+	submitPrice := core.CleanupSellLimitPrice(configuredFloor)
+	if bestBid < submitPrice {
+		submitPrice = bestBid
+	}
+	totalBidLiquidity := 0.0
+	for _, lvl := range bids {
+		if lvl.Price+1e-9 >= submitPrice {
+			totalBidLiquidity += lvl.Size
+		}
+	}
+	executableQty := normalizeMarketSellShares(math.Min(requestedQty, totalBidLiquidity))
+	if executableQty < minOnChainActionShares {
+		return realbotCleanupSellQuote{}, fmt.Errorf("live bid liquidity %.4f below %.2f shares at $%.3f", totalBidLiquidity, minOnChainActionShares, submitPrice)
+	}
+	return realbotCleanupSellQuote{
+		SubmitPrice:       submitPrice,
+		BestBid:           bestBid,
+		ExecutableQty:     executableQty,
+		BookAge:           age,
+		FetchLatency:      latency,
+		TotalBidLiquidity: totalBidLiquidity,
+	}, nil
+}
+
 func realbotMatchedAskLiquidity(asks0, asks1 []paper.MarketLevel, maxExecutionSum float64) float64 {
 	return mkt.EstimateMatchedLiquidity(
 		append([]paper.MarketLevel(nil), asks0...),
@@ -2996,6 +3100,7 @@ func settleMarketInventory(
 	engine *paper.Engine,
 	splitInventory *paper.SplitInventory,
 	tui *paper.TUI,
+	restClient *api.RestClient,
 	allowSell bool,
 	sellCap float64,
 	reason string,
@@ -3057,11 +3162,24 @@ func settleMarketInventory(
 		// Use the configured cleanup floor from settings/.env so sell cleanup behavior
 		// stays aligned with runtime execution controls instead of a hidden dump price.
 		aggressiveDumpPrice := core.CleanupSellLimitPrice(sellCap)
+		quoteCtx, cancelQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+		cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, side.tokenID, side.qty, sellCap)
+		cancelQuote()
+		if quoteErr != nil {
+			tui.LogEvent("[%s] ⚠️ %s cleanup quote unavailable for %s: %v", id, reason, side.outcome, quoteErr)
+			continue
+		}
+		if cleanupQuote.SubmitPrice+1e-9 < aggressiveDumpPrice {
+			tui.LogEvent("[%s] 📡 %s repriced %s cleanup to live bid floor $%.3f (best bid $%.3f, age %s)", id, reason, side.outcome, cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+		}
+		if cleanupQuote.ExecutableQty+1e-9 < side.qty {
+			tui.LogEvent("[%s] ⚡ %s capped %s cleanup %s→%s on live bid liquidity %s", id, reason, side.outcome, formatShareQty(side.qty), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+		}
 
-		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, aggressiveDumpPrice, side.qty, rate, side.qty, 2*time.Second)
+		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, rate, side.qty, 2*time.Second)
 		if !exec.Success {
 			if exec.Result != nil && isMinSizeRejectionMessage(exec.Result.Message) {
-				tui.LogEvent("[%s] ⚠️ %s: %s", id, reason, cleanupRejectionMessage(side.qty, side.outcome, exec.Result.Message))
+				tui.LogEvent("[%s] ⚠️ %s: %s", id, reason, cleanupRejectionMessage(cleanupQuote.ExecutableQty, side.outcome, exec.Result.Message))
 				continue
 			}
 			if exec.Err != nil {
