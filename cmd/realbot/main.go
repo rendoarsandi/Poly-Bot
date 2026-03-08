@@ -1871,6 +1871,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 							}
 						}
+						if haveInitialSnapshot {
+							initialBal0 = math.Max(initialBal0, initialSnapshot0)
+							initialBal1 = math.Max(initialBal1, initialSnapshot1)
+						}
 
 						rate1 := tokenFeeRates[outcomes[0]]
 						if rate1 == 0 {
@@ -1896,7 +1900,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						res1, err1 = exec1.Result, exec1.Err
 						res2, err2 = exec2.Result, exec2.Err
-						filled1, filled2 := exec1.ExecutedQty, exec2.ExecutedQty
+						rawFilled1, rawFilled2 := exec1.ExecutedQty, exec2.ExecutedQty
+						filled1, filled2 := rawFilled1, rawFilled2
 						side1Success, side2Success := exec1.Success, exec2.Success
 						logDirectExecutionAudit(tui, id, "Side 1 BUY", shares, limitPrice1, exec1)
 						logDirectExecutionAudit(tui, id, "Side 2 BUY", shares, limitPrice2, exec2)
@@ -1906,16 +1911,42 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] ⚠️ Position snapshot unavailable after direct buy: %v", id, verifyErr)
 						}
 
+						attributionTrusted := false
+						if haveInitialSnapshot {
+							attrCtx, cancelAttr := context.WithTimeout(ctx, 8*time.Second)
+							acquired0, acquired1, absBal0, absBal1, attrSource, attrErr := reconcileBoughtPairBalances(attrCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, true)
+							cancelAttr()
+							if attrErr == nil || shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
+								attributionTrusted = true
+								filled1 = attributedBuyFill(exec1, shares, acquired0, true)
+								filled2 = attributedBuyFill(exec2, shares, acquired1, true)
+								side1Success = hasConfirmedExecutedQty(api.SideBuy, filled1)
+								side2Success = hasConfirmedExecutedQty(api.SideBuy, filled2)
+								if shouldAttemptCleanupSell(initialSnapshot0) || shouldAttemptCleanupSell(initialSnapshot1) || math.Abs(rawFilled1-filled1) > 0.01 || math.Abs(rawFilled2-filled2) > 0.01 {
+									tui.LogEvent("[%s] 🧾 PANIC BUY attribution (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, attrSource, outcomes[0], absBal0, filled1, outcomes[1], absBal1, filled2)
+								}
+							} else {
+								tui.LogEvent("[%s] ⚠️ PANIC BUY attribution unavailable; using capped order confirmation only: %v", id, attrErr)
+							}
+						}
+						if !attributionTrusted {
+							filled1 = attributedBuyFill(exec1, shares, 0, false)
+							filled2 = attributedBuyFill(exec2, shares, 0, false)
+							side1Success = side1Success && hasConfirmedExecutedQty(api.SideBuy, filled1)
+							side2Success = side2Success && hasConfirmedExecutedQty(api.SideBuy, filled2)
+						} else {
+							if !side1Success && exec1.Success && res1 != nil && strings.TrimSpace(res1.Message) == "" {
+								res1.Message = "No fresh buy delta attributable after snapshot verification"
+							}
+							if !side2Success && exec2.Success && res2 != nil && strings.TrimSpace(res2.Message) == "" {
+								res2.Message = "No fresh buy delta attributable after snapshot verification"
+							}
+						}
+
 						// Calculate costs using the observed trigger prices for reporting.
 						// Polymarket does not expose exact per-leg execution price through this path.
-						cost1 := filled1 * ask1
-						cost2 := filled2 * ask2
-						if exec1.AcknowledgedNotional > 0 {
-							cost1 = exec1.AcknowledgedNotional
-						}
-						if exec2.AcknowledgedNotional > 0 {
-							cost2 = exec2.AcknowledgedNotional
-						}
+						cost1 := reportedBuyCost(exec1, ask1, filled1, shares)
+						cost2 := reportedBuyCost(exec2, ask2, filled2, shares)
 
 						// Log results based on VERIFIED state
 						if side1Success {
@@ -2341,6 +2372,43 @@ func venueExecutionEffectivePrice(exec directMarketExecution) float64 {
 		return 0
 	}
 	return exec.AcknowledgedNotional / exec.AcknowledgedQty
+}
+
+func clampAttributedBuyQty(qty, requestedQty float64) float64 {
+	if qty < 0 {
+		return 0
+	}
+	if requestedQty > 0 && qty > requestedQty {
+		return requestedQty
+	}
+	return qty
+}
+
+func attributedBuyFill(exec directMarketExecution, requestedQty, acquiredQty float64, trustAcquired bool) float64 {
+	if trustAcquired {
+		return clampAttributedBuyQty(acquiredQty, requestedQty)
+	}
+	qty := exec.ExecutedQty
+	if qty <= 0 && exec.AcknowledgedQty > 0 {
+		qty = exec.AcknowledgedQty
+	}
+	return clampAttributedBuyQty(qty, requestedQty)
+}
+
+func ackNotionalMatchesAttributedBuy(exec directMarketExecution, attributedQty float64) bool {
+	if exec.AcknowledgedQty <= 0 || exec.AcknowledgedNotional <= 0 || attributedQty <= 0 {
+		return false
+	}
+	diff := math.Abs(exec.AcknowledgedQty - attributedQty)
+	return diff <= math.Max(0.05, attributedQty*0.05)
+}
+
+func reportedBuyCost(exec directMarketExecution, observedPrice, attributedQty, requestedQty float64) float64 {
+	qty := clampAttributedBuyQty(attributedQty, requestedQty)
+	if ackNotionalMatchesAttributedBuy(exec, qty) {
+		return exec.AcknowledgedNotional
+	}
+	return qty * observedPrice
 }
 
 func directExecutionTxSummary(exec directMarketExecution) string {
