@@ -437,7 +437,6 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 	snapshot := quoteStore.Snapshot(outcomes)
 	tokenFullBids := snapshot.TokenFullBids
 	tokenFullAsks := snapshot.TokenFullAsks
-	quoteState := snapshot.QuoteState
 	// Determine execution pricing
 	prices := make(map[string]float64, len(outcomes))
 	buyCaps := make(map[string]float64, len(outcomes))
@@ -558,39 +557,19 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		latestSnapshot := quoteStore.Snapshot(outcomes)
 		tokenFullBids = latestSnapshot.TokenFullBids
 		tokenFullAsks = latestSnapshot.TokenFullAsks
-		quoteState = latestSnapshot.QuoteState
 		for _, out := range outcomes {
 			if bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[out]); found {
 				prices[out] = bestAsk
 			}
 		}
-		if fresh, maxAge, reason := utilbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenFullAsks, quoteState, utilbotLocalQuoteMaxAge); fresh {
-			if err := refreshBuyCaps(); err != nil {
-				fmt.Printf("❌ Local quote rejected by config: %v. Aborting before submission.\n", err)
-				return
-			}
-			cap0 := buyCaps[outcomes[0]]
-			cap1 := buyCaps[outcomes[1]]
-			updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
-			fmt.Printf("⚡ Using fresh local quote (max age %s): %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Est. total: $%.2f\n", maxAge.Round(time.Millisecond), outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue)
-		} else {
-			fmt.Printf("🔄 Local quote not fresh enough (%s). Re-quoting both legs just before submission...\n", reason)
-			requoteCtx, cancelRequote := context.WithTimeout(ctx, utilbotJITRequoteTimeout)
-			latency, err := utilbotRefreshExecutionBooks(requoteCtx, restClient, market, outcomes, side, tokenFullBids, tokenFullAsks, prices)
-			cancelRequote()
-			if err != nil {
-				fmt.Printf("❌ Re-quote failed: %v. Aborting before submission.\n", err)
-				return
-			}
-			if err := refreshBuyCaps(); err != nil {
-				fmt.Printf("❌ Fresh quote rejected by config: %v. Aborting before submission.\n", err)
-				return
-			}
-			cap0 := buyCaps[outcomes[0]]
-			cap1 := buyCaps[outcomes[1]]
-			updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
-			fmt.Printf("✅ Fresh asks: %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Updated est. total: $%.2f | rest=%s\n", outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue, latency.Round(time.Millisecond))
+		if err := refreshBuyCaps(); err != nil {
+			fmt.Printf("❌ Local quote rejected by config: %v. Aborting before submission.\n", err)
+			return
 		}
+		cap0 := buyCaps[outcomes[0]]
+		cap1 := buyCaps[outcomes[1]]
+		updatedTotalValue := shares * (prices[outcomes[0]] + prices[outcomes[1]])
+		fmt.Printf("⚡ Using local quote: %s=%.3f (cap %.3f), %s=%.3f (cap %.3f) | Est. total: $%.2f\n", outcomes[0], prices[outcomes[0]], cap0, outcomes[1], prices[outcomes[1]], cap1, updatedTotalValue)
 	}
 
 	var initialUSDC float64

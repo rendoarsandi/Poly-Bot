@@ -1309,59 +1309,26 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, sharesToSell,
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
-							if fresh, maxAge, reason := realbotCanUseLocalSellQuote(time.Now(), outcomes, tokenBids, tokenFullBids, quoteState, realbotLocalQuoteMaxAge); fresh {
-								bid1 = tokenBids[outcomes[0]]
-								bid2 = tokenBids[outcomes[1]]
-								bidSum = bid1 + bid2
-								sellMargin = (bidSum - 1.0) * 100
-								if sellMargin < cfg.SplitMinMarginSell-1e-4 {
-									tui.LogEvent("[%s] ⚠️ Local sell quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], bid1, outcomes[1], bid2, sellMargin, cfg.SplitMinMarginSell)
-									continue
-								}
-								freshMatchedLiquidity := realbotMatchedBidLiquidity(tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]], minSum)
-								if sharesToSell > freshMatchedLiquidity {
-									tui.LogEvent("[%s] ⚡ Local sell quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, sharesToSell, freshMatchedLiquidity, freshMatchedLiquidity)
-									sharesToSell = freshMatchedLiquidity
-								}
-								sharesToSell = math.Floor(sharesToSell)
-								if sharesToSell < 1.0 {
-									tui.LogEvent("[%s] ⚠️ Local sell quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
-									continue
-								}
-								tui.LogEvent("[%s] ⚡ Using fresh local sell quote (max age %s): %s@%.3f + %s@%.3f = $%.3f (%.1f%%) | %.0f shares",
-									id, maxAge.Round(time.Millisecond), outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell)
-							} else {
-								requoteCtx, cancelRequote := context.WithTimeout(ctx, 750*time.Millisecond)
-								freshPrices, requoteLatency, requoteErr := realbotRefreshSellExecutionBooks(requoteCtx, restClient, market, outcomes, tokenFullBids, tokenFullAsks)
-								cancelRequote()
-								if requoteLatency > 0 {
-									tui.UpdateRestLatency(requoteLatency)
-								}
-								if requoteErr != nil {
-									tui.LogEvent("[%s] ⚠️ Sell JIT re-quote failed before submit: %v", id, requoteErr)
-									continue
-								}
-								bid1 = freshPrices[outcomes[0]]
-								bid2 = freshPrices[outcomes[1]]
-								bidSum = bid1 + bid2
-								sellMargin = (bidSum - 1.0) * 100
-								if sellMargin < cfg.SplitMinMarginSell-1e-4 {
-									tui.LogEvent("[%s] ⚠️ Sell JIT re-quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], bid1, outcomes[1], bid2, sellMargin, cfg.SplitMinMarginSell)
-									continue
-								}
-								freshMatchedLiquidity := realbotMatchedBidLiquidity(tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]], minSum)
-								if sharesToSell > freshMatchedLiquidity {
-									tui.LogEvent("[%s] 🔄 Sell JIT re-quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, sharesToSell, freshMatchedLiquidity, freshMatchedLiquidity)
-									sharesToSell = freshMatchedLiquidity
-								}
-								sharesToSell = math.Floor(sharesToSell)
-								if sharesToSell < 1.0 {
-									tui.LogEvent("[%s] ⚠️ Sell JIT re-quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
-									continue
-								}
-								tui.LogEvent("[%s] 🔄 Sell JIT re-quote (%s): %s@%.3f + %s@%.3f = $%.3f (%.1f%%) | %.0f shares | rest=%s",
-									id, reason, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell, requoteLatency.Round(time.Millisecond))
+							bid1 = tokenBids[outcomes[0]]
+							bid2 = tokenBids[outcomes[1]]
+							bidSum = bid1 + bid2
+							sellMargin = (bidSum - 1.0) * 100
+							if sellMargin < cfg.SplitMinMarginSell-1e-4 {
+								tui.LogEvent("[%s] ⚠️ Local sell quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], bid1, outcomes[1], bid2, sellMargin, cfg.SplitMinMarginSell)
+								continue
 							}
+							freshMatchedLiquidity := realbotMatchedBidLiquidity(tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]], minSum)
+							if sharesToSell > freshMatchedLiquidity {
+								tui.LogEvent("[%s] ⚡ Local sell quote capped shares %.0f→%.0f using local matched liquidity %.0f", id, sharesToSell, freshMatchedLiquidity, freshMatchedLiquidity)
+								sharesToSell = freshMatchedLiquidity
+							}
+							sharesToSell = math.Floor(sharesToSell)
+							if sharesToSell < 1.0 {
+								tui.LogEvent("[%s] ⚠️ Local sell quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
+								continue
+							}
+							tui.LogEvent("[%s] ⚡ Using local sell quote: %s@%.3f + %s@%.3f = $%.3f (%.1f%%) | %.0f shares",
+								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, sharesToSell)
 
 							// Sell both sides in parallel
 							token0 := getTokenID(outcomes[0])
@@ -1661,72 +1628,35 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
-						if fresh, maxAge, reason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenAsks, tokenFullAsks, quoteState, realbotLocalQuoteMaxAge); fresh {
-							ask1 = tokenAsks[outcomes[0]]
-							ask2 = tokenAsks[outcomes[1]]
-							sum = ask1 + ask2
-							observedMargin = pairMarginPercent(sum)
-							limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
-							if capErr != nil {
-								tui.LogEvent("[%s] ⚠️ Local quote rejected before submit: %v", id, capErr)
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-								continue
-							}
-							freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
-							if shares > freshMatchedLiquidity {
-								tui.LogEvent("[%s] ⚡ Local quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
-								shares = freshMatchedLiquidity
-							}
-							if shares < 1.0 {
-								tui.LogEvent("[%s] ⚠️ Local quote left less than 1 share actionable liquidity: %.2f", id, shares)
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-								continue
-							}
-							tui.LogEvent("[%s] ⚡ Using fresh local quote (max age %s): %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%)",
-								id, maxAge.Round(time.Millisecond), outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin)
-						} else {
-							requoteCtx, cancelRequote := context.WithTimeout(ctx, 750*time.Millisecond)
-							freshPrices, requoteLatency, requoteErr := realbotRefreshBuyExecutionBooks(requoteCtx, restClient, market, outcomes, tokenFullBids, tokenFullAsks)
-							cancelRequote()
-							if requoteLatency > 0 {
-								tui.UpdateRestLatency(requoteLatency)
-							}
-							if requoteErr != nil {
-								tui.LogEvent("[%s] ⚠️ JIT re-quote failed before submit: %v", id, requoteErr)
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-								continue
-							}
-
-							ask1 = freshPrices[outcomes[0]]
-							ask2 = freshPrices[outcomes[1]]
-							sum = ask1 + ask2
-							observedMargin = pairMarginPercent(sum)
-							if observedMargin < cfg.MinMarginPercent-1e-4 {
-								tui.LogEvent("[%s] ⚠️ JIT re-quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-								continue
-							}
-
-							limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
-							if capErr != nil {
-								tui.LogEvent("[%s] ⚠️ JIT re-quote rejected before submit: %v", id, capErr)
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-								continue
-							}
-
-							freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
-							if shares > freshMatchedLiquidity {
-								tui.LogEvent("[%s] 🔄 JIT re-quote capped shares %.0f→%.0f using fresh matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
-								shares = freshMatchedLiquidity
-							}
-							if shares < 1.0 {
-								tui.LogEvent("[%s] ⚠️ JIT re-quote left less than 1 share actionable liquidity: %.2f", id, shares)
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-								continue
-							}
-							tui.LogEvent("[%s] 🔄 JIT re-quote (%s): %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%) | rest=%s",
-								id, reason, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, requoteLatency.Round(time.Millisecond))
+						ask1 = tokenAsks[outcomes[0]]
+						ask2 = tokenAsks[outcomes[1]]
+						sum = ask1 + ask2
+						observedMargin = pairMarginPercent(sum)
+						if observedMargin < cfg.MinMarginPercent-1e-4 {
+							tui.LogEvent("[%s] ⚠️ Local quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
 						}
+
+						limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
+						if capErr != nil {
+							tui.LogEvent("[%s] ⚠️ Local quote rejected before submit: %v", id, capErr)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+
+						freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
+						if shares > freshMatchedLiquidity {
+							tui.LogEvent("[%s] ⚡ Local quote capped shares %.0f→%.0f using local matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
+							shares = freshMatchedLiquidity
+						}
+						if shares < 1.0 {
+							tui.LogEvent("[%s] ⚠️ Local quote left less than 1 share actionable liquidity: %.2f", id, shares)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
+						tui.LogEvent("[%s] ⚡ Using local quote: %s=%.3f→%.3f + %s=%.3f→%.3f | pair=$%.3f (%.1f%%)",
+							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin)
 
 						// Map tokens
 						token0, token1 := "", ""
