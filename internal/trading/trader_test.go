@@ -390,3 +390,69 @@ func TestRealTrader_ResetConfirmedFill(t *testing.T) {
 		t.Fatalf("expected cleared confirmed fill, got %.2f", got)
 	}
 }
+
+func TestRealTrader_WaitForLivePairPositionsReturnsImmediatelyWhenReady(t *testing.T) {
+	trader := &RealTrader{
+		livePositions: map[string]float64{
+			"yes-token": 1.25,
+			"no-token":  0.80,
+		},
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	bal0, bal1, ready, err := trader.WaitForLivePairPositions(context.Background(), "yes-token", "no-token", 0.01, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForLivePairPositions returned error: %v", err)
+	}
+	if !ready {
+		t.Fatal("expected pair to be ready immediately")
+	}
+	if bal0 != 1.25 || bal1 != 0.80 {
+		t.Fatalf("unexpected balances %.2f / %.2f", bal0, bal1)
+	}
+}
+
+func TestRealTrader_WaitForLivePairPositionsObservesAsyncWSUpdate(t *testing.T) {
+	trader := &RealTrader{
+		livePositions: map[string]float64{
+			"yes-token": 2.00,
+		},
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		trader.applyLiveFill(api.OrderFillData{AssetID: "no-token", Side: "BUY", Size: "1.50"})
+	}()
+
+	bal0, bal1, ready, err := trader.WaitForLivePairPositions(context.Background(), "yes-token", "no-token", 0.01, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForLivePairPositions returned error: %v", err)
+	}
+	if !ready {
+		t.Fatal("expected pair to become ready after websocket update")
+	}
+	if bal0 != 2.00 || bal1 != 1.50 {
+		t.Fatalf("unexpected balances %.2f / %.2f", bal0, bal1)
+	}
+}
+
+func TestRealTrader_WaitForLivePairPositionsTimeoutReturnsLatestSnapshot(t *testing.T) {
+	trader := &RealTrader{
+		livePositions: map[string]float64{
+			"yes-token": 0.75,
+		},
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	bal0, bal1, ready, err := trader.WaitForLivePairPositions(context.Background(), "yes-token", "no-token", 0.01, 60*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForLivePairPositions returned error: %v", err)
+	}
+	if ready {
+		t.Fatal("expected timeout without both sides becoming available")
+	}
+	if bal0 != 0.75 || bal1 != 0 {
+		t.Fatalf("unexpected balances %.2f / %.2f", bal0, bal1)
+	}
+}

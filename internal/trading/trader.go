@@ -306,6 +306,50 @@ func (t *RealTrader) ResetConfirmedFill(orderID string) {
 	delete(t.confirmedOrderFills, orderID)
 }
 
+// GetLivePositionSize returns the latest websocket-backed position size for a token.
+func (t *RealTrader) GetLivePositionSize(tokenID string) float64 {
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	return t.livePositions[tokenID]
+}
+
+// WaitForLivePairPositions watches the websocket-backed position cache for a
+// complementary pair and returns as soon as both sides have at least minShares.
+//
+// This is intentionally WS-only so callers can react to confirmed fills without
+// blocking on slower on-chain settlement checks.
+func (t *RealTrader) WaitForLivePairPositions(ctx context.Context, token0, token1 string, minShares float64, timeout time.Duration) (bal0, bal1 float64, ready bool, err error) {
+	if minShares <= 0 {
+		minShares = 0.01
+	}
+	if timeout <= 0 {
+		bal0 = t.GetLivePositionSize(token0)
+		bal1 = t.GetLivePositionSize(token1)
+		return bal0, bal1, bal0 >= minShares && bal1 >= minShares, nil
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		bal0 = t.GetLivePositionSize(token0)
+		bal1 = t.GetLivePositionSize(token1)
+		if bal0 >= minShares && bal1 >= minShares {
+			return bal0, bal1, true, nil
+		}
+		if time.Now().After(deadline) {
+			return bal0, bal1, false, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return bal0, bal1, false, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // StartUserWS connects the user websocket and primes the position cache
 func (t *RealTrader) StartUserWS(ctx context.Context) error {
 	// Prime the cache with a REST call
