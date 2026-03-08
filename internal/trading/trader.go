@@ -2,6 +2,7 @@ package trading
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -828,6 +829,9 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 		// Wait for transaction confirmation
 		success, err := t.polygon.WaitForTransaction(ctx, txHash)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+				return txHash, fmt.Errorf("%s tx %s confirmation pending: %w", txName, txHash, err)
+			}
 			lastErr = fmt.Errorf("%s tx %s failed: %w", txName, txHash, err)
 			// Tx sent but failed on-chain - don't retry same tx, try new one
 			if attempt < 3 {

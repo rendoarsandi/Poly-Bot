@@ -32,6 +32,7 @@ const (
 	realbotLocalQuoteMaxAge = 250 * time.Millisecond
 	realbotExecQuoteTimeout = 1500 * time.Millisecond
 	realbotRestBookMaxAge   = 2 * time.Second
+	realbotMergeTimeout     = 120 * time.Second
 	realbotCleanupVerifyTTL = 20 * time.Second
 	minOnChainActionShares  = 0.01
 )
@@ -681,6 +682,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
+	var nextLiveRecoveryAttempt time.Time
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -1081,6 +1083,36 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg := tui.GetSettings()
 
+		if len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) && hasPendingBoughtPairInventory(engine, id, outcomes[0], outcomes[1]) {
+			tui.LogEvent("[%s] 🔄 Pending bought inventory detected — attempting live recovery...", id)
+			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
+			recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY")
+			trimmed, trimErr := reconcileLocalBoughtPositionsToWalletTruth(recoveryCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory, tui)
+			cancelRecovery()
+			refreshWalletTruth(5 * time.Second)
+			if newBal, err := trader.GetBalance(ctx); err == nil {
+				currentBalance = newBal
+				engine.SetBalance(currentBalance)
+				engine.RecalculateDrawdown()
+			}
+			switch {
+			case trimErr != nil:
+				tui.LogEvent("[%s] ⚠️ Live recovery wallet-truth sync failed: %v", id, trimErr)
+			case trimmed:
+				tui.LogEvent("[%s] ✅ Live recovery synchronized local inventory to wallet truth.", id)
+			}
+			if recoveryErr != nil {
+				tui.LogEvent("[%s] ⚠️ Live recovery incomplete: %v", id, recoveryErr)
+				nextLiveRecoveryAttempt = time.Now().Add(10 * time.Second)
+				if panicBuyCooldown.Before(time.Now().Add(15 * time.Second)) {
+					panicBuyCooldown = time.Now().Add(15 * time.Second)
+				}
+			} else {
+				nextLiveRecoveryAttempt = time.Now().Add(15 * time.Second)
+				continue
+			}
+		}
+
 		// ═══════════════════════════════════════════════════════════════════════════
 		// SPLIT STRATEGY: Sell to panic buyers when bid_sum > $1.03
 		// This is SEPARATE from the panic buy strategy (buy when ask_sum < $0.98)
@@ -1373,18 +1405,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// the CLOB loses sync with on-chain state between startup and trade time.
 							// Background ticker keeps allowance synced.
 
-							// Fetch initial positions to accurately calculate sold amount
-							var initialBal0, initialBal1 float64
-							if initialPos, err := trader.GetPositions(ctx); err == nil {
-								for _, pos := range initialPos {
-									if pos.TokenID == token0 {
-										initialBal0 = pos.Size
-									}
-									if pos.TokenID == token1 {
-										initialBal1 = pos.Size
-									}
-								}
-							}
+							initialBal0, initialBal1, _ := loadPairPositionBalances(ctx, trader, token0, token1)
+							snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, 5*time.Second)
+							initialSnapshot0, initialSnapshot1, _, haveInitialSnapshot := captureInitialPairSnapshot(snapshotCtx, trader, token0, token1)
+							cancelSnapshot()
 
 							rate1 := tokenFeeRates[outcomes[0]]
 							if rate1 == 0 {
@@ -1410,6 +1434,39 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							sold1, sold2 := exec1.ExecutedQty, exec2.ExecutedQty
 							side1Success, side2Success := exec1.Success, exec2.Success
+							price1, price2 := bid1, bid2
+							if eff := venueExecutionEffectivePrice(exec1); eff > 0 {
+								price1 = eff
+							}
+							if eff := venueExecutionEffectivePrice(exec2); eff > 0 {
+								price2 = eff
+							}
+							if haveInitialSnapshot && (side1Success || side2Success) {
+								verifyCtx, cancelVerify := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
+								verifiedSold0, verifiedSold1, verifyBal0, verifyBal1, verifySource, verifyErr := waitForPairSellBalanceReduction(verifyCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot, side1Success, side2Success)
+								cancelVerify()
+								if side1Success {
+									sold1 = math.Min(verifiedSold0, sharesToSell)
+								}
+								if side2Success {
+									sold2 = math.Min(verifiedSold1, sharesToSell)
+								}
+								if verifyErr != nil && ((!side1Success || hasConfirmedExecutedQty(api.SideSell, sold1)) && (!side2Success || hasConfirmedExecutedQty(api.SideSell, sold2))) {
+									tui.LogEvent("[%s] ⚠️ Split-sell balance verification warning: %v", id, verifyErr)
+								} else if verifyErr != nil {
+									tui.LogEvent("[%s] ⚠️ Split-sell balance verification still pending (%s): %s=%.4f, %s=%.4f", id, verifySource, outcomes[0], verifyBal0, outcomes[1], verifyBal1)
+								}
+								if side1Success && !hasConfirmedExecutedQty(api.SideSell, sold1) {
+									tui.LogEvent("[%s] ⚠️ Split-sell for %s lacked wallet-truth reduction (%s snapshot from %s); leaving inventory unchanged", id, outcomes[0], formatShareQty(verifyBal0), verifySource)
+									side1Success = false
+								}
+								if side2Success && !hasConfirmedExecutedQty(api.SideSell, sold2) {
+									tui.LogEvent("[%s] ⚠️ Split-sell for %s lacked wallet-truth reduction (%s snapshot from %s); leaving inventory unchanged", id, outcomes[1], formatShareQty(verifyBal1), verifySource)
+									side2Success = false
+								}
+							} else if side1Success || side2Success {
+								tui.LogEvent("[%s] ⚠️ Split-sell balance verification unavailable (initial snapshot missing); using direct execution signals only", id)
+							}
 
 							// ═══════════════════════════════════════════════════════════════
 							// LEGGED SPLIT SELL VERIFICATION: If one side sold and the other
@@ -1425,13 +1482,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							if side1Success && side2Success {
 								// Both sides sold - record in split inventory using actual sold amounts
-								profit1 := splitInventory.RecordSell(id, outcomes[0], sold1, bid1)
-								profit2 := splitInventory.RecordSell(id, outcomes[1], sold2, bid2)
+								profit1 := splitInventory.RecordSell(id, outcomes[0], sold1, price1)
+								profit2 := splitInventory.RecordSell(id, outcomes[1], sold2, price2)
 								totalProfit := profit1 + profit2
 								engine.AddRealizedPnL(totalProfit)
 								tui.LogEvent("[%s] ✅ SPLIT SOLD! %s: %.2f, %s: %.2f | Profit: +$%.2f", id, outcomes[0], sold1, outcomes[1], sold2, totalProfit)
-								tui.RecordOrder(id, outcomes[0], "SELL", sold1, bid1, sold1*bid1, sellMargin, profit1, "FILLED")
-								tui.RecordOrder(id, outcomes[1], "SELL", sold2, bid2, sold2*bid2, sellMargin, profit2, "FILLED")
+								tui.RecordOrder(id, outcomes[0], "SELL", sold1, price1, sold1*price1, sellMargin, profit1, "FILLED")
+								tui.RecordOrder(id, outcomes[1], "SELL", sold2, price2, sold2*price2, sellMargin, profit2, "FILLED")
 
 								// Refresh balance after successful sell (cash increased)
 								_, _ = trader.ForceRefreshBalance(ctx)
@@ -1440,14 +1497,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								// Partial success - record to keep inventory accurate
 								if side1Success {
-									splitInventory.RecordSell(id, outcomes[0], sold1, bid1)
+									splitInventory.RecordSell(id, outcomes[0], sold1, price1)
 									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold %.2f (one-shot)", id, outcomes[0], sold1)
 								}
 								if side2Success {
-									splitInventory.RecordSell(id, outcomes[1], sold2, bid2)
+									splitInventory.RecordSell(id, outcomes[1], sold2, price2)
 									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold %.2f (one-shot)", id, outcomes[1], sold2)
 								}
 							}
+							refreshWalletTruth(5 * time.Second)
 
 							lastSplitSell = time.Now()
 						}
@@ -1879,13 +1937,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							// Execute the merge as soon as WS confirms inventory, then let the
 							// on-chain balance query wait only for settlement confirmation.
-							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), realbotMergeTimeout)
 							mergeTarget := math.Min(filled1, filled2)
 							mergeSucceeded := false
 							mergeCleanupResolved := true
 							mergeQty, settled0, settled1, txHash, err := mergeBalancedPositionWSFirst(mergeCtx, trader, market.ConditionID, token0, token1, mergeTarget, len(market.Tokens))
 							if err != nil {
-								tui.LogEvent("[%s] ⚠️ Merge failed after WS fill confirmation: %v (will redeem at expiry)", id, err)
+								if txHash != "" && len(txHash) >= 10 {
+									tui.LogEvent("[%s] ⚠️ Merge failed after WS fill confirmation: %v | Tx: %s... (will retry near expiry if still pending)", id, err, txHash[:10])
+								} else {
+									tui.LogEvent("[%s] ⚠️ Merge failed after WS fill confirmation: %v (will retry near expiry if still pending)", id, err)
+								}
 							} else {
 								mergeSucceeded = true
 								result := engine.MergeForMarket(id, outcomes[0], outcomes[1], mergeQty)
@@ -2204,6 +2266,59 @@ func loadAcquiredPairBalances(ctx context.Context, trader *trading.RealTrader, t
 	}
 	acquired0, acquired1 = acquiredPairBalances(initial0, initial1, bal0, bal1, haveInitialSnapshot)
 	return acquired0, acquired1, bal0, bal1, source, nil
+}
+
+func reducedPairBalances(initial0, initial1, current0, current1 float64, haveInitialSnapshot bool) (sold0, sold1 float64) {
+	if !haveInitialSnapshot {
+		return 0, 0
+	}
+	if current0 < initial0 {
+		sold0 = initial0 - current0
+	}
+	if current1 < initial1 {
+		sold1 = initial1 - current1
+	}
+	return sold0, sold1
+}
+
+func loadReducedPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (sold0, sold1, bal0, bal1 float64, source string, err error) {
+	bal0, bal1, source, err = loadPairBalancesForCleanupVerification(ctx, trader, token0, token1)
+	if err != nil {
+		return 0, 0, 0, 0, source, err
+	}
+	sold0, sold1 = reducedPairBalances(initial0, initial1, bal0, bal1, haveInitialSnapshot)
+	return sold0, sold1, bal0, bal1, source, nil
+}
+
+func waitForPairSellBalanceReduction(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool, waitFor0, waitFor1 bool) (sold0, sold1, bal0, bal1 float64, source string, err error) {
+	bestSold0, bestSold1 := 0.0, 0.0
+	bestBal0, bestBal1 := initial0, initial1
+	bestSource := ""
+	for {
+		sold0, sold1, bal0, bal1, source, err = loadReducedPairBalances(ctx, trader, token0, token1, initial0, initial1, haveInitialSnapshot)
+		if sold0 > bestSold0 {
+			bestSold0 = sold0
+			bestBal0 = bal0
+		}
+		if sold1 > bestSold1 {
+			bestSold1 = sold1
+			bestBal1 = bal1
+		}
+		if source != "" {
+			bestSource = source
+		}
+		if err == nil && (!waitFor0 || hasConfirmedExecutedQty(api.SideSell, sold0)) && (!waitFor1 || hasConfirmedExecutedQty(api.SideSell, sold1)) {
+			return sold0, sold1, bal0, bal1, source, nil
+		}
+		select {
+		case <-ctx.Done():
+			if bestSource == "" {
+				bestSource = source
+			}
+			return bestSold0, bestSold1, bestBal0, bestBal1, bestSource, err
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 func waitForAcquiredCleanupResolution(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (remaining0, remaining1, bal0, bal1 float64, source string, err error) {
@@ -3101,6 +3216,74 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 	return nil
 }
 
+func localBoughtPairBalances(engine *paper.Engine, marketID, outcome0, outcome1 string) (bal0, bal1 float64) {
+	positions := engine.GetPositions()
+	for _, pos := range positions {
+		if pos.MarketID != marketID || pos.Quantity <= 0 {
+			continue
+		}
+		switch pos.Outcome {
+		case outcome0:
+			bal0 += pos.Quantity
+		case outcome1:
+			bal1 += pos.Quantity
+		}
+	}
+	return bal0, bal1
+}
+
+func hasPendingBoughtPairInventory(engine *paper.Engine, marketID, outcome0, outcome1 string) bool {
+	bal0, bal1 := localBoughtPairBalances(engine, marketID, outcome0, outcome1)
+	return shouldAttemptCleanupSell(bal0) || shouldAttemptCleanupSell(bal1)
+}
+
+func localInventorySyncPrice(engine *paper.Engine, marketID, outcome string) float64 {
+	bid, ask := engine.GetMarketBidAsk(marketID, outcome)
+	if bid >= 0.01 {
+		return bid
+	}
+	if ask >= 0.01 {
+		return ask
+	}
+	return 0.01
+}
+
+func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, token0, token1 string, outcomes []string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) (bool, error) {
+	if len(outcomes) != 2 {
+		return false, nil
+	}
+	onChain0, onChain1, err := loadPairOnChainBalances(ctx, trader, token0, token1)
+	if err != nil {
+		return false, err
+	}
+	local0, local1 := localBoughtPairBalances(engine, marketID, outcomes[0], outcomes[1])
+	split0, split1 := 0.0, 0.0
+	if splitInventory != nil {
+		split0 = splitInventory.GetSplitShares(marketID, outcomes[0])
+		split1 = splitInventory.GetSplitShares(marketID, outcomes[1])
+	}
+	desired0 := math.Max(0, onChain0-split0)
+	desired1 := math.Max(0, onChain1-split1)
+	trimmed := false
+	if local0 > desired0+1e-6 {
+		trimQty := local0 - desired0
+		if _, sellErr := engine.SellForMarket(marketID, outcomes[0], localInventorySyncPrice(engine, marketID, outcomes[0]), trimQty); sellErr != nil {
+			return trimmed, sellErr
+		}
+		tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
+		trimmed = true
+	}
+	if local1 > desired1+1e-6 {
+		trimQty := local1 - desired1
+		if _, sellErr := engine.SellForMarket(marketID, outcomes[1], localInventorySyncPrice(engine, marketID, outcomes[1]), trimQty); sellErr != nil {
+			return trimmed, sellErr
+		}
+		tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
+		trimmed = true
+	}
+	return trimmed, nil
+}
+
 func mergeBalancedPositionWSFirst(ctx context.Context, trader *trading.RealTrader, conditionID, token0, token1 string, requestedQty float64, numOutcomes int) (mergeQty, settled0, settled1 float64, txHash string, err error) {
 	if requestedQty < minOnChainActionShares {
 		return 0, 0, 0, "", fmt.Errorf("merge skipped: %.6f shares is below %.2f minimum", requestedQty, minOnChainActionShares)
@@ -3144,7 +3327,7 @@ func settleMarketInventory(
 
 	token0 := market.Tokens[0].TokenID
 	token1 := market.Tokens[1].TokenID
-	bal0, bal1, balanceSource, err := loadPairBalancesWSFirst(ctx, trader, token0, token1)
+	bal0, bal1, balanceSource, err := loadPairBalancesForCleanupVerification(ctx, trader, token0, token1)
 	if err != nil {
 		return err
 	}

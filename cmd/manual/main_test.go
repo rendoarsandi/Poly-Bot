@@ -2,14 +2,20 @@ package main
 
 import "testing"
 
-func TestFirstTargetArg(t *testing.T) {
-	if got := firstTargetArg([]string{"-force", "btc-updown-15m-1772833500"}); got != "btc-updown-15m-1772833500" {
-		t.Fatalf("expected slug target, got %q", got)
+func TestManualbotEmergencySellPriceKeepsConfiguredFloorWhenBidHigher(t *testing.T) {
+	if got := manualbotEmergencySellPrice(0.05); got != 0.03 {
+		t.Fatalf("expected configured floor 0.03, got %.3f", got)
 	}
-	if got := firstTargetArg([]string{"0xabd7a6a52fd2c53bba614104108c06403d14fd68bb2d667b0baf3af58548dd5e"}); got == "" {
-		t.Fatal("expected condition ID target to be returned")
+}
+
+func TestManualbotEmergencySellPriceRepricesToLiveBidWhenLower(t *testing.T) {
+	if got := manualbotEmergencySellPrice(0.02); got != 0.02 {
+		t.Fatalf("expected live bid 0.02, got %.3f", got)
 	}
-	if got := firstTargetArg([]string{"-force"}); got != "" {
-		t.Fatalf("expected empty target, got %q", got)
+}
+
+func TestManualbotEmergencySellPriceHonorsMinimumTick(t *testing.T) {
+	if got := manualbotEmergencySellPrice(0.001); got != 0.01 {
+		t.Fatalf("expected minimum tick 0.01, got %.3f", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -21,6 +22,14 @@ const (
 	manualbotQuoteTimeout       = 1500 * time.Millisecond
 	manualbotQuoteMaxAge        = 2 * time.Second
 )
+
+func manualbotEmergencySellPrice(bestBid float64) float64 {
+	price := core.CleanupSellLimitPrice(manualbotEmergencySellFloor)
+	if bestBid > 0 && bestBid < price {
+		price = bestBid
+	}
+	return math.Max(price, 0.01)
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -139,16 +148,16 @@ func main() {
 						fmt.Println("   ⏭️  Skipped to avoid dumping against a stale/empty book.")
 						continue
 					}
-					if bestBid < manualbotEmergencySellFloor {
-						fmt.Printf("   ⚠️ Live best bid %.3f is below dump floor %.3f (age %s, latency %s).\n", bestBid, manualbotEmergencySellFloor, age.Round(time.Millisecond), latency.Round(time.Millisecond))
-						fmt.Println("   ⏭️  Skipped to avoid sending a guaranteed-kill FAK dump.")
-						continue
+					sellPrice := manualbotEmergencySellPrice(bestBid)
+					if bestBid+1e-9 < manualbotEmergencySellFloor {
+						fmt.Printf("   📡 Live best bid %.3f is below dump floor %.3f (age %s, latency %s). Repricing to live bid.\n", bestBid, manualbotEmergencySellFloor, age.Round(time.Millisecond), latency.Round(time.Millisecond))
+					} else {
+						fmt.Printf("   📡 Live best bid: %.3f (age %s, latency %s)\n", bestBid, age.Round(time.Millisecond), latency.Round(time.Millisecond))
 					}
-					fmt.Printf("   📡 Live best bid: %.3f (age %s, latency %s)\n", bestBid, age.Round(time.Millisecond), latency.Round(time.Millisecond))
-					fmt.Printf("   ⏳ Selling %s with FAK floor %.3f...\n", outcomes[i], manualbotEmergencySellFloor)
+					fmt.Printf("   ⏳ Selling %s with FAK floor %.3f...\n", outcomes[i], sellPrice)
 					// Using trader.Sell with Market Order
 					// Using trader.Sell with Market Order
-					res, err := trader.Sell(ctx, tokenIDs[i], outcomes[i], manualbotEmergencySellFloor, b, api.OrderTypeMarket, api.TIFFillAndKill, 1000)
+					res, err := trader.Sell(ctx, tokenIDs[i], outcomes[i], sellPrice, b, api.OrderTypeMarket, api.TIFFillAndKill, 1000)
 					if err != nil {
 						fmt.Printf("   ❌ Sell error: %v\n", err)
 					} else {
