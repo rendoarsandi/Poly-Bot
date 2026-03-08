@@ -34,12 +34,126 @@ const (
 	realbotRestBookMaxAge   = 2 * time.Second
 	realbotMergeTimeout     = 120 * time.Second
 	realbotCleanupVerifyTTL = 20 * time.Second
+	realbotFastVerifyTTL    = 6 * time.Second
 	minOnChainActionShares  = 0.01
 )
 
 type realbotQuoteState struct {
 	UpdatedAt time.Time
 	Source    string
+}
+
+type realbotPendingMerge struct {
+	Qty       float64
+	HoldUntil time.Time
+}
+
+type realbotMergeCoordinator struct {
+	mu      sync.Mutex
+	pending map[string]realbotPendingMerge
+}
+
+func newRealbotMergeCoordinator() *realbotMergeCoordinator {
+	return &realbotMergeCoordinator{pending: make(map[string]realbotPendingMerge)}
+}
+
+func (c *realbotMergeCoordinator) reserve(marketID string, qty float64, hold time.Duration) bool {
+	if c == nil || qty < minOnChainActionShares {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.pending[marketID]; ok && time.Now().Before(cur.HoldUntil) {
+		return false
+	}
+	c.pending[marketID] = realbotPendingMerge{Qty: qty, HoldUntil: time.Now().Add(hold)}
+	return true
+}
+
+func (c *realbotMergeCoordinator) keepPending(marketID string, hold time.Duration) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.pending[marketID]
+	if !ok {
+		return
+	}
+	until := time.Now().Add(hold)
+	if until.After(cur.HoldUntil) {
+		cur.HoldUntil = until
+		c.pending[marketID] = cur
+	}
+}
+
+func (c *realbotMergeCoordinator) clear(marketID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	delete(c.pending, marketID)
+	c.mu.Unlock()
+}
+
+func (c *realbotMergeCoordinator) pendingQty(marketID string) float64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.pending[marketID]
+	if !ok {
+		return 0
+	}
+	if time.Now().After(cur.HoldUntil) {
+		delete(c.pending, marketID)
+		return 0
+	}
+	return cur.Qty
+}
+
+func launchBackgroundMerge(marketID, reason string, outcomes []string, conditionID string, mergeQty float64, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI, coordinator *realbotMergeCoordinator) bool {
+	if coordinator == nil || len(outcomes) != 2 || mergeQty < minOnChainActionShares {
+		return false
+	}
+	if !coordinator.reserve(marketID, mergeQty, realbotMergeTimeout+45*time.Second) {
+		return false
+	}
+	tui.LogEvent("[%s] 🔀 %s launching background merge for %.6f balanced shares; cleanup will not wait for confirmation", marketID, reason, mergeQty)
+	go func() {
+		mergeCtx, cancel := context.WithTimeout(context.Background(), realbotMergeTimeout)
+		defer cancel()
+		txHash, err := trader.MergeOnChain(mergeCtx, conditionID, mergeQty, numOutcomes)
+		if err != nil {
+			if txHash != "" && len(txHash) >= 10 && strings.Contains(strings.ToLower(err.Error()), "confirmation pending") {
+				coordinator.keepPending(marketID, 45*time.Second)
+				tui.LogEvent("[%s] ⚠️ %s background merge pending confirmation for %.6f shares | Tx: %s...", marketID, reason, mergeQty, txHash[:10])
+				return
+			}
+			coordinator.clear(marketID)
+			if txHash != "" && len(txHash) >= 10 {
+				tui.LogEvent("[%s] ⚠️ %s background merge failed for %.6f shares: %v | Tx: %s...", marketID, reason, mergeQty, err, txHash[:10])
+			} else {
+				tui.LogEvent("[%s] ⚠️ %s background merge failed for %.6f shares: %v", marketID, reason, mergeQty, err)
+			}
+			return
+		}
+		coordinator.clear(marketID)
+		result := engine.MergeForMarket(marketID, outcomes[0], outcomes[1], mergeQty)
+		if splitInventory != nil {
+			splitInventory.RecordMerge(marketID, outcomes[0], outcomes[1], mergeQty)
+		}
+		if txHash != "" && len(txHash) >= 10 {
+			tui.LogEvent("[%s] 💰 %s merge confirmed for %.6f shares | Tx: %s...", marketID, reason, mergeQty, txHash[:10])
+		} else {
+			tui.LogEvent("[%s] 💰 %s merge confirmed for %.6f shares", marketID, reason, mergeQty)
+		}
+		if result != nil && result.PnL != 0 {
+			tui.LogEvent("[%s] 💰 %s merge realized PnL: $%.2f", marketID, reason, result.PnL)
+		}
+	}()
+	return true
 }
 
 func startupPositionsSummary(positions []trading.PositionInfo) string {
@@ -683,6 +797,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
 	var nextLiveRecoveryAttempt time.Time
+	mergeCoordinator := newRealbotMergeCoordinator()
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -769,7 +884,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancelCleanup()
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT"); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT", mergeCoordinator); err != nil {
 				tui.LogEvent("[%s] ⚠️ Emergency cleanup failed: %v", id, err)
 			}
 			return
@@ -780,7 +895,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if time.Now().After(endTime.Add(5 * time.Second)) {
 			tui.LogEvent("[%s] ⏰ Closed", id)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, false, tui.GetSettings().MinAskPrice, "POST CLOSE"); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, false, tui.GetSettings().MinAskPrice, "POST CLOSE", mergeCoordinator); err != nil {
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
 			}
 			cleanupCancel()
@@ -801,7 +916,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					nearExpiryNoticeSent = true
 				}
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY"); err != nil {
+				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY", mergeCoordinator); err != nil {
 					tui.LogEvent("[%s] ⚠️ Near-expiry cleanup failed: %v", id, err)
 				}
 				cleanupCancel()
@@ -1092,7 +1207,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			if recoveryCheckErr == nil && (shouldAttemptCleanupSell(pendingRecovery0) || shouldAttemptCleanupSell(pendingRecovery1)) {
 				tui.LogEvent("[%s] 🔄 Pending inventory detected (%s): %s=%.4f, %s=%.4f — attempting live recovery...", id, recoverySource, outcomes[0], pendingRecovery0, outcomes[1], pendingRecovery1)
 				recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
-				recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY")
+				recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY", mergeCoordinator)
 				trimmed, trimErr := reconcileLocalBoughtPositionsToWalletTruth(recoveryCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory, tui)
 				cancelRecovery()
 				refreshWalletTruth(5 * time.Second)
@@ -1888,126 +2003,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
 							_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
 
-							// Execute the merge as soon as WS confirms inventory, then let the
-							// on-chain balance query wait only for settlement confirmation.
-							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), realbotMergeTimeout)
-							mergeTarget := math.Min(filled1, filled2)
-							mergeSucceeded := false
-							mergeCleanupResolved := true
-							mergeQty, settled0, settled1, txHash, err := mergeBalancedPositionWSFirst(mergeCtx, trader, market.ConditionID, token0, token1, mergeTarget, len(market.Tokens))
-							if err != nil {
-								if txHash != "" && len(txHash) >= 10 {
-									tui.LogEvent("[%s] ⚠️ Merge failed after WS fill confirmation: %v | Tx: %s... (will retry near expiry if still pending)", id, err, txHash[:10])
-								} else {
-									tui.LogEvent("[%s] ⚠️ Merge failed after WS fill confirmation: %v (will retry near expiry if still pending)", id, err)
-								}
+							settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
+							settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", mergeCoordinator)
+							settleCancel()
+							if settleErr != nil {
+								tui.LogEvent("[%s] ⚠️ Post-buy settlement still pending: %v", id, settleErr)
+								panicBuyCooldown = time.Now().Add(10 * time.Second)
+							} else if mergeCoordinator.pendingQty(id) >= minOnChainActionShares {
+								tui.LogEvent("[%s] ✅ Buys verified. Merge continues in background while cleanup handles only the excess inventory.", id)
 							} else {
-								mergeSucceeded = true
-								result := engine.MergeForMarket(id, outcomes[0], outcomes[1], mergeQty)
-								if txHash != "" && len(txHash) >= 10 {
-									tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit | Tx: %s...", id, result.PnL, txHash[:10])
-								} else {
-									tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit", id, result.PnL)
-								}
-
-								// Clean up from the settled on-chain balances for this pair, not only
-								// from WS-reported fill deltas. This catches pre-existing imbalances
-								// and WS under-reporting after merge.
-								tui.LogEvent("[%s] 📊 Settled balances: %s=%.6f, %s=%.6f", id, outcomes[0], settled0, outcomes[1], settled1)
-								cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
-								excess0, excess1 := subtractMergedPairBalances(settled0, settled1, mergeQty)
-								residualMergeQty := math.Min(excess0, excess1)
-								if residualMergeQty >= minOnChainActionShares {
-									residualTxHash, residualErr := trader.MergeOnChain(mergeCtx, market.ConditionID, residualMergeQty, len(market.Tokens))
-									if residualErr != nil {
-										tui.LogEvent("[%s] ⚠️ Residual merge after primary merge failed: %v", id, residualErr)
-									} else {
-										engine.MergeForMarket(id, outcomes[0], outcomes[1], residualMergeQty)
-										excess0, excess1 = subtractMergedPairBalances(excess0, excess1, residualMergeQty)
-										if residualTxHash != "" && len(residualTxHash) >= 10 {
-											tui.LogEvent("[%s] 🔀 Residual merge cleared %.6f extra balanced shares | Tx: %s...", id, residualMergeQty, residualTxHash[:10])
-										} else {
-											tui.LogEvent("[%s] 🔀 Residual merge cleared %.6f extra balanced shares", id, residualMergeQty)
-										}
-									}
-								}
-								var cleanup0Exec, cleanup1Exec directMarketExecution
-								if shouldAttemptCleanupSell(excess0) {
-									quoteCtx, cancelQuote := context.WithTimeout(mergeCtx, realbotExecQuoteTimeout)
-									cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token0, excess0, rMinAsk)
-									cancelQuote()
-									if quoteErr != nil {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[0], quoteErr)
-									} else {
-										if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
-											tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
-										}
-										if cleanupQuote.ExecutableQty+1e-9 < excess0 {
-											tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[0], formatShareQty(excess0), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
-										}
-										tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[0])
-										cleanup0Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token0, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, excess0, 2*time.Second)
-									}
-								}
-								if shouldAttemptCleanupSell(excess1) {
-									quoteCtx, cancelQuote := context.WithTimeout(mergeCtx, realbotExecQuoteTimeout)
-									cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token1, excess1, rMinAsk)
-									cancelQuote()
-									if quoteErr != nil {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[1], quoteErr)
-									} else {
-										if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
-											tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
-										}
-										if cleanupQuote.ExecutableQty+1e-9 < excess1 {
-											tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[1], formatShareQty(excess1), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
-										}
-										tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[1])
-										cleanup1Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token1, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, excess1, 2*time.Second)
-									}
-								}
-								if shouldAttemptCleanupSell(excess0) && !cleanup0Exec.Success {
-									if cleanup0Exec.Result != nil && isMinSizeRejectionMessage(cleanup0Exec.Result.Message) {
-										tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess0, outcomes[0], cleanup0Exec.Result.Message))
-									} else if cleanup0Exec.Err != nil {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], cleanup0Exec.Err)
-									} else if cleanup0Exec.Result != nil && cleanup0Exec.Result.Message != "" {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %s", id, outcomes[0], cleanup0Exec.Result.Message)
-									}
-								}
-								if shouldAttemptCleanupSell(excess1) && !cleanup1Exec.Success {
-									if cleanup1Exec.Result != nil && isMinSizeRejectionMessage(cleanup1Exec.Result.Message) {
-										tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess1, outcomes[1], cleanup1Exec.Result.Message))
-									} else if cleanup1Exec.Err != nil {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], cleanup1Exec.Err)
-									} else if cleanup1Exec.Result != nil && cleanup1Exec.Result.Message != "" {
-										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %s", id, outcomes[1], cleanup1Exec.Result.Message)
-									}
-								}
-								if hasActionableCleanupRemainder(excess0) || hasActionableCleanupRemainder(excess1) {
-									verifyCtx, cancelVerify := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
-									remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
-									cancelVerify()
-									if verifyErr != nil && (hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1)) {
-										mergeCleanupResolved = false
-										tui.LogEvent("[%s] ⚠️ Post-merge cleanup still unresolved (%s): %s=%.4f, %s=%.4f", id, verifySource, outcomes[0], remaining0, outcomes[1], remaining1)
-									} else if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
-										mergeCleanupResolved = false
-										tui.LogEvent("[%s] ⚠️ Post-merge cleanup still holding inventory (%s): %s=%.4f, %s=%.4f", id, verifySource, outcomes[0], remaining0, outcomes[1], remaining1)
-									}
-								}
-							}
-
-							mergeCancel() // Release merge context resources
-							if mergeSucceeded {
-								if mergeCleanupResolved {
-									tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
-								} else {
-									tui.LogEvent("[%s] ⚠️ Merge completed but cleanup still pending. Applying 30s cooldown...", id)
-									panicBuyCooldown = time.Now().Add(30 * time.Second)
-								}
-							} else {
-								tui.LogEvent("[%s] ⚠️ Buy executed but merge not completed. Applying 5s cooldown before monitoring again...", id)
+								tui.LogEvent("[%s] ✅ Execution complete after verified buys. Applying 5s cooldown...", id)
 							}
 
 							// Refresh balance for next trade
@@ -3300,6 +3305,7 @@ func settleMarketInventory(
 	allowSell bool,
 	sellCap float64,
 	reason string,
+	mergeCoordinator *realbotMergeCoordinator,
 ) error {
 	if len(outcomes) != 2 || len(market.Tokens) != 2 {
 		return nil
@@ -3311,25 +3317,23 @@ func settleMarketInventory(
 	if err != nil {
 		return err
 	}
+	pendingMergeQty := 0.0
+	if mergeCoordinator != nil {
+		pendingMergeQty = mergeCoordinator.pendingQty(id)
+		if pendingMergeQty >= minOnChainActionShares {
+			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, pendingMergeQty)
+			tui.LogEvent("[%s] 🔀 %s merge already pending for %.6f balanced shares; cleanup will focus only on excess inventory", id, reason, pendingMergeQty)
+		}
+	}
 
 	minQty := math.Min(bal0, bal1)
 	if minQty >= minOnChainActionShares {
 		tui.LogEvent("[%s] 🔍 %s inventory snapshot (%s): %s=%.6f, %s=%.6f", id, reason, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
-		mergeQty, _, _, txHash, mergeErr := mergeBalancedPositionWSFirst(ctx, trader, market.ConditionID, token0, token1, minQty, len(market.Tokens))
-		if mergeErr != nil {
-			tui.LogEvent("[%s] ⚠️ %s merge skipped: %v", id, reason, mergeErr)
-		} else {
-			result := engine.MergeForMarket(id, outcomes[0], outcomes[1], mergeQty)
-			splitInventory.RecordMerge(id, outcomes[0], outcomes[1], mergeQty)
-			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, mergeQty)
-			if txHash != "" && len(txHash) >= 10 {
-				tui.LogEvent("[%s] 🔀 %s merged %.6f sets | Tx: %s...", id, reason, mergeQty, txHash[:10])
-			} else {
-				tui.LogEvent("[%s] 🔀 %s merged %.6f sets", id, reason, mergeQty)
-			}
-			if result != nil && result.PnL != 0 {
-				tui.LogEvent("[%s] 💰 %s merge realized PnL: $%.2f", id, reason, result.PnL)
-			}
+		if launchBackgroundMerge(id, reason, outcomes, market.ConditionID, minQty, len(market.Tokens), trader, engine, splitInventory, tui, mergeCoordinator) {
+			pendingMergeQty += minQty
+			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, minQty)
+		} else if pendingMergeQty < minOnChainActionShares {
+			tui.LogEvent("[%s] ⚠️ %s merge not relaunched because another merge slot is already busy; excess cleanup will continue", id, reason)
 		}
 	}
 
@@ -3390,14 +3394,22 @@ func settleMarketInventory(
 		tui.LogEvent("[%s] 📉 %s sold %s unbalanced shares of %s", id, reason, formatShareQty(exec.ExecutedQty), side.outcome)
 	}
 
-	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
+	verifyTTL := realbotCleanupVerifyTTL
+	if pendingMergeQty >= minOnChainActionShares {
+		verifyTTL = realbotFastVerifyTTL
+	}
+	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), verifyTTL)
 	remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
 	cancelVerify()
-	if (hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1)) && verifyErr != nil {
-		return fmt.Errorf("cleanup still unresolved (%s): %s=%.4f, %s=%.4f (%w)", verifySource, outcomes[0], remaining0, outcomes[1], remaining1, verifyErr)
+	effectiveRemaining0, effectiveRemaining1 := remaining0, remaining1
+	if pendingVerifyQty := mergeCoordinator.pendingQty(id); pendingVerifyQty >= minOnChainActionShares {
+		effectiveRemaining0, effectiveRemaining1 = subtractMergedPairBalances(remaining0, remaining1, pendingVerifyQty)
 	}
-	if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
-		return fmt.Errorf("cleanup still holding inventory (%s): %s=%.4f, %s=%.4f", verifySource, outcomes[0], remaining0, outcomes[1], remaining1)
+	if (hasActionableCleanupRemainder(effectiveRemaining0) || hasActionableCleanupRemainder(effectiveRemaining1)) && verifyErr != nil {
+		return fmt.Errorf("cleanup still unresolved (%s): %s=%.4f, %s=%.4f (%w)", verifySource, outcomes[0], effectiveRemaining0, outcomes[1], effectiveRemaining1, verifyErr)
+	}
+	if hasActionableCleanupRemainder(effectiveRemaining0) || hasActionableCleanupRemainder(effectiveRemaining1) {
+		return fmt.Errorf("cleanup still holding inventory (%s): %s=%.4f, %s=%.4f", verifySource, outcomes[0], effectiveRemaining0, outcomes[1], effectiveRemaining1)
 	}
 
 	return nil
