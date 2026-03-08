@@ -724,8 +724,10 @@ func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
-		// Order not found usually means it was filled and removed
-		return &OpenOrder{OrderID: orderID, Status: "FILLED"}, nil
+		// Do NOT treat a missing order as FILLED. FAK/FOK orders can disappear after
+		// being killed or partially matched, so callers must rely on explicit fill
+		// signals (WS/position deltas) rather than a phantom 404 fill assumption.
+		return &OpenOrder{OrderID: orderID, Status: "NOT_FOUND"}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -773,6 +775,8 @@ func (c *CLOBClient) WaitForFill(ctx context.Context, orderID string, timeout ti
 		switch strings.ToUpper(strings.TrimSpace(order.Status)) {
 		case "FILLED", "CONFIRMED":
 			return true, nil
+		case "NOT_FOUND":
+			return false, nil
 		case "FAILED", "CANCELLED", "EXPIRED":
 			return false, nil
 		case "MATCHED", "MINED", "RETRYING", "DELAYED", "UNMATCHED":

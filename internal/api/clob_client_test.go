@@ -577,3 +577,55 @@ func TestWaitForFill_FailedReturnsNotFilled(t *testing.T) {
 		t.Fatal("expected FAILED order to return not filled")
 	}
 }
+
+func TestGetOrder_NotFoundDoesNotPretendFilled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, err := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	order, err := client.GetOrder(context.Background(), "order-404")
+	if err != nil {
+		t.Fatalf("GetOrder failed: %v", err)
+	}
+	if order.Status != "NOT_FOUND" {
+		t.Fatalf("expected NOT_FOUND status for 404, got %q", order.Status)
+	}
+}
+
+func TestWaitForFill_NotFoundReturnsNotFilled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	dummyPK := "0000000000000000000000000000000000000000000000000000000000000001"
+	client, err := NewCLOBClient(dummyPK, "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	filled, err := client.WaitForFill(context.Background(), "order-404", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForFill failed: %v", err)
+	}
+	if filled {
+		t.Fatal("expected NOT_FOUND order to return not filled")
+	}
+}

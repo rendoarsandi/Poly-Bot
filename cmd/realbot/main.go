@@ -2403,7 +2403,7 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 		acknowledgedQty = result.AcknowledgedQty
 		acknowledgedNotional = result.AcknowledgedNotional
 	}
-	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, side, orderID, tokenID, initialBalance, size, confirmTimeout)
+	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, side, orderID, tokenID, initialBalance, confirmTimeout)
 	if acknowledgedQty > executedQty {
 		executedQty = acknowledgedQty
 	}
@@ -2454,7 +2454,7 @@ func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, si
 	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
 }
 
-func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, side api.Side, orderID, tokenID string, initialBalance, requestedSize float64, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {
+func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, side api.Side, orderID, tokenID string, initialBalance float64, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {
 	if orderID != "" {
 		defer trader.ResetConfirmedFill(orderID)
 	}
@@ -2503,7 +2503,7 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 			verifyErr = err
 		}
 
-		if hasConfirmedExecutedQty(side, executedQty) || orderConfirmed || time.Now().After(deadline) {
+		if hasConfirmedExecutedQty(side, executedQty) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(pollInterval)
@@ -2521,10 +2521,7 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 			wsConfirmed = hasConfirmedExecutedQty(side, wsQty)
 		}
 	}
-	if orderConfirmed && !hasConfirmedExecutedQty(side, executedQty) {
-		executedQty = requestedSize
-	}
-	if hasConfirmedExecutedQty(side, executedQty) || orderConfirmed {
+	if hasConfirmedExecutedQty(side, executedQty) {
 		verifyErr = nil
 	}
 	return executedQty, wsConfirmed, orderConfirmed, verifyErr
