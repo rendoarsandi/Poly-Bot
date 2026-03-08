@@ -1881,6 +1881,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 60*time.Second)
 							mergeTarget := math.Min(filled1, filled2)
 							mergeSucceeded := false
+							mergeCleanupResolved := true
 							mergeQty, settled0, settled1, txHash, err := mergeBalancedPositionWSFirst(mergeCtx, trader, market.ConditionID, token0, token1, mergeTarget, len(market.Tokens))
 							if err != nil {
 								tui.LogEvent("[%s] ⚠️ Merge failed after WS fill confirmation: %v (will redeem at expiry)", id, err)
@@ -1899,33 +1900,55 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] 📊 Settled balances: %s=%.6f, %s=%.6f", id, outcomes[0], settled0, outcomes[1], settled1)
 								cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
 								excess0, excess1 := subtractMergedPairBalances(settled0, settled1, mergeQty)
+								var cleanup0Exec, cleanup1Exec directMarketExecution
 								if shouldAttemptCleanupSell(excess0) {
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(excess0), outcomes[0])
-									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], cleanupSellPrice, excess0, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
-									if sellErr != nil {
-										if isMinSizeRejectionMessage(sellErr.Error()) {
-											tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess0, outcomes[0], sellErr.Error()))
-										} else {
-											tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
-										}
-									}
+									cleanup0Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, excess0, cfg.FeeRateBps, excess0, 2*time.Second)
 								}
 								if shouldAttemptCleanupSell(excess1) {
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(excess1), outcomes[1])
-									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], cleanupSellPrice, excess1, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
-									if sellErr != nil {
-										if isMinSizeRejectionMessage(sellErr.Error()) {
-											tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess1, outcomes[1], sellErr.Error()))
-										} else {
-											tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
-										}
+									cleanup1Exec = executeMarketOrderWithSignals(mergeCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, excess1, cfg.FeeRateBps, excess1, 2*time.Second)
+								}
+								if shouldAttemptCleanupSell(excess0) && !cleanup0Exec.Success {
+									if cleanup0Exec.Result != nil && isMinSizeRejectionMessage(cleanup0Exec.Result.Message) {
+										tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess0, outcomes[0], cleanup0Exec.Result.Message))
+									} else if cleanup0Exec.Err != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], cleanup0Exec.Err)
+									} else if cleanup0Exec.Result != nil && cleanup0Exec.Result.Message != "" {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %s", id, outcomes[0], cleanup0Exec.Result.Message)
+									}
+								}
+								if shouldAttemptCleanupSell(excess1) && !cleanup1Exec.Success {
+									if cleanup1Exec.Result != nil && isMinSizeRejectionMessage(cleanup1Exec.Result.Message) {
+										tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess1, outcomes[1], cleanup1Exec.Result.Message))
+									} else if cleanup1Exec.Err != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], cleanup1Exec.Err)
+									} else if cleanup1Exec.Result != nil && cleanup1Exec.Result.Message != "" {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %s", id, outcomes[1], cleanup1Exec.Result.Message)
+									}
+								}
+								if hasActionableCleanupRemainder(excess0) || hasActionableCleanupRemainder(excess1) {
+									verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 8*time.Second)
+									remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
+									cancelVerify()
+									if verifyErr != nil && (hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1)) {
+										mergeCleanupResolved = false
+										tui.LogEvent("[%s] ⚠️ Post-merge cleanup still unresolved (%s): %s=%.4f, %s=%.4f", id, verifySource, outcomes[0], remaining0, outcomes[1], remaining1)
+									} else if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
+										mergeCleanupResolved = false
+										tui.LogEvent("[%s] ⚠️ Post-merge cleanup still holding inventory (%s): %s=%.4f, %s=%.4f", id, verifySource, outcomes[0], remaining0, outcomes[1], remaining1)
 									}
 								}
 							}
 
 							mergeCancel() // Release merge context resources
 							if mergeSucceeded {
-								tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
+								if mergeCleanupResolved {
+									tui.LogEvent("[%s] ✅ Execution complete after successful buy and merge. Applying 5s cooldown...", id)
+								} else {
+									tui.LogEvent("[%s] ⚠️ Merge completed but cleanup still pending. Applying 30s cooldown...", id)
+									panicBuyCooldown = time.Now().Add(30 * time.Second)
+								}
 							} else {
 								tui.LogEvent("[%s] ⚠️ Buy executed but merge not completed. Applying 5s cooldown before monitoring again...", id)
 							}
@@ -1985,40 +2008,50 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, acquired1, cfg.FeeRateBps, acquired1, 2*time.Second)
 							}
 
-							if (!attemptSell0 || sell0Exec.Success) && (!attemptSell1 || sell1Exec.Success) {
-								if sell0Exec.Success && shouldAttemptCleanupSell(sell0Exec.ExecutedQty) {
-									if _, sellErr := engine.SellForMarket(id, outcomes[0], cleanupSellPrice, sell0Exec.ExecutedQty); sellErr != nil {
-										tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
-									}
+							verifyCleanupCtx, cancelVerifyCleanup := context.WithTimeout(context.Background(), 8*time.Second)
+							remaining0, remaining1, resolvedBal0, resolvedBal1, resolvedSource, resolvedErr := waitForAcquiredCleanupResolution(verifyCleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+							cancelVerifyCleanup()
+							actualSold0 := math.Max(0, acquired0-remaining0)
+							actualSold1 := math.Max(0, acquired1-remaining1)
+
+							if shouldAttemptCleanupSell(actualSold0) {
+								if _, sellErr := engine.SellForMarket(id, outcomes[0], cleanupSellPrice, actualSold0); sellErr != nil {
+									tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
 								}
-								if sell1Exec.Success && shouldAttemptCleanupSell(sell1Exec.ExecutedQty) {
-									if _, sellErr := engine.SellForMarket(id, outcomes[1], cleanupSellPrice, sell1Exec.ExecutedQty); sellErr != nil {
-										tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
-									}
+							}
+							if shouldAttemptCleanupSell(actualSold1) {
+								if _, sellErr := engine.SellForMarket(id, outcomes[1], cleanupSellPrice, actualSold1); sellErr != nil {
+									tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
 								}
-								// Record estimated loss from cleanup sells versus the configured cleanup floor.
-								cleanupLoss := 0.0
-								if shouldAttemptCleanupSell(sell0Exec.ExecutedQty) {
-									cleanupLoss += sell0Exec.ExecutedQty * (ask1 - cleanupSellPrice)
-								}
-								if shouldAttemptCleanupSell(sell1Exec.ExecutedQty) {
-									cleanupLoss += sell1Exec.ExecutedQty * (ask2 - cleanupSellPrice)
-								}
-								if cleanupLoss > 0 {
-									trader.RecordLoss(cleanupLoss)
-									tui.LogEvent("[%s] 📉 Cleanup loss recorded: $%.2f", id, cleanupLoss)
-								}
-								tui.LogEvent("[%s] ✅ Auto-cleanup routine finished! Applying 30s cooldown before unblocking.", id)
-								panicBuyCooldown = time.Now().Add(30 * time.Second)
-							} else {
+							}
+
+							cleanupLoss := 0.0
+							if shouldAttemptCleanupSell(actualSold0) {
+								cleanupLoss += actualSold0 * (ask1 - cleanupSellPrice)
+							}
+							if shouldAttemptCleanupSell(actualSold1) {
+								cleanupLoss += actualSold1 * (ask2 - cleanupSellPrice)
+							}
+							if cleanupLoss > 0 {
+								trader.RecordLoss(cleanupLoss)
+								tui.LogEvent("[%s] 📉 Cleanup loss recorded: $%.2f", id, cleanupLoss)
+							}
+
+							if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
 								if attemptSell0 && !sell0Exec.Success && sell0Exec.Result != nil && sell0Exec.Result.Message != "" {
 									tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[0], sell0Exec.Result.Message)
 								}
 								if attemptSell1 && !sell1Exec.Success && sell1Exec.Result != nil && sell1Exec.Result.Message != "" {
 									tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[1], sell1Exec.Result.Message)
 								}
-								tui.LogEvent("[%s] 🚫 Auto-cleanup failed! Applying 2m cooldown to prevent immediate retry loops.", id)
+								if resolvedErr != nil {
+									tui.LogEvent("[%s] ⚠️ Auto-cleanup balance recheck warning: %v", id, resolvedErr)
+								}
+								tui.LogEvent("[%s] 🚫 Auto-cleanup unresolved (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Applying 2m cooldown.", id, resolvedSource, outcomes[0], resolvedBal0, remaining0, outcomes[1], resolvedBal1, remaining1)
 								panicBuyCooldown = time.Now().Add(120 * time.Second)
+							} else {
+								tui.LogEvent("[%s] ✅ Auto-cleanup verified flat (%s). Applying 30s cooldown before unblocking.", id, resolvedSource)
+								panicBuyCooldown = time.Now().Add(30 * time.Second)
 							}
 							cancelCleanup() // Release cleanup context resources
 						} // If both failed, nothing to record
@@ -2068,11 +2101,52 @@ func shouldAttemptCleanupSell(qty float64) bool {
 	return qty > 0.000001
 }
 
+func hasActionableCleanupRemainder(qty float64) bool {
+	return qty >= (minOnChainActionShares - 1e-9)
+}
+
 func normalizeMarketSellShares(qty float64) float64 {
 	if qty <= 0 {
 		return 0
 	}
 	return math.Floor((qty*100)+1e-9) / 100
+}
+
+func loadAcquiredPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, source string, err error) {
+	bal0, bal1, source, err = loadPairBalancesWSFirst(ctx, trader, token0, token1)
+	if err != nil {
+		return 0, 0, 0, 0, source, err
+	}
+	acquired0, acquired1 = acquiredPairBalances(initial0, initial1, bal0, bal1, haveInitialSnapshot)
+	return acquired0, acquired1, bal0, bal1, source, nil
+}
+
+func waitForAcquiredCleanupResolution(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (remaining0, remaining1, bal0, bal1 float64, source string, err error) {
+	for {
+		remaining0, remaining1, bal0, bal1, source, err = loadAcquiredPairBalances(ctx, trader, token0, token1, initial0, initial1, haveInitialSnapshot)
+		if err == nil && !hasActionableCleanupRemainder(remaining0) && !hasActionableCleanupRemainder(remaining1) {
+			return remaining0, remaining1, bal0, bal1, source, nil
+		}
+		select {
+		case <-ctx.Done():
+			return remaining0, remaining1, bal0, bal1, source, err
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func waitForPairFlatBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, err error) {
+	for {
+		bal0, bal1, source, err = loadPairBalancesWSFirst(ctx, trader, token0, token1)
+		if err == nil && !hasActionableCleanupRemainder(bal0) && !hasActionableCleanupRemainder(bal1) {
+			return bal0, bal1, source, nil
+		}
+		select {
+		case <-ctx.Done():
+			return bal0, bal1, source, err
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 func hasConfirmedExecutedQty(side api.Side, qty float64) bool {
@@ -3000,6 +3074,16 @@ func settleMarketInventory(
 			continue
 		}
 		tui.LogEvent("[%s] 📉 %s sold %s unbalanced shares of %s", id, reason, formatShareQty(exec.ExecutedQty), side.outcome)
+	}
+
+	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 8*time.Second)
+	remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
+	cancelVerify()
+	if (hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1)) && verifyErr != nil {
+		return fmt.Errorf("cleanup still unresolved (%s): %s=%.4f, %s=%.4f (%w)", verifySource, outcomes[0], remaining0, outcomes[1], remaining1, verifyErr)
+	}
+	if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
+		return fmt.Errorf("cleanup still holding inventory (%s): %s=%.4f, %s=%.4f", verifySource, outcomes[0], remaining0, outcomes[1], remaining1)
 	}
 
 	return nil
