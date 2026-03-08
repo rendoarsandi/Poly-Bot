@@ -444,10 +444,10 @@ func run() error {
 		// Track starting equity for this round's PnL calculation
 		startingEquity := engine.GetEquity()
 		compoundMultiplier := engine.GetCompoundMultiplier()
-		tui.LogEvent("📊 Round starting | Balance: $%.2f | Multiplier: %.2fx", currentBalance, compoundMultiplier)
+		tui.LogEvent("📊 Balance $%.2f | %.2fx", currentBalance, compoundMultiplier)
 
 		// Find markets
-		tui.LogEvent("🔍 Searching for active markets based on live settings...")
+		tui.LogEvent("🔍 Scanning markets...")
 		markets := mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
 			tui.LogEvent(format, args...)
 		})
@@ -494,7 +494,7 @@ func run() error {
 			}
 			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
-			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
+			tui.LogEvent("🚀 %s → %s", assetID, endTime.Format("15:04"))
 
 			// Create per-market Risk Manager
 			riskConfig := paper.RiskConfig{
@@ -554,7 +554,7 @@ func run() error {
 
 		select {
 		case <-done:
-			tui.LogEvent("✅ All markets closed normally.")
+			tui.LogEvent("✅ Markets closed")
 		case <-ctx.Done():
 			goto shutdown
 		case <-roundCtx.Done():
@@ -586,9 +586,9 @@ func run() error {
 		} else if roundPnL < 0 {
 			tui.LogEvent("📉 Loss. Round PnL: $%.2f", roundPnL)
 		} else {
-			tui.LogEvent("✅ Round complete, no change")
+			tui.LogEvent("✅ No change")
 		}
-		tui.LogEvent("🔄 Searching for next round...")
+		tui.LogEvent("🔄 Next round")
 
 		// Release stale keep-alive connections before the next search phase.
 		restClient.CloseIdleConnections()
@@ -641,8 +641,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	}
 
 	wsMsgChan := wsMgr.StartStreaming(ctx)
-	tui.LogEvent("[%s] 📡 Connected, trading until %v", id, endTime.Format("15:04:05"))
-
 	// Fetch fee rates for the tokens
 	tokenFeeRates := make(map[string]int)
 	for tid, outcome := range tokenMap {
@@ -777,7 +775,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		// Check if market ended
 		if time.Now().After(endTime.Add(5 * time.Second)) {
-			tui.LogEvent("[%s] ⏰ Market ended — running final cleanup and resolution check", id)
+			tui.LogEvent("[%s] ⏰ Closed", id)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
 			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, false, tui.GetSettings().MinAskPrice, "POST CLOSE"); err != nil {
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
@@ -3109,7 +3107,6 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 	}
 
 	if !hasPositions {
-		tui.LogEvent("[%s] ✅ No positions to redeem (already merged)", id)
 		return
 	}
 
