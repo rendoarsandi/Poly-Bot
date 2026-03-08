@@ -1993,17 +1993,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							tui.LogEvent("[%s] ⚠️ Legged trade detected! Watching live WS positions for up to 2s before cleanup...", id)
 
-							bal0, bal1, wsReady, wsErr := trader.WaitForLivePairPositions(cleanupCtx, token0, token1, 0.01, 2*time.Second)
+							bal0, bal1, _, wsErr := trader.WaitForLivePairPositions(cleanupCtx, token0, token1, 0.01, 2*time.Second)
 							if wsErr != nil && !errors.Is(wsErr, context.DeadlineExceeded) && !errors.Is(wsErr, context.Canceled) {
 								tui.LogEvent("[%s] ⚠️ Live WS position watch failed: %v", id, wsErr)
 							}
 
+							balanceSource := "live WS"
 							if latest0, latest1, err := loadPairBalances(cleanupCtx, trader, token0, token1); err == nil {
-								bal0, bal1 = latest0, latest1
+								bal0, bal1 = preferLivePairBalances(bal0, bal1, latest0, latest1)
+								if shouldAttemptCleanupSell(latest0) || shouldAttemptCleanupSell(latest1) {
+									balanceSource = "live WS + on-chain backup"
+								}
 							}
 
-							if wsReady && bal0 >= 0.01 && bal1 >= 0.01 {
-								tui.LogEvent("[%s] 🟢 Live positions arrived: %s=%.2f, %s=%.2f. Attempting Merge!", id, outcomes[0], bal0, outcomes[1], bal1)
+							if bal0 >= 0.01 && bal1 >= 0.01 {
+								tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s=%.2f, %s=%.2f. Attempting Merge!", id, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
 								mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(bal0, bal1), shares), len(market.Tokens))
 								if err != nil {
 									tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
@@ -2537,6 +2541,39 @@ func subtractMergedPairBalances(bal0, bal1, mergeQty float64) (float64, float64)
 	return math.Max(0, bal0-mergeQty), math.Max(0, bal1-mergeQty)
 }
 
+func preferLivePairBalances(live0, live1, backup0, backup1 float64) (float64, float64) {
+	return math.Max(live0, backup0), math.Max(live1, backup1)
+}
+
+func combinePairBalanceSnapshots(live0, live1, backup0, backup1 float64, backupErr error) (bal0, bal1 float64, source string, err error) {
+	hasLive := shouldAttemptCleanupSell(live0) || shouldAttemptCleanupSell(live1)
+	hasBackup := shouldAttemptCleanupSell(backup0) || shouldAttemptCleanupSell(backup1)
+
+	if backupErr != nil {
+		if hasLive {
+			return live0, live1, "live WS", nil
+		}
+		return 0, 0, "", backupErr
+	}
+
+	bal0, bal1 = preferLivePairBalances(live0, live1, backup0, backup1)
+	source = "live WS"
+	switch {
+	case hasLive && hasBackup:
+		source = "live WS + on-chain backup"
+	case hasBackup:
+		source = "on-chain backup"
+	}
+	return bal0, bal1, source, nil
+}
+
+func loadPairBalancesWSFirst(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, err error) {
+	live0 := trader.GetLivePositionSize(token0)
+	live1 := trader.GetLivePositionSize(token1)
+	backup0, backup1, backupErr := loadPairBalances(ctx, trader, token0, token1)
+	return combinePairBalanceSnapshots(live0, live1, backup0, backup1, backupErr)
+}
+
 func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {
 	positions, err := trader.GetPositions(ctx)
 	if err != nil {
@@ -2591,13 +2628,14 @@ func settleMarketInventory(
 
 	token0 := market.Tokens[0].TokenID
 	token1 := market.Tokens[1].TokenID
-	bal0, bal1, err := loadPairBalances(ctx, trader, token0, token1)
+	bal0, bal1, balanceSource, err := loadPairBalancesWSFirst(ctx, trader, token0, token1)
 	if err != nil {
 		return err
 	}
 
 	minQty := math.Min(bal0, bal1)
 	if minQty >= 0.000001 {
+		tui.LogEvent("[%s] 🔍 %s inventory snapshot (%s): %s=%.6f, %s=%.6f", id, reason, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
 		mergeQty, _, _, txHash, mergeErr := mergeBalancedPositionWSFirst(ctx, trader, market.ConditionID, token0, token1, minQty, len(market.Tokens))
 		if mergeErr != nil {
 			tui.LogEvent("[%s] ⚠️ %s merge skipped: %v", id, reason, mergeErr)

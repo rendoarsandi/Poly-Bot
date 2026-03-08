@@ -130,6 +130,38 @@ func TestUtilbotBalancedAndExcessShares(t *testing.T) {
 	}
 }
 
+func TestUtilbotShouldAttemptCleanupSellAllowsDust(t *testing.T) {
+	if !utilbotShouldAttemptCleanupSell(0.000432) {
+		t.Fatal("expected dust cleanup sell to be attempted")
+	}
+	if utilbotShouldAttemptCleanupSell(0.0000001) {
+		t.Fatal("expected near-zero cleanup sell to be ignored")
+	}
+}
+
+func TestUtilbotFormatShareQtyPreservesDustPrecision(t *testing.T) {
+	if got := utilbotFormatShareQty(0.23); got != "0.2300" {
+		t.Fatalf("regular qty got %q want 0.2300", got)
+	}
+	if got := utilbotFormatShareQty(0.000432); got != "0.000432" {
+		t.Fatalf("dust qty got %q want 0.000432", got)
+	}
+}
+
+func TestUtilbotPreferLivePairBalancesKeepsLiveRemainderWhenBackupIsStale(t *testing.T) {
+	bal0, bal1 := utilbotPreferLivePairBalances(0.1748, 0, 0, 0)
+	if math.Abs(bal0-0.1748) > 0.000001 || bal1 != 0 {
+		t.Fatalf("got balances %.4f/%.4f want 0.1748/0.0000", bal0, bal1)
+	}
+}
+
+func TestUtilbotPreferLivePairBalancesAllowsBackupToFillMissingSide(t *testing.T) {
+	bal0, bal1 := utilbotPreferLivePairBalances(0.1748, 0, 0.1500, 0.2250)
+	if math.Abs(bal0-0.1748) > 0.000001 || math.Abs(bal1-0.2250) > 0.000001 {
+		t.Fatalf("got balances %.4f/%.4f want 0.1748/0.2250", bal0, bal1)
+	}
+}
+
 func TestNormalizePanicBuySharesPerSideBumpsNearMinimum(t *testing.T) {
 	got, bumped := normalizePanicBuySharesPerSide(1.0, 0.99, 0.02)
 	if !bumped {

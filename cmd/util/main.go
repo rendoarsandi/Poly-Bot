@@ -680,9 +680,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 
 	if side == "BUY" && utilbotAnyTradeSucceeded(results, errs) {
 		if tradeSucceeded(results[0], errs[0]) && tradeSucceeded(results[1], errs[1]) {
-			fmt.Println("💰 Buy success! Querying on-chain balances for merge/cleanup...")
+			fmt.Println("💰 Buy success! Watching live WS positions for merge/cleanup first...")
 		} else {
-			fmt.Println("⚠️ Partial/unbalanced buy detected. Using live balances to clean up actual filled shares...")
+			fmt.Println("⚠️ Partial/unbalanced buy detected. Watching live WS positions before on-chain backup...")
 		}
 		finalizeUtilbotBuy(ctx, trader, cfg, market, outcomes, [2]string{token0, token1}, tokenFeeRates, shares, haveInitialSnapshot, initialBal0, initialBal1)
 	} else if side == "SELL" {
@@ -968,6 +968,49 @@ func utilbotAcquiredShares(bal0, bal1, initial0, initial1 float64, haveInitialSn
 	return math.Max(0, bal0), math.Max(0, bal1)
 }
 
+func utilbotShouldAttemptCleanupSell(qty float64) bool {
+	return qty > 0.000001
+}
+
+func utilbotFormatShareQty(qty float64) string {
+	if math.Abs(qty) >= 0.01 {
+		return fmt.Sprintf("%.4f", qty)
+	}
+	return fmt.Sprintf("%.6f", qty)
+}
+
+func utilbotPreferLivePairBalances(live0, live1, backup0, backup1 float64) (float64, float64) {
+	return math.Max(live0, backup0), math.Max(live1, backup1)
+}
+
+func utilbotQueryLiveBuyBalanceDelta(ctx context.Context, trader *trading.RealTrader, tokenIDs [2]string, initialBal0, initialBal1 float64, haveInitialSnapshot bool, timeout time.Duration) (acquired0, acquired1, bal0, bal1 float64, ready bool, err error) {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		bal0 = trader.GetLivePositionSize(tokenIDs[0])
+		bal1 = trader.GetLivePositionSize(tokenIDs[1])
+		acquired0, acquired1 = utilbotAcquiredShares(bal0, bal1, initialBal0, initialBal1, haveInitialSnapshot)
+		if utilbotShouldAttemptCleanupSell(acquired0) || utilbotShouldAttemptCleanupSell(acquired1) {
+			return acquired0, acquired1, bal0, bal1, true, nil
+		}
+		if time.Now().After(deadline) {
+			return acquired0, acquired1, bal0, bal1, false, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return acquired0, acquired1, bal0, bal1, false, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func utilbotQueryBuyBalanceDelta(ctx context.Context, trader *trading.RealTrader, tokenIDs [2]string, initialBal0, initialBal1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, err0, err1 error) {
 	const maxAttempts = 5
 	const settleDelay = 750 * time.Millisecond
@@ -994,20 +1037,30 @@ func utilbotQueryBuyBalanceDelta(ctx context.Context, trader *trading.RealTrader
 }
 
 func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *core.Config, market *api.Market, outcomes []string, tokenIDs [2]string, tokenFeeRates map[string]int, requestedShares float64, haveInitialSnapshot bool, initialBal0, initialBal1 float64) {
-	time.Sleep(3 * time.Second)
-	fmt.Printf("🔍 Querying balances for tokens: %s (%s), %s (%s)\n", outcomes[0], tokenIDs[0], outcomes[1], tokenIDs[1])
+	fmt.Printf("🔍 Watching live WS positions for tokens: %s (%s), %s (%s)\n", outcomes[0], tokenIDs[0], outcomes[1], tokenIDs[1])
 
 	queryCtx, cancelQuery := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelQuery()
-	acquired0, acquired1, bal0, bal1, err0, err1 := utilbotQueryBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot)
-	if err0 != nil || err1 != nil {
-		fmt.Printf("⚠️ Failed to verify buy balances (err0=%v, err1=%v). Skipping merge/cleanup.\n", err0, err1)
-		return
+
+	acquired0, acquired1, bal0, bal1, liveReady, liveErr := utilbotQueryLiveBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot, 2*time.Second)
+	balanceSource := "Live WS"
+	if liveErr != nil && liveErr != context.Canceled && liveErr != context.DeadlineExceeded {
+		fmt.Printf("⚠️ Live WS balance watch failed: %v\n", liveErr)
+	}
+	if !liveReady {
+		fmt.Println("⚠️ Live WS positions did not update in time. Falling back to on-chain balances...")
+		var err0, err1 error
+		acquired0, acquired1, bal0, bal1, err0, err1 = utilbotQueryBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot)
+		if err0 != nil || err1 != nil {
+			fmt.Printf("⚠️ Failed to verify buy balances (err0=%v, err1=%v). Skipping merge/cleanup.\n", err0, err1)
+			return
+		}
+		balanceSource = "On-chain backup"
 	}
 
 	shortfall0 := math.Max(0, requestedShares-acquired0)
 	shortfall1 := math.Max(0, requestedShares-acquired1)
-	fmt.Printf("📊 On-chain balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
+	fmt.Printf("📊 %s balances: %s=%.4f, %s=%.4f\n", balanceSource, outcomes[0], bal0, outcomes[1], bal1)
 	if haveInitialSnapshot {
 		fmt.Printf("🆕 Newly acquired since pre-buy snapshot: %s=%.4f, %s=%.4f\n", outcomes[0], acquired0, outcomes[1], acquired1)
 		preExistingPairs := math.Min(initialBal0, initialBal1)
@@ -1023,12 +1076,35 @@ func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *co
 	}
 
 	if minQty >= 0.000001 {
-		fmt.Printf("🔄 Merging %.6f balanced pairs...\n", minQty)
+		fmt.Printf("🔄 Merging %.6f balanced pairs (%s-led)...\n", minQty, strings.ToLower(balanceSource))
 		mergeCtx, cancelMerge := context.WithTimeout(ctx, 90*time.Second)
 		tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
 		cancelMerge()
 		if mergeErr != nil {
 			fmt.Printf("❌ Merge failed: %v\n", mergeErr)
+			if balanceSource == "Live WS" {
+				fmt.Println("🔄 Retrying merge with on-chain backup balances...")
+				backupAcquired0, backupAcquired1, backupBal0, backupBal1, err0, err1 := utilbotQueryBuyBalanceDelta(queryCtx, trader, tokenIDs, initialBal0, initialBal1, haveInitialSnapshot)
+				if err0 != nil || err1 != nil {
+					fmt.Printf("⚠️ On-chain backup merge check failed (err0=%v, err1=%v). Continuing with live cleanup snapshot.\n", err0, err1)
+				} else {
+					acquired0, acquired1 = utilbotPreferLivePairBalances(acquired0, acquired1, backupAcquired0, backupAcquired1)
+					bal0, bal1 = utilbotPreferLivePairBalances(bal0, bal1, backupBal0, backupBal1)
+					balanceSource = "Live WS + on-chain backup"
+					minQty, excess0, excess1 = utilbotBalancedAndExcessShares(acquired0, acquired1)
+					fmt.Printf("📊 Combined cleanup balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
+					if minQty >= 0.000001 {
+						mergeCtx, cancelMerge = context.WithTimeout(ctx, 90*time.Second)
+						tx, mergeErr = trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
+						cancelMerge()
+						if mergeErr != nil {
+							fmt.Printf("❌ Backup merge failed: %v\n", mergeErr)
+						} else {
+							fmt.Printf("✅ Merge successful! Tx: %s\n", tx)
+						}
+					}
+				}
+			}
 		} else {
 			fmt.Printf("✅ Merge successful! Tx: %s\n", tx)
 		}
@@ -1044,7 +1120,7 @@ func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *co
 func cleanupUtilbotExcessShares(ctx context.Context, trader *trading.RealTrader, cfg *core.Config, outcomes []string, tokenIDs [2]string, excesses [2]float64, tokenFeeRates map[string]int) {
 	sellPrice := core.CleanupSellLimitPrice(cfg.MinAskPrice)
 	for i, excess := range excesses {
-		if excess < 0.01 {
+		if !utilbotShouldAttemptCleanupSell(excess) {
 			continue
 		}
 
@@ -1054,7 +1130,7 @@ func cleanupUtilbotExcessShares(ctx context.Context, trader *trading.RealTrader,
 			rate = 0
 		}
 
-		fmt.Printf("🧹 Auto-cleanup: selling %.4f excess %s shares...\n", excess, outcome)
+		fmt.Printf("🧹 Auto-cleanup: selling %s excess %s shares...\n", utilbotFormatShareQty(excess), outcome)
 		res, err := trader.Sell(ctx, tokenIDs[i], outcome, sellPrice, excess, api.OrderTypeLimit, api.TIFFillAndKill, rate)
 		if err != nil {
 			fmt.Printf("⚠️ Auto-cleanup sell failed for %s: %v\n", outcome, err)
@@ -1069,7 +1145,7 @@ func cleanupUtilbotExcessShares(ctx context.Context, trader *trading.RealTrader,
 			continue
 		}
 
-		fmt.Printf("✅ Auto-cleanup sold excess %s shares. OrderID: %s\n", outcome, res.OrderID)
+		fmt.Printf("✅ Auto-cleanup sold %s excess %s shares. OrderID: %s\n", utilbotFormatShareQty(excess), outcome, res.OrderID)
 	}
 }
 
