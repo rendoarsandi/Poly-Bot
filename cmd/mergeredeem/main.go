@@ -16,6 +16,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const minOnChainActionShares = 0.01
+
 func main() {
 	_ = godotenv.Load()
 	cfg, err := core.LoadConfig()
@@ -249,7 +251,7 @@ func mergeablePairs(balances []float64) float64 {
 		return 0
 	}
 	minQty := math.Min(balances[0], balances[1])
-	if minQty < 0.000001 {
+	if minQty < minOnChainActionShares {
 		return 0
 	}
 	return minQty

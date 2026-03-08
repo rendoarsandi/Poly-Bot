@@ -31,6 +31,7 @@ import (
 const (
 	UseLiveUI               = true // Set to false for traditional logging
 	realbotLocalQuoteMaxAge = 250 * time.Millisecond
+	minOnChainActionShares  = 0.01
 )
 
 type realbotQuoteState struct {
@@ -239,7 +240,7 @@ func run() error {
 					}
 				}
 
-				if minQty >= 0.000001 {
+				if minQty >= minOnChainActionShares {
 					// We need the number of outcomes to merge, fetch market info
 					mInfo, err := realTrader.GetMarketInfo(overallCtx, condID)
 					if err != nil {
@@ -1749,8 +1750,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						res2, err2 = exec2.Result, exec2.Err
 						filled1, filled2 := exec1.ExecutedQty, exec2.ExecutedQty
 						side1Success, side2Success := exec1.Success, exec2.Success
-						if bal0, bal1, verifyErr := loadPairBalances(ctx, trader, token0, token1); verifyErr == nil {
-							tui.LogEvent("[%s] 🔍 Verify Positions: %s=%.4f, %s=%.4f (Target: %.0f)", id, outcomes[0], bal0, outcomes[1], bal1, shares)
+						if bal0, bal1, verifySource, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr == nil {
+							tui.LogEvent("[%s] 🔍 Verify Positions (%s): %s=%.4f, %s=%.4f (Target: %.0f)", id, verifySource, outcomes[0], bal0, outcomes[1], bal1, shares)
 						} else {
 							tui.LogEvent("[%s] ⚠️ Position snapshot unavailable after direct buy: %v", id, verifyErr)
 						}
@@ -1865,12 +1866,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									tui.LogEvent("[%s] 💰 MERGED! +$%.2f profit", id, result.PnL)
 								}
 
-								// Clean up only the excess shares from THIS execution, not the
-								// entire market inventory. WS fill deltas are the fast source of truth.
+								// Clean up from the settled on-chain balances for this pair, not only
+								// from WS-reported fill deltas. This catches pre-existing imbalances
+								// and WS under-reporting after merge.
 								tui.LogEvent("[%s] 📊 Settled balances: %s=%.6f, %s=%.6f", id, outcomes[0], settled0, outcomes[1], settled1)
 								cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
-								excess0 := math.Max(0, filled1-mergeQty)
-								excess1 := math.Max(0, filled2-mergeQty)
+								excess0, excess1 := subtractMergedPairBalances(settled0, settled1, mergeQty)
 								if shouldAttemptCleanupSell(excess0) {
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s excess %s shares", id, formatShareQty(excess0), outcomes[0])
 									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], cleanupSellPrice, excess0, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
@@ -1929,11 +1930,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							balanceSource := "live WS"
-							if latest0, latest1, err := loadPairBalances(cleanupCtx, trader, token0, token1); err == nil {
-								bal0, bal1 = preferLivePairBalances(bal0, bal1, latest0, latest1)
-								if shouldAttemptCleanupSell(latest0) || shouldAttemptCleanupSell(latest1) {
-									balanceSource = "live WS + on-chain backup"
-								}
+							if latest0, latest1, source, err := loadPairBalancesWSFirst(cleanupCtx, trader, token0, token1); err == nil {
+								bal0, bal1 = latest0, latest1
+								balanceSource = source
+							} else if shouldAttemptCleanupSell(bal0) || shouldAttemptCleanupSell(bal1) {
+								tui.LogEvent("[%s] ⚠️ Cleanup balance backup unavailable; using live WS only: %v", id, err)
 							}
 
 							if bal0 >= 0.01 && bal1 >= 0.01 {
@@ -2505,6 +2506,23 @@ func loadPairBalancesWSFirst(ctx context.Context, trader *trading.RealTrader, to
 }
 
 func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {
+	pos0, pos1, posErr := loadPairPositionBalances(ctx, trader, token0, token1)
+	onChain0, onChain1, onChainErr := loadPairOnChainBalances(ctx, trader, token0, token1)
+
+	switch {
+	case posErr == nil && onChainErr == nil:
+		bal0, bal1 := preferLivePairBalances(pos0, pos1, onChain0, onChain1)
+		return bal0, bal1, nil
+	case onChainErr == nil:
+		return onChain0, onChain1, nil
+	case posErr == nil:
+		return pos0, pos1, nil
+	default:
+		return 0, 0, fmt.Errorf("position snapshot failed (%v); on-chain backup failed (%v)", posErr, onChainErr)
+	}
+}
+
+func loadPairPositionBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {
 	positions, err := trader.GetPositions(ctx)
 	if err != nil {
 		positions, err = trader.ForceRefreshPositions(ctx)
@@ -2516,9 +2534,18 @@ func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, t
 	return bal0, bal1, nil
 }
 
+func loadPairOnChainBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {
+	bal0, err0 := trader.GetCTFBalanceFloat(ctx, token0)
+	bal1, err1 := trader.GetCTFBalanceFloat(ctx, token1)
+	if err0 != nil || err1 != nil {
+		return bal0, bal1, fmt.Errorf("on-chain balance check failed (err0=%v err1=%v)", err0, err1)
+	}
+	return bal0, bal1, nil
+}
+
 func mergeBalancedPositionWSFirst(ctx context.Context, trader *trading.RealTrader, conditionID, token0, token1 string, requestedQty float64, numOutcomes int) (mergeQty, settled0, settled1 float64, txHash string, err error) {
-	if requestedQty < 0.000001 {
-		return 0, 0, 0, "", fmt.Errorf("no balanced positions to merge")
+	if requestedQty < minOnChainActionShares {
+		return 0, 0, 0, "", fmt.Errorf("merge skipped: %.6f shares is below %.2f minimum", requestedQty, minOnChainActionShares)
 	}
 
 	settled0, settled1, err0, err1 := trader.QueryBalancedCTFBalances(ctx, token0, token1, requestedQty)
@@ -2527,8 +2554,8 @@ func mergeBalancedPositionWSFirst(ctx context.Context, trader *trading.RealTrade
 	}
 
 	mergeQty = math.Min(math.Min(settled0, settled1), requestedQty)
-	if mergeQty < 0.000001 {
-		return 0, settled0, settled1, "", fmt.Errorf("no settled balanced positions available")
+	if mergeQty < minOnChainActionShares {
+		return 0, settled0, settled1, "", fmt.Errorf("merge skipped: settled balanced size %.6f is below %.2f minimum", mergeQty, minOnChainActionShares)
 	}
 
 	txHash, err = trader.MergeOnChain(ctx, conditionID, mergeQty, numOutcomes)
@@ -2564,7 +2591,7 @@ func settleMarketInventory(
 	}
 
 	minQty := math.Min(bal0, bal1)
-	if minQty >= 0.000001 {
+	if minQty >= minOnChainActionShares {
 		tui.LogEvent("[%s] 🔍 %s inventory snapshot (%s): %s=%.6f, %s=%.6f", id, reason, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
 		mergeQty, _, _, txHash, mergeErr := mergeBalancedPositionWSFirst(ctx, trader, market.ConditionID, token0, token1, minQty, len(market.Tokens))
 		if mergeErr != nil {
