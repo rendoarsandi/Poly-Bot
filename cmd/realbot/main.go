@@ -1939,15 +1939,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								excess0 := math.Max(0, filled1-mergeQty)
 								excess1 := math.Max(0, filled2-mergeQty)
 								if excess0 >= 0.01 {
-									// Check against Polymarket's ~$1.00 minimum order value for sells
-									// We estimate this by checking if shares * price >= $1.00
-									// Since it's a market order, we conservatively estimate if shares < 2.0 (assuming max 0.50 price)
-									// If it fails, we catch the error and log it clearly.
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess0, outcomes[0])
 									_, sellErr := trader.Sell(mergeCtx, token0, outcomes[0], cleanupSellPrice, excess0, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
-										if strings.Contains(sellErr.Error(), "min size") {
-											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess0, outcomes[0])
+										if isMinSizeRejectionMessage(sellErr.Error()) {
+											tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess0, outcomes[0], sellErr.Error()))
 										} else {
 											tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[0], sellErr)
 										}
@@ -1957,8 +1953,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f excess %s shares", id, excess1, outcomes[1])
 									_, sellErr := trader.Sell(mergeCtx, token1, outcomes[1], cleanupSellPrice, excess1, api.OrderTypeLimit, api.TIFFillAndKill, cfg.FeeRateBps)
 									if sellErr != nil {
-										if strings.Contains(sellErr.Error(), "min size") {
-											tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, excess1, outcomes[1])
+										if isMinSizeRejectionMessage(sellErr.Error()) {
+											tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(excess1, outcomes[1], sellErr.Error()))
 										} else {
 											tui.LogEvent("[%s] ⚠️ Auto-cleanup sell failed for %s: %v", id, outcomes[1], sellErr)
 										}
@@ -2040,16 +2036,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if bal0 >= 0.01 {
 								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal0, outcomes[0])
 								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, bal0, cfg.FeeRateBps, bal0, 2*time.Second)
-								if sell0Exec.Result != nil && strings.Contains(sell0Exec.Result.Message, "min size") {
-									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal0, outcomes[0])
+								if sell0Exec.Result != nil && isMinSizeRejectionMessage(sell0Exec.Result.Message) {
+									tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(bal0, outcomes[0], sell0Exec.Result.Message))
 									sell0Exec.Success = true // Treat dust as handled so we don't spam retries
 								}
 							}
 							if bal1 >= 0.01 {
 								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %.2f %s shares", id, bal1, outcomes[1])
 								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, bal1, cfg.FeeRateBps, bal1, 2*time.Second)
-								if sell1Exec.Result != nil && strings.Contains(sell1Exec.Result.Message, "min size") {
-									tui.LogEvent("[%s] ⚠️ Kept %.2f %s shares as dust (Value under $1.00 minimum limit)", id, bal1, outcomes[1])
+								if sell1Exec.Result != nil && isMinSizeRejectionMessage(sell1Exec.Result.Message) {
+									tui.LogEvent("[%s] ⚠️ %s", id, cleanupRejectionMessage(bal1, outcomes[1], sell1Exec.Result.Message))
 									sell1Exec.Success = true // Treat dust as handled so we don't spam retries
 								}
 							}
@@ -2106,6 +2102,18 @@ type directMarketExecution struct {
 	WSConfirmed    bool
 	OrderConfirmed bool
 	VerifyErr      error
+}
+
+func isMinSizeRejectionMessage(message string) bool {
+	return strings.Contains(strings.ToLower(message), "min size")
+}
+
+func cleanupRejectionMessage(qty float64, outcome, venueMessage string) string {
+	message := strings.TrimSpace(venueMessage)
+	if message == "" {
+		return fmt.Sprintf("Cleanup attempt rejected for %.2f %s shares after placing the order; keeping remainder for now", qty, outcome)
+	}
+	return fmt.Sprintf("Cleanup attempt rejected for %.2f %s shares after placing the order; keeping remainder for now: %s", qty, outcome, message)
 }
 
 func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
@@ -2638,8 +2646,8 @@ func settleMarketInventory(
 
 		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, side.tokenID, side.outcome, aggressiveDumpPrice, side.qty, rate, side.qty, 2*time.Second)
 		if !exec.Success {
-			if exec.Result != nil && strings.Contains(exec.Result.Message, "min size") {
-				tui.LogEvent("[%s] ⚠️ %s kept %.2f %s shares as dust", id, reason, side.qty, side.outcome)
+			if exec.Result != nil && isMinSizeRejectionMessage(exec.Result.Message) {
+				tui.LogEvent("[%s] ⚠️ %s: %s", id, reason, cleanupRejectionMessage(side.qty, side.outcome, exec.Result.Message))
 				continue
 			}
 			if exec.Err != nil {
