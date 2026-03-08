@@ -57,6 +57,15 @@ var (
 	}
 )
 
+const (
+	defaultMaxOrderHistory = 20
+	defaultMaxEventHistory = 250
+	defaultTwoColOrderRows = 8
+	defaultOneColOrderRows = 6
+	defaultTwoColEventRows = 18
+	defaultOneColEventRows = 14
+)
+
 // ─── Asset style helpers ──────────────────────────────────────────────────────
 
 func getAssetStyle(id string) lipgloss.Style {
@@ -750,8 +759,8 @@ func (m tuiModel) View() string {
 		}
 
 		var rightRows []string
-		rightRows = append(rightRows, m.renderOrderHistory(rightW, 12))
-		rightRows = append(rightRows, m.renderEventLog(rightW, 12))
+		rightRows = append(rightRows, m.renderOrderHistory(rightW, m.orderHistoryRows(true)))
+		rightRows = append(rightRows, m.renderEventLog(rightW, m.eventLogRows(true)))
 
 		leftCol := strings.Join(leftRows, "\n\n")
 		rightCol := strings.Join(rightRows, "\n\n")
@@ -770,9 +779,9 @@ func (m tuiModel) View() string {
 			rows = append(rows, ord)
 		}
 
-		rows = append(rows, m.renderOrderHistory(w, 8))
+		rows = append(rows, m.renderOrderHistory(w, m.orderHistoryRows(false)))
 		rows = append(rows, "")
-		rows = append(rows, m.renderEventLog(w, 8))
+		rows = append(rows, m.renderEventLog(w, m.eventLogRows(false)))
 	}
 
 	rows = append(rows, m.renderFooter(w))
@@ -801,9 +810,9 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		orderBookDepth:  make(map[string]map[string][]MarketLevel),
 		latencySource:   "London API",
 		orderHistory:    make([]OrderHistoryEntry, 0),
-		maxOrderHistory: 20,
+		maxOrderHistory: defaultMaxOrderHistory,
 		eventLog:        make([]string, 0),
-		maxEvents:       10,
+		maxEvents:       defaultMaxEventHistory,
 		walletTruth:     make(map[string][]WalletTruthPosition),
 		width:           80,
 		height:          24,
@@ -1542,6 +1551,53 @@ func min(a, b int) int {
 	return b
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func clamp(n, low, high int) int {
+	if n < low {
+		return low
+	}
+	if n > high {
+		return high
+	}
+	return n
+}
+
+func (m tuiModel) orderHistoryRows(twoColumn bool) int {
+	h := m.snap.height
+	if h <= 0 {
+		if twoColumn {
+			return defaultTwoColOrderRows
+		}
+		return defaultOneColOrderRows
+	}
+	extra := max(0, h-24)
+	if twoColumn {
+		return clamp(defaultTwoColOrderRows+extra/10, defaultTwoColOrderRows, 12)
+	}
+	return clamp(defaultOneColOrderRows+extra/12, defaultOneColOrderRows, 10)
+}
+
+func (m tuiModel) eventLogRows(twoColumn bool) int {
+	h := m.snap.height
+	if h <= 0 {
+		if twoColumn {
+			return defaultTwoColEventRows
+		}
+		return defaultOneColEventRows
+	}
+	extra := max(0, h-24)
+	if twoColumn {
+		return clamp(defaultTwoColEventRows+extra/2, defaultTwoColEventRows, 40)
+	}
+	return clamp(defaultOneColEventRows+extra/2, defaultOneColEventRows, 32)
+}
+
 func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, realAsks map[string]float64, innerW int) string {
 	s := m.snap
 	var sb strings.Builder
@@ -2050,7 +2106,12 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 	inner := w - 4
 	var sb strings.Builder
 
-	sb.WriteString(sectionHeader("📜", "EVENT LOG", clrSlate) + "\n")
+	visible := min(len(s.eventLog), maxItems)
+	label := "EVENT LOG"
+	if len(s.eventLog) > 0 {
+		label = fmt.Sprintf("EVENT LOG  (showing %d/%d)", visible, len(s.eventLog))
+	}
+	sb.WriteString(sectionHeader("📜", label, clrSlate) + "\n")
 	if len(s.eventLog) == 0 {
 		sb.WriteString(styleDimmed.Render("  (waiting for events…)"))
 	} else {

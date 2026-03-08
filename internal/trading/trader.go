@@ -50,18 +50,24 @@ type Trader interface {
 
 // TradeResult represents the result of a trade attempt
 type TradeResult struct {
-	OrderID    string
-	Status     string
-	Success    bool
-	Message    string
-	Price      float64
-	Size       float64
-	Fee        float64
-	FeeRateBps int
-	Side       string
-	TokenID    string
-	Outcome    string
-	Timestamp  time.Time
+	OrderID              string
+	Status               string
+	Success              bool
+	Message              string
+	Price                float64
+	Size                 float64
+	Fee                  float64
+	FeeRateBps           int
+	Side                 string
+	TokenID              string
+	Outcome              string
+	MakingAmount         string
+	TakingAmount         string
+	TransactionsHashes   []string
+	TradeIDs             []string
+	AcknowledgedQty      float64
+	AcknowledgedNotional float64
+	Timestamp            time.Time
 }
 
 // PositionInfo represents a held position
@@ -74,6 +80,38 @@ type PositionInfo struct {
 	Slug            string
 	OppositeOutcome string
 	OppositeAsset   string
+}
+
+func parseMicroAmount(raw string) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	val, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0
+	}
+	return val / 1e6
+}
+
+func responseWasImmediatelyMatched(resp *api.OrderResponse) bool {
+	if resp == nil {
+		return false
+	}
+	status := strings.ToUpper(strings.TrimSpace(resp.Status))
+	return status == "MATCHED" || status == "FILLED" || len(resp.TransactionsHashes) > 0 || len(resp.TradeIDs) > 0
+}
+
+func deriveAcknowledgedExecution(resp *api.OrderResponse, side api.Side) (qty float64, notional float64) {
+	if !responseWasImmediatelyMatched(resp) {
+		return 0, 0
+	}
+	making := parseMicroAmount(resp.MakingAmount)
+	taking := parseMicroAmount(resp.TakingAmount)
+	if side == api.SideBuy {
+		return taking, making
+	}
+	return making, taking
 }
 
 // PaperTrader implements Trader for paper trading
@@ -432,17 +470,22 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 		}
 
 		results[i] = &TradeResult{
-			Success:   success,
-			OrderID:   resp.OrderID,
-			Status:    status,
-			Message:   message,
-			Price:     reqs[i].Price,
-			Size:      reqs[i].Size,
-			Side:      string(reqs[i].Side),
-			TokenID:   reqs[i].TokenID,
-			Fee:       fee,
-			Timestamp: time.Now(),
+			Success:            success,
+			OrderID:            resp.OrderID,
+			Status:             status,
+			Message:            message,
+			Price:              reqs[i].Price,
+			Size:               reqs[i].Size,
+			Side:               string(reqs[i].Side),
+			TokenID:            reqs[i].TokenID,
+			Fee:                fee,
+			MakingAmount:       resp.MakingAmount,
+			TakingAmount:       resp.TakingAmount,
+			TransactionsHashes: append([]string(nil), resp.TransactionsHashes...),
+			TradeIDs:           append([]string(nil), resp.TradeIDs...),
+			Timestamp:          time.Now(),
 		}
+		results[i].AcknowledgedQty, results[i].AcknowledgedNotional = deriveAcknowledgedExecution(resp, reqs[i].Side)
 
 		// If any buy order was successful, optimistically mark balance as stale
 		if success && reqs[i].Side == api.SideBuy {
@@ -506,20 +549,27 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	if t.clob.IsTestMode() {
 		status = "TEST"
 	}
+	ackQty, ackNotional := deriveAcknowledgedExecution(resp, api.SideBuy)
 
 	return &TradeResult{
-		OrderID:    resp.OrderID,
-		Status:     status,
-		Success:    resp.Success,
-		Price:      price,
-		Size:       size,
-		Fee:        fee,
-		FeeRateBps: feeRateBps,
-		Side:       "BUY",
-		TokenID:    tokenID,
-		Outcome:    outcome,
-		Timestamp:  time.Now(),
-		Message:    resp.ErrorMsg,
+		OrderID:              resp.OrderID,
+		Status:               status,
+		Success:              resp.Success,
+		Price:                price,
+		Size:                 size,
+		Fee:                  fee,
+		FeeRateBps:           feeRateBps,
+		Side:                 "BUY",
+		TokenID:              tokenID,
+		Outcome:              outcome,
+		MakingAmount:         resp.MakingAmount,
+		TakingAmount:         resp.TakingAmount,
+		TransactionsHashes:   append([]string(nil), resp.TransactionsHashes...),
+		TradeIDs:             append([]string(nil), resp.TradeIDs...),
+		AcknowledgedQty:      ackQty,
+		AcknowledgedNotional: ackNotional,
+		Timestamp:            time.Now(),
+		Message:              resp.ErrorMsg,
 	}, nil
 }
 
@@ -568,20 +618,27 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 	if t.clob.IsTestMode() {
 		status = "TEST"
 	}
+	ackQty, ackNotional := deriveAcknowledgedExecution(resp, api.SideSell)
 
 	return &TradeResult{
-		OrderID:    resp.OrderID,
-		Status:     status,
-		Success:    resp.Success,
-		Price:      price,
-		Size:       size,
-		Fee:        fee,
-		FeeRateBps: feeRateBps,
-		Side:       "SELL",
-		TokenID:    tokenID,
-		Outcome:    outcome,
-		Timestamp:  time.Now(),
-		Message:    resp.ErrorMsg,
+		OrderID:              resp.OrderID,
+		Status:               status,
+		Success:              resp.Success,
+		Price:                price,
+		Size:                 size,
+		Fee:                  fee,
+		FeeRateBps:           feeRateBps,
+		Side:                 "SELL",
+		TokenID:              tokenID,
+		Outcome:              outcome,
+		MakingAmount:         resp.MakingAmount,
+		TakingAmount:         resp.TakingAmount,
+		TransactionsHashes:   append([]string(nil), resp.TransactionsHashes...),
+		TradeIDs:             append([]string(nil), resp.TradeIDs...),
+		AcknowledgedQty:      ackQty,
+		AcknowledgedNotional: ackNotional,
+		Timestamp:            time.Now(),
+		Message:              resp.ErrorMsg,
 	}, nil
 }
 

@@ -425,8 +425,24 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (
 func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.executeSell(outcome, outcome, price, quantity)
+}
 
-	pos, exists := e.positions[outcome]
+// SellForMarket executes a simulated sell order for a market-specific position.
+func (e *Engine) SellForMarket(marketID, outcome string, price, quantity float64) (*Trade, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+	return e.executeSell(posKey, outcome, price, quantity)
+}
+
+func (e *Engine) executeSell(posKey, outcome string, price, quantity float64) (*Trade, error) {
+
+	pos, exists := e.positions[posKey]
 	if !exists || pos.Quantity < quantity {
 		available := 0.0
 		if exists {
@@ -462,7 +478,7 @@ func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 	pos.Quantity -= quantity
 	pos.TotalCost -= costBasis
 	if pos.Quantity <= 0.0001 {
-		delete(e.positions, outcome)
+		delete(e.positions, posKey)
 	}
 
 	// Update peak and drawdown

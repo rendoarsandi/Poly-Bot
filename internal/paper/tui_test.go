@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,5 +285,58 @@ func TestTUI_RegisterSplitInventory_ThreadSafe(t *testing.T) {
 	// Verify all inventories were registered
 	if len(tui.splitInventories) != 3 {
 		t.Errorf("Expected 3 split inventories, got %d", len(tui.splitInventories))
+	}
+}
+
+func TestNewTUI_UsesExpandedEventHistory(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	if tui.maxEvents < 100 {
+		t.Fatalf("expected expanded event retention, got %d", tui.maxEvents)
+	}
+}
+
+func TestTUILogEventRetainsNewestEntriesUpToMax(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.maxEvents = 3
+
+	for i := 1; i <= 5; i++ {
+		tui.LogEvent("event %d", i)
+	}
+
+	if len(tui.eventLog) != 3 {
+		t.Fatalf("expected 3 retained events, got %d", len(tui.eventLog))
+	}
+	if !strings.Contains(tui.eventLog[0], "event 3") {
+		t.Fatalf("expected oldest retained event to be event 3, got %q", tui.eventLog[0])
+	}
+	if !strings.Contains(tui.eventLog[2], "event 5") {
+		t.Fatalf("expected newest retained event to be event 5, got %q", tui.eventLog[2])
+	}
+}
+
+func TestTUIEventLogRowsPrioritizeLargerVisibleHistory(t *testing.T) {
+	model := tuiModel{snap: tuiSnapshot{height: 40}}
+	if got := model.eventLogRows(true); got < defaultTwoColEventRows {
+		t.Fatalf("expected two-column event rows >= %d, got %d", defaultTwoColEventRows, got)
+	}
+	if got := model.eventLogRows(false); got < defaultOneColEventRows {
+		t.Fatalf("expected one-column event rows >= %d, got %d", defaultOneColEventRows, got)
+	}
+	if got := model.orderHistoryRows(true); got > 12 {
+		t.Fatalf("expected capped two-column order rows, got %d", got)
+	}
+}
+
+func TestRenderEventLogShowsVisibleVsRetainedCount(t *testing.T) {
+	model := tuiModel{snap: tuiSnapshot{eventLog: []string{"one", "two", "three"}}}
+	rendered := model.renderEventLog(120, 2)
+	if !strings.Contains(rendered, "showing 2/3") {
+		t.Fatalf("expected render to show visible/retained counts, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "two") || !strings.Contains(rendered, "three") {
+		t.Fatalf("expected render to include newest events, got %q", rendered)
+	}
+	if strings.Contains(rendered, "one") {
+		t.Fatalf("expected render to omit trimmed events, got %q", rendered)
 	}
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -1730,6 +1729,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Background ticker keeps allowance synced.
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
+						initialSnapshot0, initialSnapshot1, initialSnapshotSource, haveInitialSnapshot := 0.0, 0.0, "", false
+						if snapshotCtx, cancel := context.WithTimeout(ctx, 3*time.Second); true {
+							initialSnapshot0, initialSnapshot1, initialSnapshotSource, haveInitialSnapshot = captureInitialPairSnapshot(snapshotCtx, trader, token0, token1)
+							cancel()
+						}
 
 						// Fetch initial positions to accurately calculate bought amount
 						var initialBal0, initialBal1 float64
@@ -1770,6 +1774,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						res2, err2 = exec2.Result, exec2.Err
 						filled1, filled2 := exec1.ExecutedQty, exec2.ExecutedQty
 						side1Success, side2Success := exec1.Success, exec2.Success
+						logDirectExecutionAudit(tui, id, "Side 1 BUY", shares, limitPrice1, exec1)
+						logDirectExecutionAudit(tui, id, "Side 2 BUY", shares, limitPrice2, exec2)
 						if bal0, bal1, verifySource, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr == nil {
 							tui.LogEvent("[%s] 🔍 Verify Positions (%s): %s=%.4f, %s=%.4f (Target: %.0f)", id, verifySource, outcomes[0], bal0, outcomes[1], bal1, shares)
 						} else {
@@ -1780,6 +1786,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Polymarket does not expose exact per-leg execution price through this path.
 						cost1 := filled1 * ask1
 						cost2 := filled2 * ask2
+						if exec1.AcknowledgedNotional > 0 {
+							cost1 = exec1.AcknowledgedNotional
+						}
+						if exec2.AcknowledgedNotional > 0 {
+							cost2 = exec2.AcknowledgedNotional
+						}
 
 						// Log results based on VERIFIED state
 						if side1Success {
@@ -1822,33 +1834,31 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Do not retry buys here to avoid accidental spam-buys.
 						// ═══════════════════════════════════════════════════════════════
 						if side1Success != side2Success {
+							if haveInitialSnapshot {
+								tui.LogEvent("[%s] 🧾 Pre-trade share snapshot (%s): %s=%.4f, %s=%.4f", id, initialSnapshotSource, outcomes[0], initialSnapshot0, outcomes[1], initialSnapshot1)
+							}
 							tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then re-verifying...",
 								id, outcomes[0], side1Success, outcomes[1], side2Success)
 							time.Sleep(2 * time.Second)
 
-							// Re-verify: the "failed" order may have settled during the delay
-							if retryPos, retryErr := trader.GetPositions(ctx); retryErr == nil {
-								var rbal0, rbal1 float64
-								for _, pos := range retryPos {
-									if pos.TokenID == token0 {
-										rbal0 = pos.Size
-									} else if pos.TokenID == token1 {
-										rbal1 = pos.Size
-									}
-								}
-								prevSide1, prevSide2 := side1Success, side2Success
-								side1Success = prevSide1 || rbal0 > 0.01
-								side2Success = prevSide2 || rbal1 > 0.01
-								if rbal0 > 0.01 {
-									filled1 = rbal0
-								}
-								if rbal1 > 0.01 {
-									filled2 = rbal1
-								}
-								tui.LogEvent("[%s] 🔍 Re-verify after delay: %s=%.4f (%v→%v), %s=%.4f (%v→%v)",
-									id, outcomes[0], rbal0, prevSide1, side1Success,
-									outcomes[1], rbal1, prevSide2, side2Success)
+							var leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1 float64
+							var leggedSource string
+							reverifyCtx, cancelReverify := context.WithTimeout(ctx, 12*time.Second)
+							leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1, leggedSource, _ = reconcileBoughtPairBalances(reverifyCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+							cancelReverify()
+							prevSide1, prevSide2 := side1Success, side2Success
+							side1Success = prevSide1 || shouldAttemptCleanupSell(leggedAcquired0)
+							side2Success = prevSide2 || shouldAttemptCleanupSell(leggedAcquired1)
+							if shouldAttemptCleanupSell(leggedAcquired0) {
+								filled1 = math.Max(filled1, leggedAcquired0)
 							}
+							if shouldAttemptCleanupSell(leggedAcquired1) {
+								filled2 = math.Max(filled2, leggedAcquired1)
+							}
+							tui.LogEvent("[%s] 🔍 Re-verify after delay (%s): %s abs=%.4f Δ=%.4f (%v→%v), %s abs=%.4f Δ=%.4f (%v→%v)",
+								id, leggedSource,
+								outcomes[0], leggedBal0, leggedAcquired0, prevSide1, side1Success,
+								outcomes[1], leggedBal1, leggedAcquired1, prevSide2, side2Success)
 
 							// Final status after verification
 							if side1Success != side2Success {
@@ -1943,50 +1953,52 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 60*time.Second)
 
-							tui.LogEvent("[%s] ⚠️ Legged trade detected! Watching live WS positions for up to 2s before cleanup...", id)
+							tui.LogEvent("[%s] ⚠️ Legged trade detected! Re-checking live/on-chain balances before cleanup...", id)
 
-							bal0, bal1, _, wsErr := trader.WaitForLivePairPositions(cleanupCtx, token0, token1, 0.01, 2*time.Second)
-							if wsErr != nil && !errors.Is(wsErr, context.DeadlineExceeded) && !errors.Is(wsErr, context.Canceled) {
-								tui.LogEvent("[%s] ⚠️ Live WS position watch failed: %v", id, wsErr)
+							acquired0, acquired1, bal0, bal1, balanceSource, balanceErr := reconcileBoughtPairBalances(cleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+							if balanceErr != nil {
+								tui.LogEvent("[%s] ⚠️ Cleanup balance reconciliation warning: %v", id, balanceErr)
 							}
 
-							balanceSource := "live WS"
-							if latest0, latest1, source, err := loadPairBalancesWSFirst(cleanupCtx, trader, token0, token1); err == nil {
-								bal0, bal1 = latest0, latest1
-								balanceSource = source
-							} else if shouldAttemptCleanupSell(bal0) || shouldAttemptCleanupSell(bal1) {
-								tui.LogEvent("[%s] ⚠️ Cleanup balance backup unavailable; using live WS only: %v", id, err)
-							}
-
-							if bal0 >= 0.01 && bal1 >= 0.01 {
-								tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s=%.2f, %s=%.2f. Attempting Merge!", id, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
-								mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(bal0, bal1), shares), len(market.Tokens))
+							if acquired0 >= minOnChainActionShares && acquired1 >= minOnChainActionShares {
+								tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Attempting Merge!", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
+								mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(acquired0, acquired1), shares), len(market.Tokens))
 								if err != nil {
 									tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
 									// Fallback to sell below using the live position snapshot.
 								} else {
 									tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
-									bal0, bal1 = subtractMergedPairBalances(bal0, bal1, mergeQty)
+									acquired0, acquired1 = subtractMergedPairBalances(acquired0, acquired1, mergeQty)
 								}
 							}
 
 							// If not settled via merge, or if dust remains, clean it up via Market Sell
-							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking for unbalanced shares to sell... Balances: %s=%.2f, %s=%.2f", id, outcomes[0], bal0, outcomes[1], bal1)
+							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking newly acquired shares to sell (%s)... %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
 
 							cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
 							var sell0Exec, sell1Exec directMarketExecution
-							attemptSell0 := shouldAttemptCleanupSell(bal0)
-							attemptSell1 := shouldAttemptCleanupSell(bal1)
+							attemptSell0 := shouldAttemptCleanupSell(acquired0)
+							attemptSell1 := shouldAttemptCleanupSell(acquired1)
 							if attemptSell0 {
-								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(bal0), outcomes[0])
-								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, bal0, cfg.FeeRateBps, bal0, 2*time.Second)
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(acquired0), outcomes[0])
+								sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupSellPrice, acquired0, cfg.FeeRateBps, acquired0, 2*time.Second)
 							}
 							if attemptSell1 {
-								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(bal1), outcomes[1])
-								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, bal1, cfg.FeeRateBps, bal1, 2*time.Second)
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(acquired1), outcomes[1])
+								sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupSellPrice, acquired1, cfg.FeeRateBps, acquired1, 2*time.Second)
 							}
 
 							if (!attemptSell0 || sell0Exec.Success) && (!attemptSell1 || sell1Exec.Success) {
+								if sell0Exec.Success && shouldAttemptCleanupSell(sell0Exec.ExecutedQty) {
+									if _, sellErr := engine.SellForMarket(id, outcomes[0], cleanupSellPrice, sell0Exec.ExecutedQty); sellErr != nil {
+										tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
+									}
+								}
+								if sell1Exec.Success && shouldAttemptCleanupSell(sell1Exec.ExecutedQty) {
+									if _, sellErr := engine.SellForMarket(id, outcomes[1], cleanupSellPrice, sell1Exec.ExecutedQty); sellErr != nil {
+										tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
+									}
+								}
 								// Record estimated loss from cleanup sells versus the configured cleanup floor.
 								cleanupLoss := 0.0
 								if shouldAttemptCleanupSell(sell0Exec.ExecutedQty) {
@@ -2032,13 +2044,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 }
 
 type directMarketExecution struct {
-	Result         *trading.TradeResult
-	Err            error
-	ExecutedQty    float64
-	Success        bool
-	WSConfirmed    bool
-	OrderConfirmed bool
-	VerifyErr      error
+	Result               *trading.TradeResult
+	Err                  error
+	ExecutedQty          float64
+	AcknowledgedQty      float64
+	AcknowledgedNotional float64
+	Success              bool
+	WSConfirmed          bool
+	OrderConfirmed       bool
+	VerifyErr            error
 }
 
 func isMinSizeRejectionMessage(message string) bool {
@@ -2071,13 +2085,82 @@ func formatShareQty(qty float64) string {
 	return fmt.Sprintf("%.6f", qty)
 }
 
+func venueExecutionEffectivePrice(exec directMarketExecution) float64 {
+	if exec.AcknowledgedQty <= 0 || exec.AcknowledgedNotional <= 0 {
+		return 0
+	}
+	return exec.AcknowledgedNotional / exec.AcknowledgedQty
+}
+
+func directExecutionTxSummary(exec directMarketExecution) string {
+	if exec.Result == nil || len(exec.Result.TransactionsHashes) == 0 {
+		return ""
+	}
+	tx := exec.Result.TransactionsHashes[0]
+	if len(tx) > 12 {
+		return tx[:12] + "..."
+	}
+	return tx
+}
+
+func directExecutionHasSizingDrift(exec directMarketExecution, requestedQty float64) bool {
+	if exec.AcknowledgedQty <= 0 || requestedQty <= 0 {
+		return false
+	}
+	drift := math.Abs(exec.AcknowledgedQty - requestedQty)
+	return drift > math.Max(0.02, requestedQty*0.02)
+}
+
+func logDirectExecutionAudit(tui *paper.TUI, id, label string, requestedQty, limitPrice float64, exec directMarketExecution) {
+	if tui == nil || exec.Result == nil {
+		return
+	}
+	if exec.AcknowledgedQty <= 0 && exec.AcknowledgedNotional <= 0 && len(exec.Result.TransactionsHashes) == 0 {
+		return
+	}
+	effectivePrice := venueExecutionEffectivePrice(exec)
+	txSummary := directExecutionTxSummary(exec)
+	tui.LogEvent("[%s] 🧾 %s venue ack: req=%s lim=$%.3f ackQty=%s ackNotional=$%.4f eff=$%.4f maker=%s taker=%s tx=%s",
+		id,
+		label,
+		formatShareQty(requestedQty),
+		limitPrice,
+		formatShareQty(exec.AcknowledgedQty),
+		exec.AcknowledgedNotional,
+		effectivePrice,
+		exec.Result.MakingAmount,
+		exec.Result.TakingAmount,
+		txSummary,
+	)
+	if directExecutionHasSizingDrift(exec, requestedQty) {
+		driftPct := ((exec.AcknowledgedQty / requestedQty) - 1.0) * 100.0
+		tui.LogEvent("[%s] 🚨 %s sizing drift: requested %s shares but venue acknowledged %s (%+.1f%%) at cap $%.3f (effective $%.4f) tx=%s",
+			id,
+			label,
+			formatShareQty(requestedQty),
+			formatShareQty(exec.AcknowledgedQty),
+			driftPct,
+			limitPrice,
+			effectivePrice,
+			txSummary,
+		)
+	}
+}
+
 func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
 	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
 	orderID := ""
+	acknowledgedQty := 0.0
+	acknowledgedNotional := 0.0
 	if result != nil {
 		orderID = result.OrderID
+		acknowledgedQty = result.AcknowledgedQty
+		acknowledgedNotional = result.AcknowledgedNotional
 	}
 	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, side, orderID, tokenID, initialBalance, size, confirmTimeout)
+	if acknowledgedQty > executedQty {
+		executedQty = acknowledgedQty
+	}
 	success := hasConfirmedExecutedQty(side, executedQty) || orderConfirmed
 
 	if result == nil {
@@ -2106,13 +2189,15 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 	}
 
 	return directMarketExecution{
-		Result:         result,
-		Err:            err,
-		ExecutedQty:    executedQty,
-		Success:        success,
-		WSConfirmed:    wsConfirmed,
-		OrderConfirmed: orderConfirmed,
-		VerifyErr:      verifyErr,
+		Result:               result,
+		Err:                  err,
+		ExecutedQty:          executedQty,
+		AcknowledgedQty:      acknowledgedQty,
+		AcknowledgedNotional: acknowledgedNotional,
+		Success:              success,
+		WSConfirmed:          wsConfirmed,
+		OrderConfirmed:       orderConfirmed,
+		VerifyErr:            verifyErr,
 	}
 }
 
@@ -2563,6 +2648,105 @@ func loadPairOnChainBalances(ctx context.Context, trader *trading.RealTrader, to
 		return bal0, bal1, fmt.Errorf("on-chain balance check failed (err0=%v err1=%v)", err0, err1)
 	}
 	return bal0, bal1, nil
+}
+
+func captureInitialPairSnapshot(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, ok bool) {
+	if onChain0, onChain1, err := loadPairOnChainBalances(ctx, trader, token0, token1); err == nil {
+		return onChain0, onChain1, "on-chain", true
+	}
+	if pos0, pos1, err := loadPairPositionBalances(ctx, trader, token0, token1); err == nil {
+		return pos0, pos1, "position snapshot", true
+	}
+	return 0, 0, "", false
+}
+
+func incrementalBalance(initial, current float64) float64 {
+	if current <= initial {
+		return 0
+	}
+	return current - initial
+}
+
+func acquiredPairBalances(initial0, initial1, current0, current1 float64, haveInitialSnapshot bool) (float64, float64) {
+	if !haveInitialSnapshot {
+		return current0, current1
+	}
+	return incrementalBalance(initial0, current0), incrementalBalance(initial1, current1)
+}
+
+func queryLivePairBalanceDelta(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64) {
+	for {
+		bal0 = trader.GetLivePositionSize(token0)
+		bal1 = trader.GetLivePositionSize(token1)
+		acquired0, acquired1 = acquiredPairBalances(initial0, initial1, bal0, bal1, haveInitialSnapshot)
+		if shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
+			return acquired0, acquired1, bal0, bal1
+		}
+		select {
+		case <-ctx.Done():
+			return acquired0, acquired1, bal0, bal1
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func queryOnChainPairBalanceDelta(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, err error) {
+	for {
+		bal0, bal1, err = loadPairOnChainBalances(ctx, trader, token0, token1)
+		if err == nil {
+			acquired0, acquired1 = acquiredPairBalances(initial0, initial1, bal0, bal1, haveInitialSnapshot)
+			if shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
+				return acquired0, acquired1, bal0, bal1, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return acquired0, acquired1, bal0, bal1, err
+		case <-time.After(750 * time.Millisecond):
+		}
+	}
+}
+
+func reconcileBoughtPairBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, source string, err error) {
+	liveWindow := 2 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < liveWindow {
+			liveWindow = remaining
+		}
+	}
+	if liveWindow < 0 {
+		liveWindow = 0
+	}
+
+	var live0, live1 float64
+	if liveWindow > 0 {
+		liveCtx, cancel := context.WithTimeout(ctx, liveWindow)
+		defer cancel()
+		acquired0, acquired1, live0, live1 = queryLivePairBalanceDelta(liveCtx, trader, token0, token1, initial0, initial1, haveInitialSnapshot)
+		source = "live WS"
+	}
+
+	onChainAcquired0, onChainAcquired1, onChain0, onChain1, onChainErr := queryOnChainPairBalanceDelta(ctx, trader, token0, token1, initial0, initial1, haveInitialSnapshot)
+	if onChainErr == nil {
+		acquired0 = math.Max(acquired0, onChainAcquired0)
+		acquired1 = math.Max(acquired1, onChainAcquired1)
+		bal0, bal1 = preferLivePairBalances(live0, live1, onChain0, onChain1)
+		if source == "" {
+			source = "on-chain delta"
+		} else {
+			source += " + on-chain delta"
+		}
+		return acquired0, acquired1, bal0, bal1, source, nil
+	}
+
+	if shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
+		return acquired0, acquired1, live0, live1, source, nil
+	}
+	if source == "" {
+		source = "unavailable"
+	}
+	return acquired0, acquired1, live0, live1, source, onChainErr
 }
 
 func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) error {

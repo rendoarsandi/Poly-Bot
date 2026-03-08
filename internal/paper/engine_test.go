@@ -166,10 +166,10 @@ func TestMarketBuy_UpdatesPosition(t *testing.T) {
 	// Second buy - should update position with weighted average
 	levels2 := []MarketLevel{
 		{Price: 0.50, Size: 50},
-		}
-		_, _, _ = engine.MarketBuy("BTC", "Up", 50, levels2)
+	}
+	_, _, _ = engine.MarketBuy("BTC", "Up", 50, levels2)
 
-		positions = engine.GetPositions()
+	positions = engine.GetPositions()
 	pos = positions["BTC:Up"]
 
 	if pos.Quantity != 100 {
@@ -408,5 +408,32 @@ func TestEngine_getSplitInventoryValue_ThreadSafe(t *testing.T) {
 	// Verify final state is consistent
 	if engine.GetEquity() != 1200.0 { // 1000 + 100 (split) + 100 (added)
 		t.Errorf("Expected final equity $1200.00, got $%.2f", engine.GetEquity())
+	}
+}
+
+func TestEngine_SellForMarket(t *testing.T) {
+	engine := NewEngine(1000.0)
+	if _, err := engine.BuyForMarket("XRP", "Up", 0.40, 5); err != nil {
+		t.Fatalf("BuyForMarket failed: %v", err)
+	}
+
+	trade, err := engine.SellForMarket("XRP", "Up", 0.42, 2)
+	if err != nil {
+		t.Fatalf("SellForMarket failed: %v", err)
+	}
+	if trade == nil || trade.Outcome != "Up" || trade.Quantity != 2 {
+		t.Fatalf("unexpected trade: %+v", trade)
+	}
+
+	positions := engine.GetPositions()
+	if len(positions) != 1 {
+		t.Fatalf("expected 1 remaining position, got %d", len(positions))
+	}
+	pos, ok := positions["XRP:Up"]
+	if !ok {
+		t.Fatalf("expected XRP:Up position, got %+v", positions)
+	}
+	if pos.MarketID != "XRP" || pos.Outcome != "Up" || absFloat(pos.Quantity-3) > 1e-9 {
+		t.Fatalf("unexpected remaining position: %+v", pos)
 	}
 }

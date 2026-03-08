@@ -128,6 +128,51 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 	}
 }
 
+func TestDeriveAcknowledgedExecutionForMatchedBuy(t *testing.T) {
+	resp := &api.OrderResponse{
+		Status:       "matched",
+		MakingAmount: "2150000",
+		TakingAmount: "7885631",
+	}
+
+	qty, notional := deriveAcknowledgedExecution(resp, api.SideBuy)
+	if qty != 7.885631 {
+		t.Fatalf("expected acknowledged qty 7.885631, got %.6f", qty)
+	}
+	if notional != 2.15 {
+		t.Fatalf("expected acknowledged notional 2.15, got %.6f", notional)
+	}
+}
+
+func TestDeriveAcknowledgedExecutionForMatchedSell(t *testing.T) {
+	resp := &api.OrderResponse{
+		Status:       "MATCHED",
+		MakingAmount: "7880000",
+		TakingAmount: "3401000",
+	}
+
+	qty, notional := deriveAcknowledgedExecution(resp, api.SideSell)
+	if qty != 7.88 {
+		t.Fatalf("expected acknowledged sell qty 7.88, got %.6f", qty)
+	}
+	if notional != 3.401 {
+		t.Fatalf("expected acknowledged sell notional 3.401, got %.6f", notional)
+	}
+}
+
+func TestDeriveAcknowledgedExecutionIgnoresLiveOrder(t *testing.T) {
+	resp := &api.OrderResponse{
+		Status:       "live",
+		MakingAmount: "2150000",
+		TakingAmount: "5000000",
+	}
+
+	qty, notional := deriveAcknowledgedExecution(resp, api.SideBuy)
+	if qty != 0 || notional != 0 {
+		t.Fatalf("expected live order to have no acknowledged execution, got qty=%.6f notional=%.6f", qty, notional)
+	}
+}
+
 // TestPaperTrader_SellAfterBuy verifies sell works after buying
 func TestPaperTrader_SellAfterBuy(t *testing.T) {
 	engine := paper.NewEngine(1000.0)
