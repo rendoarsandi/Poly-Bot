@@ -32,9 +32,10 @@ type WSManager struct {
 	mu   sync.Mutex
 
 	// Connection state
-	connected     atomic.Bool
-	lastMessage   atomic.Int64 // Unix timestamp of last message
-	lastHeartbeat atomic.Int64
+	connected       atomic.Bool
+	lastMessage     atomic.Int64 // Unix timestamp of last message, including PONG heartbeats
+	lastDataMessage atomic.Int64 // Unix timestamp (ns) of last non-heartbeat data message
+	lastHeartbeat   atomic.Int64
 
 	// Subscription state for reconnection
 	subscriptions []interface{}
@@ -427,7 +428,17 @@ func (m *WSManager) TimeSinceLastMessage() time.Duration {
 	return time.Since(time.Unix(m.lastMessage.Load(), 0))
 }
 
-// PingLatency returns the last measured ping round-trip time
+// TimeSinceLastDataMessage returns duration since the last non-heartbeat data message.
+func (m *WSManager) TimeSinceLastDataMessage() time.Duration {
+	last := m.lastDataMessage.Load()
+	if last == 0 {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Since(time.Unix(0, last))
+}
+
+// PingLatency returns the last measured heartbeat write latency.
+// Polymarket heartbeats use text PING/PONG frames here, so this is not a full round-trip RTT metric.
 func (m *WSManager) PingLatency() time.Duration {
 	return time.Duration(m.pingLatencyNs.Load())
 }
@@ -518,7 +529,8 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 
 			// Reset error counter on success
 			consecutiveErrors = 0
-			m.lastMessage.Store(time.Now().Unix())
+			now := time.Now()
+			m.lastMessage.Store(now.Unix())
 			m.messageCount.Add(1)
 
 			// Polymarket responds to PING with literal "PONG" strings
@@ -526,6 +538,7 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 			if string(p) == "PONG" {
 				continue
 			}
+			m.lastDataMessage.Store(now.UnixNano())
 
 			// Send to channel - prioritize newest message
 			// Uses labeled loop for clarity (avoids goto)

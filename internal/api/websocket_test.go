@@ -90,3 +90,20 @@ func TestWSManagerDefault(t *testing.T) {
 		t.Errorf("Expected default URL, got %s", mgr.URL)
 	}
 }
+
+func TestWSManagerTimeSinceLastDataMessage(t *testing.T) {
+	mgr := NewWSManager("")
+	mgr.lastDataMessage.Store(time.Now().Add(-2 * time.Second).UnixNano())
+
+	got := mgr.TimeSinceLastDataMessage()
+	if got < time.Second || got > 3*time.Second {
+		t.Fatalf("expected last data age around 2s, got %v", got)
+	}
+}
+
+func TestWSManagerTimeSinceLastDataMessageUnsetIsLarge(t *testing.T) {
+	mgr := NewWSManager("")
+	if got := mgr.TimeSinceLastDataMessage(); got < time.Hour {
+		t.Fatalf("expected unset data age to appear stale, got %v", got)
+	}
+}

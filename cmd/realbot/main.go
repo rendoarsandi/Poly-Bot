@@ -1050,7 +1050,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		staleTime := time.Since(lastUpdate)
 
 		// Update WS staleness and ping latency in TUI
-		wsTimeSinceMsg := wsMgr.TimeSinceLastMessage()
+		// Use data-message age, not heartbeat/PONG age, so the bot can tell the
+		// difference between an alive socket and an actually fresh market feed.
+		wsTimeSinceMsg := wsMgr.TimeSinceLastDataMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 
@@ -1571,8 +1573,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Scale shares based on margin (User requested NO fee buffer deduction)
 					shares := tradeSize / sum
 					shares = math.Floor(shares) // Round down to integer shares for cleaner execution matching utilbot
+					requestedShares := shares
 
 					// Fee estimation and balance check logging removed per user request
+					localBuyFresh, _, localBuyReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenAsks, tokenFullAsks, quoteState, realbotLocalQuoteMaxAge)
+					if !localBuyFresh {
+						tui.LogEvent("[%s] ⚠️ Skipping buy: local WS ask depth unavailable (%s)", id, localBuyReason)
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
+					}
 
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across all price levels
 					// that remain acceptable under the configured execution margin floor. This lets
@@ -1583,31 +1592,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
 					copy(asks1, tokenFullAsks[outcomes[0]])
-					// Inject BBO if missing due to orderbook lag
-					hasAsk1 := false
-					for _, a := range asks1 {
-						if a.Price <= ask1+1e-6 {
-							hasAsk1 = true
-							break
-						}
-					}
-					if !hasAsk1 {
-						asks1 = append(asks1, paper.MarketLevel{Price: ask1, Size: shares})
-					}
 					sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
 					asks2 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[1]]))
 					copy(asks2, tokenFullAsks[outcomes[1]])
-					hasAsk2 := false
-					for _, a := range asks2 {
-						if a.Price <= ask2+1e-6 {
-							hasAsk2 = true
-							break
-						}
-					}
-					if !hasAsk2 {
-						asks2 = append(asks2, paper.MarketLevel{Price: ask2, Size: shares})
-					}
 					sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
 
 					// Calculate aggregated matched liquidity across valid price levels
@@ -1668,11 +1656,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					bookDepth1 := len(tokenFullAsks[outcomes[0]])
 					bookDepth2 := len(tokenFullAsks[outcomes[1]])
 
-					// Use all matched liquidity that fits inside the execution floor. This improves
-					// fill odds, but does NOT make the two sides atomic: legging is still possible.
-					maxSafeShares := minLiquidity * 1.00
-					if shares > maxSafeShares {
-						shares = maxSafeShares
+					// Require local WS depth inside the configured execution floor to cover the
+					// requested trade size before we attempt entry. This avoids late REST requotes
+					// and prevents entering on incomplete BBO-only depth.
+					if requestedShares > minLiquidity+1e-6 {
+						tui.LogEvent("[%s] ⚠️ WS executable ask depth inside %.1f%% window covers %.2f/%.0f shares — skipping", id, executionMarginFloor, minLiquidity, requestedShares)
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
 					}
 
 					// Risk checks should use the worst price sum the bot is willing to execute through.
@@ -1713,50 +1703,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-
-						execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
-						quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshBuyExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
-						cancelExecQuote()
-						if quoteErr != nil {
-							tui.LogEvent("[%s] ⚠️ Execution quote unavailable before submit: %v", id, quoteErr)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
-						if quoteSource == "rest" {
-							tui.LogEvent("[%s] 📡 Refreshed buy books via REST in %s after %s", id, quoteMetric.Round(time.Millisecond), quoteDetail)
-						}
-						ask1 = tokenAsks[outcomes[0]]
-						ask2 = tokenAsks[outcomes[1]]
-						sum = ask1 + ask2
-						observedMargin = pairMarginPercent(sum)
-						if observedMargin < cfg.MinMarginPercent-1e-4 {
-							tui.LogEvent("[%s] ⚠️ Local quote moved away: %s=%.3f, %s=%.3f (%.1f%% < %.1f%% trigger)", id, outcomes[0], ask1, outcomes[1], ask2, observedMargin, cfg.MinMarginPercent)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
-						refreshedTargetShares := math.Floor(tradeSize / sum)
-						if refreshedTargetShares > 0 && refreshedTargetShares < shares {
-							tui.LogEvent("[%s] 📉 Refreshed pair cost resized shares %.0f→%.0f using live pair=$%.3f", id, shares, refreshedTargetShares, sum)
-							shares = refreshedTargetShares
-						}
-
-						limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
-						if capErr != nil {
-							tui.LogEvent("[%s] ⚠️ Local quote rejected before submit: %v", id, capErr)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
-
-						freshMatchedLiquidity := realbotMatchedAskLiquidity(tokenFullAsks[outcomes[0]], tokenFullAsks[outcomes[1]], maxExecutionSum)
-						if shares > freshMatchedLiquidity {
-							tui.LogEvent("[%s] ⚡ Local quote capped shares %.0f→%.0f using local matched liquidity %.0f", id, shares, freshMatchedLiquidity, freshMatchedLiquidity)
-							shares = freshMatchedLiquidity
-						}
-						if shares < 1.0 {
-							tui.LogEvent("[%s] ⚠️ Local quote left less than 1 share actionable liquidity: %.2f", id, shares)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-							continue
-						}
 
 						// Map tokens
 						token0, token1 := "", ""
