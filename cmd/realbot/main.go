@@ -1231,15 +1231,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					availableShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 					sharesToSell := requestedShares
 					if sharesToSell > availableShares {
-						if availableShares >= 1.0 {
-							tui.LogEvent("[%s] ⚠️ SPLIT: Capped sell at available inventory (%.0f/%.0f)", id, availableShares, requestedShares)
+						if availableShares >= minOnChainActionShares {
+							tui.LogEvent("[%s] ⚠️ SPLIT: Capped sell at available inventory (%s/%s)", id, formatShareQty(availableShares), formatShareQty(requestedShares))
 							sharesToSell = availableShares
 						} else {
 							sharesToSell = 0
 						}
 					}
 
-					if sharesToSell >= 1.0 {
+					if sharesToSell >= minOnChainActionShares {
 						// Hard safety cap
 						if sharesToSell > 250 {
 							sharesToSell = 250
@@ -1320,17 +1320,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							sharesToSell = matchedBidLiq
 						}
 
-						// Ensure min order size 1 share
-						if sharesToSell < 1.0 {
-							sharesToSell = 1.0
-						}
+						sharesToSell = normalizeMarketSellShares(sharesToSell)
 
-						sharesToSell = math.Floor(sharesToSell)
-
-						if sharesToSell >= 1.0 && sharesToSell <= availableShares {
+						if sharesToSell >= minOnChainActionShares && sharesToSell <= availableShares+1e-6 {
 							// Enhanced log with liquidity and depth info (same format as paper bot)
-							tui.LogEvent("[%s] 📈 SPLIT SELL candidate %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %.0f shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, sharesToSell,
+							tui.LogEvent("[%s] 📈 SPLIT SELL candidate %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %s shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, formatShareQty(sharesToSell),
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 							execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
@@ -1353,12 +1348,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 							freshMatchedLiquidity := realbotMatchedBidLiquidity(tokenFullBids[outcomes[0]], tokenFullBids[outcomes[1]], minSum)
 							if sharesToSell > freshMatchedLiquidity {
-								tui.LogEvent("[%s] ⚡ Local sell quote capped shares %.0f→%.0f using local matched liquidity %.0f", id, sharesToSell, freshMatchedLiquidity, freshMatchedLiquidity)
+								tui.LogEvent("[%s] ⚡ Local sell quote capped shares %s→%s using local matched liquidity %s", id, formatShareQty(sharesToSell), formatShareQty(freshMatchedLiquidity), formatShareQty(freshMatchedLiquidity))
 								sharesToSell = freshMatchedLiquidity
 							}
-							sharesToSell = math.Floor(sharesToSell)
-							if sharesToSell < 1.0 {
-								tui.LogEvent("[%s] ⚠️ Local sell quote left less than 1 share actionable liquidity: %.2f", id, sharesToSell)
+							sharesToSell = normalizeMarketSellShares(sharesToSell)
+							if sharesToSell < minOnChainActionShares {
+								tui.LogEvent("[%s] ⚠️ Local sell quote left less than %.2f share actionable liquidity: %.4f", id, minOnChainActionShares, sharesToSell)
 								continue
 							}
 
@@ -1725,30 +1720,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// ═══════════════════════════════════════════════════════════════
-						// CLOB MINIMUM ORDER VALUE: Each side must be >= $1.
-						// When one outcome has a very low price (e.g. $0.24), a small
-						// share count can produce a sub-$1 maker amount the CLOB rejects
-						// with "invalid amount for a marketable BUY order, min size: $1".
-						// Solution: compute the minimum shares required so that
-						//   shares × limitPriceN >= $1 for BOTH sides, then either bump
-						//   up to that floor or skip if balance can't cover it.
-						// ═══════════════════════════════════════════════════════════════
-						const minOrderUSD = 1.0
-						minSharesCLOB := math.Ceil(math.Max(minOrderUSD/limitPrice1, minOrderUSD/limitPrice2))
-						if shares < minSharesCLOB {
-							totalMinCost := minSharesCLOB * (limitPrice1 + limitPrice2)
-							if totalMinCost > currentBalance {
-								tui.LogEvent("[%s] ⚠️ Skipping: min order %.0f shares ($%.2f) exceeds balance $%.2f (lim1=$%.2f lim2=$%.2f)",
-									id, minSharesCLOB, totalMinCost, currentBalance, limitPrice1, limitPrice2)
-								lastTrade = time.Now() // apply cooldown to avoid log spam
-								continue
-							}
-							tui.LogEvent("[%s] 📏 %.0f→%.0f shares to meet CLOB $1/side min (lim1=$%.2f lim2=$%.2f cost=$%.2f)",
-								id, shares, minSharesCLOB, limitPrice1, limitPrice2, totalMinCost)
-							shares = minSharesCLOB
-						}
-
 						// Sync CLOB allowance with on-chain state right before trading.
 						// Root cause of "insufficient balance/allowance" errors in realbot:
 						// allowance synced once at startup can go stale by the time an arb opportunity arrives.
@@ -2095,6 +2066,13 @@ func cleanupRejectionMessage(qty float64, outcome, venueMessage string) string {
 
 func shouldAttemptCleanupSell(qty float64) bool {
 	return qty > 0.000001
+}
+
+func normalizeMarketSellShares(qty float64) float64 {
+	if qty <= 0 {
+		return 0
+	}
+	return math.Floor((qty*100)+1e-9) / 100
 }
 
 func hasConfirmedExecutedQty(side api.Side, qty float64) bool {
