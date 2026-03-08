@@ -727,10 +727,30 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	}
 	splitMu.Unlock()
 
-	engine.RegisterSplitInventory(splitInventory)   // Register for equity calculation
-	tui.RegisterSplitInventory(splitInventory)      // Register for TUI display
+	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
+	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
+	defer tui.ClearWalletTruthPositions(id)
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
+
+	refreshWalletTruth := func(timeout time.Duration) {
+		truthCtx, truthCancel := context.WithTimeout(ctx, timeout)
+		defer truthCancel()
+		_ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)
+	}
+	refreshWalletTruth(5 * time.Second)
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshWalletTruth(5 * time.Second)
+			}
+		}
+	}()
 
 	for {
 		select {
@@ -1907,6 +1927,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 								currentBalance = newBal
 							}
+							refreshWalletTruth(5 * time.Second)
 							time.Sleep(5 * time.Second)
 						} else if side1Success || side2Success {
 							// Only one side filled — record the unbalanced position and
@@ -1998,6 +2019,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							currentBalance = newBal
 							// currentCash = newBal // Unused
 						}
+						refreshWalletTruth(5 * time.Second)
 
 						lastTrade = time.Now()
 					}
@@ -2541,6 +2563,47 @@ func loadPairOnChainBalances(ctx context.Context, trader *trading.RealTrader, to
 		return bal0, bal1, fmt.Errorf("on-chain balance check failed (err0=%v err1=%v)", err0, err1)
 	}
 	return bal0, bal1, nil
+}
+
+func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) error {
+	enginePositions := engine.GetPositions()
+	localByOutcome := make(map[string]float64)
+	for _, pos := range enginePositions {
+		if pos.MarketID != marketID {
+			continue
+		}
+		localByOutcome[pos.Outcome] += pos.Quantity
+	}
+
+	positions := make([]paper.WalletTruthPosition, 0, len(tokenToOutcome))
+	for tokenID, outcome := range tokenToOutcome {
+		if tokenID == "" || outcome == "" {
+			continue
+		}
+		onChainShares, err := trader.GetCTFBalanceFloat(ctx, tokenID)
+		if err != nil {
+			return err
+		}
+		localShares := localByOutcome[outcome]
+		if splitInventory != nil {
+			localShares += splitInventory.GetSplitShares(marketID, outcome)
+		}
+		positions = append(positions, paper.WalletTruthPosition{
+			MarketID:      marketID,
+			Outcome:       outcome,
+			LocalShares:   localShares,
+			OnChainShares: onChainShares,
+			Drift:         onChainShares - localShares,
+		})
+	}
+	sort.Slice(positions, func(i, j int) bool {
+		if positions[i].MarketID == positions[j].MarketID {
+			return positions[i].Outcome < positions[j].Outcome
+		}
+		return positions[i].MarketID < positions[j].MarketID
+	})
+	tui.SetWalletTruthPositions(marketID, positions)
+	return nil
 }
 
 func mergeBalancedPositionWSFirst(ctx context.Context, trader *trading.RealTrader, conditionID, token0, token1 string, requestedQty float64, numOutcomes int) (mergeQty, settled0, settled1 float64, txHash string, err error) {

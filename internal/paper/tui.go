@@ -244,6 +244,7 @@ type TUI struct {
 	latencySource  string
 
 	splitInventories []*SplitInventory
+	walletTruth      map[string][]WalletTruthPosition
 
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
 	settings         TUISettings
@@ -292,6 +293,7 @@ type tuiSnapshot struct {
 	wsPingLatency  time.Duration
 	latencySource  string
 	splitPositions []SplitPosition
+	walletTruth    []WalletTruthPosition
 
 	stats           Stats
 	exposure        float64
@@ -313,6 +315,14 @@ type tuiModel struct {
 	// Settings overlay state (immediate, not snapshotted)
 	showSettings   bool
 	settingsCursor int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
+}
+
+type WalletTruthPosition struct {
+	MarketID      string
+	Outcome       string
+	LocalShares   float64
+	OnChainShares float64
+	Drift         float64
 }
 
 type tickMsg time.Time
@@ -353,6 +363,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		multiplier, rounds, profitable := m.tui.engine.GetCompoundStats()
 		enginePositions := m.tui.engine.GetPositions()
 		splitPositions := m.tui.getSplitPositions()
+		walletTruth := m.tui.getWalletTruthPositions()
 
 		m.tui.mu.Lock()
 
@@ -446,6 +457,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			wsPingLatency:   m.tui.wsPingLatency,
 			latencySource:   m.tui.latencySource,
 			splitPositions:  splitPositions,
+			walletTruth:     walletTruth,
 			stats:           stats,
 			exposure:        exposure,
 			equity:          equity,
@@ -792,6 +804,7 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		maxOrderHistory: 20,
 		eventLog:        make([]string, 0),
 		maxEvents:       10,
+		walletTruth:     make(map[string][]WalletTruthPosition),
 		width:           80,
 		height:          24,
 		startTime:       time.Now(),
@@ -1125,12 +1138,38 @@ func (t *TUI) RegisterSplitInventory(inv *SplitInventory) {
 	t.splitInventories = append(t.splitInventories, inv)
 }
 
+func (t *TUI) SetWalletTruthPositions(marketID string, positions []WalletTruthPosition) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(positions) == 0 {
+		delete(t.walletTruth, marketID)
+		return
+	}
+	t.walletTruth[marketID] = append([]WalletTruthPosition(nil), positions...)
+}
+
+func (t *TUI) ClearWalletTruthPositions(marketID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.walletTruth, marketID)
+}
+
 func (t *TUI) getSplitPositions() []SplitPosition {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var all []SplitPosition
 	for _, inv := range t.splitInventories {
 		all = append(all, inv.GetAllPositions()...)
+	}
+	return all
+}
+
+func (t *TUI) getWalletTruthPositions() []WalletTruthPosition {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var all []WalletTruthPosition
+	for _, positions := range t.walletTruth {
+		all = append(all, positions...)
 	}
 	return all
 }
@@ -1686,10 +1725,12 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	inner := w - 4
 
 	splitPositions := s.splitPositions
+	walletTruthPositions := s.walletTruth
 	hasPositions := len(positionsWithPnL) > 0
 	hasSplitInventory := len(splitPositions) > 0
+	hasWalletTruth := len(walletTruthPositions) > 0
 
-	if !hasPositions && !hasSplitInventory {
+	if !hasPositions && !hasSplitInventory && !hasWalletTruth {
 		return makePanel(inner, clrSlate,
 			sectionHeader("📦", "POSITIONS", clrSlate)+"\n"+
 				styleDimmed.Render("  (none)"))
@@ -1837,6 +1878,62 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				sb.WriteString("  →  " + styleGreen.Render(fmt.Sprintf("%.2f pairs sellable", minSh)))
 			}
 			sb.WriteString("\n")
+		}
+	}
+
+	if hasWalletTruth {
+		sb.WriteString("\n" + sectionHeader("🧾", "WALLET TRUTH  (local vs on-chain)", clrTeal) + "\n")
+		truthByMarket := make(map[string][]WalletTruthPosition)
+		marketSet := make(map[string]struct{})
+		for _, wt := range walletTruthPositions {
+			truthByMarket[wt.MarketID] = append(truthByMarket[wt.MarketID], wt)
+			marketSet[wt.MarketID] = struct{}{}
+		}
+
+		orderedMarkets := make([]string, 0, len(marketSet))
+		for _, marketID := range assetOrder {
+			if _, ok := marketSet[marketID]; ok {
+				orderedMarkets = append(orderedMarkets, marketID)
+				delete(marketSet, marketID)
+			}
+		}
+		extraMarkets := make([]string, 0, len(marketSet))
+		for marketID := range marketSet {
+			extraMarkets = append(extraMarkets, marketID)
+		}
+		sort.Strings(extraMarkets)
+		orderedMarkets = append(orderedMarkets, extraMarkets...)
+
+		for _, marketID := range orderedMarkets {
+			positions := truthByMarket[marketID]
+			if len(positions) == 0 {
+				continue
+			}
+			aStyle := getAssetStyle(marketID)
+			sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
+			parts := make([]string, 0, len(positions))
+			marketWarning := false
+			for _, wt := range positions {
+				driftStyle := styleGreen
+				marker := "✅"
+				if math.Abs(wt.Drift) >= 0.01 {
+					driftStyle = styleRed
+					marker = "⚠"
+					marketWarning = true
+				}
+				parts = append(parts, fmt.Sprintf("%s %s L:%.4f C:%.4f Δ:%s",
+					marker,
+					core.SanitizeString(wt.Outcome),
+					wt.LocalShares,
+					wt.OnChainShares,
+					driftStyle.Render(fmt.Sprintf("%+.4f", wt.Drift)),
+				))
+			}
+			prefix := "  " + aStyle.Render("["+marketID+"]") + "  "
+			if marketWarning {
+				prefix = "  " + styleYellow.Render("⚠") + " " + aStyle.Render("["+marketID+"]") + "  "
+			}
+			sb.WriteString(prefix + strings.Join(parts, "  │  ") + "\n")
 		}
 	}
 

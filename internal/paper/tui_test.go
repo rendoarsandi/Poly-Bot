@@ -28,6 +28,51 @@ func TestTUI_RegisterSplitInventory(t *testing.T) {
 	}
 }
 
+func TestTUI_SetWalletTruthPositions(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tui.SetWalletTruthPositions("SOL", []WalletTruthPosition{{
+		MarketID:      "SOL",
+		Outcome:       "Up",
+		LocalShares:   0.9311,
+		OnChainShares: 0.9311,
+		Drift:         0,
+	}})
+
+	positions := tui.getWalletTruthPositions()
+	if len(positions) != 1 {
+		t.Fatalf("expected 1 wallet truth position, got %d", len(positions))
+	}
+	if positions[0].MarketID != "SOL" || positions[0].Outcome != "Up" {
+		t.Fatalf("unexpected wallet truth position: %+v", positions[0])
+	}
+
+	tui.ClearWalletTruthPositions("SOL")
+	if got := tui.getWalletTruthPositions(); len(got) != 0 {
+		t.Fatalf("expected wallet truth positions to clear, got %d", len(got))
+	}
+}
+
+func TestTUI_SetWalletTruthPositionsClonesInput(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	positions := []WalletTruthPosition{{MarketID: "BTC", Outcome: "Yes", LocalShares: 1, OnChainShares: 1.25, Drift: 0.25}}
+	tui.SetWalletTruthPositions("BTC", positions)
+	positions[0].OnChainShares = 99
+
+	got := tui.getWalletTruthPositions()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 wallet truth position, got %d", len(got))
+	}
+	if got[0].OnChainShares != 1.25 {
+		t.Fatalf("expected stored snapshot to be cloned, got %+v", got[0])
+	}
+}
+
 func TestShouldPersistIssueEvent(t *testing.T) {
 	tests := []struct {
 		name string
