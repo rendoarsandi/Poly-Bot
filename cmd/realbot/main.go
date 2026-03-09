@@ -797,6 +797,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
 	var nextLiveRecoveryAttempt time.Time
+	var lastDustRecoveryNotice time.Time
 	mergeCoordinator := newRealbotMergeCoordinator()
 
 	// Initial balance tracking
@@ -1204,7 +1205,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
 			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
 			cancelRecoveryCheck()
-			if recoveryCheckErr == nil && (shouldAttemptCleanupSell(pendingRecovery0) || shouldAttemptCleanupSell(pendingRecovery1)) {
+			if recoveryCheckErr == nil && (hasActionableCleanupRemainder(pendingRecovery0) || hasActionableCleanupRemainder(pendingRecovery1)) {
 				tui.LogEvent("[%s] 🔄 Pending inventory detected (%s): %s=%.4f, %s=%.4f — attempting live recovery...", id, recoverySource, outcomes[0], pendingRecovery0, outcomes[1], pendingRecovery1)
 				recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
 				recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY", mergeCoordinator)
@@ -1232,6 +1233,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					nextLiveRecoveryAttempt = time.Now().Add(15 * time.Second)
 					continue
 				}
+			} else if recoveryCheckErr == nil && (isDustCleanupRemainder(pendingRecovery0) || isDustCleanupRemainder(pendingRecovery1)) {
+				if time.Since(lastDustRecoveryNotice) > 45*time.Second {
+					tui.LogEvent("[%s] ℹ️ Residual dust below %.2f-share cleanup minimum (%s): %s=%.4f, %s=%.4f — skipping live recovery retries for now", id, minOnChainActionShares, recoverySource, outcomes[0], pendingRecovery0, outcomes[1], pendingRecovery1)
+					lastDustRecoveryNotice = time.Now()
+				}
+				nextLiveRecoveryAttempt = time.Now().Add(60 * time.Second)
 			} else {
 				nextLiveRecoveryAttempt = time.Now().Add(5 * time.Second)
 			}
@@ -2090,8 +2097,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
 							var sell0Exec, sell1Exec directMarketExecution
-							attemptSell0 := shouldAttemptCleanupSell(acquired0)
-							attemptSell1 := shouldAttemptCleanupSell(acquired1)
+							attemptSell0 := hasActionableCleanupRemainder(acquired0)
+							attemptSell1 := hasActionableCleanupRemainder(acquired1)
 							if attemptSell0 {
 								quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
 								cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token0, acquired0, rMinAsk)
@@ -2133,22 +2140,22 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							actualSold0 := math.Max(0, acquired0-remaining0)
 							actualSold1 := math.Max(0, acquired1-remaining1)
 
-							if shouldAttemptCleanupSell(actualSold0) {
+							if hasActionableCleanupRemainder(actualSold0) {
 								if _, sellErr := engine.SellForMarket(id, outcomes[0], cleanupSellPrice, actualSold0); sellErr != nil {
 									tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
 								}
 							}
-							if shouldAttemptCleanupSell(actualSold1) {
+							if hasActionableCleanupRemainder(actualSold1) {
 								if _, sellErr := engine.SellForMarket(id, outcomes[1], cleanupSellPrice, actualSold1); sellErr != nil {
 									tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
 								}
 							}
 
 							cleanupLoss := 0.0
-							if shouldAttemptCleanupSell(actualSold0) {
+							if hasActionableCleanupRemainder(actualSold0) {
 								cleanupLoss += actualSold0 * (ask1 - cleanupSellPrice)
 							}
-							if shouldAttemptCleanupSell(actualSold1) {
+							if hasActionableCleanupRemainder(actualSold1) {
 								cleanupLoss += actualSold1 * (ask2 - cleanupSellPrice)
 							}
 							if cleanupLoss > 0 {
@@ -2218,6 +2225,10 @@ func cleanupRejectionMessage(qty float64, outcome, venueMessage string) string {
 
 func shouldAttemptCleanupSell(qty float64) bool {
 	return qty > 0.000001
+}
+
+func isDustCleanupRemainder(qty float64) bool {
+	return shouldAttemptCleanupSell(qty) && !hasActionableCleanupRemainder(qty)
 }
 
 func hasActionableCleanupRemainder(qty float64) bool {
@@ -3275,7 +3286,7 @@ func pendingPairRecoveryBalances(ctx context.Context, marketID, token0, token1 s
 		return 0, 0, "", nil
 	}
 	local0, local1 := localBoughtPairBalances(engine, marketID, outcomes[0], outcomes[1])
-	if shouldAttemptCleanupSell(local0) || shouldAttemptCleanupSell(local1) {
+	if hasActionableCleanupRemainder(local0) || hasActionableCleanupRemainder(local1) {
 		return local0, local1, "local engine", nil
 	}
 	onChain0, onChain1, err := loadPairOnChainBalances(ctx, trader, token0, token1)
@@ -3419,7 +3430,11 @@ func settleMarketInventory(
 	}
 
 	for _, side := range balances {
-		if !shouldAttemptCleanupSell(side.qty) {
+		if isDustCleanupRemainder(side.qty) {
+			tui.LogEvent("[%s] ℹ️ %s leaving dust remainder for %s: %.4f shares below %.2f-share cleanup minimum", id, reason, side.outcome, side.qty, minOnChainActionShares)
+			continue
+		}
+		if !hasActionableCleanupRemainder(side.qty) {
 			continue
 		}
 		rate := tokenFeeRates[side.outcome]
