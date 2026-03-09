@@ -376,10 +376,7 @@ func TestRealTrader_ApplyLiveFill_UpdatesCacheAndClampsAtZero(t *testing.T) {
 	trader.applyLiveFill(api.OrderFillData{OrderID: "buy-2", AssetID: "asset-2", Side: "BUY", Size: "1.5"})
 	trader.applyLiveFill(api.OrderFillData{OrderID: "sell-2", AssetID: "asset-2", Side: "SELL", Size: "10"})
 
-	positions, err := trader.GetPositions(context.Background())
-	if err != nil {
-		t.Fatalf("GetPositions failed: %v", err)
-	}
+	positions := trader.GetLivePositionsSnapshot()
 
 	if got := trader.livePositions["asset-1"]; got != 1 {
 		t.Fatalf("expected asset-1 cached size 1, got %.2f", got)
@@ -394,10 +391,10 @@ func TestRealTrader_ApplyLiveFill_UpdatesCacheAndClampsAtZero(t *testing.T) {
 		t.Fatalf("expected confirmed sell-1 fill of 4, got %.2f", got)
 	}
 	if len(positions) != 1 {
-		t.Fatalf("expected only one positive position from cache, got %d", len(positions))
+		t.Fatalf("expected only one positive position from live WS cache, got %d", len(positions))
 	}
 	if positions[0].TokenID != "asset-1" || positions[0].Size != 1 {
-		t.Fatalf("unexpected cached position payload: %+v", positions[0])
+		t.Fatalf("unexpected live WS cache payload: %+v", positions[0])
 	}
 }
 
@@ -411,15 +408,20 @@ func TestRealTrader_ApplyLiveFill_InvalidSizeDoesNotMutateCache(t *testing.T) {
 
 	trader.applyLiveFill(api.OrderFillData{OrderID: "bad-order", AssetID: "asset-1", Side: "BUY", Size: "bad-size"})
 
-	positions, err := trader.GetPositions(context.Background())
-	if err != nil {
-		t.Fatalf("GetPositions failed: %v", err)
-	}
+	positions := trader.GetLivePositionsSnapshot()
 	if len(positions) != 1 || positions[0].TokenID != "asset-1" || positions[0].Size != 2 {
-		t.Fatalf("expected unchanged cached position, got %+v", positions)
+		t.Fatalf("expected unchanged live WS cache position, got %+v", positions)
 	}
 	if got := trader.GetConfirmedFillSize("bad-order"); got != 0 {
 		t.Fatalf("expected invalid fill not to be recorded, got %.2f", got)
+	}
+}
+
+func TestRealTrader_GetPositionsRequiresExternalSnapshot(t *testing.T) {
+	trader := &RealTrader{}
+
+	if _, err := trader.GetPositions(context.Background()); err == nil {
+		t.Fatal("expected GetPositions to require an external snapshot source")
 	}
 }
 

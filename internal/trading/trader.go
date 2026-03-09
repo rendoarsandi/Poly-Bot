@@ -33,7 +33,7 @@ type Trader interface {
 	// GetBalance returns the current available balance
 	GetBalance(ctx context.Context) (float64, error)
 
-	// GetPositions returns current positions
+	// GetPositions returns an authoritative external position snapshot.
 	GetPositions(ctx context.Context) ([]PositionInfo, error)
 
 	// IsPaperMode returns true if this is paper trading
@@ -350,6 +350,22 @@ func (t *RealTrader) GetLivePositionSize(tokenID string) float64 {
 	t.posMu.Lock()
 	defer t.posMu.Unlock()
 	return t.livePositions[tokenID]
+}
+
+// GetLivePositionsSnapshot returns the current websocket-backed position cache.
+// This is a fast local hint only, not authoritative external truth.
+func (t *RealTrader) GetLivePositionsSnapshot() []PositionInfo {
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+
+	result := make([]PositionInfo, 0, len(t.livePositions))
+	for tokenID, size := range t.livePositions {
+		if size <= 0 {
+			continue
+		}
+		result = append(result, PositionInfo{TokenID: tokenID, Size: size})
+	}
+	return result
 }
 
 // WaitForLivePairPositions watches the websocket-backed position cache for a
@@ -690,8 +706,12 @@ func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
 	return t.clob.UpdateBalanceAllowance(ctx)
 }
 
-// ForceRefreshPositions clears the local position cache and fetches fresh data from REST
+// ForceRefreshPositions fetches an authoritative external position snapshot and
+// refreshes the local WS-backed cache to match it.
 func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo, error) {
+	if t.clob == nil {
+		return nil, fmt.Errorf("clob client not initialized")
+	}
 	positions, err := t.clob.GetPositions(ctx)
 	if err != nil {
 		return nil, err
@@ -720,42 +740,7 @@ func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo,
 }
 
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
-	t.posMu.Lock()
-	if len(t.livePositions) > 0 {
-		var result []PositionInfo
-		for tokenID, size := range t.livePositions {
-			if size > 0 {
-				result = append(result, PositionInfo{
-					TokenID: tokenID,
-					Size:    size,
-				})
-			}
-		}
-		t.posMu.Unlock()
-		return result, nil
-	}
-	t.posMu.Unlock()
-
-	// Fallback to REST
-	positions, err := t.clob.GetPositions(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]PositionInfo, len(positions))
-	for i, pos := range positions {
-		result[i] = PositionInfo{
-			TokenID:         pos.TokenID,
-			Size:            pos.Size,
-			AvgPrice:        pos.AvgPrice,
-			Outcome:         pos.Outcome,
-			ConditionID:     pos.ConditionID,
-			Slug:            pos.Slug,
-			OppositeOutcome: pos.OppositeOutcome,
-			OppositeAsset:   pos.OppositeAsset,
-		}
-	}
-	return result, nil
+	return t.ForceRefreshPositions(ctx)
 }
 
 func (t *RealTrader) IsPaperMode() bool {

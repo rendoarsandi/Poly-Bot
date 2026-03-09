@@ -1891,7 +1891,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if bal0, bal1, verifySource, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr == nil {
 							tui.LogEvent("[%s] 🔍 Verify Positions (%s): %s=%.4f, %s=%.4f (Target: %.0f)", id, verifySource, outcomes[0], bal0, outcomes[1], bal1, shares)
 						} else {
-							tui.LogEvent("[%s] ⚠️ Position snapshot unavailable after direct buy: %v", id, verifyErr)
+							tui.LogEvent("[%s] ⚠️ External position snapshot unavailable after direct buy: %v", id, verifyErr)
 						}
 
 						attributionTrusted := false
@@ -2061,7 +2061,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(acquired0, acquired1), shares), len(market.Tokens))
 								if err != nil {
 									tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
-									// Fallback to sell below using the live position snapshot.
+									// Fallback to sell below using the live WS position cache.
 								} else {
 									tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
 									acquired0, acquired1 = subtractMergedPairBalances(acquired0, acquired1, mergeQty)
@@ -2227,10 +2227,10 @@ func combineCleanupVerificationBalances(live0, live1, pos0, pos1, onChain0, onCh
 	}
 	if posErr == nil {
 		bal0, bal1 = preferLivePairBalances(live0, live1, pos0, pos1)
-		source = "position snapshot"
+		source = "external position snapshot"
 		switch {
 		case hasLive && hasPos:
-			source = "live WS + position snapshot"
+			source = "live WS + external position snapshot"
 		case hasLive:
 			source = "live WS"
 		}
@@ -2239,7 +2239,7 @@ func combineCleanupVerificationBalances(live0, live1, pos0, pos1, onChain0, onCh
 	if hasLive {
 		return live0, live1, "live WS", nil
 	}
-	return 0, 0, "", fmt.Errorf("position snapshot failed (%v); on-chain truth failed (%v)", posErr, onChainErr)
+	return 0, 0, "", fmt.Errorf("external position snapshot failed (%v); on-chain truth failed (%v)", posErr, onChainErr)
 }
 
 func loadPairBalancesForCleanupVerification(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, err error) {
@@ -2554,13 +2554,9 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 			}
 		}
 
-		positions, err := trader.GetPositions(ctx)
-		if err == nil {
-			if delta := executionDeltaFromPositions(positions, tokenID, initialBalance, side); delta > executedQty {
-				executedQty = delta
-			}
-		} else if verifyErr == nil {
-			verifyErr = err
+		liveBalance := trader.GetLivePositionSize(tokenID)
+		if delta := executionDeltaFromLiveBalance(liveBalance, initialBalance, side); delta > executedQty {
+			executedQty = delta
 		}
 
 		if hasConfirmedExecutedQty(side, executedQty) || time.Now().After(deadline) {
@@ -2595,6 +2591,21 @@ func executionDeltaFromPositions(positions []trading.PositionInfo, tokenID strin
 			break
 		}
 	}
+	if side == api.SideSell {
+		delta := initialBalance - current
+		if delta < 0 {
+			return 0
+		}
+		return delta
+	}
+	delta := current - initialBalance
+	if delta < 0 {
+		return 0
+	}
+	return delta
+}
+
+func executionDeltaFromLiveBalance(current, initialBalance float64, side api.Side) float64 {
 	if side == api.SideSell {
 		delta := initialBalance - current
 		if delta < 0 {
@@ -3076,17 +3087,14 @@ func loadPairBalances(ctx context.Context, trader *trading.RealTrader, token0, t
 	case posErr == nil:
 		return pos0, pos1, nil
 	default:
-		return 0, 0, fmt.Errorf("position snapshot failed (%v); on-chain backup failed (%v)", posErr, onChainErr)
+		return 0, 0, fmt.Errorf("external position snapshot failed (%v); on-chain backup failed (%v)", posErr, onChainErr)
 	}
 }
 
 func loadPairPositionBalances(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (float64, float64, error) {
 	positions, err := trader.GetPositions(ctx)
 	if err != nil {
-		positions, err = trader.ForceRefreshPositions(ctx)
-		if err != nil {
-			return 0, 0, err
-		}
+		return 0, 0, err
 	}
 	bal0, bal1 := pairBalancesFromPositions(positions, token0, token1)
 	return bal0, bal1, nil
@@ -3106,7 +3114,7 @@ func captureInitialPairSnapshot(ctx context.Context, trader *trading.RealTrader,
 		return onChain0, onChain1, "on-chain", true
 	}
 	if pos0, pos1, err := loadPairPositionBalances(ctx, trader, token0, token1); err == nil {
-		return pos0, pos1, "position snapshot", true
+		return pos0, pos1, "external position snapshot", true
 	}
 	return 0, 0, "", false
 }
