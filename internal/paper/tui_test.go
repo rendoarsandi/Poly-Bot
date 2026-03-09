@@ -491,3 +491,23 @@ func TestRenderPositionsFusionRemovesAwaitingMergeLabel(t *testing.T) {
 		t.Fatalf("expected merge wording to be absent, got %q", rendered)
 	}
 }
+
+func TestRenderOrderHistoryFusionUsesEdgeAndPnLLabels(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.mu.Lock()
+	tui.mode = "Fusion"
+	tui.orderHistory = []OrderHistoryEntry{
+		{Timestamp: time.Now(), MarketID: "BTC", Outcome: "Down", Side: "BUY", Shares: 66, Price: 0.75, Cost: 50, Margin: 13.28, Profit: 0, Status: "FILLED"},
+		{Timestamp: time.Now(), MarketID: "SOL", Outcome: "Down", Side: "SELL", Shares: 56, Price: 0.53, Cost: 29.68, Margin: 2.4, Profit: 2.10, Status: "FILLED"},
+	}
+	tui.mu.Unlock()
+	model := tuiModel{tui: tui, snap: tuiSnapshot{orderHistory: tui.GetOrderHistory()}}
+
+	rendered := model.renderOrderHistory(140, 10)
+	if !strings.Contains(rendered, "EDGE / PNL") || !strings.Contains(rendered, "edge +13.28%") || !strings.Contains(rendered, "+$2.10") {
+		t.Fatalf("expected fusion order-history semantics, got %q", rendered)
+	}
+	if strings.Contains(rendered, "PROFIT/MARGIN") {
+		t.Fatalf("expected generic arb label to be absent, got %q", rendered)
+	}
+}

@@ -31,13 +31,16 @@ func main() {
 		}
 		return
 	}
-	fmt.Printf("snapshots=%d completed_trades=%d realized_pnl=%.2f final_equity=%.2f max_drawdown=%.2f%% win_rate=%.1f%%\n",
+	fmt.Printf("snapshots=%d completed_trades=%d realized_pnl=%.2f final_equity=%.2f max_drawdown=%.2f%% win_rate=%.1f%% ml_snapshots=%d ml_trades=%d avg_ml_weight=%.1f%%\n",
 		report.Snapshots,
 		report.CompletedTrades,
 		report.RealizedPnL,
 		report.FinalEquity,
 		report.MaxDrawdownPct,
 		report.WinRate*100,
+		report.ModelSnapshots,
+		report.ModelTrades,
+		report.AverageModelWeight*100,
 	)
 	assets := make([]string, 0, len(report.ByAsset))
 	for asset := range report.ByAsset {

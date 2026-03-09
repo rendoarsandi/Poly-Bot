@@ -2340,6 +2340,10 @@ func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
 func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 	s := m.snap
 	inner := w - 4
+	m.tui.mu.Lock()
+	mode := m.tui.mode
+	m.tui.mu.Unlock()
+	fusionMode := settingsModeIsFusion(mode)
 	var sb strings.Builder
 
 	if len(s.orderHistory) == 0 {
@@ -2352,7 +2356,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 
 	// Table header
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-5s  %-6s  %-5s  %-9s  %-8s  %-8s  %s",
-		"TIME", "MKT", "OUTC", "SIDE", "SHARES", "PRICE", "VALUE", "PROFIT/MARGIN")) + "\n")
+		"TIME", "MKT", "OUTC", "SIDE", "SHARES", "PRICE", "VALUE", map[bool]string{true: "EDGE / PNL", false: "PROFIT/MARGIN"}[fusionMode])) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 75))) + "\n")
 
 	displayCount := len(s.orderHistory)
@@ -2375,7 +2379,21 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		}
 
 		var marginText string
-		if o.Side == "SELL" {
+		if fusionMode {
+			if o.Side == "SELL" {
+				sg := "+"
+				if o.Profit < 0 {
+					sg = ""
+					marginSt = styleRed
+				} else if o.Profit == 0 {
+					marginSt = styleWhite
+				}
+				marginText = fmt.Sprintf("%s$%.2f", sg, o.Profit)
+			} else {
+				marginSt = styleCyan
+				marginText = fmt.Sprintf("edge %+.2f%%", o.Margin)
+			}
+		} else if o.Side == "SELL" {
 			sg := ""
 			if o.Profit > 0 {
 				sg = "+"

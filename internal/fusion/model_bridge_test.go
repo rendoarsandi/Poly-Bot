@@ -40,3 +40,15 @@ func TestExternalScoreProviderLoadsWrappedJSON(t *testing.T) {
 		t.Fatalf("unexpected updated_at: %+v", score)
 	}
 }
+
+func TestExternalScoreProviderLookupFreshRejectsStaleScores(t *testing.T) {
+	provider := &externalScoreProvider{scores: map[string]externalModelScore{
+		"BTC": {Score: 0.10, Confidence: 0.8, UpdatedAt: time.Date(2026, 3, 9, 7, 0, 0, 0, time.UTC)},
+	}}
+	if _, ok := provider.LookupFresh("BTC", 30*time.Second, time.Date(2026, 3, 9, 7, 0, 20, 0, time.UTC)); !ok {
+		t.Fatal("expected fresh score to be accepted")
+	}
+	if _, ok := provider.LookupFresh("BTC", 30*time.Second, time.Date(2026, 3, 9, 7, 1, 0, 0, time.UTC)); ok {
+		t.Fatal("expected stale score to be rejected")
+	}
+}

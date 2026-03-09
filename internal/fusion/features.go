@@ -20,6 +20,7 @@ type ModelFeatures struct {
 	SmoothedScore         float64 `json:"smoothed_score"`
 	ExternalModelScore    float64 `json:"external_model_score"`
 	ExternalModelWeight   float64 `json:"external_model_weight"`
+	ExternalModelAgeSec   float64 `json:"external_model_age_sec"`
 	ExternalModelReason   string  `json:"external_model_reason"`
 	Returns1m             float64 `json:"returns_1m"`
 	Returns5m             float64 `json:"returns_5m"`
@@ -123,6 +124,9 @@ func applyExternalModelScore(features ModelFeatures, score externalModelScore) M
 	}
 	features.ExternalModelScore = clamp(score.Score, -0.30, 0.30)
 	features.ExternalModelWeight = weight
+	if !score.UpdatedAt.IsZero() {
+		features.ExternalModelAgeSec = math.Max(0, time.Since(score.UpdatedAt).Seconds())
+	}
 	features.ExternalModelReason = score.Reason
 	features.Score = clamp(features.Score*(1-weight)+features.ExternalModelScore*weight, -0.30, 0.30)
 	features.FairUp = clamp(features.CurrentProb+features.Score, 0.02, 0.98)

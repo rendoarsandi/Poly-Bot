@@ -173,7 +173,10 @@ func (b *Bot) refreshMarkets(ctx context.Context) error {
 	}
 	b.mu.RUnlock()
 	now := time.Now().UTC()
-	qualities := b.fetchMarketQualities(refreshCtx, markets, currentMarkets, assets, timeframe, now)
+	qualities := map[string]marketQuality{}
+	if shouldProbeMarketQualities(currentMarkets) {
+		qualities = b.fetchMarketQualities(refreshCtx, markets, currentMarkets, assets, timeframe, now)
+	}
 	selected, updated := chooseLatestMarkets(markets, currentMarkets, qualities, assets, timeframe, settings.MaxMarkets, now), map[string]*trackedMarket{}
 	newFeedKey := feedKeyForMarkets(selected)
 	b.mu.Lock()
@@ -241,6 +244,8 @@ func (b *Bot) fetchMarketQualities(ctx context.Context, markets []api.Market, cu
 			return grouped[asset][i].EndTime.Before(grouped[asset][j].EndTime)
 		})
 	}
+	var wg sync.WaitGroup
+	var qualitiesMu sync.Mutex
 	for _, requested := range requestedAssets {
 		asset := strings.ToUpper(strings.TrimSpace(requested))
 		candidates := grouped[asset]
@@ -256,13 +261,31 @@ func (b *Bot) fetchMarketQualities(ctx context.Context, markets []api.Market, cu
 			if _, exists := qualities[candidate.ConditionID]; exists {
 				continue
 			}
-			quality, err := b.fetchMarketQuality(ctx, &candidate)
-			if err == nil {
+			candidate := candidate
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				quality, err := b.fetchMarketQuality(ctx, &candidate)
+				if err != nil {
+					return
+				}
+				qualitiesMu.Lock()
 				qualities[candidate.ConditionID] = quality
-			}
+				qualitiesMu.Unlock()
+			}()
 		}
 	}
+	wg.Wait()
 	return qualities
+}
+
+func shouldProbeMarketQualities(current map[string]*trackedMarket) bool {
+	for _, market := range current {
+		if market != nil && market.Market != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func shortlistMarketQualityCandidates(candidates []api.Market, currentCondition string, limit int) []api.Market {
@@ -638,7 +661,11 @@ func (b *Bot) buildMarketDetails(market *trackedMarket, quote BinanceQuote, pos 
 		fmt.Sprintf("Edge U %+.1f%% D %+.1f%% | OB %.2f/%.2f Flow %.2f CVD %.2f %s", upEdge*100, downEdge*100, features.OrderBookImbalanceL1, features.OrderBookImbalanceL5, features.TradeFlowImbalance, features.CVDAcceleration, positionText),
 	}
 	if features.ExternalModelWeight > 0 {
-		details = append(details, fmt.Sprintf("ML %+.1f%% • Weight %.0f%% • %s", features.ExternalModelScore*100, features.ExternalModelWeight*100, strings.TrimSpace(features.ExternalModelReason)))
+		ageText := ""
+		if features.ExternalModelAgeSec > 0 {
+			ageText = fmt.Sprintf(" • age %.0fs", features.ExternalModelAgeSec)
+		}
+		details = append(details, fmt.Sprintf("ML %+.1f%% • Weight %.0f%%%s • %s", features.ExternalModelScore*100, features.ExternalModelWeight*100, ageText, strings.TrimSpace(features.ExternalModelReason)))
 	}
 	if note := marketBookStatusLine(market); note != "" {
 		details = append(details, note)
@@ -651,7 +678,7 @@ func (b *Bot) modelFeatures(asset string, market *trackedMarket, quote BinanceQu
 	if b.scorer == nil {
 		return features
 	}
-	score, ok := b.scorer.Lookup(asset)
+	score, ok := b.scorer.LookupFresh(asset, maxExternalModelScoreAge, time.Now())
 	if !ok {
 		return features
 	}

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const maxExternalModelScoreAge = 2 * time.Minute
+
 type externalModelScore struct {
 	Score      float64
 	Confidence float64
@@ -50,6 +52,17 @@ func (p *externalScoreProvider) Lookup(asset string) (externalModelScore, bool) 
 	defer p.mu.RUnlock()
 	score, ok := p.scores[strings.ToUpper(strings.TrimSpace(asset))]
 	return score, ok
+}
+
+func (p *externalScoreProvider) LookupFresh(asset string, maxAge time.Duration, now time.Time) (externalModelScore, bool) {
+	score, ok := p.Lookup(asset)
+	if !ok {
+		return externalModelScore{}, false
+	}
+	if maxAge > 0 && !score.UpdatedAt.IsZero() && now.Sub(score.UpdatedAt) > maxAge {
+		return externalModelScore{}, false
+	}
+	return score, true
 }
 
 func (p *externalScoreProvider) LastError() string {
@@ -99,6 +112,12 @@ func (p *externalScoreProvider) refreshIfNeeded() {
 	if err != nil {
 		p.lastErr = err.Error()
 		return
+	}
+	for asset, score := range scores {
+		if score.UpdatedAt.IsZero() {
+			score.UpdatedAt = info.ModTime().UTC()
+			scores[asset] = score
+		}
 	}
 	p.scores = scores
 	p.lastMod = info.ModTime()
