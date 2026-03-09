@@ -222,6 +222,46 @@ func TestTUI_getSplitPositions_MultipleInventories(t *testing.T) {
 	}
 }
 
+func TestTUIGetOpenOrdersSnapshotAggregatesRegisteredBooks(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+
+	book1 := NewOrderBook()
+	book2 := NewOrderBook()
+	tui.RegisterOrderBook("BTC", book1)
+	tui.RegisterOrderBook("ETH", book2)
+
+	book1.PlaceOrder("Up", "buy", 0.48, 5, 0)
+	book2.PlaceOrder("Down", "sell", 0.52, 7, 0)
+
+	orders := tui.getOpenOrdersSnapshot()
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 open orders across registered books, got %d", len(orders))
+	}
+}
+
+func TestTUICancelAllOrdersCancelsRegisteredBooks(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+
+	book1 := NewOrderBook()
+	book2 := NewOrderBook()
+	tui.RegisterOrderBook("BTC", book1)
+	tui.RegisterOrderBook("ETH", book2)
+
+	book1.PlaceOrder("Up", "buy", 0.48, 5, 0)
+	book2.PlaceOrder("Down", "sell", 0.52, 7, 0)
+
+	tui.CancelAllOrders()
+
+	if got := len(book1.GetOpenOrders()); got != 0 {
+		t.Fatalf("expected BTC book to be fully cancelled, got %d open orders", got)
+	}
+	if got := len(book2.GetOpenOrders()); got != 0 {
+		t.Fatalf("expected ETH book to be fully cancelled, got %d open orders", got)
+	}
+}
+
 func TestTUI_getSplitPositions_ConcurrentAccess(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
