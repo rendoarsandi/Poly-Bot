@@ -20,6 +20,7 @@ import (
 	"Market-bot/internal/core"
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/strategy"
 )
 
 const (
@@ -43,6 +44,15 @@ const (
 	paperMakerMinQuoteShares      = 1.0
 	paperMakerCashUsagePerOutcome = 0.35
 )
+
+var paperMakerStrategyParams = strategy.MakerParams{
+	QuoteStep:           paperMakerQuoteStep,
+	DefaultQuoteGap:     paperMakerBaseOffset,
+	InventorySkewStep:   paperMakerInventorySkewStep,
+	QuoteSizeSkewFactor: paperMakerQuoteSizeSkewFactor,
+	CashUsagePerOutcome: paperMakerCashUsagePerOutcome,
+	MinQuoteShares:      paperMakerMinQuoteShares,
+}
 
 // MarketTrader holds state for trading a single market
 type MarketTrader struct {
@@ -278,10 +288,7 @@ func computePaperMakerSplitSellPrices(bid1, ask1, bid2, ask2, minSum float64) (f
 }
 
 func computePaperSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
-	if feeRateBps <= 0 || shares <= 0 || price <= 0 {
-		return 0
-	}
-	return shares * 0.25 * math.Pow(price*(1.0-price), 2.0) * price
+	return strategy.ComputeMakerSellFeeUsdc(shares, price, feeRateBps)
 }
 
 func paperMakerQuoteKey(side, outcome string) string {
@@ -301,123 +308,27 @@ func getPaperMarketPosition(positions map[string]paper.Position, marketID, outco
 }
 
 func computePaperMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
-	if targetShares <= 0 {
-		return 0
-	}
-	skew := (positionShares - peerShares) / targetShares
-	return clampFloat64(skew, -1.0, 1.0)
+	return strategy.ComputeMakerInventorySkew(positionShares, peerShares, targetShares)
 }
 
 func computePaperMakerSkewedQuote(side string, bid, ask, skew, quoteGap float64) (float64, bool) {
-	if ask <= 0 || ask-bid <= paperMakerQuoteStep*2 {
-		return 0, false
-	}
-	if quoteGap <= 0 {
-		quoteGap = paperMakerBaseOffset
-	}
-	minPrice := paperMakerQuoteStep
-	if bid > 0 {
-		minPrice = bid + paperMakerQuoteStep
-	}
-	maxPrice := ask - paperMakerQuoteStep
-	if maxPrice < minPrice {
-		return 0, false
-	}
-	mid := (bid + ask) / 2
-	base := mid
-	if side == "buy" {
-		base = mid - quoteGap - (skew * paperMakerInventorySkewStep)
-	} else {
-		base = mid + quoteGap - (skew * paperMakerInventorySkewStep)
-	}
-	price := roundPaperMakerPrice(clampFloat64(base, minPrice, maxPrice))
-	if price < minPrice || price > maxPrice {
-		return 0, false
-	}
-	return price, true
+	return strategy.ComputeMakerSkewedQuote(strings.EqualFold(side, "buy"), bid, ask, skew, quoteGap, paperMakerStrategyParams)
 }
 
 func computePaperMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price float64) float64 {
-	if price <= 0 || cash <= 0 || positionShares >= maxInventory {
-		return 0
-	}
-	qty := baseShares * (1.0 - math.Max(0, skew)*paperMakerQuoteSizeSkewFactor)
-	remainingInventory := maxInventory - positionShares
-	if qty > remainingInventory {
-		qty = remainingInventory
-	}
-	affordable := (cash * paperMakerCashUsagePerOutcome) / price
-	if qty > affordable {
-		qty = affordable
-	}
-	if qty < paperMakerMinQuoteShares {
-		return 0
-	}
-	return math.Floor(qty)
+	return strategy.ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price, paperMakerStrategyParams, math.Floor)
 }
 
 func computePaperMakerSellQty(baseShares, positionShares, skew float64) float64 {
-	if positionShares <= 0 {
-		return 0
-	}
-	qty := baseShares * (1.0 + math.Max(0, skew)*paperMakerQuoteSizeSkewFactor)
-	if qty > positionShares {
-		qty = positionShares
-	}
-	if qty < paperMakerMinQuoteShares {
-		return 0
-	}
-	return math.Floor(qty)
+	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, paperMakerStrategyParams, math.Floor)
 }
 
 func computePaperMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int) (float64, bool) {
-	price, ok := computePaperMakerSkewedQuote("sell", bid, ask, skew, quoteGap)
-	if !ok {
-		return 0, false
-	}
-
-	minPrice := paperMakerQuoteStep
-	if bid > 0 {
-		minPrice = roundPaperMakerPrice(bid + paperMakerQuoteStep)
-	}
-	maxPrice := roundPaperMakerPrice(ask - paperMakerQuoteStep)
-	if maxPrice < minPrice {
-		return 0, false
-	}
-
-	requiredNet := avgCost + minEdge
-	price = roundPaperMakerPrice(clampFloat64(price, minPrice, maxPrice))
-	for price <= maxPrice+1e-9 {
-		netPrice := price - computePaperSellFeeUsdc(1.0, price, feeRateBps)
-		if netPrice+1e-9 >= requiredNet {
-			return price, true
-		}
-		price = roundPaperMakerPrice(price + paperMakerQuoteStep)
-	}
-	return 0, false
+	return strategy.ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap, feeRateBps, paperMakerStrategyParams)
 }
 
 func shouldPaperMakerBlockBuy(positionShares float64, sellOK bool, peerShares, peerAvgCost, price, minEdge float64) bool {
-	if price <= 0 {
-		return true
-	}
-
-	// Do not keep adding to a side that is already the heavy leg when we do not
-	// currently have a profitable maker exit for that inventory.
-	if positionShares > 0 && !sellOK && positionShares >= peerShares {
-		return true
-	}
-
-	// If buying this side would complete matched pairs against peer inventory,
-	// require the completed pair cost to remain below $1.00 after the desired edge.
-	if peerShares > positionShares && peerAvgCost > 0 {
-		maxCompletionPrice := (1.0 - minEdge) - peerAvgCost
-		if price > maxCompletionPrice+1e-9 {
-			return true
-		}
-	}
-
-	return false
+	return strategy.ShouldMakerBlockBuy(positionShares, sellOK, peerShares, peerAvgCost, price, minEdge)
 }
 
 func clearPaperMakerQuoteReference(t *MarketTrader, order *paper.LimitOrder) {
@@ -611,8 +522,6 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		mergeBuffer = time.Duration(liveCfg.MakerMergeBufferSeconds) * time.Second
 	} else if t.Config.MakerMergeBufferSeconds > 0 {
 		mergeBuffer = time.Duration(t.Config.MakerMergeBufferSeconds) * time.Second
-	} else if t.Config.SplitMergeBufferSeconds > 0 {
-		mergeBuffer = time.Duration(t.Config.SplitMergeBufferSeconds) * time.Second
 	}
 	if timeToEnd < mergeBuffer && timeToEnd > 0 {
 		cancelAllPaperMakerQuotes(t, "near expiry merge cleanup")

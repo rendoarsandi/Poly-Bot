@@ -54,6 +54,15 @@ const (
 	realbotMakerCashUsagePerOutcome = 0.35
 )
 
+var realbotMakerStrategyParams = strategy.MakerParams{
+	QuoteStep:           realbotMakerQuoteStep,
+	DefaultQuoteGap:     realbotMakerBaseOffset,
+	InventorySkewStep:   realbotMakerInventorySkewStep,
+	QuoteSizeSkewFactor: realbotMakerQuoteSizeSkewFactor,
+	CashUsagePerOutcome: realbotMakerCashUsagePerOutcome,
+	MinQuoteShares:      realbotMakerMinQuoteShares,
+}
+
 type realbotOrderPathWarmer interface {
 	GetTradingAllowance(ctx context.Context) (float64, error)
 }
@@ -2873,125 +2882,31 @@ func pairMarginPercent(sum float64) float64 {
 }
 
 func computeRealbotMakerSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
-	if feeRateBps <= 0 || shares <= 0 || price <= 0 {
-		return 0
-	}
-	return shares * 0.25 * math.Pow(price*(1.0-price), 2.0) * price
+	return strategy.ComputeMakerSellFeeUsdc(shares, price, feeRateBps)
 }
 
 func computeRealbotMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
-	if targetShares <= 0 {
-		return 0
-	}
-	skew := (positionShares - peerShares) / targetShares
-	return clampFloat64(skew, -1.0, 1.0)
+	return strategy.ComputeMakerInventorySkew(positionShares, peerShares, targetShares)
 }
 
 func computeRealbotMakerSkewedQuote(side api.Side, bid, ask, skew, quoteGap float64) (float64, bool) {
-	if ask <= 0 || ask-bid <= realbotMakerQuoteStep*2 {
-		return 0, false
-	}
-	if quoteGap <= 0 {
-		quoteGap = realbotMakerBaseOffset
-	}
-	minPrice := realbotMakerQuoteStep
-	if bid > 0 {
-		minPrice = bid + realbotMakerQuoteStep
-	}
-	maxPrice := ask - realbotMakerQuoteStep
-	if maxPrice < minPrice {
-		return 0, false
-	}
-	mid := (bid + ask) / 2
-	base := mid
-	if side == api.SideBuy {
-		base = mid - quoteGap - (skew * realbotMakerInventorySkewStep)
-	} else {
-		base = mid + quoteGap - (skew * realbotMakerInventorySkewStep)
-	}
-	price := roundRealbotMakerPrice(clampFloat64(base, minPrice, maxPrice))
-	if price < minPrice || price > maxPrice {
-		return 0, false
-	}
-	return price, true
+	return strategy.ComputeMakerSkewedQuote(side == api.SideBuy, bid, ask, skew, quoteGap, realbotMakerStrategyParams)
 }
 
 func computeRealbotMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price float64) float64 {
-	if price <= 0 || cash <= 0 || positionShares >= maxInventory {
-		return 0
-	}
-	qty := baseShares * (1.0 - math.Max(0, skew)*realbotMakerQuoteSizeSkewFactor)
-	remainingInventory := maxInventory - positionShares
-	if qty > remainingInventory {
-		qty = remainingInventory
-	}
-	affordable := (cash * realbotMakerCashUsagePerOutcome) / price
-	if qty > affordable {
-		qty = affordable
-	}
-	qty = normalizeMarketSellShares(qty)
-	if qty < realbotMakerMinQuoteShares {
-		return 0
-	}
-	return qty
+	return strategy.ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price, realbotMakerStrategyParams, normalizeMarketSellShares)
 }
 
 func computeRealbotMakerSellQty(baseShares, positionShares, skew float64) float64 {
-	if positionShares <= 0 {
-		return 0
-	}
-	qty := baseShares * (1.0 + math.Max(0, skew)*realbotMakerQuoteSizeSkewFactor)
-	if qty > positionShares {
-		qty = positionShares
-	}
-	qty = normalizeMarketSellShares(qty)
-	if qty < realbotMakerMinQuoteShares {
-		return 0
-	}
-	return qty
+	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, realbotMakerStrategyParams, normalizeMarketSellShares)
 }
 
 func computeRealbotMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int) (float64, bool) {
-	price, ok := computeRealbotMakerSkewedQuote(api.SideSell, bid, ask, skew, quoteGap)
-	if !ok {
-		return 0, false
-	}
-
-	minPrice := realbotMakerQuoteStep
-	if bid > 0 {
-		minPrice = roundRealbotMakerPrice(bid + realbotMakerQuoteStep)
-	}
-	maxPrice := roundRealbotMakerPrice(ask - realbotMakerQuoteStep)
-	if maxPrice < minPrice {
-		return 0, false
-	}
-
-	requiredNet := avgCost + minEdge
-	price = roundRealbotMakerPrice(clampFloat64(price, minPrice, maxPrice))
-	for price <= maxPrice+1e-9 {
-		netPrice := price - computeRealbotMakerSellFeeUsdc(1.0, price, feeRateBps)
-		if netPrice+1e-9 >= requiredNet {
-			return price, true
-		}
-		price = roundRealbotMakerPrice(price + realbotMakerQuoteStep)
-	}
-	return 0, false
+	return strategy.ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap, feeRateBps, realbotMakerStrategyParams)
 }
 
 func shouldRealbotMakerBlockBuy(positionShares float64, sellOK bool, peerShares, peerAvgCost, price, minEdge float64) bool {
-	if price <= 0 {
-		return true
-	}
-	if positionShares > 0 && !sellOK && positionShares >= peerShares {
-		return true
-	}
-	if peerShares > positionShares && peerAvgCost > 0 {
-		maxCompletionPrice := (1.0 - minEdge) - peerAvgCost
-		if price > maxCompletionPrice+1e-9 {
-			return true
-		}
-	}
-	return false
+	return strategy.ShouldMakerBlockBuy(positionShares, sellOK, peerShares, peerAvgCost, price, minEdge)
 }
 
 func realbotMakerReservedBuyNotional(makerQuotes map[string]*realbotMakerQuote) float64 {
@@ -3199,8 +3114,6 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		mergeBuffer = time.Duration(liveCfg.MakerMergeBufferSeconds) * time.Second
 	} else if cfg.MakerMergeBufferSeconds > 0 {
 		mergeBuffer = time.Duration(cfg.MakerMergeBufferSeconds) * time.Second
-	} else if cfg.SplitMergeBufferSeconds > 0 {
-		mergeBuffer = time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 	}
 	if timeToEnd > 0 && timeToEnd < mergeBuffer {
 		realbotCancelAllMakerQuotes(ctx, marketID, "near expiry cleanup", trader, engine, tui, makerQuotes)
