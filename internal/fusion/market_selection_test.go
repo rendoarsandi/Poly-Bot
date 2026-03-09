@@ -1,6 +1,7 @@
 package fusion
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -222,6 +223,40 @@ func TestCopyTrackedMarketDeepCopiesMutableState(t *testing.T) {
 	}
 	if copy.UpMidHistory[0].Value != 0.50 || !copy.EventTimes[0].Equal(now) || copy.ScoreHistory[0].Value != 0.02 {
 		t.Fatalf("expected histories to be copied, got mids=%+v events=%+v scores=%+v", copy.UpMidHistory, copy.EventTimes, copy.ScoreHistory)
+	}
+}
+
+func TestCloseAssetPositionsUsesLiveBidWhenAvailable(t *testing.T) {
+	engine := paper.NewEngine(100)
+	bot := &Bot{engine: engine, tui: paper.NewTUI(engine, paper.NewOrderBook())}
+
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.40, 10); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	bot.closeAssetPositions("BTC", &trackedMarket{Bids: map[string]float64{"Up": 0.60}}, "market rotated")
+
+	if positions := engine.GetPositions(); len(positions) != 0 {
+		t.Fatalf("expected forced close to remove position, got %+v", positions)
+	}
+	if stats := engine.GetStats(); math.Abs(stats.CurrentBalance-102) > 0.000001 {
+		t.Fatalf("expected balance 102 after closing at live bid, got %.4f", stats.CurrentBalance)
+	}
+}
+
+func TestCloseAssetPositionsFallsBackToAveragePriceWhenBidMissing(t *testing.T) {
+	engine := paper.NewEngine(100)
+	bot := &Bot{engine: engine, tui: paper.NewTUI(engine, paper.NewOrderBook())}
+
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.40, 10); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	bot.closeAssetPositions("BTC", &trackedMarket{Bids: map[string]float64{}}, "market dropped")
+
+	if positions := engine.GetPositions(); len(positions) != 0 {
+		t.Fatalf("expected missing bid fallback to remove position, got %+v", positions)
+	}
+	if stats := engine.GetStats(); math.Abs(stats.CurrentBalance-100) > 0.000001 {
+		t.Fatalf("expected neutral close at avg price to restore balance, got %.4f", stats.CurrentBalance)
 	}
 }
 

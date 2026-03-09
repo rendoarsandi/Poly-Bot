@@ -246,6 +246,12 @@ type marketQuality struct {
 func (b *Bot) fetchMarketQualities(ctx context.Context, markets []api.Market, current map[string]*trackedMarket, requestedAssets []string, timeframe string, now time.Time) map[string]marketQuality {
 	_ = timeframe
 	qualities := make(map[string]marketQuality)
+	type qualityProbeResult struct {
+		conditionID string
+		slug        string
+		quality     marketQuality
+		err         error
+	}
 	grouped := make(map[string][]api.Market)
 	for _, market := range markets {
 		asset, ok := fusionMarketAsset(market)
@@ -260,7 +266,7 @@ func (b *Bot) fetchMarketQualities(ctx context.Context, markets []api.Market, cu
 		})
 	}
 	var wg sync.WaitGroup
-	var qualitiesMu sync.Mutex
+	results := make(chan qualityProbeResult, len(markets))
 	for _, requested := range requestedAssets {
 		asset := strings.ToUpper(strings.TrimSpace(requested))
 		candidates := grouped[asset]
@@ -281,16 +287,21 @@ func (b *Bot) fetchMarketQualities(ctx context.Context, markets []api.Market, cu
 			go func() {
 				defer wg.Done()
 				quality, err := b.fetchMarketQuality(ctx, &candidate)
-				if err != nil {
-					return
-				}
-				qualitiesMu.Lock()
-				qualities[candidate.ConditionID] = quality
-				qualitiesMu.Unlock()
+				results <- qualityProbeResult{conditionID: candidate.ConditionID, slug: candidate.Slug, quality: quality, err: err}
 			}()
 		}
 	}
 	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.err != nil {
+			if b.tui != nil {
+				b.tui.LogEvent("quality probe for %s failed: %v", result.slug, result.err)
+			}
+			continue
+		}
+		qualities[result.conditionID] = result.quality
+	}
 	return qualities
 }
 
@@ -833,7 +844,11 @@ func (b *Bot) closeAssetPositions(asset string, market *trackedMarket, reason st
 			bid = market.Bids[pos.Outcome]
 		}
 		if bid <= 0 {
-			continue
+			bid = pos.AvgPrice
+			if bid <= 0 {
+				continue
+			}
+			b.tui.LogEvent("[%s] forced close %s using avg price %.3f due to missing bid (%s)", asset, pos.Outcome, bid, reason)
 		}
 		profit := (bid - pos.AvgPrice) * pos.Quantity
 		if _, err := b.engine.SellForMarket(asset, pos.Outcome, bid, pos.Quantity); err != nil {
