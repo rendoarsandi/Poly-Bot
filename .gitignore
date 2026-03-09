@@ -26,6 +26,7 @@ logs/
 /fetchbook
 bot_activity.csv
 /paperbot
+/fusionbot
 /manual
 /manualbot
 /mergeredeem

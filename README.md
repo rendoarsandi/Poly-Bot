@@ -19,6 +19,7 @@ Main loop:
 Main run modes:
 - `paperbot` = simulated trading
 - `realbot` = real wallet, real orders, real on-chain cleanup
+- `fusionbot` = isolated Binance + Polymarket signal bot using the same TUI style
 
 ## What the bot actually does
 
@@ -68,6 +69,17 @@ Notes:
 - uses real Polymarket / Polygon state
 - handles setup, approvals, order placement, cleanup, and redemption
 - if `REQUIRE_CONFIRM=true`, startup asks whether to begin with split strategy `on` or `off`
+
+### Fusion signal bot
+```bash
+go run cmd/fusionbot/main.go
+```
+
+Notes:
+- separate from `paperbot` and `realbot`
+- paper-only for now; no live order placement
+- reads Binance prices plus Polymarket books and trades a lightweight cross-market signal
+- reuses the same TUI style, but runtime setting changes stay in-memory for this bot only
 
 ### Other tools
 ```bash
@@ -184,6 +196,16 @@ Adds:
 - on-chain split / merge / redeem flows
 - emergency cleanup to avoid leaving junk behind
 
+### `fusionbot`
+Use this to experiment with crypto lead/lag logic safely.
+
+It adds:
+- separate command path and internal package
+- Binance reference-price polling
+- Polymarket orderbook polling
+- lightweight fair-value / edge logic for `Up` and `Down`
+- paper-only execution through the same TUI style
+
 ## TUI notes
 
 The terminal UI is the main interface. It shows:
@@ -201,6 +223,7 @@ The settings panel can update runtime values like market filters, trade scaling,
 ### Main entrypoints
 - `cmd/paperbot`
 - `cmd/realbot`
+- `cmd/fusionbot`
 - `cmd/diagnose`
 - `cmd/util`
 - `cmd/manual`
@@ -210,6 +233,7 @@ The settings panel can update runtime values like market filters, trade scaling,
 ### Main internal packages
 - `internal/api`
 - `internal/core`
+- `internal/fusion`
 - `internal/markets`
 - `internal/paper`
 - `internal/trading`
@@ -230,7 +254,7 @@ That means:
 ```bash
 go test ./...
 # or the smaller scope I usually care about
-go test ./internal/paper ./cmd/paperbot ./cmd/realbot
+go test ./internal/paper ./internal/fusion ./cmd/paperbot ./cmd/realbot ./cmd/fusionbot
 ```
 
 ## Personal reminder

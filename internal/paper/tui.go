@@ -163,6 +163,7 @@ type MarketData struct {
 	Asks       map[string]float64
 	RealBids   map[string]float64
 	RealAsks   map[string]float64
+	Details    []string
 	LastUpdate time.Time
 	DataSource string // "WS" or "REST"
 }
@@ -526,6 +527,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Asks:       make(map[string]float64),
 				RealBids:   make(map[string]float64),
 				RealAsks:   make(map[string]float64),
+				Details:    append([]string(nil), v.Details...),
 				LastUpdate: v.LastUpdate,
 				DataSource: v.DataSource,
 			}
@@ -639,17 +641,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshScrollMetrics()
 				return m, nil
 			case "up", "k":
+				rowCount := settingsRowCountForMode(m.tui.mode)
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 11
+					m.settingsCursor = rowCount - 1
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 12
+				rowCount := settingsRowCountForMode(m.tui.mode)
+				m.settingsCursor = (m.settingsCursor + 1) % rowCount
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
 				changed := false
+				fusionMode := settingsModeIsFusion(m.tui.mode)
 				switch m.settingsCursor {
 				case 0: // Market
 					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
@@ -698,13 +703,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 6:
-					m.tui.settings.SplitMinMarginSell -= 0.5
-					if m.tui.settings.SplitMinMarginSell < 1.0 {
-						m.tui.settings.SplitMinMarginSell = 1.0
+					if fusionMode {
+						m.tui.settings.MinAskPrice -= 0.01
+						if m.tui.settings.MinAskPrice < 0.01 {
+							m.tui.settings.MinAskPrice = 0.01
+						}
+					} else {
+						m.tui.settings.SplitMinMarginSell -= 0.5
+						if m.tui.settings.SplitMinMarginSell < 1.0 {
+							m.tui.settings.SplitMinMarginSell = 1.0
+						}
 					}
 					changed = true
 				case 7:
-					m.tui.settings.SplitStrategyEnabled = false
+					if fusionMode {
+						m.tui.settings.MaxAskPrice -= 0.01
+						if m.tui.settings.MaxAskPrice < 0.01 {
+							m.tui.settings.MaxAskPrice = 0.01
+						}
+					} else {
+						m.tui.settings.SplitStrategyEnabled = false
+					}
 					changed = true
 				case 8:
 					m.tui.settings.SplitInitialCapPct -= 0.05
@@ -740,6 +759,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
+				fusionMode := settingsModeIsFusion(m.tui.mode)
 				switch m.settingsCursor {
 				case 0: // Market
 					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
@@ -785,13 +805,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 6:
-					m.tui.settings.SplitMinMarginSell += 0.5
-					if m.tui.settings.SplitMinMarginSell > 20.0 {
-						m.tui.settings.SplitMinMarginSell = 20.0
+					if fusionMode {
+						m.tui.settings.MinAskPrice += 0.01
+						if m.tui.settings.MinAskPrice > 0.99 {
+							m.tui.settings.MinAskPrice = 0.99
+						}
+					} else {
+						m.tui.settings.SplitMinMarginSell += 0.5
+						if m.tui.settings.SplitMinMarginSell > 20.0 {
+							m.tui.settings.SplitMinMarginSell = 20.0
+						}
 					}
 					changed = true
 				case 7:
-					m.tui.settings.SplitStrategyEnabled = true
+					if fusionMode {
+						m.tui.settings.MaxAskPrice += 0.01
+						if m.tui.settings.MaxAskPrice > 0.99 {
+							m.tui.settings.MaxAskPrice = 0.99
+						}
+					} else {
+						m.tui.settings.SplitStrategyEnabled = true
+					}
 					changed = true
 				case 8:
 					m.tui.settings.SplitInitialCapPct += 0.05
@@ -1020,6 +1054,15 @@ func (t *TUI) SetMode(mode string) {
 func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if existing, ok := t.markets[id]; ok {
+		sameMarket := existing.Slug == slug && existing.EndTime.Equal(endTime) && sameOutcomes(existing.Outcomes, outcomes)
+		if sameMarket {
+			existing.Slug = slug
+			existing.Outcomes = append([]string(nil), outcomes...)
+			existing.EndTime = endTime
+			return
+		}
+	}
 	t.markets[id] = &MarketData{
 		Slug:     slug,
 		Outcomes: outcomes,
@@ -1028,7 +1071,16 @@ func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.
 		Asks:     make(map[string]float64),
 		RealBids: make(map[string]float64),
 		RealAsks: make(map[string]float64),
+		Details:  nil,
 	}
+}
+
+func (t *TUI) RemoveMarket(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.markets, id)
+	delete(t.orderBookDepth, id)
+	delete(t.pendingOrders, id)
 }
 
 func (t *TUI) ClearMarkets() {
@@ -1051,17 +1103,39 @@ func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[strin
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
+		updated := false
 		for k, v := range bids {
-			m.Bids[k] = v
-			m.RealBids[k] = v
+			if v > 0 {
+				m.Bids[k] = v
+				m.RealBids[k] = v
+				updated = true
+			}
 		}
 		for k, v := range asks {
-			m.Asks[k] = v
-			m.RealAsks[k] = v
+			if v > 0 {
+				m.Asks[k] = v
+				m.RealAsks[k] = v
+				updated = true
+			}
+		}
+		if !updated {
+			return
 		}
 		m.LastUpdate = time.Now()
 		m.DataSource = source
 	}
+}
+
+func sameOutcomes(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (t *TUI) TouchMarket(marketID string) {
@@ -1069,6 +1143,14 @@ func (t *TUI) TouchMarket(marketID string) {
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
 		m.LastUpdate = time.Now()
+	}
+}
+
+func (t *TUI) SetMarketDetails(marketID string, details []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if m, ok := t.markets[marketID]; ok {
+		m.Details = append([]string(nil), details...)
 	}
 }
 
@@ -1305,13 +1387,21 @@ func (t *TUI) getWalletTruthPositions() []WalletTruthPosition {
 func (m tuiModel) renderHeader(w int) string {
 	s := m.snap
 	inner := w - 4
+	m.tui.mu.Lock()
+	mode := m.tui.mode
+	m.tui.mu.Unlock()
+	fusionMode := settingsModeIsFusion(mode)
+	titleText := "◆  POLYARB-15M TRADING TERMINAL  ◆"
+	if fusionMode {
+		titleText = "◆  FUSIONBOT CROSS-MARKET TERMINAL  ◆"
+	}
 
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(clrBrand).
 		Width(inner).
 		Align(lipgloss.Center).
-		Render("◆  POLYARB-15M TRADING TERMINAL  ◆")
+		Render(titleText)
 
 	uptime := time.Since(s.startTime).Round(time.Second)
 	uptimePart := styleDimmed.Render("⏱ " + uptime.String())
@@ -1614,6 +1704,19 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		"\n" +
 		priceLinesB.String()
 
+	if len(mkt.Details) > 0 {
+		content += "\n"
+		for _, detail := range mkt.Details {
+			if strings.TrimSpace(detail) == "" {
+				continue
+			}
+			if len(detail) > innerW {
+				detail = detail[:innerW-1] + "…"
+			}
+			content += "\n" + styleMuted.Render("  "+detail)
+		}
+	}
+
 	return makePanel(innerW, borderColor, content), buyMargin
 }
 
@@ -1793,6 +1896,10 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity, multiplier float64, rounds, profitable int, positions map[string]Position) string {
 	s := m.snap
 	inner := w - 4
+	m.tui.mu.Lock()
+	mode := m.tui.mode
+	m.tui.mu.Unlock()
+	fusionMode := settingsModeIsFusion(mode)
 
 	netChange := equity - stats.StartingBalance
 	changeSt := styleGreen
@@ -1862,14 +1969,25 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	} else {
 		tradeLine = "  "
 	}
-	tradeLine += fmt.Sprintf("Realized %s  ·  Arb %s",
-		changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, stats.RealizedPnL)),
-		arbSt.Render(fmt.Sprintf("%s$%.2f", arbSign, guaranteedProfit)),
-	)
+	if fusionMode {
+		tradeLine += fmt.Sprintf("Realized %s  ·  Signal Positions %d",
+			changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, stats.RealizedPnL)),
+			len(positions),
+		)
+	} else {
+		tradeLine += fmt.Sprintf("Realized %s  ·  Arb %s",
+			changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, stats.RealizedPnL)),
+			arbSt.Render(fmt.Sprintf("%s$%.2f", arbSign, guaranteedProfit)),
+		)
+	}
 
 	uptime := time.Since(s.startTime).Round(time.Second)
 
-	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
+	headerTitle := "ACCOUNT STATUS"
+	if fusionMode {
+		headerTitle = "FUSION STATUS"
+	}
+	header := sectionHeader("💼", headerTitle, clrTeal)
 	row1 := fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)",
 		styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
@@ -2248,12 +2366,17 @@ func (m tuiModel) renderFooter(w int, scrollOffset, maxOffset int) string {
 		mode = "Paper"
 	}
 
+	fusionMode := settingsModeIsFusion(mode)
 	modeText := mode + " Trading Mode"
 	scrollText := "Top"
 	if maxOffset > 0 {
 		scrollText = fmt.Sprintf("Scroll %d/%d", scrollOffset, maxOffset)
 	}
-	leftText := "  Polyarb-15m  ·  " + modeText + "  ·  " + scrollText
+	leftBrand := "Polyarb-15m"
+	if fusionMode {
+		leftBrand = "Fusionbot"
+	}
+	leftText := "  " + leftBrand + "  ·  " + modeText + "  ·  " + scrollText
 	rightText := "[↑↓/jk] scroll  [PgUp/PgDn] page  [g/G] top/btm  [q] quit  "
 	if w < 120 {
 		rightText = "[↑↓/jk] scroll  [PgUp/PgDn] page  [q] quit  "
@@ -2326,10 +2449,16 @@ func (m tuiModel) renderSettings(w int) string {
 	// Read current settings (under lock for safety)
 	m.tui.mu.Lock()
 	cfg := m.tui.settings
+	mode := m.tui.mode
 	m.tui.mu.Unlock()
+	fusionMode := settingsModeIsFusion(mode)
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
-	title := titleStyle.Render("⚙  LIVE SETTINGS")
+	titleText := "⚙  LIVE SETTINGS"
+	if fusionMode {
+		titleText = "⚙  FUSIONBOT SETTINGS"
+	}
+	title := titleStyle.Render(titleText)
 
 	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [s/Esc] Close")
 
@@ -2365,39 +2494,24 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   renderBar(cfg.TradeScaleFactor/1.0, 20),
 		},
 		{
-			label: "Buy Min Margin %",
+			label: func() string {
+				if fusionMode {
+					return "Signal Min Edge %"
+				}
+				return "Buy Min Margin %"
+			}(),
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
 		{
-			label: "Buy/Sell Exec Floor %",
+			label: func() string {
+				if fusionMode {
+					return "Exit Edge Floor %"
+				}
+				return "Buy/Sell Exec Floor %"
+			}(),
 			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
 			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
-		},
-		{
-			label: "Split Min Margin",
-			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
-			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
-		},
-		{
-			label: "Split Strategy",
-			value: func() string {
-				if cfg.SplitStrategyEnabled {
-					return styleGreen.Render("  ON ")
-				}
-				return styleMuted.Render(" OFF ")
-			}(),
-			bar: "",
-		},
-		{
-			label: "Split Initial Cap",
-			value: fmtPct(cfg.SplitInitialCapPct),
-			bar:   renderBar(cfg.SplitInitialCapPct, 20),
-		},
-		{
-			label: "Split Replenish Cap",
-			value: fmtPct(cfg.SplitReplenishCapPct),
-			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 		{
 			label: "Min Ask Price",
@@ -2409,6 +2523,35 @@ func (m tuiModel) renderSettings(w int) string {
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
+	}
+	if !fusionMode {
+		rows = append(rows[:6], append([]row{
+			{
+				label: "Split Min Margin",
+				value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
+				bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
+			},
+			{
+				label: "Split Strategy",
+				value: func() string {
+					if cfg.SplitStrategyEnabled {
+						return styleGreen.Render("  ON ")
+					}
+					return styleMuted.Render(" OFF ")
+				}(),
+				bar: "",
+			},
+			{
+				label: "Split Initial Cap",
+				value: fmtPct(cfg.SplitInitialCapPct),
+				bar:   renderBar(cfg.SplitInitialCapPct, 20),
+			},
+			{
+				label: "Split Replenish Cap",
+				value: fmtPct(cfg.SplitReplenishCapPct),
+				bar:   renderBar(cfg.SplitReplenishCapPct, 20),
+			},
+		}, rows[6:]...)...)
 	}
 
 	cursorStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
@@ -2458,14 +2601,17 @@ func (m tuiModel) renderSettings(w int) string {
 	// Preset descriptions
 	presetDivider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
 	presetTitle := styleDimmed.Render("  Quick Presets:")
-	p1 := fmt.Sprintf("  %s Conservative  scale=1%%   margin=3%%  (%s)",
+	p1 := fmt.Sprintf("  %s Conservative  scale=1%%   %s=3%%  (%s)",
 		lipgloss.NewStyle().Foreground(clrAmber).Render("[1]"),
+		map[bool]string{true: "edge", false: "margin"}[fusionMode],
 		styleDimmed.Render("$1/trade on $100 balance"))
-	p2 := fmt.Sprintf("  %s Moderate      scale=5%%   margin=2%%  (%s)",
+	p2 := fmt.Sprintf("  %s Moderate      scale=5%%   %s=2%%  (%s)",
 		lipgloss.NewStyle().Foreground(clrTeal).Render("[2]"),
+		map[bool]string{true: "edge", false: "margin"}[fusionMode],
 		styleDimmed.Render("$5/trade on $100 balance"))
-	p3 := fmt.Sprintf("  %s Aggressive    scale=10%%  margin=1%%  (%s)",
+	p3 := fmt.Sprintf("  %s Aggressive    scale=10%%  %s=1%%  (%s)",
 		lipgloss.NewStyle().Foreground(clrEmerald).Render("[3]"),
+		map[bool]string{true: "edge", false: "margin"}[fusionMode],
 		styleDimmed.Render("$10/trade on $100 balance"))
 
 	// Trade size preview
@@ -2510,4 +2656,15 @@ func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	if s.TradeScaleFactor > 0 {
 		t.tradeFactor = s.TradeScaleFactor
 	}
+}
+
+func settingsModeIsFusion(mode string) bool {
+	return strings.Contains(strings.ToLower(mode), "fusion")
+}
+
+func settingsRowCountForMode(mode string) int {
+	if settingsModeIsFusion(mode) {
+		return 8
+	}
+	return 12
 }

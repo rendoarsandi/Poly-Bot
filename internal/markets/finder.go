@@ -45,7 +45,7 @@ func FindMarkets(
 			// User specified multiple markets separated by comma?
 			// Let's support split by comma, e.g. "BTC,ETH"
 			for _, p := range strings.Split(cfg.MarketSlug, ",") {
-				p = strings.TrimSpace(p)
+				p = strings.ToLower(strings.TrimSpace(p))
 				if p != "" {
 					assets = append(assets, p)
 				}
@@ -65,14 +65,14 @@ func FindMarkets(
 
 		var markets []api.Market
 		var exactMarkets []api.Market
-		
+
 		// Always fetch both 15m and 5m for maximum coverage, unless a specific timeframe is enforced
 		// The user steering specifically requested adding both 5m and 15m
 		markets15m, err15m := restClient.GetMarketsByTimeframe(ctx, assets, "15m")
 		if err15m == nil {
 			markets = append(markets, markets15m...)
 		}
-		
+
 		markets5m, err5m := restClient.GetMarketsByTimeframe(ctx, assets, "5m")
 		if err5m == nil {
 			markets = append(markets, markets5m...)

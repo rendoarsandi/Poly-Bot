@@ -404,3 +404,45 @@ func TestRenderFooterShowsScrollStatus(t *testing.T) {
 		t.Fatalf("expected footer controls, got %q", rendered)
 	}
 }
+
+func TestTUIAddMarketPreservesExistingDataForSameMarket(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	end := time.Now().Add(10 * time.Minute).Round(time.Second)
+
+	tui.AddMarket("BTC", "btc-updown-15m-1", []string{"Up", "Down"}, end)
+	tui.UpdateMarketPricesWithSource("BTC", map[string]float64{"Up": 0.51}, map[string]float64{"Up": 0.53}, "WS")
+	tui.SetMarketDetails("BTC", []string{"detail"})
+	tui.AddMarket("BTC", "btc-updown-15m-1", []string{"Up", "Down"}, end)
+
+	tui.mu.Lock()
+	defer tui.mu.Unlock()
+	market := tui.markets["BTC"]
+	if market == nil {
+		t.Fatal("expected BTC market to exist")
+	}
+	if market.Bids["Up"] != 0.51 || market.Asks["Up"] != 0.53 {
+		t.Fatalf("expected prices to be preserved, got bids=%v asks=%v", market.Bids, market.Asks)
+	}
+	if len(market.Details) != 1 || market.Details[0] != "detail" {
+		t.Fatalf("expected details to be preserved, got %+v", market.Details)
+	}
+}
+
+func TestTUIUpdateMarketPricesWithSourceIgnoresZeroQuotes(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tui.AddMarket("BTC", "btc-updown-15m-1", []string{"Up", "Down"}, time.Now().Add(10*time.Minute))
+	tui.UpdateMarketPricesWithSource("BTC", map[string]float64{"Up": 0.51}, map[string]float64{"Up": 0.53}, "WS")
+	tui.UpdateMarketPricesWithSource("BTC", map[string]float64{"Up": 0}, map[string]float64{"Up": 0}, "WS")
+
+	tui.mu.Lock()
+	defer tui.mu.Unlock()
+	market := tui.markets["BTC"]
+	if market.Bids["Up"] != 0.51 || market.Asks["Up"] != 0.53 {
+		t.Fatalf("expected zero quotes to be ignored, got bids=%v asks=%v", market.Bids, market.Asks)
+	}
+}
