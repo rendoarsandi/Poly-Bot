@@ -98,6 +98,88 @@ func TestMinExecutablePairSum(t *testing.T) {
 	}
 }
 
+func TestRealbotPanicBuyCompletionGuardBlocksUnprofitableCompletion(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.62, 10); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	block, reason := realbotPanicBuyCompletionGuard(engine, "mkt-1", "Yes", "No", 0.45, 0.40, 2.0)
+	if !block {
+		t.Fatal("expected completion guard to block unprofitable pair completion")
+	}
+	if !strings.Contains(reason, "Yes") || !strings.Contains(reason, "No") {
+		t.Fatalf("expected reason to mention affected outcomes, got %q", reason)
+	}
+}
+
+func TestRealbotPanicBuyCompletionGuardAllowsProfitableCompletion(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.44, 10); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	block, reason := realbotPanicBuyCompletionGuard(engine, "mkt-1", "Yes", "No", 0.45, 0.40, 2.0)
+	if block {
+		t.Fatalf("expected profitable completion to pass, got reason %q", reason)
+	}
+}
+
+func TestRealbotPanicBuyCompletionGuardIgnoresBalancedInventory(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.62, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("mkt-1", "No", 0.30, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	block, reason := realbotPanicBuyCompletionGuard(engine, "mkt-1", "Yes", "No", 0.45, 0.40, 2.0)
+	if block {
+		t.Fatalf("expected balanced inventory to bypass completion guard, got reason %q", reason)
+	}
+}
+
+func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
+	if got := normalizePaperArbMode(""); got != paperArbModeTaker {
+		t.Fatalf("expected empty mode to normalize to taker, got %q", got)
+	}
+	if got := normalizePaperArbMode("maker"); got != paperArbModeMaker {
+		t.Fatalf("expected maker to remain maker, got %q", got)
+	}
+}
+
+func TestShouldRealbotMakerBlockBuyBlocksHeavyLegWithoutProtectedSell(t *testing.T) {
+	if !shouldRealbotMakerBlockBuy(12, false, 8, 0.44, 0.43, 0.02) {
+		t.Fatal("expected heavy leg without protected sell to block maker buy")
+	}
+	if shouldRealbotMakerBlockBuy(12, true, 8, 0.44, 0.43, 0.02) {
+		t.Fatal("expected protected sell path to allow maker buy evaluation")
+	}
+}
+
+func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
+	if !shouldRealbotMakerBlockBuy(3, true, 10, 0.62, 0.39, 0.02) {
+		t.Fatal("expected expensive completion path to block maker buy")
+	}
+	if shouldRealbotMakerBlockBuy(3, true, 10, 0.50, 0.39, 0.02) {
+		t.Fatal("expected affordable completion path to pass")
+	}
+}
+
+func TestComputeRealbotMakerProtectedSellQuoteRequiresEdge(t *testing.T) {
+	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 1000)
+	if !ok {
+		t.Fatal("expected protected sell quote to exist")
+	}
+	if price < 0.58 {
+		t.Fatalf("expected sell quote to clear required edge, got %.3f", price)
+	}
+	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 1000); ok {
+		t.Fatal("expected narrow market to fail protected sell quote")
+	}
+}
+
 func TestExecutionDeltaFromPositionsBuy(t *testing.T) {
 	positions := []trading.PositionInfo{{TokenID: "yes-token", Size: 7.5}}
 

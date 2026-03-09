@@ -171,6 +171,7 @@ Simulates:
 - paper PnL
 - merge outcomes
 - split inventory behavior
+- maker-mode quoting, including buy-side guards that avoid building inventory when pair completion is unprofitable or there is no protected maker sell path
 - market rotation
 
 ### `realbot`
@@ -183,6 +184,8 @@ Adds:
 - user WebSocket fill tracking
 - on-chain split / merge / redeem flows
 - emergency cleanup to avoid leaving junk behind
+- live `maker` mode via `PAPER_ARB_MODE=maker`, using resting GTC quotes plus conservative buy/sell inventory guards
+- default live `taker` mode still uses the paired panic-buy / merge path plus split-inventory sell logic
 
 ## TUI notes
 
