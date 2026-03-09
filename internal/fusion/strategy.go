@@ -12,13 +12,7 @@ import (
 
 const flattenBeforeExpiry = 45 * time.Second
 
-const (
-	maxEntryMarketDataAge  = 3 * time.Second
-	maxEntryBinanceDataAge = 3 * time.Second
-	maxEntrySpreadPct      = 0.08
-	minEntryScoreMagnitude = 0.02
-	minEntryAskDepthShares = 60.0
-)
+const defaultFusionMinConsensusVotes = 3
 
 type SignalSnapshot struct {
 	Asset          string
@@ -102,13 +96,13 @@ func decideAction(cfg *core.Config, snap SignalSnapshot) Decision {
 	downEdge := fairDown - snap.DownAsk
 	confidence := decisionConfidence(snap.Features, upEdge, downEdge)
 	if snap.UpAsk >= cfg.MinAskPrice && snap.UpAsk <= cfg.MaxAskPrice && upEdge >= downEdge && upEdge >= entryThreshold {
-		if reason := entryBlockReason(snap, "Up"); reason != "" {
+		if reason := entryBlockReason(cfg, snap, "Up"); reason != "" {
 			return Decision{Action: "HOLD", FairUp: fairUp, Confidence: confidence, Reason: reason}
 		}
 		return Decision{Action: "BUY", Outcome: "Up", Price: snap.UpAsk, Edge: upEdge, FairUp: fairUp, Confidence: confidence, Reason: fmt.Sprintf("%s + bullish fusion", snap.Features.PrimaryReason)}
 	}
 	if snap.DownAsk >= cfg.MinAskPrice && snap.DownAsk <= cfg.MaxAskPrice && downEdge > upEdge && downEdge >= entryThreshold {
-		if reason := entryBlockReason(snap, "Down"); reason != "" {
+		if reason := entryBlockReason(cfg, snap, "Down"); reason != "" {
 			return Decision{Action: "HOLD", FairUp: fairUp, Confidence: confidence, Reason: reason}
 		}
 		return Decision{Action: "BUY", Outcome: "Down", Price: snap.DownAsk, Edge: downEdge, FairUp: fairUp, Confidence: confidence, Reason: fmt.Sprintf("%s + bearish fusion", snap.Features.PrimaryReason)}
@@ -132,23 +126,23 @@ func decisionConfidence(features ModelFeatures, upEdge, downEdge float64) float6
 	return clamp(0.25+strength*3, 0.25, 1.0)
 }
 
-func entryBlockReason(snap SignalSnapshot, outcome string) string {
-	if snap.MarketDataAge > maxEntryMarketDataAge {
+func entryBlockReason(cfg *core.Config, snap SignalSnapshot, outcome string) string {
+	if snap.MarketDataAge > fusionMaxMarketDataAge(cfg) {
 		return "stale polymarket"
 	}
-	if snap.BinanceDataAge > maxEntryBinanceDataAge {
+	if snap.BinanceDataAge > fusionMaxBinanceDataAge(cfg) {
 		return "stale binance"
 	}
-	if snap.Features.SpreadPct >= maxEntrySpreadPct {
+	if snap.Features.SpreadPct >= fusionMaxSpreadPct(cfg) {
 		return "wide spread"
 	}
-	if math.Abs(snap.Features.Score) < minEntryScoreMagnitude {
+	if math.Abs(snap.Features.Score) < fusionMinScoreMagnitude(cfg) {
 		return "weak score"
 	}
-	if askDepthForOutcome(snap, outcome) < minEntryAskDepthShares {
+	if askDepthForOutcome(snap, outcome) < fusionMinAskDepthShares(cfg) {
 		return "thin ask depth"
 	}
-	if !signalConsensus(snap.Features, outcome) {
+	if !signalConsensus(cfg, snap.Features, outcome) {
 		return "weak consensus"
 	}
 	return ""
@@ -161,7 +155,7 @@ func askDepthForOutcome(snap SignalSnapshot, outcome string) float64 {
 	return snap.DownAskDepth
 }
 
-func signalConsensus(features ModelFeatures, outcome string) bool {
+func signalConsensus(cfg *core.Config, features ModelFeatures, outcome string) bool {
 	votes := 0
 	if strings.EqualFold(outcome, "Up") {
 		if features.Returns1m > 0 {
@@ -202,7 +196,52 @@ func signalConsensus(features ModelFeatures, outcome string) bool {
 			votes++
 		}
 	}
-	return votes >= 3
+	return votes >= fusionMinConsensusVotes(cfg)
+}
+
+func fusionMinScoreMagnitude(cfg *core.Config) float64 {
+	if cfg != nil && cfg.FusionMinScorePercent > 0 {
+		return cfg.FusionMinScorePercent / 100.0
+	}
+	return 0.02
+}
+
+func fusionMaxSpreadPct(cfg *core.Config) float64 {
+	if cfg != nil && cfg.FusionMaxSpreadPercent > 0 {
+		return cfg.FusionMaxSpreadPercent / 100.0
+	}
+	return 0.08
+}
+
+func fusionMinAskDepthShares(cfg *core.Config) float64 {
+	if cfg != nil && cfg.FusionMinAskDepthShares > 0 {
+		return cfg.FusionMinAskDepthShares
+	}
+	return 60.0
+}
+
+func fusionMaxMarketDataAge(cfg *core.Config) time.Duration {
+	if cfg != nil && cfg.FusionMaxMarketDataAgeSec > 0 {
+		return time.Duration(cfg.FusionMaxMarketDataAgeSec * float64(time.Second))
+	}
+	return 3 * time.Second
+}
+
+func fusionMaxBinanceDataAge(cfg *core.Config) time.Duration {
+	if cfg != nil && cfg.FusionMaxBinanceDataAgeSec > 0 {
+		return time.Duration(cfg.FusionMaxBinanceDataAgeSec * float64(time.Second))
+	}
+	return 3 * time.Second
+}
+
+func fusionMinConsensusVotes(cfg *core.Config) int {
+	if cfg != nil && cfg.FusionMinConsensusVotes > 0 {
+		if cfg.FusionMinConsensusVotes > 6 {
+			return 6
+		}
+		return cfg.FusionMinConsensusVotes
+	}
+	return defaultFusionMinConsensusVotes
 }
 
 func exitDecision(outcome string, price, fairUp, edge float64, reason string) Decision {

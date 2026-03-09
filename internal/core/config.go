@@ -64,6 +64,13 @@ type Config struct {
 	// Price filters
 	MinAskPrice float64 // Minimum ask price to buy (default: 0.10)
 	MaxAskPrice float64 // Maximum ask price to buy (default: 0.90)
+	// Fusion-only filters/tuning controls.
+	FusionMinScorePercent      float64
+	FusionMaxSpreadPercent     float64
+	FusionMinAskDepthShares    float64
+	FusionMaxMarketDataAgeSec  float64
+	FusionMaxBinanceDataAgeSec float64
+	FusionMinConsensusVotes    int
 	// Shared panic buy/sell execution tolerance: minimum acceptable combined pair
 	// margin while walking deeper book liquidity during execution. Can be negative
 	// to tolerate a small loss on the pair if that reduces legging risk.

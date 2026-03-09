@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/paper"
 )
 
 func TestChooseLatestMarketsKeepsCurrentHealthyMarket(t *testing.T) {
@@ -185,6 +186,42 @@ func TestShouldProbeMarketQualities(t *testing.T) {
 	}
 	if !shouldProbeMarketQualities(map[string]*trackedMarket{"BTC": {Market: &api.Market{ConditionID: "cond"}}}) {
 		t.Fatal("expected existing tracked market to enable quality probing")
+	}
+}
+
+func TestCopyTrackedMarketDeepCopiesMutableState(t *testing.T) {
+	now := time.Date(2026, 3, 9, 7, 30, 0, 0, time.UTC)
+	original := &trackedMarket{
+		Asset:        "SOL",
+		Market:       &api.Market{ConditionID: "cond-sol"},
+		Bids:         map[string]float64{"Up": 0.49},
+		Asks:         map[string]float64{"Up": 0.51},
+		DepthBids:    map[string][]paper.MarketLevel{"Up": {{Price: 0.49, Size: 100}}},
+		DepthAsks:    map[string][]paper.MarketLevel{"Up": {{Price: 0.51, Size: 120}}},
+		UpMidHistory: []timedValue{{At: now, Value: 0.50}},
+		EventTimes:   []time.Time{now},
+		ScoreHistory: []timedValue{{At: now, Value: 0.02}},
+	}
+
+	copy := copyTrackedMarket(original)
+	if copy == nil {
+		t.Fatal("expected copied market")
+	}
+	original.Bids["Up"] = 0.10
+	original.Asks["Up"] = 0.90
+	original.DepthBids["Up"][0].Price = 0.10
+	original.UpMidHistory[0].Value = 0.10
+	original.EventTimes[0] = now.Add(time.Minute)
+	original.ScoreHistory[0].Value = 0.10
+
+	if copy.Bids["Up"] != 0.49 || copy.Asks["Up"] != 0.51 {
+		t.Fatalf("expected quote maps to be copied, got bids=%v asks=%v", copy.Bids, copy.Asks)
+	}
+	if copy.DepthBids["Up"][0].Price != 0.49 {
+		t.Fatalf("expected depth levels to be copied, got %+v", copy.DepthBids)
+	}
+	if copy.UpMidHistory[0].Value != 0.50 || !copy.EventTimes[0].Equal(now) || copy.ScoreHistory[0].Value != 0.02 {
+		t.Fatalf("expected histories to be copied, got mids=%+v events=%+v scores=%+v", copy.UpMidHistory, copy.EventTimes, copy.ScoreHistory)
 	}
 }
 

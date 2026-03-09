@@ -511,3 +511,19 @@ func TestRenderOrderHistoryFusionUsesEdgeAndPnLLabels(t *testing.T) {
 		t.Fatalf("expected generic arb label to be absent, got %q", rendered)
 	}
 }
+
+func TestRenderSettingsFusionShowsHeuristicControls(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.mu.Lock()
+	tui.mode = "Fusion"
+	tui.settings = TUISettings{MarketSlug: "SOL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, BuyExecutionMarginFloorPercent: -1.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, FusionMinAskDepthShares: 60, FusionMaxSpreadPercent: 8, FusionMinScorePercent: 2, FusionMaxMarketDataAgeSec: 3, FusionMaxBinanceDataAgeSec: 3, FusionMinConsensusVotes: 3}
+	tui.mu.Unlock()
+	model := tuiModel{tui: tui, showSettings: true}
+
+	rendered := model.renderSettings(140)
+	for _, label := range []string{"Min Ask Depth", "Max Spread %", "Min Score %", "Consensus Votes"} {
+		if !strings.Contains(rendered, label) {
+			t.Fatalf("expected fusion settings label %q, got %q", label, rendered)
+		}
+	}
+}

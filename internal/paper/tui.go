@@ -205,13 +205,19 @@ type TUISettings struct {
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
+	FusionMinScorePercent          float64 // e.g. 2.0 = minimum absolute signal score
+	FusionMaxSpreadPercent         float64 // e.g. 8.0 = maximum spread percentage
+	FusionMinAskDepthShares        float64 // e.g. 60 = minimum top-3 ask depth
+	FusionMaxMarketDataAgeSec      float64 // e.g. 3.0 = max Polymarket quote staleness
+	FusionMaxBinanceDataAgeSec     float64 // e.g. 3.0 = max Binance quote staleness
+	FusionMinConsensusVotes        int     // e.g. 3 = minimum directional votes
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, FusionMinScorePercent: 2.0, FusionMaxSpreadPercent: 8.0, FusionMinAskDepthShares: 60.0, FusionMaxMarketDataAgeSec: 3.0, FusionMaxBinanceDataAgeSec: 3.0, FusionMinConsensusVotes: 3}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, FusionMinScorePercent: 2.0, FusionMaxSpreadPercent: 8.0, FusionMinAskDepthShares: 60.0, FusionMaxMarketDataAgeSec: 3.0, FusionMaxBinanceDataAgeSec: 3.0, FusionMinConsensusVotes: 3}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, FusionMinScorePercent: 1.5, FusionMaxSpreadPercent: 10.0, FusionMinAskDepthShares: 40.0, FusionMaxMarketDataAgeSec: 4.0, FusionMaxBinanceDataAgeSec: 4.0, FusionMinConsensusVotes: 2}
 )
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -653,229 +659,61 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
-				changed := false
-				fusionMode := settingsModeIsFusion(m.tui.mode)
-				switch m.settingsCursor {
-				case 0: // Market
-					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
-					idx := 0
-					for i, mkt := range markets {
-						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
-							idx = i
-							break
-						}
-					}
-					idx--
-					if idx < 0 {
-						idx = len(markets) - 1
-					}
-					m.tui.settings.MarketSlug = markets[idx]
-					changed = true
-				case 1: // MaxMarkets
-					m.tui.settings.MaxMarkets--
-					if m.tui.settings.MaxMarkets < 1 {
-						m.tui.settings.MaxMarkets = 1
-					}
-					changed = true
-				case 2: // Timeframe
-					if m.tui.settings.Timeframe == "15m" {
-						m.tui.settings.Timeframe = "5m"
-					} else {
-						m.tui.settings.Timeframe = "15m"
-					}
-					changed = true
-				case 3:
-					m.tui.settings.TradeScaleFactor -= 0.01
-					if m.tui.settings.TradeScaleFactor < 0.01 {
-						m.tui.settings.TradeScaleFactor = 0.01
-					}
-					changed = true
-				case 4:
-					m.tui.settings.MinMarginPercent -= 0.5
-					if m.tui.settings.MinMarginPercent < 0.5 {
-						m.tui.settings.MinMarginPercent = 0.5
-					}
-					changed = true
-				case 5:
-					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.5
-					if m.tui.settings.BuyExecutionMarginFloorPercent < -10.0 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = -10.0
-					}
-					changed = true
-				case 6:
-					if fusionMode {
-						m.tui.settings.MinAskPrice -= 0.01
-						if m.tui.settings.MinAskPrice < 0.01 {
-							m.tui.settings.MinAskPrice = 0.01
-						}
-					} else {
-						m.tui.settings.SplitMinMarginSell -= 0.5
-						if m.tui.settings.SplitMinMarginSell < 1.0 {
-							m.tui.settings.SplitMinMarginSell = 1.0
-						}
-					}
-					changed = true
-				case 7:
-					if fusionMode {
-						m.tui.settings.MaxAskPrice -= 0.01
-						if m.tui.settings.MaxAskPrice < 0.01 {
-							m.tui.settings.MaxAskPrice = 0.01
-						}
-					} else {
-						m.tui.settings.SplitStrategyEnabled = false
-					}
-					changed = true
-				case 8:
-					m.tui.settings.SplitInitialCapPct -= 0.05
-					if m.tui.settings.SplitInitialCapPct < 0.05 {
-						m.tui.settings.SplitInitialCapPct = 0.05
-					}
-					changed = true
-				case 9:
-					m.tui.settings.SplitReplenishCapPct -= 0.05
-					if m.tui.settings.SplitReplenishCapPct < 0.05 {
-						m.tui.settings.SplitReplenishCapPct = 0.05
-					}
-					changed = true
-				case 10:
-					m.tui.settings.MinAskPrice -= 0.01
-					if m.tui.settings.MinAskPrice < 0.01 {
-						m.tui.settings.MinAskPrice = 0.01
-					}
-					changed = true
-				case 11:
-					m.tui.settings.MaxAskPrice -= 0.01
-					if m.tui.settings.MaxAskPrice < 0.01 {
-						m.tui.settings.MaxAskPrice = 0.01
-					}
-					changed = true
-				}
+				updated, changed := adjustSettingsValue(m.tui.settings, m.tui.mode, m.settingsCursor, -1)
+				m.tui.settings = updated
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if changed && m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
+				callback := m.tui.onSettingsChange
+				settings := m.tui.settings
 				m.tui.mu.Unlock()
+				if changed && callback != nil {
+					callback(settings)
+				}
 				return m, nil
 			case "right", "+", "l":
 				m.tui.mu.Lock()
-				changed := false
-				fusionMode := settingsModeIsFusion(m.tui.mode)
-				switch m.settingsCursor {
-				case 0: // Market
-					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
-					idx := 0
-					for i, mkt := range markets {
-						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
-							idx = i
-							break
-						}
-					}
-					idx = (idx + 1) % len(markets)
-					m.tui.settings.MarketSlug = markets[idx]
-					changed = true
-				case 1: // MaxMarkets
-					m.tui.settings.MaxMarkets++
-					if m.tui.settings.MaxMarkets > 4 {
-						m.tui.settings.MaxMarkets = 4
-					}
-					changed = true
-				case 2: // Timeframe
-					if m.tui.settings.Timeframe == "15m" {
-						m.tui.settings.Timeframe = "5m"
-					} else {
-						m.tui.settings.Timeframe = "15m"
-					}
-					changed = true
-				case 3:
-					m.tui.settings.TradeScaleFactor += 0.01
-					if m.tui.settings.TradeScaleFactor > 0.50 {
-						m.tui.settings.TradeScaleFactor = 0.50
-					}
-					changed = true
-				case 4:
-					m.tui.settings.MinMarginPercent += 0.5
-					if m.tui.settings.MinMarginPercent > 20.0 {
-						m.tui.settings.MinMarginPercent = 20.0
-					}
-					changed = true
-				case 5:
-					m.tui.settings.BuyExecutionMarginFloorPercent += 0.5
-					if m.tui.settings.BuyExecutionMarginFloorPercent > 5.0 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = 5.0
-					}
-					changed = true
-				case 6:
-					if fusionMode {
-						m.tui.settings.MinAskPrice += 0.01
-						if m.tui.settings.MinAskPrice > 0.99 {
-							m.tui.settings.MinAskPrice = 0.99
-						}
-					} else {
-						m.tui.settings.SplitMinMarginSell += 0.5
-						if m.tui.settings.SplitMinMarginSell > 20.0 {
-							m.tui.settings.SplitMinMarginSell = 20.0
-						}
-					}
-					changed = true
-				case 7:
-					if fusionMode {
-						m.tui.settings.MaxAskPrice += 0.01
-						if m.tui.settings.MaxAskPrice > 0.99 {
-							m.tui.settings.MaxAskPrice = 0.99
-						}
-					} else {
-						m.tui.settings.SplitStrategyEnabled = true
-					}
-					changed = true
-				case 8:
-					m.tui.settings.SplitInitialCapPct += 0.05
-					if m.tui.settings.SplitInitialCapPct > 1.0 {
-						m.tui.settings.SplitInitialCapPct = 1.0
-					}
-					changed = true
-				case 9:
-					m.tui.settings.SplitReplenishCapPct += 0.05
-					if m.tui.settings.SplitReplenishCapPct > 1.0 {
-						m.tui.settings.SplitReplenishCapPct = 1.0
-					}
-					changed = true
-				case 10:
-					m.tui.settings.MinAskPrice += 0.01
-					if m.tui.settings.MinAskPrice > 0.99 {
-						m.tui.settings.MinAskPrice = 0.99
-					}
-					changed = true
-				case 11:
-					m.tui.settings.MaxAskPrice += 0.01
-					if m.tui.settings.MaxAskPrice > 0.99 {
-						m.tui.settings.MaxAskPrice = 0.99
-					}
-					changed = true
-				}
+				updated, changed := adjustSettingsValue(m.tui.settings, m.tui.mode, m.settingsCursor, 1)
+				m.tui.settings = updated
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if changed && m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
+				callback := m.tui.onSettingsChange
+				settings := m.tui.settings
 				m.tui.mu.Unlock()
+				if changed && callback != nil {
+					callback(settings)
+				}
 				return m, nil
 			// Quick presets
 			case "1":
 				m.tui.mu.Lock()
 				m.tui.settings = SettingsConservative
 				m.tui.tradeFactor = SettingsConservative.TradeScaleFactor
+				callback := m.tui.onSettingsChange
+				settings := m.tui.settings
 				m.tui.mu.Unlock()
+				if callback != nil {
+					callback(settings)
+				}
 				return m, nil
 			case "2":
 				m.tui.mu.Lock()
 				m.tui.settings = SettingsModerate
 				m.tui.tradeFactor = SettingsModerate.TradeScaleFactor
+				callback := m.tui.onSettingsChange
+				settings := m.tui.settings
 				m.tui.mu.Unlock()
+				if callback != nil {
+					callback(settings)
+				}
 				return m, nil
 			case "3":
 				m.tui.mu.Lock()
 				m.tui.settings = SettingsAggressive
 				m.tui.tradeFactor = SettingsAggressive.TradeScaleFactor
+				callback := m.tui.onSettingsChange
+				settings := m.tui.settings
 				m.tui.mu.Unlock()
+				if callback != nil {
+					callback(settings)
+				}
 				return m, nil
 			}
 			return m, nil
@@ -2617,7 +2455,16 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
 	}
-	if !fusionMode {
+	if fusionMode {
+		rows = append(rows,
+			row{label: "Min Ask Depth", value: fmt.Sprintf(" %.0f ", cfg.FusionMinAskDepthShares), bar: renderBar(cfg.FusionMinAskDepthShares/300.0, 20)},
+			row{label: "Max Spread %", value: fmt.Sprintf("%5.1f%%", cfg.FusionMaxSpreadPercent), bar: renderBar(cfg.FusionMaxSpreadPercent/20.0, 20)},
+			row{label: "Min Score %", value: fmt.Sprintf("%5.1f%%", cfg.FusionMinScorePercent), bar: renderBar(cfg.FusionMinScorePercent/10.0, 20)},
+			row{label: "Max PM Age (s)", value: fmt.Sprintf(" %3.1f ", cfg.FusionMaxMarketDataAgeSec), bar: renderBar(cfg.FusionMaxMarketDataAgeSec/10.0, 20)},
+			row{label: "Max Binance Age", value: fmt.Sprintf(" %3.1fs ", cfg.FusionMaxBinanceDataAgeSec), bar: renderBar(cfg.FusionMaxBinanceDataAgeSec/10.0, 20)},
+			row{label: "Consensus Votes", value: fmt.Sprintf(" %d ", cfg.FusionMinConsensusVotes), bar: renderBar(float64(cfg.FusionMinConsensusVotes)/6.0, 20)},
+		)
+	} else {
 		rows = append(rows[:6], append([]row{
 			{
 				label: "Split Min Margin",
@@ -2755,9 +2602,119 @@ func settingsModeIsFusion(mode string) bool {
 	return strings.Contains(strings.ToLower(mode), "fusion")
 }
 
+func adjustSettingsValue(current TUISettings, mode string, cursor int, delta int) (TUISettings, bool) {
+	settings := current
+	if delta == 0 {
+		return settings, false
+	}
+	marketOptions := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+	if settingsModeIsFusion(mode) {
+		switch cursor {
+		case 0:
+			settings.MarketSlug = cycleStringOption(settings.MarketSlug, marketOptions, delta)
+		case 1:
+			settings.MaxMarkets = clampIntSetting(settings.MaxMarkets+delta, 1, 4)
+		case 2:
+			settings.Timeframe = cycleStringOption(settings.Timeframe, []string{"5m", "15m"}, delta)
+		case 3:
+			settings.TradeScaleFactor = clampFloat(settings.TradeScaleFactor+0.01*float64(delta), 0.01, 0.50)
+		case 4:
+			settings.MinMarginPercent = clampFloat(settings.MinMarginPercent+0.5*float64(delta), 0.5, 20.0)
+		case 5:
+			settings.BuyExecutionMarginFloorPercent = clampFloat(settings.BuyExecutionMarginFloorPercent+0.5*float64(delta), -10.0, 5.0)
+		case 6:
+			settings.MinAskPrice = clampFloat(settings.MinAskPrice+0.01*float64(delta), 0.01, 0.99)
+		case 7:
+			settings.MaxAskPrice = clampFloat(settings.MaxAskPrice+0.01*float64(delta), 0.01, 0.99)
+		case 8:
+			settings.FusionMinAskDepthShares = clampFloat(settings.FusionMinAskDepthShares+10.0*float64(delta), 10.0, 500.0)
+		case 9:
+			settings.FusionMaxSpreadPercent = clampFloat(settings.FusionMaxSpreadPercent+0.5*float64(delta), 0.5, 20.0)
+		case 10:
+			settings.FusionMinScorePercent = clampFloat(settings.FusionMinScorePercent+0.5*float64(delta), 0.5, 10.0)
+		case 11:
+			settings.FusionMaxMarketDataAgeSec = clampFloat(settings.FusionMaxMarketDataAgeSec+0.5*float64(delta), 0.5, 15.0)
+		case 12:
+			settings.FusionMaxBinanceDataAgeSec = clampFloat(settings.FusionMaxBinanceDataAgeSec+0.5*float64(delta), 0.5, 15.0)
+		case 13:
+			settings.FusionMinConsensusVotes = clampIntSetting(settings.FusionMinConsensusVotes+delta, 1, 6)
+		default:
+			return settings, false
+		}
+		return settings, true
+	}
+	switch cursor {
+	case 0:
+		settings.MarketSlug = cycleStringOption(settings.MarketSlug, marketOptions, delta)
+	case 1:
+		settings.MaxMarkets = clampIntSetting(settings.MaxMarkets+delta, 1, 4)
+	case 2:
+		settings.Timeframe = cycleStringOption(settings.Timeframe, []string{"5m", "15m"}, delta)
+	case 3:
+		settings.TradeScaleFactor = clampFloat(settings.TradeScaleFactor+0.01*float64(delta), 0.01, 0.50)
+	case 4:
+		settings.MinMarginPercent = clampFloat(settings.MinMarginPercent+0.5*float64(delta), 0.5, 20.0)
+	case 5:
+		settings.BuyExecutionMarginFloorPercent = clampFloat(settings.BuyExecutionMarginFloorPercent+0.5*float64(delta), -10.0, 5.0)
+	case 6:
+		settings.SplitMinMarginSell = clampFloat(settings.SplitMinMarginSell+0.5*float64(delta), 1.0, 20.0)
+	case 7:
+		settings.SplitStrategyEnabled = delta > 0
+	case 8:
+		settings.SplitInitialCapPct = clampFloat(settings.SplitInitialCapPct+0.05*float64(delta), 0.05, 1.0)
+	case 9:
+		settings.SplitReplenishCapPct = clampFloat(settings.SplitReplenishCapPct+0.05*float64(delta), 0.05, 1.0)
+	case 10:
+		settings.MinAskPrice = clampFloat(settings.MinAskPrice+0.01*float64(delta), 0.01, 0.99)
+	case 11:
+		settings.MaxAskPrice = clampFloat(settings.MaxAskPrice+0.01*float64(delta), 0.01, 0.99)
+	default:
+		return settings, false
+	}
+	return settings, true
+}
+
+func cycleStringOption(current string, options []string, delta int) string {
+	if len(options) == 0 {
+		return current
+	}
+	idx := 0
+	for i, option := range options {
+		if strings.EqualFold(current, option) {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta) % len(options)
+	if idx < 0 {
+		idx += len(options)
+	}
+	return options[idx]
+}
+
+func clampIntSetting(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func clampFloat(value, minValue, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
 func settingsRowCountForMode(mode string) int {
 	if settingsModeIsFusion(mode) {
-		return 8
+		return 14
 	}
 	return 12
 }

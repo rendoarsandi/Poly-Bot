@@ -125,6 +125,43 @@ func TestDecideActionBlocksStaleEntry(t *testing.T) {
 	}
 }
 
+func TestDecideActionUsesConfigurableFusionThresholds(t *testing.T) {
+	cfg := &core.Config{
+		MinMarginPercent:           2,
+		MinAskPrice:                0.1,
+		MaxAskPrice:                0.9,
+		FusionMinAskDepthShares:    150,
+		FusionMaxSpreadPercent:     4.0,
+		FusionMinScorePercent:      5.0,
+		FusionMaxMarketDataAgeSec:  1.0,
+		FusionMaxBinanceDataAgeSec: 1.0,
+		FusionMinConsensusVotes:    4,
+	}
+	decision := decideAction(cfg, SignalSnapshot{
+		UpAsk:          0.60,
+		DownAsk:        0.39,
+		TimeRemaining:  5 * time.Minute,
+		MarketDataAge:  500 * time.Millisecond,
+		BinanceDataAge: 500 * time.Millisecond,
+		UpAskDepth:     120,
+		DownAskDepth:   120,
+		Features: ModelFeatures{
+			FairUp:               0.68,
+			Score:                0.045,
+			SpreadPct:            0.03,
+			Returns1m:            0.002,
+			Returns5m:            0.003,
+			TradeFlowImbalance:   0.3,
+			OrderBookImbalanceL1: 0.2,
+			ProbVelocity:         0.01,
+			TrendRegime:          0.2,
+		},
+	})
+	if decision.Action != "HOLD" || decision.Reason != "weak score" {
+		t.Fatalf("expected configurable weak-score HOLD, got %+v", decision)
+	}
+}
+
 type paperlessMarket struct{ EndTime time.Time }
 
 func (p *paperlessMarket) toAPIMarket() *api.Market { return &api.Market{EndTime: p.EndTime} }

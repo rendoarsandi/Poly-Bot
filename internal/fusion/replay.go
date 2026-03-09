@@ -34,18 +34,16 @@ type ReplaySnapshot struct {
 }
 
 type ReplayTrade struct {
-	Asset       string    `json:"asset"`
-	MarketID    string    `json:"market_id"`
-	Outcome     string    `json:"outcome"`
-	EntryAt     time.Time `json:"entry_at"`
-	ExitAt      time.Time `json:"exit_at"`
-	EntryPrice  float64   `json:"entry_price"`
-	ExitPrice   float64   `json:"exit_price"`
-	Quantity    float64   `json:"quantity"`
-	PnL         float64   `json:"pnl"`
-	ModelWeight float64   `json:"model_weight"`
-	ModelReason string    `json:"model_reason"`
-	Reason      string    `json:"reason"`
+	Asset      string    `json:"asset"`
+	MarketID   string    `json:"market_id"`
+	Outcome    string    `json:"outcome"`
+	EntryAt    time.Time `json:"entry_at"`
+	ExitAt     time.Time `json:"exit_at"`
+	EntryPrice float64   `json:"entry_price"`
+	ExitPrice  float64   `json:"exit_price"`
+	Quantity   float64   `json:"quantity"`
+	PnL        float64   `json:"pnl"`
+	Reason     string    `json:"reason"`
 }
 
 type ReplayAssetReport struct {
@@ -56,17 +54,14 @@ type ReplayAssetReport struct {
 }
 
 type ReplayReport struct {
-	Snapshots          int                          `json:"snapshots"`
-	CompletedTrades    int                          `json:"completed_trades"`
-	RealizedPnL        float64                      `json:"realized_pnl"`
-	FinalEquity        float64                      `json:"final_equity"`
-	MaxDrawdownPct     float64                      `json:"max_drawdown_pct"`
-	WinRate            float64                      `json:"win_rate"`
-	ModelSnapshots     int                          `json:"model_snapshots"`
-	ModelTrades        int                          `json:"model_trades"`
-	AverageModelWeight float64                      `json:"average_model_weight"`
-	ByAsset            map[string]ReplayAssetReport `json:"by_asset"`
-	Trades             []ReplayTrade                `json:"trades"`
+	Snapshots       int                          `json:"snapshots"`
+	CompletedTrades int                          `json:"completed_trades"`
+	RealizedPnL     float64                      `json:"realized_pnl"`
+	FinalEquity     float64                      `json:"final_equity"`
+	MaxDrawdownPct  float64                      `json:"max_drawdown_pct"`
+	WinRate         float64                      `json:"win_rate"`
+	ByAsset         map[string]ReplayAssetReport `json:"by_asset"`
+	Trades          []ReplayTrade                `json:"trades"`
 }
 
 type snapshotRecorder struct {
@@ -150,14 +145,8 @@ func EvaluateReplay(cfg *core.Config, snapshots []ReplaySnapshot) ReplayReport {
 	byAsset := map[string]*ReplayAssetReport{}
 	openEntries := map[string]ReplayTrade{}
 	completed := make([]ReplayTrade, 0)
-	modelSnapshots := 0
-	modelWeightSum := 0.0
 
 	for _, snapshot := range sorted {
-		if snapshot.Features.ExternalModelWeight > 0 {
-			modelSnapshots++
-			modelWeightSum += snapshot.Features.ExternalModelWeight
-		}
 		engine.UpdateMarketBidAsk(snapshot.Asset, "Up", snapshot.UpBid, snapshot.UpAsk)
 		engine.UpdateMarketBidAsk(snapshot.Asset, "Down", snapshot.DownBid, snapshot.DownAsk)
 		pos := replayPositionForAsset(engine, snapshot.Asset)
@@ -177,7 +166,7 @@ func EvaluateReplay(cfg *core.Config, snapshots []ReplaySnapshot) ReplayReport {
 			}
 			entry := openEntries[snapshot.Asset]
 			if entry.EntryAt.IsZero() {
-				openEntries[snapshot.Asset] = ReplayTrade{Asset: snapshot.Asset, MarketID: snapshot.MarketID, Outcome: decision.Outcome, EntryAt: snapshot.Timestamp, Reason: decision.Reason, ModelWeight: snapshot.Features.ExternalModelWeight, ModelReason: snapshot.Features.ExternalModelReason}
+				openEntries[snapshot.Asset] = ReplayTrade{Asset: snapshot.Asset, MarketID: snapshot.MarketID, Outcome: decision.Outcome, EntryAt: snapshot.Timestamp, Reason: decision.Reason}
 			}
 		case "SELL":
 			if pos == nil || !strings.EqualFold(pos.Outcome, decision.Outcome) {
@@ -200,18 +189,16 @@ func EvaluateReplay(cfg *core.Config, snapshots []ReplaySnapshot) ReplayReport {
 				assetReport.Winning++
 			}
 			completed = append(completed, ReplayTrade{
-				Asset:       snapshot.Asset,
-				MarketID:    snapshot.MarketID,
-				Outcome:     decision.Outcome,
-				EntryAt:     entry.EntryAt,
-				ExitAt:      snapshot.Timestamp,
-				EntryPrice:  pos.AvgPrice,
-				ExitPrice:   decision.Price,
-				Quantity:    quantity,
-				PnL:         pnl,
-				ModelWeight: entry.ModelWeight,
-				ModelReason: entry.ModelReason,
-				Reason:      decision.Reason,
+				Asset:      snapshot.Asset,
+				MarketID:   snapshot.MarketID,
+				Outcome:    decision.Outcome,
+				EntryAt:    entry.EntryAt,
+				ExitAt:     snapshot.Timestamp,
+				EntryPrice: pos.AvgPrice,
+				ExitPrice:  decision.Price,
+				Quantity:   quantity,
+				PnL:        pnl,
+				Reason:     decision.Reason,
 			})
 			delete(openEntries, snapshot.Asset)
 		}
@@ -224,12 +211,10 @@ func EvaluateReplay(cfg *core.Config, snapshots []ReplaySnapshot) ReplayReport {
 		RealizedPnL:     stats.RealizedPnL,
 		FinalEquity:     engine.GetEquity(),
 		MaxDrawdownPct:  stats.MaxDrawdown,
-		ModelSnapshots:  modelSnapshots,
 		ByAsset:         map[string]ReplayAssetReport{},
 		Trades:          completed,
 	}
 	winning := 0
-	modelTrades := 0
 	for asset, item := range byAsset {
 		if item.Trades > 0 {
 			item.WinRate = float64(item.Winning) / float64(item.Trades)
@@ -239,15 +224,6 @@ func EvaluateReplay(cfg *core.Config, snapshots []ReplaySnapshot) ReplayReport {
 	}
 	if report.CompletedTrades > 0 {
 		report.WinRate = float64(winning) / float64(report.CompletedTrades)
-	}
-	for _, trade := range completed {
-		if trade.ModelWeight > 0 {
-			modelTrades++
-		}
-	}
-	report.ModelTrades = modelTrades
-	if modelSnapshots > 0 {
-		report.AverageModelWeight = modelWeightSum / float64(modelSnapshots)
 	}
 	return report
 }

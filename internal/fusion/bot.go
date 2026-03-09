@@ -43,6 +43,21 @@ type trackedMarket struct {
 	LastFeatures ModelFeatures
 }
 
+func copyTrackedMarket(market *trackedMarket) *trackedMarket {
+	if market == nil {
+		return nil
+	}
+	clone := *market
+	clone.Bids = copyFloatMap(market.Bids)
+	clone.Asks = copyFloatMap(market.Asks)
+	clone.DepthBids = copyDepthMap(market.DepthBids)
+	clone.DepthAsks = copyDepthMap(market.DepthAsks)
+	clone.UpMidHistory = append([]timedValue(nil), market.UpMidHistory...)
+	clone.EventTimes = append([]time.Time(nil), market.EventTimes...)
+	clone.ScoreHistory = append([]timedValue(nil), market.ScoreHistory...)
+	return &clone
+}
+
 type Bot struct {
 	mu       sync.RWMutex
 	cfg      *core.Config
@@ -55,7 +70,6 @@ type Bot struct {
 	markets  map[string]*trackedMarket
 	feedKey  string
 	recorder *snapshotRecorder
-	scorer   *externalScoreProvider
 }
 
 func Run() error {
@@ -80,7 +94,14 @@ func NewBot(cfg *core.Config) *Bot {
 	tui.InitSettings(settingsFromConfig(cfg), func(s paper.TUISettings) {
 		cfg.MarketSlug, cfg.MaxMarkets, cfg.Timeframe = s.MarketSlug, s.MaxMarkets, s.Timeframe
 		cfg.TradeScaleFactor, cfg.MinMarginPercent = s.TradeScaleFactor, s.MinMarginPercent
+		cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 		cfg.MinAskPrice, cfg.MaxAskPrice = s.MinAskPrice, s.MaxAskPrice
+		cfg.FusionMinScorePercent = s.FusionMinScorePercent
+		cfg.FusionMaxSpreadPercent = s.FusionMaxSpreadPercent
+		cfg.FusionMinAskDepthShares = s.FusionMinAskDepthShares
+		cfg.FusionMaxMarketDataAgeSec = s.FusionMaxMarketDataAgeSec
+		cfg.FusionMaxBinanceDataAgeSec = s.FusionMaxBinanceDataAgeSec
+		cfg.FusionMinConsensusVotes = s.FusionMinConsensusVotes
 		if err := SaveFusionSettings(s); err != nil {
 			tui.LogEvent("fusion settings save failed: %v", err)
 		} else {
@@ -92,13 +113,7 @@ func NewBot(cfg *core.Config) *Bot {
 	tui.LogEvent("fusionbot isolated from realbot/paperbot")
 	tui.LogEvent("using Binance WS + Polymarket WS/REST paper execution")
 	tui.LogEvent("logic: estimate fair Up from Binance move + book skew, buy side with edge >= threshold, exit on edge decay/flip/near expiry")
-	tui.LogEvent("ML note: external repo uses MLX PPO; Termux cannot run MLX here, so fusionbot is currently using the heuristic signal path")
-	var scorer *externalScoreProvider
-	if path := strings.TrimSpace(os.Getenv("FUSIONBOT_EXTERNAL_SCORES_PATH")); path != "" {
-		scorer = newExternalScoreProvider(path)
-		tui.LogEvent("external model score bridge enabled: %s", path)
-	}
-	return &Bot{cfg: cfg, rest: api.NewRestClient(""), engine: engine, book: book, tui: tui, binance: NewBinanceStreamer(), markets: map[string]*trackedMarket{}, scorer: scorer}
+	return &Bot{cfg: cfg, rest: api.NewRestClient(""), engine: engine, book: book, tui: tui, binance: NewBinanceStreamer(), markets: map[string]*trackedMarket{}}
 }
 
 func (b *Bot) Run(ctx context.Context, cancel func()) error {
@@ -169,7 +184,7 @@ func (b *Bot) refreshMarkets(ctx context.Context) error {
 	b.mu.RLock()
 	currentMarkets := make(map[string]*trackedMarket, len(b.markets))
 	for asset, market := range b.markets {
-		currentMarkets[asset] = market
+		currentMarkets[asset] = copyTrackedMarket(market)
 	}
 	b.mu.RUnlock()
 	now := time.Now().UTC()
@@ -631,7 +646,7 @@ func (b *Bot) updateStatus() {
 	for _, asset := range b.marketIDs() {
 		quote := b.binance.Quote(asset)
 		b.mu.RLock()
-		market := b.markets[asset]
+		market := copyTrackedMarket(b.markets[asset])
 		b.mu.RUnlock()
 		if market != nil {
 			b.tui.SetMarketDetails(asset, b.buildMarketDetails(market, quote, b.currentPosition(asset)))
@@ -660,13 +675,6 @@ func (b *Bot) buildMarketDetails(market *trackedMarket, quote BinanceQuote, pos 
 		fmt.Sprintf("Prob %.3f Fair %.3f Score %+.1f%% Smooth %+.1f%%", features.CurrentProb, features.FairUp, features.Score*100, features.SmoothedScore*100),
 		fmt.Sprintf("Edge U %+.1f%% D %+.1f%% | OB %.2f/%.2f Flow %.2f CVD %.2f %s", upEdge*100, downEdge*100, features.OrderBookImbalanceL1, features.OrderBookImbalanceL5, features.TradeFlowImbalance, features.CVDAcceleration, positionText),
 	}
-	if features.ExternalModelWeight > 0 {
-		ageText := ""
-		if features.ExternalModelAgeSec > 0 {
-			ageText = fmt.Sprintf(" • age %.0fs", features.ExternalModelAgeSec)
-		}
-		details = append(details, fmt.Sprintf("ML %+.1f%% • Weight %.0f%%%s • %s", features.ExternalModelScore*100, features.ExternalModelWeight*100, ageText, strings.TrimSpace(features.ExternalModelReason)))
-	}
 	if note := marketBookStatusLine(market); note != "" {
 		details = append(details, note)
 	}
@@ -674,15 +682,7 @@ func (b *Bot) buildMarketDetails(market *trackedMarket, quote BinanceQuote, pos 
 }
 
 func (b *Bot) modelFeatures(asset string, market *trackedMarket, quote BinanceQuote, pos *paper.Position) ModelFeatures {
-	features := buildModelFeatures(b.cfg, market, quote, b.binance.Signals(asset), pos)
-	if b.scorer == nil {
-		return features
-	}
-	score, ok := b.scorer.LookupFresh(asset, maxExternalModelScoreAge, time.Now())
-	if !ok {
-		return features
-	}
-	return applyExternalModelScore(features, score)
+	return buildModelFeatures(b.cfg, market, quote, b.binance.Signals(asset), pos)
 }
 
 func (b *Bot) evaluateSignals() {
@@ -703,16 +703,13 @@ func (b *Bot) evaluateSignals() {
 			b.mu.Unlock()
 			continue
 		}
-		marketCopy := *market
-		marketCopy.Bids, marketCopy.Asks = copyFloatMap(market.Bids), copyFloatMap(market.Asks)
-		marketCopy.DepthBids, marketCopy.DepthAsks = copyDepthMap(market.DepthBids), copyDepthMap(market.DepthAsks)
-		marketCopy.UpMidHistory = append([]timedValue(nil), market.UpMidHistory...)
-		marketCopy.EventTimes = append([]time.Time(nil), market.EventTimes...)
-		marketCopy.ScoreHistory = append([]timedValue(nil), market.ScoreHistory...)
-		marketCopy.LastFeatures = market.LastFeatures
+		marketCopy := copyTrackedMarket(market)
 		b.mu.Unlock()
+		if marketCopy == nil {
+			continue
+		}
 		pos := b.currentPosition(asset)
-		features := b.modelFeatures(asset, &marketCopy, quote, pos)
+		features := b.modelFeatures(asset, marketCopy, quote, pos)
 		decision := decideAction(b.cfg, SignalSnapshot{
 			Asset:          asset,
 			UpBid:          marketCopy.Bids["Up"],
@@ -759,7 +756,7 @@ func (b *Bot) evaluateSignals() {
 		}
 		b.applyDecision(asset, decision)
 		marketCopy.LastFeatures = features
-		b.tui.SetMarketDetails(asset, b.buildMarketDetails(&marketCopy, quote, b.currentPosition(asset)))
+		b.tui.SetMarketDetails(asset, b.buildMarketDetails(marketCopy, quote, b.currentPosition(asset)))
 	}
 	b.tui.SetPendingOrders(pending)
 }
@@ -868,7 +865,25 @@ func settingsFromConfig(cfg *core.Config) paper.TUISettings {
 	if cfg.MaxAskPrice <= 0 {
 		cfg.MaxAskPrice = 0.90
 	}
-	return paper.TUISettings{MarketSlug: marketSlug, MaxMarkets: cfg.MaxMarkets, Timeframe: timeframe, TradeScaleFactor: cfg.TradeScaleFactor, MinMarginPercent: cfg.MinMarginPercent, BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent, SplitMinMarginSell: cfg.SplitMinMarginSell, SplitStrategyEnabled: false, SplitInitialCapPct: cfg.SplitInitialCapPct, SplitReplenishCapPct: cfg.SplitReplenishCapPct, MinAskPrice: cfg.MinAskPrice, MaxAskPrice: cfg.MaxAskPrice}
+	if cfg.FusionMinScorePercent <= 0 {
+		cfg.FusionMinScorePercent = 2.0
+	}
+	if cfg.FusionMaxSpreadPercent <= 0 {
+		cfg.FusionMaxSpreadPercent = 8.0
+	}
+	if cfg.FusionMinAskDepthShares <= 0 {
+		cfg.FusionMinAskDepthShares = 60.0
+	}
+	if cfg.FusionMaxMarketDataAgeSec <= 0 {
+		cfg.FusionMaxMarketDataAgeSec = 3.0
+	}
+	if cfg.FusionMaxBinanceDataAgeSec <= 0 {
+		cfg.FusionMaxBinanceDataAgeSec = 3.0
+	}
+	if cfg.FusionMinConsensusVotes <= 0 {
+		cfg.FusionMinConsensusVotes = defaultFusionMinConsensusVotes
+	}
+	return paper.TUISettings{MarketSlug: marketSlug, MaxMarkets: cfg.MaxMarkets, Timeframe: timeframe, TradeScaleFactor: cfg.TradeScaleFactor, MinMarginPercent: cfg.MinMarginPercent, BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent, SplitMinMarginSell: cfg.SplitMinMarginSell, SplitStrategyEnabled: false, SplitInitialCapPct: cfg.SplitInitialCapPct, SplitReplenishCapPct: cfg.SplitReplenishCapPct, MinAskPrice: cfg.MinAskPrice, MaxAskPrice: cfg.MaxAskPrice, FusionMinScorePercent: cfg.FusionMinScorePercent, FusionMaxSpreadPercent: cfg.FusionMaxSpreadPercent, FusionMinAskDepthShares: cfg.FusionMinAskDepthShares, FusionMaxMarketDataAgeSec: cfg.FusionMaxMarketDataAgeSec, FusionMaxBinanceDataAgeSec: cfg.FusionMaxBinanceDataAgeSec, FusionMinConsensusVotes: cfg.FusionMinConsensusVotes}
 }
 
 func settingsAssets(marketSlug string) []string {
