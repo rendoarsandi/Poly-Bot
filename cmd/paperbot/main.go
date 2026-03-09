@@ -80,6 +80,69 @@ type marketResult struct {
 	trades      int
 }
 
+type paperExecutionLatency struct {
+	detectedAt  time.Time
+	startedAt   time.Time
+	executedAt  time.Time
+	settledAt   time.Time
+	opportunity string
+	marketID    string
+	shares      float64
+	marginPct   float64
+	expectedPnL float64
+}
+
+func (l paperExecutionLatency) detectToStart() time.Duration {
+	if l.detectedAt.IsZero() || l.startedAt.IsZero() {
+		return 0
+	}
+	return l.startedAt.Sub(l.detectedAt)
+}
+
+func (l paperExecutionLatency) startToExecution() time.Duration {
+	if l.startedAt.IsZero() || l.executedAt.IsZero() {
+		return 0
+	}
+	return l.executedAt.Sub(l.startedAt)
+}
+
+func (l paperExecutionLatency) detectToExecution() time.Duration {
+	if l.detectedAt.IsZero() || l.executedAt.IsZero() {
+		return 0
+	}
+	return l.executedAt.Sub(l.detectedAt)
+}
+
+func (l paperExecutionLatency) detectToSettlement() time.Duration {
+	if l.detectedAt.IsZero() || l.settledAt.IsZero() {
+		return 0
+	}
+	return l.settledAt.Sub(l.detectedAt)
+}
+
+func logPaperExecutionLatency(t *MarketTrader, latency paperExecutionLatency) {
+	settlement := latency.detectToSettlement()
+	if settlement == 0 {
+		settlement = latency.detectToExecution()
+	}
+	msg := fmt.Sprintf(
+		"[%s] ⏱ %s latency | detect→start=%s | start→exec=%s | detect→exec=%s | detect→settle=%s | shares=%.2f | margin=%.2f%% | expected=$%.2f",
+		latency.marketID,
+		latency.opportunity,
+		latency.detectToStart().Round(time.Microsecond),
+		latency.startToExecution().Round(time.Microsecond),
+		latency.detectToExecution().Round(time.Microsecond),
+		settlement.Round(time.Microsecond),
+		latency.shares,
+		latency.marginPct,
+		latency.expectedPnL,
+	)
+	t.TUI.LogEvent("%s", msg)
+	if t.CSVLogger != nil {
+		t.CSVLogger.Log("TRADE", t.ID, "LATENCY", msg, t.Engine.GetEquity())
+	}
+}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("Critical error: %v", err)
@@ -1385,6 +1448,14 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares ($%.0f), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, cost, netProfit, margin, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 						}
+						latency := paperExecutionLatency{
+							detectedAt:  time.Now(),
+							opportunity: "paper buy-arb",
+							marketID:    t.ID,
+							shares:      shares,
+							marginPct:   margin,
+							expectedPnL: netProfit,
+						}
 
 						if t.CSVLogger != nil {
 							t.CSVLogger.Log("TRADE", t.ID, "ARB_ENTRY", fmt.Sprintf("Sum: %.3f, Shares: %.0f, Margin: %.1f%%", sum, shares, margin), t.Engine.GetEquity())
@@ -1402,6 +1473,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 						// Execute market orders that consume liquidity across multiple levels
 						// Force fill: walks the book atomically to guarantee execution without legging
+						latency.startedAt = time.Now()
 						trade1, trade2, avgPrice1, avgPrice2, err := t.Engine.MarketBuyArb(t.ID, t.Outcomes[0], t.Outcomes[1], shares, freshAsks1, freshAsks2)
 						if err != nil {
 							// Concurrency edge case: another market consumed the cash between our check and execution.
@@ -1409,6 +1481,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.TUI.LogEvent("[%s] ⚠️ Trade failed during execution (TOCTOU / Insufficient balance): %v", t.ID, err)
 							continue
 						}
+						latency.executedAt = time.Now()
 						// Get actual fill quantities
 						filled1, filled2 := shares, shares
 						actualCost1, actualCost2 := shares*avgPrice1, shares*avgPrice2
@@ -1439,10 +1512,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 						if minFilled > 0 {
 							result := t.Engine.MergeForMarket(t.ID, t.Outcomes[0], t.Outcomes[1], minFilled)
+							latency.settledAt = time.Now()
 							if result.PnL != 0 {
 								t.TUI.LogEvent("[%s] 💰 MERGED! +$%.2f profit", t.ID, result.PnL)
 							}
 						}
+						logPaperExecutionLatency(t, latency)
 
 						lastTrade = time.Now()
 						t.LaddersPlaced = true
@@ -1643,10 +1718,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							if expectedProfit <= 0 {
 								continue
 							}
+							latency := paperExecutionLatency{
+								detectedAt:  time.Now(),
+								opportunity: "paper split-sell",
+								marketID:    t.ID,
+								shares:      sharesToSell,
+								marginPct:   sellMargin,
+								expectedPnL: expectedProfit,
+							}
 
 							// Simulate sell: record profit using actual average fill prices
+							latency.startedAt = time.Now()
 							profit1 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[0], sharesToSell, avgBid1)
 							profit2 := t.SplitInventory.RecordSell(t.ID, t.Outcomes[1], sharesToSell, avgBid2)
+							latency.executedAt = time.Now()
 							totalProfit := profit1 + profit2 - feeUsdc
 
 							// Divide the fee roughly proportionally to adjust the leg-level profit for display
@@ -1658,6 +1743,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.Engine.AddBalance(proceeds)
 							t.Engine.AddRealizedPnL(totalProfit)
 							t.Engine.RecalculateDrawdown() // Safe to check drawdown now
+							latency.settledAt = time.Now()
 
 							// Enhanced log with liquidity and depth info (same format as ARB buy)
 							t.TUI.LogEvent("[%s] 📈 SPLIT SELL! %s@$%.2f + %s@$%.2f = $%.3f (%.1f%%) | %.0f shares, profit $%.2f [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
@@ -1665,6 +1751,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 							t.TUI.RecordOrder(t.ID, t.Outcomes[0], "SELL", sharesToSell, avgBid1, sharesToSell*avgBid1, sellMargin, netProfit1, "FILLED")
 							t.TUI.RecordOrder(t.ID, t.Outcomes[1], "SELL", sharesToSell, avgBid2, sharesToSell*avgBid2, sellMargin, netProfit2, "FILLED")
+							logPaperExecutionLatency(t, latency)
 							t.LastSplitSell = time.Now()
 						}
 					}

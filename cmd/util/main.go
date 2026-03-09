@@ -403,10 +403,10 @@ func isUtilbotMarketInEntryWindow(now, endTime time.Time, timeframe string) bool
 
 	timeLeft := endTime.Sub(now)
 	minTimeLeft, maxTimeLeft, hasUpperBound := utilbotEntryWindow(timeframe)
-	if timeLeft < minTimeLeft {
+	if timeLeft <= minTimeLeft {
 		return false
 	}
-	if hasUpperBound && timeLeft > maxTimeLeft {
+	if hasUpperBound && timeLeft >= maxTimeLeft {
 		return false
 	}
 
@@ -416,9 +416,9 @@ func isUtilbotMarketInEntryWindow(now, endTime time.Time, timeframe string) bool
 func utilbotEntryWindow(timeframe string) (minTimeLeft, maxTimeLeft time.Duration, hasUpperBound bool) {
 	switch strings.ToLower(strings.TrimSpace(timeframe)) {
 	case "15m":
-		// Utility bot should prefer 15m markets after the opening noise but before
-		// the final rush, focusing on the 3m-14m pre-expiry range.
-		return 3 * time.Minute, 14 * time.Minute, true
+		// Utility bot should accept 15m markets strictly inside the window:
+		// more than 1 minute left, less than 15 minutes left.
+		return 1 * time.Minute, 15 * time.Minute, true
 	default:
 		return 1 * time.Minute, 0, false
 	}
@@ -638,11 +638,11 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 	startReq := time.Now()
 	if len(batchReqs) > 0 {
 		batchResults, batchErr := trader.ExecuteBatch(ctx, batchReqs)
-		latency := time.Since(startReq)
+		clobPostRTT := time.Since(startReq)
 		resultIdx := 0
 		for i := range batchMeta {
 			if errs[i] != nil {
-				printTradeResult(side+" "+batchMeta[i].outcome, results[i], errs[i], batchMeta[i].rate, batchMeta[i].shares, latency)
+				printTradeResult(side+" "+batchMeta[i].outcome, results[i], errs[i], batchMeta[i].rate, batchMeta[i].shares, clobPostRTT)
 				continue
 			}
 			if batchErr != nil {
@@ -652,7 +652,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 			} else {
 				errs[i] = fmt.Errorf("missing batch result for %s", batchMeta[i].outcome)
 			}
-			printTradeResult(side+" "+batchMeta[i].outcome, results[i], errs[i], batchMeta[i].rate, batchMeta[i].shares, latency)
+			printTradeResult(side+" "+batchMeta[i].outcome, results[i], errs[i], batchMeta[i].rate, batchMeta[i].shares, clobPostRTT)
 			resultIdx++
 		}
 	}
@@ -1145,7 +1145,7 @@ func cleanupUtilbotExcessShares(ctx context.Context, trader *trading.RealTrader,
 	}
 }
 
-func printTradeResult(act string, res *trading.TradeResult, err error, rate int, shares float64, latency time.Duration) {
+func printTradeResult(act string, res *trading.TradeResult, err error, rate int, shares float64, clobPostRTT time.Duration) {
 	if !tradeSucceeded(res, err) {
 		msg := "Error"
 		if err != nil {
@@ -1159,7 +1159,7 @@ func printTradeResult(act string, res *trading.TradeResult, err error, rate int,
 		if msg == "" {
 			msg = "empty order response"
 		}
-		fmt.Printf("FAILED: %s - %s (Latency: %v)\n", act, msg, latency)
+		fmt.Printf("FAILED: %s - %s (CLOB POST→Ack: %v)\n", act, msg, clobPostRTT)
 	} else {
 		actualFeeRate := float64(rate) / 10000.0
 		feePercentage := float64(rate) / 100.0 // bps to percentage
@@ -1170,10 +1170,10 @@ func printTradeResult(act string, res *trading.TradeResult, err error, rate int,
 		if strings.HasPrefix(act, "BUY") {
 			// For BUY, fee is deducted from the shares you receive.
 			feeShares := shares * actualFeeRate
-			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares (Latency: %v)\n", act, orderLabel, feePercentage, feeShares, latency)
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): %.4f shares | CLOB POST→Ack: %v\n", act, orderLabel, feePercentage, feeShares, clobPostRTT)
 		} else {
 			feeUSDC := shares * actualFeeRate
-			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC (Latency: %v)\n", act, orderLabel, feePercentage, feeUSDC, latency)
+			fmt.Printf("SUCCESS: %s - OrderID: %s | Estimated Fee (%.2f%%): $%.4f USDC | CLOB POST→Ack: %v\n", act, orderLabel, feePercentage, feeUSDC, clobPostRTT)
 		}
 	}
 }

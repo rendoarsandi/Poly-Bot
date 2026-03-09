@@ -20,12 +20,13 @@ func TestIsUtilbotMarketInEntryWindow15m(t *testing.T) {
 		want     bool
 	}{
 		{name: "too_early", timeLeft: 15 * time.Minute, want: false},
-		{name: "upper_bound", timeLeft: 14 * time.Minute, want: true},
+		{name: "just_below_upper_bound", timeLeft: 14*time.Minute + 59*time.Second, want: true},
 		{name: "early_window", timeLeft: 11 * time.Minute, want: true},
 		{name: "mid_window", timeLeft: 6 * time.Minute, want: true},
 		{name: "inside_window", timeLeft: 3 * time.Minute, want: true},
-		{name: "lower_bound", timeLeft: 3 * time.Minute, want: true},
-		{name: "below_lower_bound", timeLeft: 2 * time.Minute, want: false},
+		{name: "just_above_lower_bound", timeLeft: 1*time.Minute + 1*time.Second, want: true},
+		{name: "lower_bound_exact", timeLeft: 1 * time.Minute, want: false},
+		{name: "below_lower_bound", timeLeft: 59 * time.Second, want: false},
 		{name: "under_one_minute", timeLeft: 59 * time.Second, want: false},
 		{name: "expired", timeLeft: -1 * time.Second, want: false},
 	}
@@ -46,6 +47,10 @@ func TestIsUtilbotMarketInEntryWindowDefaultTimeframe(t *testing.T) {
 
 	if !isUtilbotMarketInEntryWindow(now, now.Add(6*time.Minute), "5m") {
 		t.Fatal("expected non-15m timeframe to allow markets with more than 5 minutes left")
+	}
+
+	if isUtilbotMarketInEntryWindow(now, now.Add(1*time.Minute), "5m") {
+		t.Fatal("expected markets with exactly 1 minute left to be rejected")
 	}
 
 	if isUtilbotMarketInEntryWindow(now, now.Add(30*time.Second), "5m") {
@@ -90,7 +95,7 @@ func TestPickUtilbotMarketsPrefersClosestExpiryPerAsset(t *testing.T) {
 		{
 			Active:  true,
 			Slug:    "btc-updown-15m-too-early",
-			EndTime: now.Add(7 * time.Minute),
+			EndTime: now.Add(15 * time.Minute),
 		},
 	}
 
