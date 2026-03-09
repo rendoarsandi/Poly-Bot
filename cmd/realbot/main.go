@@ -100,6 +100,16 @@ func clampFloat64(v, lo, hi float64) float64 {
 	return v
 }
 
+func resolveRealbotMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) float64 {
+	if liveCfg.MakerQuoteGap > 0 {
+		return liveCfg.MakerQuoteGap
+	}
+	if cfg != nil && cfg.MakerQuoteGap > 0 {
+		return cfg.MakerQuoteGap
+	}
+	return realbotMakerBaseOffset
+}
+
 type realbotQuoteState struct {
 	UpdatedAt time.Time
 	Source    string
@@ -261,27 +271,10 @@ func run() error {
 	fmt.Printf("⏰ Started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 	fmt.Println()
 
-	// Load configuration
-	cfg, err := core.LoadConfig()
+	// Load realbot settings + env-backed secrets
+	cfg, err := core.LoadBotConfig("realbot")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Ensure we're in real mode
-	if cfg.IsPaperMode() {
-		fmt.Println("❌ TRADING_MODE is not set to 'real'")
-		fmt.Println()
-		fmt.Println("To use real trading:")
-		fmt.Println("  1. Edit your .env file")
-		fmt.Println("  2. Set TRADING_MODE=real")
-		fmt.Println("  3. Add your credentials:")
-		fmt.Println("     POLY_PK=your_private_key")
-		fmt.Println("     POLY_API_KEY=your_api_key")
-		fmt.Println("     POLY_API_SECRET=your_api_secret")
-		fmt.Println("     POLY_PASSPHRASE=your_passphrase")
-		fmt.Println()
-		fmt.Println("For paper trading, use: go run cmd/paperbot/main.go")
-		return nil
 	}
 
 	// Create real trader and auto-setup credentials/allowances if missing
@@ -560,6 +553,7 @@ func run() error {
 		SplitInitialCapPct:             cfg.SplitInitialCapPct,
 		SplitReplenishCapPct:           cfg.SplitReplenishCapPct,
 		MakerMergeBufferSeconds:        cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:                  cfg.MakerQuoteGap,
 		MinAskPrice:                    cfg.MinAskPrice,
 		MaxAskPrice:                    cfg.MaxAskPrice,
 	}, func(s paper.TUISettings) {
@@ -575,6 +569,7 @@ func run() error {
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
 		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
 		cfg.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
+		cfg.MakerQuoteGap = s.MakerQuoteGap
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
 		_ = cfg.SaveSettings()
@@ -2892,9 +2887,12 @@ func computeRealbotMakerInventorySkew(positionShares, peerShares, targetShares f
 	return clampFloat64(skew, -1.0, 1.0)
 }
 
-func computeRealbotMakerSkewedQuote(side api.Side, bid, ask, skew float64) (float64, bool) {
+func computeRealbotMakerSkewedQuote(side api.Side, bid, ask, skew, quoteGap float64) (float64, bool) {
 	if ask <= 0 || ask-bid <= realbotMakerQuoteStep*2 {
 		return 0, false
+	}
+	if quoteGap <= 0 {
+		quoteGap = realbotMakerBaseOffset
 	}
 	minPrice := realbotMakerQuoteStep
 	if bid > 0 {
@@ -2907,9 +2905,9 @@ func computeRealbotMakerSkewedQuote(side api.Side, bid, ask, skew float64) (floa
 	mid := (bid + ask) / 2
 	base := mid
 	if side == api.SideBuy {
-		base = mid - realbotMakerBaseOffset - (skew * realbotMakerInventorySkewStep)
+		base = mid - quoteGap - (skew * realbotMakerInventorySkewStep)
 	} else {
-		base = mid + realbotMakerBaseOffset - (skew * realbotMakerInventorySkewStep)
+		base = mid + quoteGap - (skew * realbotMakerInventorySkewStep)
 	}
 	price := roundRealbotMakerPrice(clampFloat64(base, minPrice, maxPrice))
 	if price < minPrice || price > maxPrice {
@@ -2953,8 +2951,8 @@ func computeRealbotMakerSellQty(baseShares, positionShares, skew float64) float6
 	return qty
 }
 
-func computeRealbotMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew float64, feeRateBps int) (float64, bool) {
-	price, ok := computeRealbotMakerSkewedQuote(api.SideSell, bid, ask, skew)
+func computeRealbotMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int) (float64, bool) {
+	price, ok := computeRealbotMakerSkewedQuote(api.SideSell, bid, ask, skew, quoteGap)
 	if !ok {
 		return 0, false
 	}
@@ -3230,12 +3228,13 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	targetShares := math.Max(realbotMakerMinQuoteShares, baseShares*realbotMakerInventoryTargetMult)
 	maxInventory := math.Max(targetShares, baseShares*realbotMakerInventoryCapMult)
 	minSellEdge := liveCfg.MinMarginPercent / 100.0
+	quoteGap := resolveRealbotMakerQuoteGap(liveCfg, cfg)
 
 	skew0 := computeRealbotMakerInventorySkew(shares0, shares1, targetShares)
 	skew1 := computeRealbotMakerInventorySkew(shares1, shares0, targetShares)
 
-	buyPrice0, buyOK0 := computeRealbotMakerSkewedQuote(api.SideBuy, bid0, ask0, skew0)
-	buyPrice1, buyOK1 := computeRealbotMakerSkewedQuote(api.SideBuy, bid1, ask1, skew1)
+	buyPrice0, buyOK0 := computeRealbotMakerSkewedQuote(api.SideBuy, bid0, ask0, skew0, quoteGap)
+	buyPrice1, buyOK1 := computeRealbotMakerSkewedQuote(api.SideBuy, bid1, ask1, skew1, quoteGap)
 	maxMakerBuyPrice := liveCfg.MaxAskPrice
 	if maxMakerBuyPrice <= 0 || maxMakerBuyPrice > 0.99 {
 		maxMakerBuyPrice = 0.99
@@ -3249,8 +3248,8 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 
 	sellFee0 := tokenFeeRates[outcomes[0]]
 	sellFee1 := tokenFeeRates[outcomes[1]]
-	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, sellFee0)
-	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, sellFee1)
+	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, quoteGap, sellFee0)
+	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, quoteGap, sellFee1)
 	sellQty0 := computeRealbotMakerSellQty(baseShares, shares0, skew0)
 	sellQty1 := computeRealbotMakerSellQty(baseShares, shares1, skew1)
 	if !sellOK0 {

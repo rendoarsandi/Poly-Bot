@@ -205,15 +205,16 @@ type TUISettings struct {
 	SplitInitialCapPct             float64 // Initial Split Cap percentage
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
 	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
+	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 func isMakerSettingsMode(cfg TUISettings) bool {
@@ -263,6 +264,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 			return "Maker Max Buy Price"
 		}
 		return "Max Ask Price"
+	case 13:
+		return "Maker Quote Gap"
 	default:
 		return ""
 	}
@@ -697,11 +700,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 12
+					m.settingsCursor = 13
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 13
+				m.settingsCursor = (m.settingsCursor + 1) % 14
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -798,6 +801,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
+					}
+					changed = true
+				case 13:
+					m.tui.settings.MakerQuoteGap -= 0.001
+					if m.tui.settings.MakerQuoteGap < 0.001 {
+						m.tui.settings.MakerQuoteGap = 0.001
 					}
 					changed = true
 				}
@@ -899,6 +908,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
+					}
+					changed = true
+				case 13:
+					m.tui.settings.MakerQuoteGap += 0.001
+					if m.tui.settings.MakerQuoteGap > 0.050 {
+						m.tui.settings.MakerQuoteGap = 0.050
 					}
 					changed = true
 				}
@@ -2623,6 +2638,11 @@ func (m tuiModel) renderSettings(w int) string {
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
+		{
+			label: settingsRowLabel(cfg, 13),
+			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
+			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
+		},
 	}
 
 	cursorStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
@@ -2731,6 +2751,9 @@ func (t *TUI) GetSettings() TUISettings {
 func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if s.MakerQuoteGap <= 0 {
+		s.MakerQuoteGap = 0.008
+	}
 	t.settings = s
 	t.onSettingsChange = onChange
 	// Keep tradeFactor in sync so the account panel shows the right value.

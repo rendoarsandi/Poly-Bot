@@ -39,7 +39,7 @@ Plain English: create split inventory first, dump both sides later when the mark
 - WebSocket is the primary feed
 - REST is used for fallback and extra depth checks
 - UI is terminal-based and updates live
-- settings changed in the TUI are written back to config
+- settings changed in the TUI are written back to the bot-specific JSON config file
 - the bot rotates to the next market after a round ends
 - emergency cleanup runs on shutdown/panic
 
@@ -91,12 +91,17 @@ cp .env.example .env
 ```
 
 Minimum real-trading values:
-- `TRADING_MODE=real`
 - `POLY_PK`
 - `POLY_API_KEY`
 - `POLY_API_SECRET`
 - `POLY_PASSPHRASE`
 - `POLYGON_RPC_URL`
+
+Bot runtime settings live in:
+- `config/paperbot.settings.json`
+- `config/realbot.settings.json`
+
+Use `.env` for secrets/credentials only.
 
 You can derive API credentials with:
 ```bash
@@ -107,30 +112,34 @@ node scripts/derive-api-key.js 0xYOUR_PRIVATE_KEY
 
 ## Important config values
 
+These runtime settings are stored in the bot-specific JSON files rather than `.env`.
+
 ### Market selection
-- `MARKET_SLUG`
-- `TIMEFRAME`
-- `MAX_MARKETS`
+- `marketSlug`
+- `timeframe`
+- `maxMarkets`
 
 ### Buy strategy
-- `MIN_MARGIN_PERCENT`
-- `TRADE_SCALE_FACTOR`
-- `MIN_ASK_PRICE` / `MAX_ASK_PRICE`
-- `ENABLE_MARGIN_AGGRESSION`
-- `MAX_AGGRESSION_MULTIPLIER`
-- `BUY_EXECUTION_MARGIN_FLOOR_PERCENT`
+- `minMarginPercent`
+- `tradeScaleFactor`
+- `minAskPrice` / `maxAskPrice`
+- `paperArbMode`
+- `makerQuoteGap`
+- `enableMarginAggression`
+- `maxAggressionMultiplier`
+- `buyExecutionMarginFloorPercent`
 
 ### Split strategy
-- `SPLIT_STRATEGY_ENABLED`
-- `SPLIT_MIN_MARGIN_SELL`
-- `SPLIT_TARGET_MARGIN_RESERVE`
-- `SPLIT_REPLENISH_THRESHOLD`
-- `SPLIT_MERGE_BUFFER_SECONDS`
-- `SPLIT_INITIAL_CAP_PCT`
-- `SPLIT_REPLENISH_CAP_PCT`
+- `splitStrategyEnabled`
+- `splitMinMarginSell`
+- `splitTargetMarginReserve`
+- `splitReplenishThreshold`
+- `splitMergeBufferSeconds`
+- `splitInitialCapPct`
+- `splitReplenishCapPct`
 
 ### Real trading safety
-- `MAX_TRADE_SIZE` (`0` = disabled)
+- `maxTradeSize` (`0` = disabled)
 - `MAX_DAILY_LOSS` (`0` = disabled)
 - `REQUIRE_CONFIRM`
 
@@ -184,7 +193,8 @@ Adds:
 - user WebSocket fill tracking
 - on-chain split / merge / redeem flows
 - emergency cleanup to avoid leaving junk behind
-- live `maker` mode via `PAPER_ARB_MODE=maker`, using resting GTC quotes plus conservative buy/sell inventory guards
+- live `maker` mode via `paperArbMode: "maker"`, using resting GTC quotes plus conservative buy/sell inventory guards
+- maker quote distance is adjustable via `makerQuoteGap` (smaller = tighter / more aggressive, larger = farther / more passive)
 - default live `taker` mode still uses the paired panic-buy / merge path plus split-inventory sell logic
 
 ## TUI notes
@@ -197,7 +207,7 @@ The terminal UI is the main interface. It shows:
 - positions / equity
 - split inventory state
 
-The settings panel can update runtime values like market filters, trade scaling, margins, split settings, and price filters.
+The settings panel can update runtime values like market filters, trade scaling, margins, split settings, and price filters, and saves them back to the current bot's JSON settings file.
 
 ## Repo layout
 

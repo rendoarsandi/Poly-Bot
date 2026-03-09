@@ -185,6 +185,16 @@ func clampFloat64(v, lo, hi float64) float64 {
 	return v
 }
 
+func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) float64 {
+	if liveCfg.MakerQuoteGap > 0 {
+		return liveCfg.MakerQuoteGap
+	}
+	if cfg != nil && cfg.MakerQuoteGap > 0 {
+		return cfg.MakerQuoteGap
+	}
+	return paperMakerBaseOffset
+}
+
 func shouldPaperRestFallback(quoteAge, sinceLastRest time.Duration) bool {
 	return quoteAge > 3*time.Second && sinceLastRest > time.Second
 }
@@ -298,9 +308,12 @@ func computePaperMakerInventorySkew(positionShares, peerShares, targetShares flo
 	return clampFloat64(skew, -1.0, 1.0)
 }
 
-func computePaperMakerSkewedQuote(side string, bid, ask, skew float64) (float64, bool) {
+func computePaperMakerSkewedQuote(side string, bid, ask, skew, quoteGap float64) (float64, bool) {
 	if ask <= 0 || ask-bid <= paperMakerQuoteStep*2 {
 		return 0, false
+	}
+	if quoteGap <= 0 {
+		quoteGap = paperMakerBaseOffset
 	}
 	minPrice := paperMakerQuoteStep
 	if bid > 0 {
@@ -313,9 +326,9 @@ func computePaperMakerSkewedQuote(side string, bid, ask, skew float64) (float64,
 	mid := (bid + ask) / 2
 	base := mid
 	if side == "buy" {
-		base = mid - paperMakerBaseOffset - (skew * paperMakerInventorySkewStep)
+		base = mid - quoteGap - (skew * paperMakerInventorySkewStep)
 	} else {
-		base = mid + paperMakerBaseOffset - (skew * paperMakerInventorySkewStep)
+		base = mid + quoteGap - (skew * paperMakerInventorySkewStep)
 	}
 	price := roundPaperMakerPrice(clampFloat64(base, minPrice, maxPrice))
 	if price < minPrice || price > maxPrice {
@@ -357,8 +370,8 @@ func computePaperMakerSellQty(baseShares, positionShares, skew float64) float64 
 	return math.Floor(qty)
 }
 
-func computePaperMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew float64, feeRateBps int) (float64, bool) {
-	price, ok := computePaperMakerSkewedQuote("sell", bid, ask, skew)
+func computePaperMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int) (float64, bool) {
+	price, ok := computePaperMakerSkewedQuote("sell", bid, ask, skew, quoteGap)
 	if !ok {
 		return 0, false
 	}
@@ -620,12 +633,13 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	targetShares := math.Max(paperMakerMinQuoteShares, baseShares*paperMakerInventoryTargetMult)
 	maxInventory := math.Max(targetShares, baseShares*paperMakerInventoryCapMult)
 	minSellEdge := t.Config.MinMarginPercent / 100.0
+	quoteGap := resolvePaperMakerQuoteGap(liveCfg, t.Config)
 
 	skew1 := computePaperMakerInventorySkew(shares1, shares2, targetShares)
 	skew2 := computePaperMakerInventorySkew(shares2, shares1, targetShares)
 
-	buyPrice1, buyOK1 := computePaperMakerSkewedQuote("buy", bid1, ask1, skew1)
-	buyPrice2, buyOK2 := computePaperMakerSkewedQuote("buy", bid2, ask2, skew2)
+	buyPrice1, buyOK1 := computePaperMakerSkewedQuote("buy", bid1, ask1, skew1, quoteGap)
+	buyPrice2, buyOK2 := computePaperMakerSkewedQuote("buy", bid2, ask2, skew2, quoteGap)
 	maxMakerBuyPrice := liveCfg.MaxAskPrice
 	if maxMakerBuyPrice <= 0 || maxMakerBuyPrice > 0.99 {
 		maxMakerBuyPrice = 0.99
@@ -637,8 +651,8 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		buyOK2 = false
 	}
 
-	sellPrice1, sellOK1 := computePaperMakerProtectedSellQuote(bid1, ask1, avgCost1, minSellEdge, skew1, t.Config.FeeRateBps)
-	sellPrice2, sellOK2 := computePaperMakerProtectedSellQuote(bid2, ask2, avgCost2, minSellEdge, skew2, t.Config.FeeRateBps)
+	sellPrice1, sellOK1 := computePaperMakerProtectedSellQuote(bid1, ask1, avgCost1, minSellEdge, skew1, quoteGap, t.Config.FeeRateBps)
+	sellPrice2, sellOK2 := computePaperMakerProtectedSellQuote(bid2, ask2, avgCost2, minSellEdge, skew2, quoteGap, t.Config.FeeRateBps)
 	sellQty1 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares1, skew1))
 	sellQty2 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares2, skew2))
 	if !sellOK1 {
@@ -775,8 +789,8 @@ func run() error {
 	// Initialize persistent components (survive market rotation)
 	engine = paper.NewEngine(StartingBalance)
 
-	// Load config
-	cfg, err := core.LoadConfig()
+	// Load paperbot settings + env-backed secrets
+	cfg, err := core.LoadBotConfig("paperbot")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -811,6 +825,7 @@ func run() error {
 		SplitInitialCapPct:      cfg.SplitInitialCapPct,
 		SplitReplenishCapPct:    cfg.SplitReplenishCapPct,
 		MakerMergeBufferSeconds: cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:           cfg.MakerQuoteGap,
 		MinAskPrice:             cfg.MinAskPrice,
 		MaxAskPrice:             cfg.MaxAskPrice,
 	}, func(s paper.TUISettings) {
@@ -825,6 +840,7 @@ func run() error {
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
 		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
 		cfg.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
+		cfg.MakerQuoteGap = s.MakerQuoteGap
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
 		_ = cfg.SaveSettings()

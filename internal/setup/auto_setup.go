@@ -15,10 +15,7 @@ import (
 // EnsureRealTradingSetup checks if the environment is ready for real trading.
 // It will prompt for missing private keys, auto-derive API keys, and auto-approve allowances.
 func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.RealTrader, error) {
-	if cfg.TradingMode != core.ModeReal {
-		// Only prompt/setup for real mode
-		return trading.NewRealTrader(cfg)
-	}
+	cfg.UseRealTrading()
 
 	err := cfg.ValidateForRealTrading()
 	if err != nil {
@@ -47,13 +44,10 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 			return nil, fmt.Errorf("failed to save .env file: %w", err)
 		}
 
-		// Reload the config into our passed cfg object
+		// Reload env-backed credentials while preserving any bot/profile-specific
+		// runtime settings already loaded from JSON.
 		_ = godotenv.Load()
-		newCfg, loadErr := core.LoadConfig()
-		if loadErr != nil {
-			return nil, fmt.Errorf("failed to reload config: %w", loadErr)
-		}
-		*cfg = *newCfg
+		cfg.ReloadSecretsFromEnv()
 	}
 
 	trader, err := trading.NewRealTrader(cfg)

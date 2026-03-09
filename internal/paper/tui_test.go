@@ -229,7 +229,7 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 			t.Fatalf("expected row %d to be read-only in maker mode", idx)
 		}
 	}
-	for _, idx := range []int{4, 11, 12} {
+	for _, idx := range []int{4, 11, 12, 13} {
 		if !settingsRowEditable(cfg, idx) {
 			t.Fatalf("expected row %d to remain editable in maker mode", idx)
 		}
@@ -244,12 +244,13 @@ func TestRenderSettingsShowsMakerSpecificLabels(t *testing.T) {
 		PaperArbMode:            "maker",
 		TradeScaleFactor:        0.05,
 		MinMarginPercent:        2.0,
+		MakerQuoteGap:           0.006,
 		MaxAskPrice:             0.90,
 		MakerMergeBufferSeconds: 45,
 	}, nil)
 
 	view := (tuiModel{tui: tui}).renderSettings(120)
-	for _, want := range []string{"Maker Min Sell Edge %", "Maker Merge Buffer", "Maker Max Buy Price", "ignored live"} {
+	for _, want := range []string{"Maker Min Sell Edge %", "Maker Merge Buffer", "Maker Max Buy Price", "Maker Quote Gap", "ignored live"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("renderSettings() missing %q\n%s", want, view)
 		}

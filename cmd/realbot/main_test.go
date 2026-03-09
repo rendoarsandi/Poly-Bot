@@ -168,15 +168,29 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 }
 
 func TestComputeRealbotMakerProtectedSellQuoteRequiresEdge(t *testing.T) {
-	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 1000)
+	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000)
 	if !ok {
 		t.Fatal("expected protected sell quote to exist")
 	}
 	if price < 0.58 {
 		t.Fatalf("expected sell quote to clear required edge, got %.3f", price)
 	}
-	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 1000); ok {
+	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 0.008, 1000); ok {
 		t.Fatal("expected narrow market to fail protected sell quote")
+	}
+}
+
+func TestComputeRealbotMakerSkewedQuoteRespectsConfiguredGap(t *testing.T) {
+	tight, ok := computeRealbotMakerSkewedQuote(api.SideBuy, 0.47, 0.53, 0.0, 0.003)
+	if !ok {
+		t.Fatal("expected tight maker buy quote")
+	}
+	wide, ok := computeRealbotMakerSkewedQuote(api.SideBuy, 0.47, 0.53, 0.0, 0.012)
+	if !ok {
+		t.Fatal("expected wide maker buy quote")
+	}
+	if tight <= wide {
+		t.Fatalf("expected tighter gap to quote closer to ask: tight=%.3f wide=%.3f", tight, wide)
 	}
 }
 
