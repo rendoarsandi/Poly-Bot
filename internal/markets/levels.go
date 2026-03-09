@@ -25,7 +25,7 @@ func LevelsToPriceDepth(levels []api.PriceLevel, isBid bool) []paper.MarketLevel
 		}
 		result = append(result, paper.MarketLevel{Price: p, Size: s})
 	}
-	
+
 	if isBid {
 		// Bids: descending (highest first)
 		sort.Slice(result, func(i, j int) bool {
@@ -37,7 +37,7 @@ func LevelsToPriceDepth(levels []api.PriceLevel, isBid bool) []paper.MarketLevel
 			return result[i].Price < result[j].Price
 		})
 	}
-	
+
 	return result
 }
 
@@ -51,7 +51,7 @@ func LevelsToPriceDepth(levels []api.PriceLevel, isBid bool) []paper.MarketLevel
 func ApplyDelta(book []paper.MarketLevel, price, size float64, isBid bool) []paper.MarketLevel {
 	// Create a new slice to prevent race conditions from in-place modifications
 	var newBook []paper.MarketLevel
-	
+
 	// Ignore invalid bounds
 	if price <= 0.0 || price >= 1.0 {
 		return book
@@ -90,4 +90,24 @@ func ApplyDelta(book []paper.MarketLevel, price, size float64, isBid bool) []pap
 	}
 
 	return newBook
+}
+
+// RefreshTopOfBookFromDepth rebuilds best bid/ask quotes from the current depth
+// snapshots for the provided outcome names.
+func RefreshTopOfBookFromDepth(outcomes []string, bidDepth, askDepth map[string][]paper.MarketLevel, bestBids, bestAsks map[string]float64) {
+	for _, outcome := range outcomes {
+		bids := bidDepth[outcome]
+		if len(bids) > 0 {
+			bestBids[outcome] = bids[0].Price
+		} else {
+			bestBids[outcome] = 0
+		}
+
+		asks := askDepth[outcome]
+		if len(asks) > 0 {
+			bestAsks[outcome] = asks[0].Price
+		} else {
+			bestAsks[outcome] = 0
+		}
+	}
 }

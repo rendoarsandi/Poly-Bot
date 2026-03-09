@@ -176,6 +176,11 @@ type PendingOrder struct {
 	Side     string // "BUY" or "SELL"
 }
 
+type ScopedLimitOrder struct {
+	MarketID string
+	Order    *LimitOrder
+}
+
 // OrderHistoryEntry represents a completed trade.
 type OrderHistoryEntry struct {
 	Timestamp time.Time
@@ -269,6 +274,42 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	default:
 		return ""
 	}
+}
+
+func normalizeMarketSelection(slug string) string {
+	slug = strings.TrimSpace(slug)
+	if slug == "" || strings.EqualFold(slug, "ALL") {
+		return "ALL"
+	}
+	parts := strings.Split(slug, ",")
+	seen := make(map[string]bool, len(parts))
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.ToUpper(strings.TrimSpace(part))
+		if part == "" || part == "ALL" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		normalized = append(normalized, part)
+	}
+	if len(normalized) == 0 {
+		return "ALL"
+	}
+	return strings.Join(normalized, ",")
+}
+
+func normalizeTUISettings(s TUISettings) TUISettings {
+	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	if s.MaxMarkets < 1 {
+		s.MaxMarkets = 1
+	}
+	if s.MarketSlug != "ALL" {
+		selected := len(strings.Split(s.MarketSlug, ","))
+		if selected > 0 && s.MaxMarkets > selected {
+			s.MaxMarkets = selected
+		}
+	}
+	return s
 }
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -367,7 +408,7 @@ type tuiSnapshot struct {
 	exposure        float64
 	equity          float64
 	positions       map[string]PositionPnL
-	orders          []*LimitOrder
+	orders          []ScopedLimitOrder
 	multiplier      float64
 	rounds          int
 	profitable      int
@@ -1153,12 +1194,12 @@ func (t *TUI) RegisterOrderBook(marketID string, orderBook *OrderBook) {
 	t.orderBooks[marketID] = orderBook
 }
 
-func (t *TUI) getOpenOrdersSnapshot() []*LimitOrder {
+func (t *TUI) getOpenOrdersSnapshot() []ScopedLimitOrder {
 	t.mu.Lock()
-	books := make([]*OrderBook, 0, len(t.orderBooks))
-	for _, orderBook := range t.orderBooks {
+	books := make(map[string]*OrderBook, len(t.orderBooks))
+	for marketID, orderBook := range t.orderBooks {
 		if orderBook != nil {
-			books = append(books, orderBook)
+			books[marketID] = orderBook
 		}
 	}
 	fallback := t.orderBook
@@ -1168,12 +1209,19 @@ func (t *TUI) getOpenOrdersSnapshot() []*LimitOrder {
 		if fallback == nil {
 			return nil
 		}
-		return fallback.GetOpenOrders()
+		open := fallback.GetOpenOrders()
+		scoped := make([]ScopedLimitOrder, 0, len(open))
+		for _, order := range open {
+			scoped = append(scoped, ScopedLimitOrder{Order: order})
+		}
+		return scoped
 	}
 
-	orders := make([]*LimitOrder, 0)
-	for _, orderBook := range books {
-		orders = append(orders, orderBook.GetOpenOrders()...)
+	orders := make([]ScopedLimitOrder, 0)
+	for marketID, orderBook := range books {
+		for _, order := range orderBook.GetOpenOrders() {
+			orders = append(orders, ScopedLimitOrder{MarketID: marketID, Order: order})
+		}
 	}
 	return orders
 }
@@ -1314,10 +1362,27 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	}
 }
 
-func (t *TUI) SetPendingOrders(orders map[string][]PendingOrder) {
+func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pendingOrders = orders
+	if t.pendingOrders == nil {
+		t.pendingOrders = make(map[string][]PendingOrder)
+	}
+	flattened := make([]PendingOrder, 0)
+	for outcome, batch := range orders {
+		for _, order := range batch {
+			if order.Outcome == "" {
+				order.Outcome = outcome
+			}
+			order.MarketID = marketID
+			flattened = append(flattened, order)
+		}
+	}
+	if len(flattened) == 0 {
+		delete(t.pendingOrders, marketID)
+		return
+	}
+	t.pendingOrders[marketID] = flattened
 }
 
 func (t *TUI) LogEvent(format string, args ...interface{}) {
@@ -1947,12 +2012,10 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 
 	// ── Pending orders ──
 	sb.WriteString(styleGreen.Render("  └─ 📋 Planned Orders") + "\n")
-	if len(s.pendingOrders) > 0 {
-		for outcome, orders := range s.pendingOrders {
-			for _, o := range orders {
-				sb.WriteString(fmt.Sprintf("       %s %-6s  %.0f @ $%.2f\n",
-					o.Side, core.SanitizeString(outcome), o.Qty, o.Price))
-			}
+	if orders := s.pendingOrders[s.marketSlug]; len(orders) > 0 {
+		for _, o := range orders {
+			sb.WriteString(fmt.Sprintf("       %s %-6s  %.0f @ $%.2f\n",
+				o.Side, core.SanitizeString(o.Outcome), o.Qty, o.Price))
 		}
 	} else {
 		sb.WriteString(styleDimmed.Render("       (no pending orders)") + "\n")
@@ -2288,7 +2351,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 }
 
 // renderOrders: open limit orders panel.
-func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
+func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 	if len(orders) == 0 {
 		return ""
 	}
@@ -2296,9 +2359,16 @@ func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
 	var sb strings.Builder
 	sb.WriteString(sectionHeader("📝", fmt.Sprintf("LIMIT ORDERS  (%d)", len(orders)), clrSlate) + "\n")
 
-	byOutcome := make(map[string][]*LimitOrder)
+	byOutcome := make(map[string][]ScopedLimitOrder)
 	for _, o := range orders {
-		byOutcome[o.Outcome] = append(byOutcome[o.Outcome], o)
+		if o.Order == nil {
+			continue
+		}
+		key := o.Order.Outcome
+		if o.MarketID != "" {
+			key = o.MarketID + ":" + key
+		}
+		byOutcome[key] = append(byOutcome[key], o)
 	}
 	// Sorted outcomes for stable render
 	outcomes := make([]string, 0, len(byOutcome))
@@ -2311,8 +2381,8 @@ func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
 		ords := byOutcome[oc]
 		totalQty, totalVal := 0.0, 0.0
 		for _, o := range ords {
-			totalQty += o.RemainingQty()
-			totalVal += o.RemainingQty() * o.Price
+			totalQty += o.Order.RemainingQty()
+			totalVal += o.Order.RemainingQty() * o.Order.Price
 		}
 		sb.WriteString(fmt.Sprintf("  %-8s  %s orders  ·  %.0f shares  ·  $%.2f value\n",
 			core.SanitizeString(oc), styleDimmed.Render(fmt.Sprintf("%d", len(ords))),
@@ -2751,6 +2821,7 @@ func (t *TUI) GetSettings() TUISettings {
 func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	s = normalizeTUISettings(s)
 	if s.MakerQuoteGap <= 0 {
 		s.MakerQuoteGap = 0.008
 	}

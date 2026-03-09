@@ -1153,20 +1153,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					// Update best bids/asks based on the new full depth
-					for outcome := range tokenToOutcome {
-						bids := tokenFullBids[outcome]
-						if len(bids) > 0 {
-							tokenBids[outcome] = bids[0].Price
-						} else {
-							tokenBids[outcome] = 0
-						}
-
-						asks := tokenFullAsks[outcome]
-						if len(asks) > 0 {
-							tokenAsks[outcome] = asks[0].Price
-						} else {
-							tokenAsks[outcome] = 0
-						}
+					mkt.RefreshTopOfBookFromDepth(outcomes, tokenFullBids, tokenFullAsks, tokenBids, tokenAsks)
+					for _, outcome := range outcomes {
 
 						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
 							// Check for crossed book (WS state corruption or missing delete delta)
@@ -2940,7 +2928,7 @@ func realbotUpdateMakerPendingOrders(marketID string, makerQuotes map[string]*re
 			Side:     string(quote.Side),
 		})
 	}
-	tui.SetPendingOrders(pending)
+	tui.SetPendingOrders(marketID, pending)
 }
 
 func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, makerQuotes map[string]*realbotMakerQuote, openByID map[string]api.OpenOrder) {

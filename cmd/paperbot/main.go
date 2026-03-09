@@ -422,7 +422,7 @@ func updatePaperPendingOrders(t *MarketTrader) {
 			Side:     strings.ToUpper(order.Side),
 		})
 	}
-	t.TUI.SetPendingOrders(pending)
+	t.TUI.SetPendingOrders(t.ID, pending)
 }
 
 func ensurePaperMakerSplitInventory(t *MarketTrader, currentEquity, currentCash, sellMargin float64) {

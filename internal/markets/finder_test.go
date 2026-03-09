@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,11 @@ import (
 func TestFindMarkets_CaseSensitivity(t *testing.T) {
 	// Set up mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("slug"); !strings.HasPrefix(got, "btc-updown-15m-") {
+			_ = json.NewEncoder(w).Encode([]api.GammaEvent{})
+			return
+		}
+
 		// Mock Gamma response
 		var resp []api.GammaEvent
 

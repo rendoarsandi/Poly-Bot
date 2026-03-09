@@ -30,6 +30,51 @@ func TestTUI_RegisterSplitInventory(t *testing.T) {
 	}
 }
 
+func TestTUI_RegisterOrderBookAggregatesByMarket(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+	btcBook := NewOrderBookWithRealism(0, 0)
+	ethBook := NewOrderBookWithRealism(0, 0)
+
+	tui.RegisterOrderBook("BTC", btcBook)
+	tui.RegisterOrderBook("ETH", ethBook)
+
+	btcBook.PlaceOrder("Up", "buy", 0.45, 7, 0)
+	ethBook.PlaceOrder("Down", "sell", 0.55, 9, 0)
+
+	orders := tui.getOpenOrdersSnapshot()
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 scoped open orders, got %d", len(orders))
+	}
+	seen := map[string]bool{}
+	for _, order := range orders {
+		seen[order.MarketID+":"+order.Order.Outcome] = true
+	}
+	if !seen["BTC:Up"] || !seen["ETH:Down"] {
+		t.Fatalf("expected aggregated orders for BTC:Up and ETH:Down, got %+v", seen)
+	}
+}
+
+func TestTUI_SetPendingOrdersKeepsMarketsSeparate(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), nil)
+	tui.SetPendingOrders("BTC", map[string][]PendingOrder{
+		"Up": {{Outcome: "Up", Qty: 5, Price: 0.44, Side: "BUY"}},
+	})
+	tui.SetPendingOrders("ETH", map[string][]PendingOrder{
+		"Down": {{Outcome: "Down", Qty: 6, Price: 0.56, Side: "SELL"}},
+	})
+
+	if len(tui.pendingOrders) != 2 {
+		t.Fatalf("expected pending orders for 2 markets, got %d", len(tui.pendingOrders))
+	}
+	if got := tui.pendingOrders["BTC"][0].MarketID; got != "BTC" {
+		t.Fatalf("expected BTC pending order market id, got %q", got)
+	}
+	if got := tui.pendingOrders["ETH"][0].Outcome; got != "Down" {
+		t.Fatalf("expected ETH pending order outcome Down, got %q", got)
+	}
+}
+
 func TestTUI_SetWalletTruthPositions(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -477,5 +522,23 @@ func TestRenderFooterShowsScrollStatus(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "[↑↓/jk] scroll") {
 		t.Fatalf("expected footer controls, got %q", rendered)
+	}
+}
+
+func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{MarketSlug: "btc", MaxMarkets: 4, Timeframe: "15m"})
+	if got.MarketSlug != "BTC" {
+		t.Fatalf("expected normalized market slug BTC, got %q", got.MarketSlug)
+	}
+	if got.MaxMarkets != 1 {
+		t.Fatalf("expected single-market selection to clamp MaxMarkets to 1, got %d", got.MaxMarkets)
+	}
+
+	got = normalizeTUISettings(TUISettings{MarketSlug: "BTC,eth", MaxMarkets: 4, Timeframe: "15m"})
+	if got.MarketSlug != "BTC,ETH" {
+		t.Fatalf("expected normalized multi-market slug BTC,ETH, got %q", got.MarketSlug)
+	}
+	if got.MaxMarkets != 2 {
+		t.Fatalf("expected two-market selection to clamp MaxMarkets to 2, got %d", got.MaxMarkets)
 	}
 }
