@@ -446,3 +446,48 @@ func TestTUIUpdateMarketPricesWithSourceIgnoresZeroQuotes(t *testing.T) {
 		t.Fatalf("expected zero quotes to be ignored, got bids=%v asks=%v", market.Bids, market.Asks)
 	}
 }
+
+func TestRenderAccountStatusFusionUsesFusionMetrics(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.mu.Lock()
+	tui.mode = "Fusion"
+	tui.mu.Unlock()
+	model := tuiModel{tui: tui, snap: tuiSnapshot{tradeFactor: 0.05, startTime: time.Now().Add(-8 * time.Minute)}}
+
+	rendered := model.renderAccountStatus(140, Stats{
+		StartingBalance: 1000,
+		CurrentBalance:  850,
+		RealizedPnL:     -43.45,
+		UnrealizedPnL:   -6.94,
+		TotalTrades:     10,
+		WinningTrades:   4,
+		MaxDrawdown:     7.2,
+	}, 108.03, 950.39, 1.0, 0, 0, map[string]Position{"BTC:Up": {}, "ETH:Down": {}, "SOL:Down": {}})
+
+	if !strings.Contains(rendered, "FUSION STATUS") || !strings.Contains(rendered, "Mark") || !strings.Contains(rendered, "Unrealized") {
+		t.Fatalf("expected fusion-specific metrics, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Exposure") || strings.Contains(rendered, "Compound") || strings.Contains(rendered, "rounds") {
+		t.Fatalf("expected arb wording to be absent in fusion mode, got %q", rendered)
+	}
+}
+
+func TestRenderPositionsFusionRemovesAwaitingMergeLabel(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.mu.Lock()
+	tui.mode = "Fusion"
+	tui.mu.Unlock()
+	model := tuiModel{tui: tui}
+
+	rendered := model.renderPositions(140, map[string]PositionPnL{
+		"BTC:Up":   {Position: Position{MarketID: "BTC", Outcome: "Up", Quantity: 72, AvgPrice: 0.39}, CurrentBid: 0.29, MarketValue: 20.88, UnrealizedPnL: -7.20},
+		"ETH:Down": {Position: Position{MarketID: "ETH", Outcome: "Down", Quantity: 40, AvgPrice: 0.81}, CurrentBid: 0.83, MarketValue: 33.20, UnrealizedPnL: 0.80},
+	})
+
+	if !strings.Contains(rendered, "OPEN SIGNAL POSITIONS") || !strings.Contains(rendered, "Unrealized") {
+		t.Fatalf("expected fusion positions panel, got %q", rendered)
+	}
+	if strings.Contains(rendered, "awaiting merge") || strings.Contains(rendered, "Locked") {
+		t.Fatalf("expected merge wording to be absent, got %q", rendered)
+	}
+}

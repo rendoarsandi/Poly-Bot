@@ -1957,6 +1957,21 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		bar,
 		styleDimmed.Render(fmt.Sprintf("%.0f%% deployed", deployedPct*100)),
 	)
+	if fusionMode {
+		markedValue := equity - stats.CurrentBalance
+		if markedValue < 0 {
+			markedValue = 0
+		}
+		activePct := 0.0
+		if equity > 0 {
+			activePct = markedValue / equity
+		}
+		bar = renderBar(activePct, barW)
+		barLine = fmt.Sprintf("  %s %s",
+			bar,
+			styleDimmed.Render(fmt.Sprintf("%.0f%% active", activePct*100)),
+		)
+	}
 
 	// Trade size
 	tradeLine := ""
@@ -2000,6 +2015,39 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		rounds, profitable,
 		styleDimmed.Render(uptime.String()),
 	)
+	if fusionMode {
+		markedValue := equity - stats.CurrentBalance
+		if markedValue < 0 {
+			markedValue = 0
+		}
+		openPositions := len(positions)
+		winRate := 0.0
+		if stats.TotalTrades > 0 {
+			winRate = (float64(stats.WinningTrades) / float64(stats.TotalTrades)) * 100
+		}
+		unrealizedSt := styleGreen
+		unrealizedSign := "+"
+		if stats.UnrealizedPnL < 0 {
+			unrealizedSt = styleRed
+			unrealizedSign = ""
+		}
+		row1 = fmt.Sprintf("  Cash %s  ·  Mark %s  ·  Equity %s  (%s)",
+			styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
+			styleWhite.Render(fmt.Sprintf("$%.2f", markedValue)),
+			styleBold.Render(fmt.Sprintf("$%.2f", equity)),
+			changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, netChange)),
+		)
+		row3 = tradeLine + fmt.Sprintf("  ·  Unrealized %s",
+			unrealizedSt.Render(fmt.Sprintf("%s$%.2f", unrealizedSign, stats.UnrealizedPnL)),
+		)
+		row4 = fmt.Sprintf("  Open %d  ·  Trades %d  ·  Win %.0f%%  ·  MaxDD %.1f%%  ·  ⏱ %s",
+			openPositions,
+			stats.TotalTrades,
+			winRate,
+			stats.MaxDrawdown,
+			styleDimmed.Render(uptime.String()),
+		)
+	}
 
 	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4
 	return makePanel(inner, clrTeal, content)
@@ -2009,6 +2057,10 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL) string {
 	s := m.snap
 	inner := w - 4
+	m.tui.mu.Lock()
+	mode := m.tui.mode
+	m.tui.mu.Unlock()
+	fusionMode := settingsModeIsFusion(mode)
 
 	splitPositions := s.splitPositions
 	walletTruthPositions := s.walletTruth
@@ -2026,8 +2078,12 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 	// ── In-flight positions ──
 	if hasPositions {
-		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%d) %s",
-			len(positionsWithPnL), styleYellow.Render("⏳ awaiting merge")), clrTeal) + "\n")
+		if fusionMode {
+			sb.WriteString(sectionHeader("📦", fmt.Sprintf("OPEN SIGNAL POSITIONS  (%d)", len(positionsWithPnL)), clrTeal) + "\n")
+		} else {
+			sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%d) %s",
+				len(positionsWithPnL), styleYellow.Render("⏳ awaiting merge")), clrTeal) + "\n")
+		}
 	} else {
 		sb.WriteString(sectionHeader("📦", "POSITIONS", clrTeal) + "\n")
 	}
@@ -2044,6 +2100,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	assetOrder := []string{"BTC", "ETH", "SOL", "XRP", "UNKNOWN"}
 	totalMarketPnL, totalLockedPnL := 0.0, 0.0
 	hasMarketPrices := false
+	totalMarkedValue := 0.0
 
 	for _, marketID := range assetOrder {
 		mps, ok := byMarket[marketID]
@@ -2065,12 +2122,17 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					bidSt = styleRed
 				}
 				ps += " (" + bidSt.Render(fmt.Sprintf("now:$%.2f", pos.CurrentBid)) + ")"
+				if fusionMode {
+					totalMarkedValue += pos.MarketValue
+					totalMarketPnL += pos.UnrealizedPnL
+					hasMarketPrices = true
+				}
 			}
 			strs = append(strs, ps)
 		}
 		sb.WriteString(strings.Join(strs, "  │  "))
 
-		if len(mps) == 2 {
+		if !fusionMode && len(mps) == 2 {
 			matched := mps[0].Quantity
 			if mps[1].Quantity < matched {
 				matched = mps[1].Quantity
@@ -2104,7 +2166,20 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	}
 
 	// Total PnL summary
-	if hasMarketPrices {
+	if fusionMode {
+		if hasMarketPrices {
+			sg, st := func() (string, lipgloss.Style) {
+				if totalMarketPnL < 0 {
+					return "", styleRed
+				}
+				return "+", styleGreen
+			}()
+			sb.WriteString(styleBold.Render(fmt.Sprintf("  📊 Marked: %s  ·  Unrealized: %s",
+				styleWhite.Render(fmt.Sprintf("$%.2f", totalMarkedValue)),
+				st.Render(fmt.Sprintf("%s$%.2f", sg, totalMarketPnL)),
+			)) + "\n")
+		}
+	} else if hasMarketPrices {
 		mktSg, mktSt := func() (string, lipgloss.Style) {
 			if totalMarketPnL < 0 {
 				return "", styleRed
