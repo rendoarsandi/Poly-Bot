@@ -33,6 +33,9 @@ const (
 	realbotExecQuoteTimeout = 1500 * time.Millisecond
 	realbotOrderWarmTimeout = 1500 * time.Millisecond
 	realbotRestBookMaxAge   = 2 * time.Second
+	realbotRestPollInterval = 1 * time.Second
+	realbotWSWarnInterval   = 10 * time.Second
+	realbotWSForceReconnect = 10 * time.Second
 	realbotMergeTimeout     = 120 * time.Second
 	realbotCleanupVerifyTTL = 20 * time.Second
 	realbotFastVerifyTTL    = 6 * time.Second
@@ -52,6 +55,10 @@ func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWar
 		defer cancel()
 		_, _ = warmer.GetTradingAllowance(warmCtx)
 	}()
+}
+
+func shouldRealbotRestFallback(quoteAge, sinceLastRest time.Duration) bool {
+	return quoteAge > 3*time.Second && sinceLastRest > realbotRestPollInterval
 }
 
 type realbotQuoteState struct {
@@ -887,6 +894,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 	}()
 
+	lastRestPoll := time.Now()
+	lastReconnectCount := int32(0)
+	lastWsWarnTime := time.Time{}
+	lastForceReconnect := time.Time{}
+	wsChannelClosed := false
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -947,6 +960,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Exiting would leave positions unmatched; better to hold until expiration
 		killSwitchActive := riskMgr.IsKillSwitchTriggered()
 
+		_, _, reconnects, _ := wsMgr.GetStats()
+		if reconnects > lastReconnectCount {
+			tui.LogEvent("[%s] 🔄 WebSocket reconnected (attempt #%d)", id, reconnects)
+			lastReconnectCount = reconnects
+			wsChannelClosed = false
+		}
+
 		// ============ FAST WEBSOCKET PROCESSING ============
 		messagesProcessed := 0
 		for {
@@ -960,12 +980,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] ⚠️ WS closed (context cancelled)", id)
 						return
 					default:
-						// Context still active but channel closed unexpectedly
-						// This shouldn't happen with the current WS manager, but handle it
-						tui.LogEvent("[%s] ⚠️ WS channel closed unexpectedly, continuing with REST only", id)
+						// Context still active but channel closed unexpectedly.
+						// Treat this as a reconnect condition instead of continuing silently.
+						wsChannelClosed = true
 						goto doneWS
 					}
 				}
+				wsChannelClosed = false
 				messagesProcessed++
 
 				// Parse and process WebSocket message immediately.
@@ -1187,6 +1208,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		wsTimeSinceMsg := wsMgr.TimeSinceLastDataMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
+		sinceLastRest := time.Since(lastRestPoll)
 
 		// Force REST fallback if a book was just cleared or if it is currently crossed
 		forceRestFallback := false
@@ -1201,11 +1223,36 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
-		if forceRestFallback || (wsUnhealthy && staleTime > 3*time.Second) {
+		shouldPollREST := forceRestFallback || (wsUnhealthy && shouldRealbotRestFallback(staleTime, sinceLastRest))
+		if shouldPollREST {
+			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
-			if handleRestFallbackWithDepth(ctx, id, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui) {
+			if handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui) {
 				lastUpdate = time.Now()
 			}
+		}
+
+		if staleTime > realbotWSForceReconnect && time.Since(lastForceReconnect) > realbotWSForceReconnect {
+			tui.LogEvent("[%s] ⚠️ STALE (%s) - forcing WS reconnect", id, staleTime.Round(time.Second))
+			lastForceReconnect = time.Now()
+			wsChannelClosed = false
+			wsMgr.ForceReconnect()
+		}
+
+		if !wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
+			lastForceReconnect = time.Now()
+			wsMgr.ForceReconnect()
+			if time.Since(lastWsWarnTime) > realbotWSWarnInterval {
+				tui.LogEvent("[%s] 🔌 WS disconnected - reconnecting...", id)
+				lastWsWarnTime = time.Now()
+			}
+		}
+
+		if wsChannelClosed && time.Since(lastWsWarnTime) > realbotWSWarnInterval {
+			tui.LogEvent("[%s] ⚠️ WebSocket closed - attempting reconnect", id)
+			lastWsWarnTime = time.Now()
+			lastForceReconnect = time.Now()
+			wsMgr.ForceReconnect()
 		}
 
 		// ============ TRADING LOGIC ============
@@ -3588,8 +3635,12 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
 	success := false
+	staleSeconds := int(staleTime.Seconds())
+	restErrors := 0
+	restEmpty := 0
+	var lastErr error
 	for tokenID, outcome := range tokenMap {
 		start := time.Now()
 		// Use a short 2s timeout for fallback to prevent freezing the main loop when internet is down
@@ -3602,11 +3653,23 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 		tui.UpdateRestLatency(latency)
 
 		if err != nil {
+			restErrors++
+			lastErr = fmt.Errorf("fetching %s book after %s: %w", outcome, latency.Round(time.Millisecond), err)
 			// If one request fails (likely due to no internet), break immediately to prevent further blocking
 			break
 		}
 
-		// Parse timestamp for freshness check (removed logic)
+		// REST is authoritative state. If both sides are empty, clear stale local quotes.
+		if len(book.Bids) == 0 && len(book.Asks) == 0 {
+			restEmpty++
+			bids[outcome] = 0
+			asks[outcome] = 0
+			fullBids[outcome] = nil
+			fullAsks[outcome] = nil
+			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
+			success = true
+			continue
+		}
 
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
@@ -3651,6 +3714,17 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, tokenMap map[st
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
+		if staleSeconds >= 10 {
+			tui.LogEvent("[%s] ✅ REST recovered after %ds", id, staleSeconds)
+		}
+	} else if restErrors > 0 {
+		if staleSeconds%10 == 0 || staleSeconds == 10 {
+			tui.LogEvent("[%s] ❌ REST fallback failed after %ds: %v", id, staleSeconds, lastErr)
+		}
+	} else if restEmpty == len(tokenMap) && len(tokenMap) > 0 {
+		if staleSeconds%10 == 0 || staleSeconds == 10 {
+			tui.LogEvent("[%s] 📭 REST returned empty books after %ds", id, staleSeconds)
+		}
 	}
 	return success
 }

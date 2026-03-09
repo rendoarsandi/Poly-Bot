@@ -222,6 +222,40 @@ func TestTUI_getSplitPositions_MultipleInventories(t *testing.T) {
 	}
 }
 
+func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "maker"}
+	for _, idx := range []int{6, 7, 8, 9, 10} {
+		if settingsRowEditable(cfg, idx) {
+			t.Fatalf("expected row %d to be read-only in maker mode", idx)
+		}
+	}
+	for _, idx := range []int{4, 11, 12} {
+		if !settingsRowEditable(cfg, idx) {
+			t.Fatalf("expected row %d to remain editable in maker mode", idx)
+		}
+	}
+}
+
+func TestRenderSettingsShowsMakerSpecificLabels(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "maker",
+		TradeScaleFactor:        0.05,
+		MinMarginPercent:        2.0,
+		MaxAskPrice:             0.90,
+		MakerMergeBufferSeconds: 45,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	for _, want := range []string{"Maker Min Sell Edge %", "Maker Merge Buffer", "Maker Max Buy Price", "ignored live"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("renderSettings() missing %q\n%s", want, view)
+		}
+	}
+}
+
 func TestTUIGetOpenOrdersSnapshotAggregatesRegisteredBooks(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, nil)

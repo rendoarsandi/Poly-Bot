@@ -81,6 +81,7 @@ type Config struct {
 	SplitTargetMarginReserve float64 // Maintain inventory for this margin level (default: 6%)
 	SplitReplenishThreshold  float64 // Trigger new split when shares fall below this (default: 50)
 	SplitMergeBufferSeconds  int     // Seconds before expiry to merge unsold shares (default: 30)
+	MakerMergeBufferSeconds  int     // Seconds before expiry to merge paired maker inventory (default: 30)
 	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
 }
@@ -136,6 +137,7 @@ func LoadConfig() (*Config, error) {
 		SplitTargetMarginReserve: parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
 		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
 		SplitMergeBufferSeconds:  parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
+		MakerMergeBufferSeconds:  parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
 		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
 	}
@@ -267,11 +269,13 @@ func (c *Config) SaveSettings() error {
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
+	envMap["PAPER_ARB_MODE"] = c.PaperArbMode
 	envMap["MIN_ASK_PRICE"] = strconv.FormatFloat(c.MinAskPrice, 'f', -1, 64)
 	envMap["MAX_ASK_PRICE"] = strconv.FormatFloat(c.MaxAskPrice, 'f', -1, 64)
 	envMap["BUY_EXECUTION_MARGIN_FLOOR_PERCENT"] = strconv.FormatFloat(c.BuyExecutionMarginFloorPercent, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)
+	envMap["MAKER_MERGE_BUFFER_SECONDS"] = strconv.Itoa(c.MakerMergeBufferSeconds)
 	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
 	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
 

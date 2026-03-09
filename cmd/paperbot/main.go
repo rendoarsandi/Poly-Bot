@@ -233,6 +233,47 @@ func computePaperMakerArbPrices(bid1, ask1, bid2, ask2, maxSum float64) (float64
 	return price1, price2, true
 }
 
+func computePaperMakerSplitSellPrices(bid1, ask1, bid2, ask2, minSum float64) (float64, float64, bool) {
+	minPrice1 := roundPaperMakerPrice(bid1 + paperMakerQuoteStep)
+	minPrice2 := roundPaperMakerPrice(bid2 + paperMakerQuoteStep)
+	maxPrice1 := roundPaperMakerPrice(ask1 - paperMakerQuoteStep)
+	maxPrice2 := roundPaperMakerPrice(ask2 - paperMakerQuoteStep)
+	if ask1 <= 0 || ask2 <= 0 || maxPrice1 < minPrice1 || maxPrice2 < minPrice2 {
+		return 0, 0, false
+	}
+
+	price1 := minPrice1
+	price2 := minPrice2
+	for price1+price2 < minSum-1e-9 {
+		room1 := maxPrice1 - price1
+		room2 := maxPrice2 - price2
+		if room1 < paperMakerQuoteStep-1e-9 && room2 < paperMakerQuoteStep-1e-9 {
+			return 0, 0, false
+		}
+		if room1 >= room2 && room1 >= paperMakerQuoteStep-1e-9 {
+			price1 = roundPaperMakerPrice(math.Min(maxPrice1, price1+paperMakerQuoteStep))
+			continue
+		}
+		if room2 >= paperMakerQuoteStep-1e-9 {
+			price2 = roundPaperMakerPrice(math.Min(maxPrice2, price2+paperMakerQuoteStep))
+			continue
+		}
+		if room1 >= paperMakerQuoteStep-1e-9 {
+			price1 = roundPaperMakerPrice(math.Min(maxPrice1, price1+paperMakerQuoteStep))
+			continue
+		}
+		return 0, 0, false
+	}
+	return price1, price2, true
+}
+
+func computePaperSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
+	if feeRateBps <= 0 || shares <= 0 || price <= 0 {
+		return 0
+	}
+	return shares * 0.25 * math.Pow(price*(1.0-price), 2.0) * price
+}
+
 func paperMakerQuoteKey(side, outcome string) string {
 	return strings.ToLower(strings.TrimSpace(side)) + ":" + outcome
 }
@@ -316,6 +357,56 @@ func computePaperMakerSellQty(baseShares, positionShares, skew float64) float64 
 	return math.Floor(qty)
 }
 
+func computePaperMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew float64, feeRateBps int) (float64, bool) {
+	price, ok := computePaperMakerSkewedQuote("sell", bid, ask, skew)
+	if !ok {
+		return 0, false
+	}
+
+	minPrice := paperMakerQuoteStep
+	if bid > 0 {
+		minPrice = roundPaperMakerPrice(bid + paperMakerQuoteStep)
+	}
+	maxPrice := roundPaperMakerPrice(ask - paperMakerQuoteStep)
+	if maxPrice < minPrice {
+		return 0, false
+	}
+
+	requiredNet := avgCost + minEdge
+	price = roundPaperMakerPrice(clampFloat64(price, minPrice, maxPrice))
+	for price <= maxPrice+1e-9 {
+		netPrice := price - computePaperSellFeeUsdc(1.0, price, feeRateBps)
+		if netPrice+1e-9 >= requiredNet {
+			return price, true
+		}
+		price = roundPaperMakerPrice(price + paperMakerQuoteStep)
+	}
+	return 0, false
+}
+
+func shouldPaperMakerBlockBuy(positionShares float64, sellOK bool, peerShares, peerAvgCost, price, minEdge float64) bool {
+	if price <= 0 {
+		return true
+	}
+
+	// Do not keep adding to a side that is already the heavy leg when we do not
+	// currently have a profitable maker exit for that inventory.
+	if positionShares > 0 && !sellOK && positionShares >= peerShares {
+		return true
+	}
+
+	// If buying this side would complete matched pairs against peer inventory,
+	// require the completed pair cost to remain below $1.00 after the desired edge.
+	if peerShares > positionShares && peerAvgCost > 0 {
+		maxCompletionPrice := (1.0 - minEdge) - peerAvgCost
+		if price > maxCompletionPrice+1e-9 {
+			return true
+		}
+	}
+
+	return false
+}
+
 func clearPaperMakerQuoteReference(t *MarketTrader, order *paper.LimitOrder) {
 	if order == nil || len(t.MakerQuotes) == 0 {
 		return
@@ -325,6 +416,18 @@ func clearPaperMakerQuoteReference(t *MarketTrader, order *paper.LimitOrder) {
 			delete(t.MakerQuotes, key)
 		}
 	}
+}
+
+func isPaperMakerQuote(t *MarketTrader, order *paper.LimitOrder) bool {
+	if order == nil {
+		return false
+	}
+	for _, existing := range t.MakerQuotes {
+		if existing != nil && existing.ID == order.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func cancelPaperMakerQuote(t *MarketTrader, side, outcome string) bool {
@@ -398,6 +501,63 @@ func updatePaperPendingOrders(t *MarketTrader) {
 	t.TUI.SetPendingOrders(pending)
 }
 
+func ensurePaperMakerSplitInventory(t *MarketTrader, currentEquity, currentCash, sellMargin float64) {
+	if len(t.Outcomes) != 2 {
+		return
+	}
+	if !t.SplitInitialized {
+		baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+		initialBuffer := baseTradeSize * 2.0
+		if initialBuffer < MinSplitBuffer {
+			initialBuffer = MinSplitBuffer
+		}
+		maxInitial := currentEquity * t.Config.SplitInitialCapPct
+		splitAmount := math.Min(initialBuffer, maxInitial)
+		if splitAmount > currentCash {
+			splitAmount = currentCash
+		}
+		if splitAmount >= MinSplitAmount {
+			t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
+			t.Engine.DeductBalance(splitAmount)
+			t.Engine.RecalculateDrawdown()
+			t.SplitInitialized = true
+			t.InitialSplitAmount = splitAmount
+			t.TUI.LogEvent("[%s] 🔀 SPLIT (sim): Created %.0f shares ($%.2f)", t.ID, splitAmount, splitAmount)
+			currentCash -= splitAmount
+		}
+	}
+
+	baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+	targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
+	currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
+	replenishAmount := baseTradeSize * 2.0
+
+	decision := t.ReplenishCtrl.CheckReplenish(paper.ReplenishParams{
+		CurrentShares:      currentShares,
+		TargetBuffer:       targetBuffer,
+		InitialShares:      t.InitialSplitAmount,
+		SellMargin:         sellMargin,
+		MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
+		CurrentBalance:     currentCash,
+		ReplenishAmount:    replenishAmount,
+		MaxBalancePercent:  t.Config.SplitReplenishCapPct,
+	})
+
+	if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
+		actualReplenish := decision.Amount
+		if actualReplenish > currentCash {
+			actualReplenish = currentCash
+		}
+		if actualReplenish >= MinSplitAmount {
+			t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], actualReplenish)
+			t.Engine.DeductBalance(actualReplenish)
+			t.Engine.RecalculateDrawdown()
+			t.TUI.LogEvent("[%s] 🔄 SPLIT (sim): Replenished +%.0f shares (now %.0f)", t.ID, actualReplenish, t.InitialSplitAmount)
+		}
+		t.ReplenishCtrl.MarkComplete()
+	}
+}
+
 func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	if len(t.Outcomes) != 2 {
 		cancelAllPaperMakerQuotes(t, "maker mode requires exactly 2 outcomes")
@@ -408,62 +568,116 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		return
 	}
 
-	currentCash := t.Engine.GetBalance()
-	positions := t.Engine.GetPositions()
 	bid1, ask1 := t.TokenBids[t.Outcomes[0]], t.TokenAsks[t.Outcomes[0]]
 	bid2, ask2 := t.TokenBids[t.Outcomes[1]], t.TokenAsks[t.Outcomes[1]]
 	if bid1 <= 0 || ask1 <= 0 || bid2 <= 0 || ask2 <= 0 {
 		cancelAllPaperMakerQuotes(t, "waiting for valid bid/ask on both outcomes")
 		return
 	}
-	mid1 := (bid1 + ask1) / 2
-	mid2 := (bid2 + ask2) / 2
-	if mid1 <= 0 || mid2 <= 0 {
-		cancelAllPaperMakerQuotes(t, "invalid mid prices")
+
+	liveCfg := t.TUI.GetSettings()
+	currentEquity := t.Engine.GetEquity()
+	currentCash := t.Engine.GetBalance()
+	positions := t.Engine.GetPositions()
+	pos1, hasPos1 := getPaperMarketPosition(positions, t.ID, t.Outcomes[0])
+	pos2, hasPos2 := getPaperMarketPosition(positions, t.ID, t.Outcomes[1])
+	shares1, shares2 := 0.0, 0.0
+	avgCost1, avgCost2 := 0.0, 0.0
+	if hasPos1 {
+		shares1 = pos1.Quantity
+		avgCost1 = pos1.AvgPrice
+	}
+	if hasPos2 {
+		shares2 = pos2.Quantity
+		avgCost2 = pos2.AvgPrice
+	}
+
+	timeToEnd := time.Until(t.EndTime)
+	mergeBuffer := 30 * time.Second
+	if liveCfg.MakerMergeBufferSeconds > 0 {
+		mergeBuffer = time.Duration(liveCfg.MakerMergeBufferSeconds) * time.Second
+	} else if t.Config.MakerMergeBufferSeconds > 0 {
+		mergeBuffer = time.Duration(t.Config.MakerMergeBufferSeconds) * time.Second
+	} else if t.Config.SplitMergeBufferSeconds > 0 {
+		mergeBuffer = time.Duration(t.Config.SplitMergeBufferSeconds) * time.Second
+	}
+	if timeToEnd < mergeBuffer && timeToEnd > 0 {
+		cancelAllPaperMakerQuotes(t, "near expiry merge cleanup")
+		mergeableShares := math.Floor(math.Min(shares1, shares2))
+		if mergeableShares >= 1.0 {
+			result := t.Engine.MergeForMarket(t.ID, t.Outcomes[0], t.Outcomes[1], mergeableShares)
+			t.Engine.RecalculateDrawdown()
+			t.TUI.LogEvent("[%s] 💰 MAKER MERGE (sim): Merged %.0f paired shares (pnl $%.2f)", t.ID, result.Shares, result.PnL)
+		}
+		updatePaperPendingOrders(t)
 		return
 	}
 
-	currentEquity := t.Engine.GetEquity()
-	baseShares := t.Config.CalculateTradeSize(currentEquity) / math.Max(mid1+mid2, 0.01)
+	baseShares := t.Config.CalculateTradeSize(currentEquity)
 	if baseShares < paperMakerMinQuoteShares {
 		baseShares = paperMakerMinQuoteShares
 	}
-	targetInventory := math.Max(baseShares*paperMakerInventoryTargetMult, 4.0)
-	maxInventory := math.Max(baseShares*paperMakerInventoryCapMult, targetInventory)
+	targetShares := math.Max(paperMakerMinQuoteShares, baseShares*paperMakerInventoryTargetMult)
+	maxInventory := math.Max(targetShares, baseShares*paperMakerInventoryCapMult)
+	minSellEdge := t.Config.MinMarginPercent / 100.0
+
+	skew1 := computePaperMakerInventorySkew(shares1, shares2, targetShares)
+	skew2 := computePaperMakerInventorySkew(shares2, shares1, targetShares)
+
+	buyPrice1, buyOK1 := computePaperMakerSkewedQuote("buy", bid1, ask1, skew1)
+	buyPrice2, buyOK2 := computePaperMakerSkewedQuote("buy", bid2, ask2, skew2)
+	maxMakerBuyPrice := liveCfg.MaxAskPrice
+	if maxMakerBuyPrice <= 0 || maxMakerBuyPrice > 0.99 {
+		maxMakerBuyPrice = 0.99
+	}
+	if !buyOK1 || buyPrice1 > maxMakerBuyPrice {
+		buyOK1 = false
+	}
+	if !buyOK2 || buyPrice2 > maxMakerBuyPrice {
+		buyOK2 = false
+	}
+
+	sellPrice1, sellOK1 := computePaperMakerProtectedSellQuote(bid1, ask1, avgCost1, minSellEdge, skew1, t.Config.FeeRateBps)
+	sellPrice2, sellOK2 := computePaperMakerProtectedSellQuote(bid2, ask2, avgCost2, minSellEdge, skew2, t.Config.FeeRateBps)
+	sellQty1 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares1, skew1))
+	sellQty2 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares2, skew2))
+	if !sellOK1 {
+		sellQty1 = 0
+	}
+	if !sellOK2 {
+		sellQty2 = 0
+	}
+
+	buyQty1 := 0.0
+	buyQty2 := 0.0
+	if buyOK1 && !shouldPaperMakerBlockBuy(shares1, sellOK1, shares2, avgCost2, buyPrice1, minSellEdge) {
+		buyQty1 = math.Min(MaxSharesPerSell, computePaperMakerBuyQty(baseShares, shares1, skew1, maxInventory, currentCash, buyPrice1))
+	}
+	if buyOK2 && !shouldPaperMakerBlockBuy(shares2, sellOK2, shares1, avgCost1, buyPrice2, minSellEdge) {
+		buyQty2 = math.Min(MaxSharesPerSell, computePaperMakerBuyQty(baseShares, shares2, skew2, maxInventory, currentCash, buyPrice2))
+	}
+
 	changed := false
-
-	for i, outcome := range t.Outcomes {
-		peerOutcome := t.Outcomes[1-i]
-		bid := t.TokenBids[outcome]
-		ask := t.TokenAsks[outcome]
-		pos, _ := getPaperMarketPosition(positions, t.ID, outcome)
-		peerPos, _ := getPaperMarketPosition(positions, t.ID, peerOutcome)
-		positionShares := pos.Quantity
-		peerShares := peerPos.Quantity
-		skew := computePaperMakerInventorySkew(positionShares, peerShares, targetInventory)
-
-		buyPrice, buyOK := computePaperMakerSkewedQuote("buy", bid, ask, skew)
-		buyQty := 0.0
-		if buyOK {
-			buyQty = computePaperMakerBuyQty(baseShares, positionShares, skew, maxInventory, currentCash, buyPrice)
-		}
-		if upsertPaperMakerQuote(t, "buy", outcome, buyPrice, buyQty) {
-			changed = true
-		}
-
-		sellPrice, sellOK := computePaperMakerSkewedQuote("sell", bid, ask, skew)
-		sellQty := 0.0
-		if sellOK {
-			sellQty = computePaperMakerSellQty(baseShares, positionShares, skew)
-		}
-		if upsertPaperMakerQuote(t, "sell", outcome, sellPrice, sellQty) {
-			changed = true
-		}
+	if upsertPaperMakerQuote(t, "buy", t.Outcomes[0], buyPrice1, buyQty1) {
+		changed = true
+	}
+	if upsertPaperMakerQuote(t, "buy", t.Outcomes[1], buyPrice2, buyQty2) {
+		changed = true
+	}
+	if upsertPaperMakerQuote(t, "sell", t.Outcomes[0], sellPrice1, sellQty1) {
+		changed = true
+	}
+	if upsertPaperMakerQuote(t, "sell", t.Outcomes[1], sellPrice2, sellQty2) {
+		changed = true
 	}
 
 	t.LastMakerSync = now
 	if changed {
-		t.TUI.LogEvent("[%s] 🧾 Maker quotes refreshed", t.ID)
+		t.TUI.LogEvent("[%s] 🧾 Maker quotes refreshed: %s buy@$%.3f/ sell@$%.3f | %s buy@$%.3f/ sell@$%.3f",
+			t.ID,
+			t.Outcomes[0], buyPrice1, sellPrice1,
+			t.Outcomes[1], buyPrice2, sellPrice2,
+		)
 	}
 	updatePaperPendingOrders(t)
 }
@@ -586,18 +800,19 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
-		MarketSlug:           cfg.MarketSlug,
-		MaxMarkets:           cfg.MaxMarkets,
-		Timeframe:            cfg.Timeframe,
-		TradeScaleFactor:     cfg.TradeScaleFactor,
-		MinMarginPercent:     cfg.MinMarginPercent,
-		PaperArbMode:         normalizePaperArbMode(cfg.PaperArbMode),
-		SplitMinMarginSell:   cfg.SplitMinMarginSell,
-		SplitStrategyEnabled: cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:   cfg.SplitInitialCapPct,
-		SplitReplenishCapPct: cfg.SplitReplenishCapPct,
-		MinAskPrice:          cfg.MinAskPrice,
-		MaxAskPrice:          cfg.MaxAskPrice,
+		MarketSlug:              cfg.MarketSlug,
+		MaxMarkets:              cfg.MaxMarkets,
+		Timeframe:               cfg.Timeframe,
+		TradeScaleFactor:        cfg.TradeScaleFactor,
+		MinMarginPercent:        cfg.MinMarginPercent,
+		PaperArbMode:            normalizePaperArbMode(cfg.PaperArbMode),
+		SplitMinMarginSell:      cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:    cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:      cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:    cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds: cfg.MakerMergeBufferSeconds,
+		MinAskPrice:             cfg.MinAskPrice,
+		MaxAskPrice:             cfg.MaxAskPrice,
 	}, func(s paper.TUISettings) {
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
@@ -609,6 +824,7 @@ func run() error {
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
 		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
+		cfg.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
 		_ = cfg.SaveSettings()

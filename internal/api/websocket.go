@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -49,7 +50,8 @@ type WSManager struct {
 	// Stats
 	reconnectCount atomic.Int32
 	messageCount   atomic.Int64
-	pingLatencyNs  atomic.Int64 // Last ping round-trip time in nanoseconds
+	pingLatencyNs  atomic.Int64 // Last PING -> PONG round-trip time in nanoseconds
+	lastPingSentNs atomic.Int64
 }
 
 func NewWSManager(url string) *WSManager {
@@ -112,6 +114,7 @@ func (m *WSManager) connectInternal(ctx context.Context) error {
 	m.connected.Store(true)
 	m.lastMessage.Store(time.Now().Unix())
 	m.lastHeartbeat.Store(time.Now().Unix())
+	m.lastPingSentNs.Store(0)
 
 	return nil
 }
@@ -162,12 +165,11 @@ func (m *WSManager) heartbeatLoop() {
 
 				// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame)
 				err := conn.Write(pingCtx, websocket.MessageText, []byte("PING"))
-
-				pingLatency := time.Since(pingStart)
 				pingCancel()
 				if err != nil {
 					consecutivePingFailures++
 					m.pingLatencyNs.Store(0)
+					m.lastPingSentNs.Store(0)
 
 					// Only reconnect after multiple failures (handles temporary throttling)
 					if consecutivePingFailures >= maxPingFailures {
@@ -178,10 +180,9 @@ func (m *WSManager) heartbeatLoop() {
 				}
 				// Ping succeeded - connection is alive, record latency
 				consecutivePingFailures = 0
-				m.lastHeartbeat.Store(time.Now().Unix())
-				m.pingLatencyNs.Store(pingLatency.Nanoseconds())
+				m.lastPingSentNs.Store(pingStart.UnixNano())
 				// NOTE: Do NOT update lastMessage here - only actual data messages
-				// should update lastMessage. This allows the bot to detect when
+				// or PONG heartbeats should update lastMessage. This allows the bot to detect when
 				// the connection is alive but no market data is flowing, triggering
 				// the REST fallback for fresh prices.
 			}
@@ -270,6 +271,7 @@ attemptLoop:
 func (m *WSManager) handleConnectionFailure(failedConn *websocket.Conn, code websocket.StatusCode, reason string) {
 	m.connected.Store(false)
 	m.pingLatencyNs.Store(0)
+	m.lastPingSentNs.Store(0)
 
 	var connToClose *websocket.Conn
 	m.mu.Lock()
@@ -297,6 +299,7 @@ func (m *WSManager) Close() error {
 
 	m.connected.Store(false)
 	m.pingLatencyNs.Store(0)
+	m.lastPingSentNs.Store(0)
 
 	var connToClose *websocket.Conn
 	m.mu.Lock()
@@ -342,17 +345,21 @@ func (m *WSManager) ReadMessage(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("%w: not connected", ErrWSConnectionUnhealthy)
 	}
 
-	_, p, err := conn.Read(ctx)
-	if err != nil {
-		m.handleConnectionFailure(conn, websocket.StatusGoingAway, "read failed")
-		// Trigger reconnection on read error
-		go m.tryReconnect()
-		return nil, err
-	}
+	for {
+		_, p, err := conn.Read(ctx)
+		if err != nil {
+			m.handleConnectionFailure(conn, websocket.StatusGoingAway, "read failed")
+			// Trigger reconnection on read error
+			go m.tryReconnect()
+			return nil, err
+		}
 
-	m.lastMessage.Store(time.Now().Unix())
-	m.messageCount.Add(1)
-	return p, nil
+		msg, heartbeat := m.processInboundMessage(p)
+		if heartbeat {
+			continue
+		}
+		return msg, nil
+	}
 }
 
 // ReadMessageWithTimeout reads with a timeout, returning nil if timeout exceeded
@@ -380,27 +387,31 @@ func (m *WSManager) ReadMessageWithTimeout(ctx context.Context, timeout time.Dur
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	_, p, err := conn.Read(timeoutCtx)
-	if err != nil {
-		// Check if parent context was cancelled (Ctrl+C)
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+	for {
+		_, p, err := conn.Read(timeoutCtx)
+		if err != nil {
+			// Check if parent context was cancelled (Ctrl+C)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			// If it's just a timeout, return nil without error
+			if timeoutCtx.Err() == context.DeadlineExceeded {
+				return nil, nil
+			}
+			m.handleConnectionFailure(conn, websocket.StatusGoingAway, "read timeout loop failed")
+			// On other errors, trigger reconnection
+			go m.tryReconnect()
+			return nil, err
 		}
-		// If it's just a timeout, return nil without error
-		if timeoutCtx.Err() == context.DeadlineExceeded {
-			return nil, nil
-		}
-		m.handleConnectionFailure(conn, websocket.StatusGoingAway, "read timeout loop failed")
-		// On other errors, trigger reconnection
-		go m.tryReconnect()
-		return nil, err
-	}
 
-	m.lastMessage.Store(time.Now().Unix())
-	m.messageCount.Add(1)
-	return p, nil
+		msg, heartbeat := m.processInboundMessage(p)
+		if heartbeat {
+			continue
+		}
+		return msg, nil
+	}
 }
 
 // IsConnected returns current connection status
@@ -437,10 +448,26 @@ func (m *WSManager) TimeSinceLastDataMessage() time.Duration {
 	return time.Since(time.Unix(0, last))
 }
 
-// PingLatency returns the last measured heartbeat write latency.
-// Polymarket heartbeats use text PING/PONG frames here, so this is not a full round-trip RTT metric.
+// PingLatency returns the last measured PING -> PONG heartbeat round-trip latency.
 func (m *WSManager) PingLatency() time.Duration {
 	return time.Duration(m.pingLatencyNs.Load())
+}
+
+func (m *WSManager) processInboundMessage(p []byte) ([]byte, bool) {
+	now := time.Now()
+	m.lastMessage.Store(now.Unix())
+	m.messageCount.Add(1)
+
+	if bytes.Equal(bytes.TrimSpace(p), []byte("PONG")) {
+		m.lastHeartbeat.Store(now.Unix())
+		if pingSentNs := m.lastPingSentNs.Swap(0); pingSentNs > 0 {
+			m.pingLatencyNs.Store(now.Sub(time.Unix(0, pingSentNs)).Nanoseconds())
+		}
+		return nil, true
+	}
+
+	m.lastDataMessage.Store(now.UnixNano())
+	return p, false
 }
 
 // StartStreaming starts a goroutine that continuously reads messages and sends to channel
@@ -529,23 +556,20 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 
 			// Reset error counter on success
 			consecutiveErrors = 0
-			now := time.Now()
-			m.lastMessage.Store(now.Unix())
-			m.messageCount.Add(1)
 
-			// Polymarket responds to PING with literal "PONG" strings
-			// Filter these out so JSON parsers downstream don't crash
-			if string(p) == "PONG" {
+			// Polymarket responds to PING with literal "PONG" strings.
+			// Consume them here so downstream JSON parsers only see data events.
+			msg, heartbeat := m.processInboundMessage(p)
+			if heartbeat {
 				continue
 			}
-			m.lastDataMessage.Store(now.UnixNano())
 
 			// Send to channel - prioritize newest message
 			// Uses labeled loop for clarity (avoids goto)
 		sendLoop:
 			for {
 				select {
-				case msgChan <- p:
+				case msgChan <- msg:
 					// Successfully sent
 					break sendLoop
 				default:

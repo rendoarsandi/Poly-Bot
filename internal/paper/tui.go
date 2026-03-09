@@ -204,16 +204,69 @@ type TUISettings struct {
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
 	SplitInitialCapPct             float64 // Initial Split Cap percentage
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
+	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
+
+func isMakerSettingsMode(cfg TUISettings) bool {
+	return strings.EqualFold(cfg.PaperArbMode, "maker")
+}
+
+func settingsRowEditable(cfg TUISettings, idx int) bool {
+	if !isMakerSettingsMode(cfg) {
+		return true
+	}
+	switch idx {
+	case 6, 7, 8, 9, 10:
+		return false
+	default:
+		return true
+	}
+}
+
+func settingsRowLabel(cfg TUISettings, idx int) string {
+	maker := isMakerSettingsMode(cfg)
+	switch idx {
+	case 4:
+		if maker {
+			return "Maker Min Sell Edge %"
+		}
+		return "Buy Min Margin %"
+	case 6:
+		if maker {
+			return "Exec Floor % (taker only)"
+		}
+		return "Buy/Sell Exec Floor %"
+	case 7:
+		return "Split Min Margin"
+	case 8:
+		return "Split Strategy"
+	case 9:
+		return "Split Initial Cap"
+	case 10:
+		return "Split Replenish Cap"
+	case 11:
+		if maker {
+			return "Maker Merge Buffer"
+		}
+		return "Min Ask Price"
+	case 12:
+		if maker {
+			return "Maker Max Buy Price"
+		}
+		return "Max Ask Price"
+	default:
+		return ""
+	}
+}
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
 
@@ -653,6 +706,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "left", "-", "h":
 				m.tui.mu.Lock()
 				changed := false
+				if !settingsRowEditable(m.tui.settings, m.settingsCursor) {
+					m.tui.mu.Unlock()
+					return m, nil
+				}
 				switch m.settingsCursor {
 				case 0: // Market
 					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
@@ -725,9 +782,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
-					m.tui.settings.MinAskPrice -= 0.01
-					if m.tui.settings.MinAskPrice < 0.01 {
-						m.tui.settings.MinAskPrice = 0.01
+					if isMakerSettingsMode(m.tui.settings) {
+						m.tui.settings.MakerMergeBufferSeconds -= 5
+						if m.tui.settings.MakerMergeBufferSeconds < 5 {
+							m.tui.settings.MakerMergeBufferSeconds = 5
+						}
+					} else {
+						m.tui.settings.MinAskPrice -= 0.01
+						if m.tui.settings.MinAskPrice < 0.01 {
+							m.tui.settings.MinAskPrice = 0.01
+						}
 					}
 					changed = true
 				case 12:
@@ -746,6 +810,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
+				if !settingsRowEditable(m.tui.settings, m.settingsCursor) {
+					m.tui.mu.Unlock()
+					return m, nil
+				}
 				switch m.settingsCursor {
 				case 0: // Market
 					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
@@ -815,9 +883,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
-					m.tui.settings.MinAskPrice += 0.01
-					if m.tui.settings.MinAskPrice > 0.99 {
-						m.tui.settings.MinAskPrice = 0.99
+					if isMakerSettingsMode(m.tui.settings) {
+						m.tui.settings.MakerMergeBufferSeconds += 5
+						if m.tui.settings.MakerMergeBufferSeconds > 120 {
+							m.tui.settings.MakerMergeBufferSeconds = 120
+						}
+					} else {
+						m.tui.settings.MinAskPrice += 0.01
+						if m.tui.settings.MinAskPrice > 0.99 {
+							m.tui.settings.MinAskPrice = 0.99
+						}
 					}
 					changed = true
 				case 12:
@@ -2425,13 +2500,15 @@ func (m tuiModel) renderSettings(w int) string {
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
 
 	type row struct {
-		label string
-		value string
-		bar   string
+		label    string
+		value    string
+		bar      string
+		disabled bool
 	}
 
 	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
 
+	makerMode := isMakerSettingsMode(cfg)
 	rows := []row{
 		{
 			label: "Market",
@@ -2454,7 +2531,7 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   renderBar(cfg.TradeScaleFactor/1.0, 20),
 		},
 		{
-			label: "Buy Min Margin %",
+			label: settingsRowLabel(cfg, 4),
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
@@ -2469,42 +2546,80 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
-			label: "Buy/Sell Exec Floor %",
-			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
-			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
-		},
-		{
-			label: "Split Min Margin",
-			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
-			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
-		},
-		{
-			label: "Split Strategy",
+			label: settingsRowLabel(cfg, 6),
 			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" maker ignores ")
+				}
+				return fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent)
+			}(),
+			bar:      renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
+			disabled: makerMode,
+		},
+		{
+			label: settingsRowLabel(cfg, 7),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
+				return fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell)
+			}(),
+			bar:      renderBar(cfg.SplitMinMarginSell/20.0, 20),
+			disabled: makerMode,
+		},
+		{
+			label: settingsRowLabel(cfg, 8),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
 				if cfg.SplitStrategyEnabled {
 					return styleGreen.Render("  ON ")
 				}
 				return styleMuted.Render(" OFF ")
 			}(),
-			bar: "",
+			bar:      "",
+			disabled: makerMode,
 		},
 		{
-			label: "Split Initial Cap",
-			value: fmtPct(cfg.SplitInitialCapPct),
-			bar:   renderBar(cfg.SplitInitialCapPct, 20),
+			label: settingsRowLabel(cfg, 9),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
+				return fmtPct(cfg.SplitInitialCapPct)
+			}(),
+			bar:      renderBar(cfg.SplitInitialCapPct, 20),
+			disabled: makerMode,
 		},
 		{
-			label: "Split Replenish Cap",
-			value: fmtPct(cfg.SplitReplenishCapPct),
-			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
+			label: settingsRowLabel(cfg, 10),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
+				return fmtPct(cfg.SplitReplenishCapPct)
+			}(),
+			bar:      renderBar(cfg.SplitReplenishCapPct, 20),
+			disabled: makerMode,
 		},
 		{
-			label: "Min Ask Price",
-			value: fmt.Sprintf(" $%.2f ", cfg.MinAskPrice),
-			bar:   renderBar(cfg.MinAskPrice, 20),
+			label: settingsRowLabel(cfg, 11),
+			value: func() string {
+				if makerMode {
+					return fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds)
+				}
+				return fmt.Sprintf(" $%.2f ", cfg.MinAskPrice)
+			}(),
+			bar: func() string {
+				if makerMode {
+					return renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20)
+				}
+				return renderBar(cfg.MinAskPrice, 20)
+			}(),
 		},
 		{
-			label: "Max Ask Price",
+			label: settingsRowLabel(cfg, 12),
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
@@ -2521,8 +2636,16 @@ func (m tuiModel) renderSettings(w int) string {
 		vSt := valueStyle
 		if i == m.settingsCursor {
 			cursor = cursorStyle.Render("> ")
-			lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
-			vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
+			if r.disabled {
+				lSt = lipgloss.NewStyle().Bold(true).Foreground(clrDim)
+				vSt = lipgloss.NewStyle().Bold(true).Foreground(clrDim)
+			} else {
+				lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
+				vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
+			}
+		} else if r.disabled {
+			lSt = lipgloss.NewStyle().Foreground(clrDim)
+			vSt = lipgloss.NewStyle().Foreground(clrDim)
 		}
 
 		// Use fixed-width padding to perfectly align the bars
@@ -2573,6 +2696,10 @@ func (m tuiModel) renderSettings(w int) string {
 		100*cfg.TradeScaleFactor,
 		500*cfg.TradeScaleFactor,
 	))
+	modeNote := ""
+	if makerMode {
+		modeNote = styleDimmed.Render("  Maker mode: split/taker-only rows are shown for reference and ignored live") + "\n"
+	}
 
 	content := title + "\n" +
 		keysLine + "\n\n" +
@@ -2583,6 +2710,7 @@ func (m tuiModel) renderSettings(w int) string {
 		p2 + "\n" +
 		p3 + "\n\n" +
 		divider + "\n" +
+		modeNote +
 		balanceNote
 
 	return makePanel(inner, clrBrand, content)
