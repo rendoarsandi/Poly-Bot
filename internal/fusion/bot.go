@@ -211,6 +211,7 @@ func (b *Bot) refreshMarkets(ctx context.Context) error {
 
 type marketQuality struct {
 	Available    bool
+	Complete     bool
 	UpBid        float64
 	UpAsk        float64
 	DownBid      float64
@@ -219,6 +220,9 @@ type marketQuality struct {
 	UpAskDepth   float64
 	DownBidDepth float64
 	DownAskDepth float64
+	PairBidSum   float64
+	PairAskSum   float64
+	MaxSpread    float64
 }
 
 func (b *Bot) fetchMarketQualities(ctx context.Context, markets []api.Market, current map[string]*trackedMarket, requestedAssets []string, timeframe string, now time.Time) map[string]marketQuality {
@@ -280,7 +284,8 @@ func marketQualityFromTracked(market *trackedMarket) marketQuality {
 		return marketQuality{}
 	}
 	return marketQuality{
-		Available:    true,
+		Available:    marketQuoteHealth(market.Bids, market.Asks).Complete,
+		Complete:     marketQuoteHealth(market.Bids, market.Asks).Complete,
 		UpBid:        market.Bids["Up"],
 		UpAsk:        market.Asks["Up"],
 		DownBid:      market.Bids["Down"],
@@ -289,6 +294,9 @@ func marketQualityFromTracked(market *trackedMarket) marketQuality {
 		UpAskDepth:   sumLevelSize(market.DepthAsks["Up"], 3),
 		DownBidDepth: sumLevelSize(market.DepthBids["Down"], 3),
 		DownAskDepth: sumLevelSize(market.DepthAsks["Down"], 3),
+		PairBidSum:   market.Bids["Up"] + market.Bids["Down"],
+		PairAskSum:   market.Asks["Up"] + market.Asks["Down"],
+		MaxSpread:    math.Max(math.Max(0, market.Asks["Up"]-market.Bids["Up"]), math.Max(0, market.Asks["Down"]-market.Bids["Down"])),
 	}
 }
 
@@ -317,6 +325,7 @@ func (b *Bot) fetchMarketQuality(ctx context.Context, market *api.Market) (marke
 	}
 	quality = marketQuality{
 		Available:    bids["Up"] > 0 && asks["Up"] > 0 && bids["Down"] > 0 && asks["Down"] > 0,
+		Complete:     bids["Up"] > 0 && asks["Up"] > 0 && bids["Down"] > 0 && asks["Down"] > 0,
 		UpBid:        bids["Up"],
 		UpAsk:        asks["Up"],
 		DownBid:      bids["Down"],
@@ -325,6 +334,9 @@ func (b *Bot) fetchMarketQuality(ctx context.Context, market *api.Market) (marke
 		UpAskDepth:   askDepth["Up"],
 		DownBidDepth: bidDepth["Down"],
 		DownAskDepth: askDepth["Down"],
+		PairBidSum:   bids["Up"] + bids["Down"],
+		PairAskSum:   asks["Up"] + asks["Down"],
+		MaxSpread:    math.Max(math.Max(0, asks["Up"]-bids["Up"]), math.Max(0, asks["Down"]-bids["Down"])),
 	}
 	return quality, nil
 }
@@ -407,8 +419,11 @@ func (b *Bot) applyBookSnapshot(feed *PolymarketFeed, book *api.OrderBook) {
 		return
 	}
 	now := time.Now()
-	market.DepthBids[ref.Outcome], market.DepthAsks[ref.Outcome], market.LastUpdate = append([]paper.MarketLevel(nil), bids...), append([]paper.MarketLevel(nil), asks...), now
-	market.Bids[ref.Outcome], market.Asks[ref.Outcome] = bestPrice(bids), bestPrice(asks)
+	market.DepthBids[ref.Outcome] = mergeDepthLevels(market.DepthBids[ref.Outcome], bids)
+	market.DepthAsks[ref.Outcome] = mergeDepthLevels(market.DepthAsks[ref.Outcome], asks)
+	market.Bids[ref.Outcome] = preservePositiveQuote(market.Bids[ref.Outcome], bestPrice(market.DepthBids[ref.Outcome]))
+	market.Asks[ref.Outcome] = preservePositiveQuote(market.Asks[ref.Outcome], bestPrice(market.DepthAsks[ref.Outcome]))
+	market.LastUpdate = now
 	recordMarketMicroLocked(market, now)
 	bidsCopy, asksCopy, bidDepth, askDepth := copyFloatMap(market.Bids), copyFloatMap(market.Asks), copyDepthMap(market.DepthBids), copyDepthMap(market.DepthAsks)
 	b.mu.Unlock()
@@ -516,12 +531,23 @@ func (b *Bot) marketIDs() []string {
 func (b *Bot) pollBooks(ctx context.Context) error {
 	b.mu.RLock()
 	feed := b.pmFeed
+	repairAssets := make([]string, 0)
+	for asset, market := range b.markets {
+		if marketNeedsBookRepair(market) {
+			repairAssets = append(repairAssets, asset)
+		}
+	}
 	b.mu.RUnlock()
-	if feed != nil && feed.IsConnected() && feed.TimeSinceLastDataMessage() < 3*time.Second {
+	if feed != nil && feed.IsConnected() && feed.TimeSinceLastDataMessage() < 3*time.Second && len(repairAssets) == 0 {
 		return nil
 	}
 	started := time.Now()
-	for _, asset := range b.marketIDs() {
+	assets := repairAssets
+	if len(assets) == 0 {
+		assets = b.marketIDs()
+	}
+	sort.Strings(assets)
+	for _, asset := range assets {
 		if err := b.pollMarketBooks(ctx, asset); err != nil {
 			b.tui.LogEvent("[%s] rest book poll failed: %v", asset, err)
 		}
@@ -556,11 +582,13 @@ func (b *Bot) pollMarketBooks(ctx context.Context, asset string) error {
 		return nil
 	}
 	now := time.Now()
-	for outcome, bid := range bids {
-		bids[outcome] = preservePositiveQuote(current.Bids[outcome], bid)
+	for outcome, levels := range bidDepth {
+		bidDepth[outcome] = mergeDepthLevels(current.DepthBids[outcome], levels)
+		bids[outcome] = preservePositiveQuote(current.Bids[outcome], bestPrice(bidDepth[outcome]))
 	}
-	for outcome, ask := range asks {
-		asks[outcome] = preservePositiveQuote(current.Asks[outcome], ask)
+	for outcome, levels := range askDepth {
+		askDepth[outcome] = mergeDepthLevels(current.DepthAsks[outcome], levels)
+		asks[outcome] = preservePositiveQuote(current.Asks[outcome], bestPrice(askDepth[outcome]))
 	}
 	current.Bids, current.Asks, current.DepthBids, current.DepthAsks, current.LastUpdate = bids, asks, bidDepth, askDepth, now
 	recordMarketMicroLocked(current, now)
@@ -611,6 +639,9 @@ func (b *Bot) buildMarketDetails(market *trackedMarket, quote BinanceQuote, pos 
 	}
 	if features.ExternalModelWeight > 0 {
 		details = append(details, fmt.Sprintf("ML %+.1f%% • Weight %.0f%% • %s", features.ExternalModelScore*100, features.ExternalModelWeight*100, strings.TrimSpace(features.ExternalModelReason)))
+	}
+	if note := marketBookStatusLine(market); note != "" {
+		details = append(details, note)
 	}
 	return details
 }
@@ -930,17 +961,66 @@ func marketSelectionScore(candidate api.Market, quality marketQuality, currentCo
 	if candidate.ConditionID == currentCondition {
 		score += 0.35
 	}
-	if !quality.Available {
-		return score - 0.10
+	coherencePenalty := clamp((math.Abs(quality.PairAskSum-1.0)+math.Abs(quality.PairBidSum-1.0))/0.08, 0, 1) * 1.15
+	spreadPenalty := clamp((math.Max(0, quality.UpAsk-quality.UpBid)+math.Max(0, quality.DownAsk-quality.DownBid)+quality.MaxSpread)/0.12, 0, 1) * 1.10
+	if !quality.Available || !quality.Complete {
+		return score - 0.35 - coherencePenalty
 	}
-	spreadSum := math.Max(0, quality.UpAsk-quality.UpBid) + math.Max(0, quality.DownAsk-quality.DownBid)
 	depthScore := clamp(math.Min(quality.UpAskDepth, quality.DownAskDepth)/200, 0, 1)
 	bidSupport := clamp((quality.UpBidDepth+quality.DownBidDepth)/300, 0, 1)
 	quoteIntegrity := 0.0
 	if quality.UpBid > 0 && quality.UpAsk > 0 && quality.DownBid > 0 && quality.DownAsk > 0 {
 		quoteIntegrity = 0.25
 	}
-	return score + depthScore*1.25 + bidSupport*0.35 + quoteIntegrity - clamp(spreadSum/0.12, 0, 1)*1.10
+	return score + depthScore*1.25 + bidSupport*0.35 + quoteIntegrity - spreadPenalty - coherencePenalty
+}
+
+type bookQuoteHealth struct {
+	Complete  bool
+	Missing   []string
+	PairBid   float64
+	PairAsk   float64
+	MaxSpread float64
+}
+
+func marketQuoteHealth(bids, asks map[string]float64) bookQuoteHealth {
+	health := bookQuoteHealth{Missing: make([]string, 0, 4)}
+	for _, outcome := range []string{"Up", "Down"} {
+		bid := bids[outcome]
+		ask := asks[outcome]
+		if bid <= 0 {
+			health.Missing = append(health.Missing, outcome+" bid")
+		}
+		if ask <= 0 {
+			health.Missing = append(health.Missing, outcome+" ask")
+		}
+		health.PairBid += bid
+		health.PairAsk += ask
+		health.MaxSpread = math.Max(health.MaxSpread, math.Max(0, ask-bid))
+	}
+	health.Complete = len(health.Missing) == 0
+	return health
+}
+
+func marketNeedsBookRepair(market *trackedMarket) bool {
+	if market == nil {
+		return false
+	}
+	return !marketQuoteHealth(market.Bids, market.Asks).Complete
+}
+
+func marketBookStatusLine(market *trackedMarket) string {
+	if market == nil {
+		return ""
+	}
+	health := marketQuoteHealth(market.Bids, market.Asks)
+	if !health.Complete {
+		return fmt.Sprintf("Book degraded: missing %s • REST repair active", strings.Join(health.Missing, ", "))
+	}
+	if health.MaxSpread >= 0.03 || math.Abs(health.PairAsk-1.0) >= 0.04 || math.Abs(health.PairBid-1.0) >= 0.04 {
+		return fmt.Sprintf("Book wide: buy %.3f sell %.3f max spread %.1f%%", health.PairAsk, health.PairBid, health.MaxSpread*100)
+	}
+	return ""
 }
 
 func fusionMarketAsset(market api.Market) (string, bool) {
@@ -1035,6 +1115,16 @@ func bestPrice(levels []paper.MarketLevel) float64 {
 		return 0
 	}
 	return levels[0].Price
+}
+
+func mergeDepthLevels(existing, incoming []paper.MarketLevel) []paper.MarketLevel {
+	if len(incoming) > 0 {
+		return append([]paper.MarketLevel(nil), incoming...)
+	}
+	if len(existing) > 0 {
+		return append([]paper.MarketLevel(nil), existing...)
+	}
+	return nil
 }
 
 func preservePositiveQuote(previous, next float64) float64 {

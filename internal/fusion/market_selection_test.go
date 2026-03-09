@@ -78,8 +78,8 @@ func TestChooseLatestMarketsPrefersMoreLiquidCandidateWhenRotating(t *testing.T)
 		[]api.Market{current, thin, deep},
 		map[string]*trackedMarket{"BTC": {Market: &current}},
 		map[string]marketQuality{
-			"cond-thin": {Available: true, UpBid: 0.49, UpAsk: 0.56, DownBid: 0.44, DownAsk: 0.51, UpBidDepth: 20, UpAskDepth: 25, DownBidDepth: 20, DownAskDepth: 25},
-			"cond-deep": {Available: true, UpBid: 0.50, UpAsk: 0.52, DownBid: 0.48, DownAsk: 0.50, UpBidDepth: 220, UpAskDepth: 240, DownBidDepth: 220, DownAskDepth: 240},
+			"cond-thin": {Available: true, Complete: true, UpBid: 0.49, UpAsk: 0.56, DownBid: 0.44, DownAsk: 0.51, UpBidDepth: 20, UpAskDepth: 25, DownBidDepth: 20, DownAskDepth: 25, PairBidSum: 0.93, PairAskSum: 1.07, MaxSpread: 0.07},
+			"cond-deep": {Available: true, Complete: true, UpBid: 0.50, UpAsk: 0.52, DownBid: 0.48, DownAsk: 0.50, UpBidDepth: 220, UpAskDepth: 240, DownBidDepth: 220, DownAskDepth: 240, PairBidSum: 0.98, PairAskSum: 1.02, MaxSpread: 0.02},
 		},
 		[]string{"btc"},
 		"15m",
@@ -89,6 +89,43 @@ func TestChooseLatestMarketsPrefersMoreLiquidCandidateWhenRotating(t *testing.T)
 
 	if got := selected["BTC"]; got == nil || got.ConditionID != deep.ConditionID {
 		t.Fatalf("expected deeper/tighter market to be selected, got %+v", got)
+	}
+}
+
+func TestChooseLatestMarketsPenalizesIncompleteCandidate(t *testing.T) {
+	now := time.Date(2026, 3, 9, 6, 13, 45, 0, time.UTC)
+	current := marketForTest("eth-updown-15m-1", "cond-current", now.Add(70*time.Second), true, false, "up", "down")
+	incomplete := marketForTest("eth-updown-15m-2", "cond-incomplete", now.Add(16*time.Minute), true, false, "up", "down")
+	complete := marketForTest("eth-updown-15m-3", "cond-complete", now.Add(15*time.Minute), true, false, "up", "down")
+
+	selected := chooseLatestMarkets(
+		[]api.Market{current, incomplete, complete},
+		map[string]*trackedMarket{"ETH": {Market: &current}},
+		map[string]marketQuality{
+			"cond-incomplete": {Available: false, Complete: false, UpBid: 0.52, UpAsk: 0.0, DownBid: 0.46, DownAsk: 0.47, UpBidDepth: 120, DownAskDepth: 120},
+			"cond-complete":   {Available: true, Complete: true, UpBid: 0.51, UpAsk: 0.52, DownBid: 0.48, DownAsk: 0.49, UpBidDepth: 200, UpAskDepth: 200, DownBidDepth: 200, DownAskDepth: 200, PairBidSum: 0.99, PairAskSum: 1.01, MaxSpread: 0.01},
+		},
+		[]string{"eth"},
+		"15m",
+		4,
+		now,
+	)
+
+	if got := selected["ETH"]; got == nil || got.ConditionID != complete.ConditionID {
+		t.Fatalf("expected complete market to be selected over incomplete one, got %+v", got)
+	}
+}
+
+func TestMarketQuoteHealthDetectsMissingAsk(t *testing.T) {
+	health := marketQuoteHealth(
+		map[string]float64{"Up": 0.52, "Down": 0.46},
+		map[string]float64{"Up": 0.0, "Down": 0.47},
+	)
+	if health.Complete {
+		t.Fatalf("expected incomplete health, got %+v", health)
+	}
+	if len(health.Missing) != 1 || health.Missing[0] != "Up ask" {
+		t.Fatalf("expected missing Up ask, got %+v", health)
 	}
 }
 
