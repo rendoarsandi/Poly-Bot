@@ -169,10 +169,16 @@ type MarketData struct {
 
 // PendingOrder represents an order the bot intends to place.
 type PendingOrder struct {
-	Outcome string
-	Price   float64
-	Qty     float64
-	Side    string // "BUY" or "SELL"
+	MarketID string
+	Outcome  string
+	Price    float64
+	Qty      float64
+	Side     string // "BUY" or "SELL"
+}
+
+type ScopedLimitOrder struct {
+	MarketID string
+	Order    *LimitOrder
 }
 
 // OrderHistoryEntry represents a completed trade.
@@ -197,6 +203,7 @@ type TUISettings struct {
 	Timeframe                      string  // "5m" or "15m"
 	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
 	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
+	PaperArbMode                   string  // taker or maker
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
@@ -208,9 +215,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -219,8 +226,9 @@ var (
 type TUI struct {
 	mu sync.Mutex
 
-	engine    *Engine
-	orderBook *OrderBook
+	engine     *Engine
+	orderBook  *OrderBook
+	orderBooks map[string]*OrderBook
 
 	markets         map[string]*MarketData
 	marketSlug      string
@@ -308,7 +316,7 @@ type tuiSnapshot struct {
 	exposure        float64
 	equity          float64
 	positions       map[string]PositionPnL
-	orders          []*LimitOrder
+	orders          []ScopedLimitOrder
 	multiplier      float64
 	rounds          int
 	profitable      int
@@ -507,7 +515,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		exposure, _ := m.tui.engine.GetExposure()
 		equity := m.tui.engine.GetEquity()
 		positions := m.tui.engine.GetPositionsWithPnL()
-		orders := m.tui.orderBook.GetOpenOrders()
+		orders := m.tui.getOpenOrdersSnapshot()
 		multiplier, rounds, profitable := m.tui.engine.GetCompoundStats()
 		enginePositions := m.tui.engine.GetPositions()
 		splitPositions := m.tui.getSplitPositions()
@@ -641,11 +649,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 11
+					m.settingsCursor = 12
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 12
+				m.settingsCursor = (m.settingsCursor + 1) % 13
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -692,39 +700,42 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 5:
+					m.tui.settings.PaperArbMode = "taker"
+					changed = true
+				case 6:
 					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.5
 					if m.tui.settings.BuyExecutionMarginFloorPercent < -10.0 {
 						m.tui.settings.BuyExecutionMarginFloorPercent = -10.0
 					}
 					changed = true
-				case 6:
+				case 7:
 					m.tui.settings.SplitMinMarginSell -= 0.5
 					if m.tui.settings.SplitMinMarginSell < 1.0 {
 						m.tui.settings.SplitMinMarginSell = 1.0
 					}
 					changed = true
-				case 7:
+				case 8:
 					m.tui.settings.SplitStrategyEnabled = false
 					changed = true
-				case 8:
+				case 9:
 					m.tui.settings.SplitInitialCapPct -= 0.05
 					if m.tui.settings.SplitInitialCapPct < 0.05 {
 						m.tui.settings.SplitInitialCapPct = 0.05
 					}
 					changed = true
-				case 9:
+				case 10:
 					m.tui.settings.SplitReplenishCapPct -= 0.05
 					if m.tui.settings.SplitReplenishCapPct < 0.05 {
 						m.tui.settings.SplitReplenishCapPct = 0.05
 					}
 					changed = true
-				case 10:
+				case 11:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
 						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
-				case 11:
+				case 12:
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
@@ -779,39 +790,42 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 5:
+					m.tui.settings.PaperArbMode = "maker"
+					changed = true
+				case 6:
 					m.tui.settings.BuyExecutionMarginFloorPercent += 0.5
 					if m.tui.settings.BuyExecutionMarginFloorPercent > 5.0 {
 						m.tui.settings.BuyExecutionMarginFloorPercent = 5.0
 					}
 					changed = true
-				case 6:
+				case 7:
 					m.tui.settings.SplitMinMarginSell += 0.5
 					if m.tui.settings.SplitMinMarginSell > 20.0 {
 						m.tui.settings.SplitMinMarginSell = 20.0
 					}
 					changed = true
-				case 7:
+				case 8:
 					m.tui.settings.SplitStrategyEnabled = true
 					changed = true
-				case 8:
+				case 9:
 					m.tui.settings.SplitInitialCapPct += 0.05
 					if m.tui.settings.SplitInitialCapPct > 1.0 {
 						m.tui.settings.SplitInitialCapPct = 1.0
 					}
 					changed = true
-				case 9:
+				case 10:
 					m.tui.settings.SplitReplenishCapPct += 0.05
 					if m.tui.settings.SplitReplenishCapPct > 1.0 {
 						m.tui.settings.SplitReplenishCapPct = 1.0
 					}
 					changed = true
-				case 10:
+				case 11:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
 						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
-				case 11:
+				case 12:
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
@@ -909,9 +923,10 @@ func (m tuiModel) View() string {
 // ─── TUI Public API ───────────────────────────────────────────────────────────
 
 func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
-	return &TUI{
+	tui := &TUI{
 		engine:          engine,
 		orderBook:       orderBook,
+		orderBooks:      make(map[string]*OrderBook),
 		markets:         make(map[string]*MarketData),
 		lastPrices:      make(map[string]float64),
 		lastBids:        make(map[string]float64),
@@ -929,6 +944,83 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		width:           80,
 		height:          24,
 		startTime:       time.Now(),
+	}
+	if orderBook != nil {
+		tui.orderBooks[""] = orderBook
+	}
+	return tui
+}
+
+func (t *TUI) RegisterOrderBook(marketID string, orderBook *OrderBook) {
+	if orderBook == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.orderBooks == nil {
+		t.orderBooks = make(map[string]*OrderBook)
+	}
+	t.orderBooks[marketID] = orderBook
+	if marketID == "" {
+		t.orderBook = orderBook
+	}
+}
+
+func (t *TUI) ClearOrderBooks() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.orderBook = nil
+	t.orderBooks = make(map[string]*OrderBook)
+}
+
+func (t *TUI) getOpenOrdersSnapshot() []ScopedLimitOrder {
+	t.mu.Lock()
+	books := make(map[string]*OrderBook, len(t.orderBooks))
+	for marketID, ob := range t.orderBooks {
+		books[marketID] = ob
+	}
+	t.mu.Unlock()
+
+	marketIDs := make([]string, 0, len(books))
+	for marketID := range books {
+		marketIDs = append(marketIDs, marketID)
+	}
+	sort.Strings(marketIDs)
+
+	orders := make([]ScopedLimitOrder, 0)
+	for _, marketID := range marketIDs {
+		for _, order := range books[marketID].GetOpenOrders() {
+			orders = append(orders, ScopedLimitOrder{MarketID: marketID, Order: order})
+		}
+	}
+	return orders
+}
+
+func (t *TUI) CancelAllOrders() int {
+	t.mu.Lock()
+	books := make([]*OrderBook, 0, len(t.orderBooks))
+	for _, ob := range t.orderBooks {
+		books = append(books, ob)
+	}
+	t.mu.Unlock()
+
+	total := 0
+	for _, ob := range books {
+		total += ob.CancelAllOrders()
+	}
+	return total
+}
+
+func (t *TUI) CleanupOrderBooks(maxAge time.Duration) {
+	t.mu.Lock()
+	books := make([]*OrderBook, 0, len(t.orderBooks))
+	for _, ob := range t.orderBooks {
+		books = append(books, ob)
+	}
+	t.mu.Unlock()
+
+	for _, ob := range books {
+		ob.CleanupOldOrders(maxAge)
 	}
 }
 
@@ -1041,6 +1133,8 @@ func (t *TUI) ClearMarkets() {
 	t.orderBookDepth = make(map[string]map[string][]MarketLevel)
 	t.pendingOrders = make(map[string][]PendingOrder)
 	t.splitInventories = nil
+	t.orderBook = nil
+	t.orderBooks = make(map[string]*OrderBook)
 }
 
 func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {
@@ -1135,10 +1229,24 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	}
 }
 
-func (t *TUI) SetPendingOrders(orders map[string][]PendingOrder) {
+func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pendingOrders = orders
+	flattened := make([]PendingOrder, 0)
+	for outcome, entries := range orders {
+		for _, entry := range entries {
+			entry.MarketID = marketID
+			if entry.Outcome == "" {
+				entry.Outcome = outcome
+			}
+			flattened = append(flattened, entry)
+		}
+	}
+	if len(flattened) == 0 {
+		delete(t.pendingOrders, marketID)
+		return
+	}
+	t.pendingOrders[marketID] = flattened
 }
 
 func (t *TUI) LogEvent(format string, args ...interface{}) {
@@ -1769,10 +1877,19 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 	// ── Pending orders ──
 	sb.WriteString(styleGreen.Render("  └─ 📋 Planned Orders") + "\n")
 	if len(s.pendingOrders) > 0 {
-		for outcome, orders := range s.pendingOrders {
-			for _, o := range orders {
-				sb.WriteString(fmt.Sprintf("       %s %-6s  %.0f @ $%.2f\n",
-					o.Side, core.SanitizeString(outcome), o.Qty, o.Price))
+		marketIDs := make([]string, 0, len(s.pendingOrders))
+		for marketID := range s.pendingOrders {
+			marketIDs = append(marketIDs, marketID)
+		}
+		sort.Strings(marketIDs)
+		for _, marketID := range marketIDs {
+			for _, o := range s.pendingOrders[marketID] {
+				label := core.SanitizeString(o.Outcome)
+				if marketID != "" {
+					label = marketID + "/" + label
+				}
+				sb.WriteString(fmt.Sprintf("       %s %-10s %.0f @ $%.2f\n",
+					o.Side, label, o.Qty, o.Price))
 			}
 		}
 	} else {
@@ -2109,7 +2226,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 }
 
 // renderOrders: open limit orders panel.
-func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
+func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 	if len(orders) == 0 {
 		return ""
 	}
@@ -2117,9 +2234,13 @@ func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
 	var sb strings.Builder
 	sb.WriteString(sectionHeader("📝", fmt.Sprintf("LIMIT ORDERS  (%d)", len(orders)), clrSlate) + "\n")
 
-	byOutcome := make(map[string][]*LimitOrder)
+	byOutcome := make(map[string][]ScopedLimitOrder)
 	for _, o := range orders {
-		byOutcome[o.Outcome] = append(byOutcome[o.Outcome], o)
+		label := o.Order.Outcome
+		if o.MarketID != "" {
+			label = o.MarketID + "/" + label
+		}
+		byOutcome[label] = append(byOutcome[label], o)
 	}
 	// Sorted outcomes for stable render
 	outcomes := make([]string, 0, len(byOutcome))
@@ -2132,8 +2253,8 @@ func (m tuiModel) renderOrders(w int, orders []*LimitOrder) string {
 		ords := byOutcome[oc]
 		totalQty, totalVal := 0.0, 0.0
 		for _, o := range ords {
-			totalQty += o.RemainingQty()
-			totalVal += o.RemainingQty() * o.Price
+			totalQty += o.Order.RemainingQty()
+			totalVal += o.Order.RemainingQty() * o.Order.Price
 		}
 		sb.WriteString(fmt.Sprintf("  %-8s  %s orders  ·  %.0f shares  ·  $%.2f value\n",
 			core.SanitizeString(oc), styleDimmed.Render(fmt.Sprintf("%d", len(ords))),
@@ -2368,6 +2489,16 @@ func (m tuiModel) renderSettings(w int) string {
 			label: "Buy Min Margin %",
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
+		},
+		{
+			label: "Buy Arb Mode",
+			value: func() string {
+				if strings.EqualFold(cfg.PaperArbMode, "maker") {
+					return styleCyan.Render(" MAKER ")
+				}
+				return styleYellow.Render(" TAKER ")
+			}(),
+			bar: "",
 		},
 		{
 			label: "Buy/Sell Exec Floor %",

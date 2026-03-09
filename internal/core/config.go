@@ -62,8 +62,9 @@ type Config struct {
 	MinOrderSize float64 // Minimum shares per order enforced by CLOB API (default: 5.0)
 
 	// Price filters
-	MinAskPrice float64 // Minimum ask price to buy (default: 0.10)
-	MaxAskPrice float64 // Maximum ask price to buy (default: 0.90)
+	MinAskPrice  float64 // Minimum ask price to buy (default: 0.10)
+	MaxAskPrice  float64 // Maximum ask price to buy (default: 0.90)
+	PaperArbMode string  // Paperbot arb execution mode: taker or maker
 	// Shared panic buy/sell execution tolerance: minimum acceptable combined pair
 	// margin while walking deeper book liquidity during execution. Can be negative
 	// to tolerate a small loss on the pair if that reduces legging risk.
@@ -119,8 +120,15 @@ func LoadConfig() (*Config, error) {
 		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
 		MaxAggressionMultiplier: parseEnvFloat("MAX_AGGRESSION_MULTIPLIER", 5.0),
 		// Price filters
-		MinAskPrice:                    parseEnvFloat("MIN_ASK_PRICE", 0.10),
-		MaxAskPrice:                    parseEnvFloat("MAX_ASK_PRICE", 0.90),
+		MinAskPrice: parseEnvFloat("MIN_ASK_PRICE", 0.10),
+		MaxAskPrice: parseEnvFloat("MAX_ASK_PRICE", 0.90),
+		PaperArbMode: func() string {
+			mode := strings.ToLower(strings.TrimSpace(os.Getenv("PAPER_ARB_MODE")))
+			if mode == "" {
+				return "taker"
+			}
+			return mode
+		}(),
 		BuyExecutionMarginFloorPercent: parseEnvFloat("BUY_EXECUTION_MARGIN_FLOOR_PERCENT", -1.0),
 		// Split strategy settings (panic sell)
 		SplitStrategyEnabled:     os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
@@ -261,6 +269,7 @@ func (c *Config) SaveSettings() error {
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
 	envMap["MIN_ASK_PRICE"] = strconv.FormatFloat(c.MinAskPrice, 'f', -1, 64)
 	envMap["MAX_ASK_PRICE"] = strconv.FormatFloat(c.MaxAskPrice, 'f', -1, 64)
+	envMap["PAPER_ARB_MODE"] = c.PaperArbMode
 	envMap["BUY_EXECUTION_MARGIN_FLOOR_PERCENT"] = strconv.FormatFloat(c.BuyExecutionMarginFloorPercent, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)
