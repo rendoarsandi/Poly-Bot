@@ -1550,18 +1550,27 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								rate2 = 1000
 							}
 
-							var exec1, exec2 directMarketExecution
-							var wg sync.WaitGroup
-							wg.Add(2)
-							go func() {
-								defer wg.Done()
-								exec1 = executeMarketOrderWithSignals(ctx, trader, api.SideSell, token0, outcomes[0], liveCfg.MinAskPrice, sharesToSell, rate1, initialBal0, 2*time.Second)
-							}()
-							go func() {
-								defer wg.Done()
-								exec2 = executeMarketOrderWithSignals(ctx, trader, api.SideSell, token1, outcomes[1], liveCfg.MinAskPrice, sharesToSell, rate2, initialBal1, 2*time.Second)
-							}()
-							wg.Wait()
+							batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, []directMarketOrderSignalRequest{
+								{
+									Side:           api.SideSell,
+									TokenID:        token0,
+									Outcome:        outcomes[0],
+									Price:          liveCfg.MinAskPrice,
+									Size:           sharesToSell,
+									FeeRateBps:     rate1,
+									InitialBalance: initialBal0,
+								},
+								{
+									Side:           api.SideSell,
+									TokenID:        token1,
+									Outcome:        outcomes[1],
+									Price:          liveCfg.MinAskPrice,
+									Size:           sharesToSell,
+									FeeRateBps:     rate2,
+									InitialBalance: initialBal1,
+								},
+							}, 2*time.Second)
+							exec1, exec2 := batchExecs[0], batchExecs[1]
 
 							sold1, sold2 := exec1.ExecutedQty, exec2.ExecutedQty
 							side1Success, side2Success := exec1.Success, exec2.Success
@@ -1868,18 +1877,27 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							rate2 = 1000
 						}
 
-						var exec1, exec2 directMarketExecution
-						var wg sync.WaitGroup
-						wg.Add(2)
-						go func() {
-							defer wg.Done()
-							exec1 = executeMarketOrderWithSignals(ctx, trader, api.SideBuy, token0, outcomes[0], limitPrice1, shares, rate1, initialBal0, 2*time.Second)
-						}()
-						go func() {
-							defer wg.Done()
-							exec2 = executeMarketOrderWithSignals(ctx, trader, api.SideBuy, token1, outcomes[1], limitPrice2, shares, rate2, initialBal1, 2*time.Second)
-						}()
-						wg.Wait()
+						batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, []directMarketOrderSignalRequest{
+							{
+								Side:           api.SideBuy,
+								TokenID:        token0,
+								Outcome:        outcomes[0],
+								Price:          limitPrice1,
+								Size:           shares,
+								FeeRateBps:     rate1,
+								InitialBalance: initialBal0,
+							},
+							{
+								Side:           api.SideBuy,
+								TokenID:        token1,
+								Outcome:        outcomes[1],
+								Price:          limitPrice2,
+								Size:           shares,
+								FeeRateBps:     rate2,
+								InitialBalance: initialBal1,
+							},
+						}, 2*time.Second)
+						exec1, exec2 := batchExecs[0], batchExecs[1]
 
 						res1, err1 = exec1.Result, exec1.Err
 						res2, err2 = exec2.Result, exec2.Err
@@ -2187,6 +2205,16 @@ type directMarketExecution struct {
 	VerifyErr            error
 }
 
+type directMarketOrderSignalRequest struct {
+	Side           api.Side
+	TokenID        string
+	Outcome        string
+	Price          float64
+	Size           float64
+	FeeRateBps     int
+	InitialBalance float64
+}
+
 func isMinSizeRejectionMessage(message string) bool {
 	return strings.Contains(strings.ToLower(message), "min size")
 }
@@ -2453,32 +2481,45 @@ func logDirectExecutionAudit(tui *paper.TUI, id, label string, requestedQty, lim
 	}
 }
 
-func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
-	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
-	orderID := ""
-	acknowledgedQty := 0.0
-	acknowledgedNotional := 0.0
-	if result != nil {
-		orderID = result.OrderID
-		acknowledgedQty = result.AcknowledgedQty
-		acknowledgedNotional = result.AcknowledgedNotional
+func buildDirectMarketOrderRequest(req directMarketOrderSignalRequest) *api.OrderRequest {
+	return &api.OrderRequest{
+		TokenID:     req.TokenID,
+		Price:       req.Price,
+		Size:        req.Size,
+		Side:        req.Side,
+		OrderType:   api.OrderTypeLimit,
+		TimeInForce: api.TIFFillAndKill,
+		FeeRateBps:  req.FeeRateBps,
 	}
-	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, side, orderID, tokenID, initialBalance, confirmTimeout)
+}
+
+func hydrateDirectMarketTradeResult(req directMarketOrderSignalRequest, result *trading.TradeResult) *trading.TradeResult {
+	if result == nil {
+		result = &trading.TradeResult{}
+	}
+	result.Price = req.Price
+	result.Size = req.Size
+	result.Side = string(req.Side)
+	result.TokenID = req.TokenID
+	result.Outcome = req.Outcome
+	result.FeeRateBps = req.FeeRateBps
+	if result.Timestamp.IsZero() {
+		result.Timestamp = time.Now()
+	}
+	return result
+}
+
+func finalizeDirectMarketExecutionWithSignals(ctx context.Context, trader *trading.RealTrader, req directMarketOrderSignalRequest, confirmTimeout time.Duration, result *trading.TradeResult, err error) directMarketExecution {
+	result = hydrateDirectMarketTradeResult(req, result)
+	orderID := result.OrderID
+	acknowledgedQty := result.AcknowledgedQty
+	acknowledgedNotional := result.AcknowledgedNotional
+	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, req.Side, orderID, req.TokenID, req.InitialBalance, confirmTimeout)
 	if acknowledgedQty > executedQty {
 		executedQty = acknowledgedQty
 	}
-	success := hasConfirmedExecutedQty(side, executedQty) || orderConfirmed
+	success := hasConfirmedExecutedQty(req.Side, executedQty) || orderConfirmed
 
-	if result == nil {
-		result = &trading.TradeResult{
-			Price:     price,
-			Size:      size,
-			Side:      string(side),
-			TokenID:   tokenID,
-			Outcome:   outcome,
-			Timestamp: time.Now(),
-		}
-	}
 	if success {
 		result.Success = true
 		if orderConfirmed {
@@ -2505,6 +2546,51 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 		OrderConfirmed:       orderConfirmed,
 		VerifyErr:            verifyErr,
 	}
+}
+
+func executeMarketOrderBatchWithSignals(ctx context.Context, trader *trading.RealTrader, reqs []directMarketOrderSignalRequest, confirmTimeout time.Duration) []directMarketExecution {
+	if len(reqs) == 0 {
+		return nil
+	}
+
+	batchReqs := make([]*api.OrderRequest, len(reqs))
+	for i, req := range reqs {
+		batchReqs[i] = buildDirectMarketOrderRequest(req)
+	}
+
+	results, err := trader.ExecuteBatch(ctx, batchReqs)
+	execs := make([]directMarketExecution, len(reqs))
+	var wg sync.WaitGroup
+	wg.Add(len(reqs))
+	for i := range reqs {
+		i := i
+		go func() {
+			defer wg.Done()
+			var result *trading.TradeResult
+			if i < len(results) {
+				result = results[i]
+			} else if err == nil {
+				result = &trading.TradeResult{Message: "missing batch response from exchange"}
+			}
+			execs[i] = finalizeDirectMarketExecutionWithSignals(ctx, trader, reqs[i], confirmTimeout, result, err)
+		}()
+	}
+	wg.Wait()
+	return execs
+}
+
+func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
+	req := directMarketOrderSignalRequest{
+		Side:           side,
+		TokenID:        tokenID,
+		Outcome:        outcome,
+		Price:          price,
+		Size:           size,
+		FeeRateBps:     feeRateBps,
+		InitialBalance: initialBalance,
+	}
+	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
+	return finalizeDirectMarketExecutionWithSignals(ctx, trader, req, confirmTimeout, result, err)
 }
 
 func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*trading.TradeResult, error) {
