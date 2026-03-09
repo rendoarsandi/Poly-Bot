@@ -1677,13 +1677,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					// Dynamic trade size based on EQUITY (not just cash)
-					// This ensures consistent sizing regardless of how much is in positions
-					latestBalance, _ := trader.GetBalance(ctx)
-					if latestBalance > 0 {
-						// currentCash = latestBalance // Unused
-						currentBalance = latestBalance
-					}
+					// Dynamic trade size uses the last known cached balance.
+					// Do not block the panic-buy hot path on a fresh balance RPC here.
 
 					// For real bot, equity = cash + market value of positions
 					// Simplification: use cash balance as proxy for sizing, or fetch equity
@@ -1797,13 +1792,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Risk checks should use the worst price sum the bot is willing to execute through.
 					cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
 
-					// REFRESH BALANCE RIGHT BEFORE TRADING to prevent unbalanced fills
-					// This is the "Zero Excuse" check to ensure we have enough for BOTH sides
-					latestBalance, balErr := trader.GetBalance(ctx)
-					if balErr == nil {
-						currentBalance = latestBalance
-						// currentCash = latestBalance // Unused
-					}
+					// Use the last known cached balance here; a fresh RPC can add avoidable
+					// latency right when we need to submit the panic-buy legs.
 
 					// Check risk limits only (Balance check disabled per user request to match utilbot behavior)
 					if !riskMgr.CanPlaceOrder(cost) {
@@ -1860,28 +1850,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Background ticker keeps allowance synced.
 						var res1, res2 *trading.TradeResult
 						var err1, err2 error
-						initialSnapshot0, initialSnapshot1, initialSnapshotSource, haveInitialSnapshot := 0.0, 0.0, "", false
-						if snapshotCtx, cancel := context.WithTimeout(ctx, 3*time.Second); true {
-							initialSnapshot0, initialSnapshot1, initialSnapshotSource, haveInitialSnapshot = captureInitialPairSnapshot(snapshotCtx, trader, token0, token1)
-							cancel()
-						}
-
-						// Fetch initial positions to accurately calculate bought amount
-						var initialBal0, initialBal1 float64
-						if initialPos, err := trader.GetPositions(ctx); err == nil {
-							for _, pos := range initialPos {
-								if pos.TokenID == token0 {
-									initialBal0 = pos.Size
-								}
-								if pos.TokenID == token1 {
-									initialBal1 = pos.Size
-								}
-							}
-						}
-						if haveInitialSnapshot {
-							initialBal0 = math.Max(initialBal0, initialSnapshot0)
-							initialBal1 = math.Max(initialBal1, initialSnapshot1)
-						}
+						// Capture an instant websocket-backed baseline so the panic-buy legs can
+						// be submitted immediately without waiting on slow on-chain snapshots.
+						initialSnapshot0 := trader.GetLivePositionSize(token0)
+						initialSnapshot1 := trader.GetLivePositionSize(token1)
+						initialSnapshotSource := "live WS cache"
+						haveInitialSnapshot := true
+						initialBal0 := initialSnapshot0
+						initialBal1 := initialSnapshot1
 
 						rate1 := tokenFeeRates[outcomes[0]]
 						if rate1 == 0 {
