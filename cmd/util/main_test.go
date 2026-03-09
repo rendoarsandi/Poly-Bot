@@ -5,6 +5,7 @@ import (
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
+	"context"
 	"math"
 	"strings"
 	"testing"
@@ -328,5 +329,45 @@ func TestUtilbotAcquiredShares(t *testing.T) {
 	acquired0, acquired1 = utilbotAcquiredShares(0.9, 1.1, 0, 0, false)
 	if math.Abs(acquired0-0.9) > 0.000001 || math.Abs(acquired1-1.1) > 0.000001 {
 		t.Fatalf("live acquired shares got %.4f/%.4f want 0.9/1.1", acquired0, acquired1)
+	}
+}
+
+type stubUtilbotOrderWarmer struct {
+	calls chan struct{}
+}
+
+func (s *stubUtilbotOrderWarmer) GetTradingAllowance(context.Context) (float64, error) {
+	select {
+	case s.calls <- struct{}{}:
+	default:
+	}
+	return 1, nil
+}
+
+func TestStartUtilbotOrderWarmLoopWarmsImmediatelyAndStops(t *testing.T) {
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	warmer := &stubUtilbotOrderWarmer{calls: make(chan struct{}, 8)}
+	stop := startUtilbotOrderWarmLoop(parentCtx, warmer, 25*time.Millisecond, 100*time.Millisecond)
+
+	select {
+	case <-warmer.calls:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected immediate utilbot order-path warmup call")
+	}
+
+	select {
+	case <-warmer.calls:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected periodic utilbot order-path warmup call")
+	}
+
+	stop()
+
+	select {
+	case <-warmer.calls:
+		t.Fatal("expected utilbot order-path warm loop to stop after cancel")
+	case <-time.After(40 * time.Millisecond):
 	}
 }

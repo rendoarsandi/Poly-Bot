@@ -28,7 +28,51 @@ import (
 const (
 	utilbotLocalQuoteMaxAge  = 250 * time.Millisecond
 	utilbotJITRequoteTimeout = 750 * time.Millisecond
+	utilbotOrderWarmInterval = 2 * time.Second
+	utilbotOrderWarmTimeout  = 1500 * time.Millisecond
 )
+
+type utilbotOrderPathWarmer interface {
+	GetTradingAllowance(ctx context.Context) (float64, error)
+}
+
+func warmUtilbotOrderPath(ctx context.Context, warmer utilbotOrderPathWarmer) error {
+	if warmer == nil {
+		return nil
+	}
+	_, err := warmer.GetTradingAllowance(ctx)
+	return err
+}
+
+func startUtilbotOrderWarmLoop(parentCtx context.Context, warmer utilbotOrderPathWarmer, interval, timeout time.Duration) func() {
+	if warmer == nil || interval <= 0 || timeout <= 0 {
+		return func() {}
+	}
+
+	warmCtx, cancel := context.WithCancel(parentCtx)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		warmOnce := func() {
+			singleCtx, singleCancel := context.WithTimeout(warmCtx, timeout)
+			defer singleCancel()
+			_ = warmUtilbotOrderPath(singleCtx, warmer)
+		}
+
+		warmOnce()
+		for {
+			select {
+			case <-warmCtx.Done():
+				return
+			case <-ticker.C:
+				warmOnce()
+			}
+		}
+	}()
+
+	return cancel
+}
 
 type utilbotQuoteState struct {
 	UpdatedAt time.Time
@@ -547,10 +591,14 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		fmt.Printf("💸 Expected fee deduction: %s=$%.4f, %s=$%.4f\n", outcomes[0], expectedUsdcFee0, outcomes[1], expectedUsdcFee1)
 	}
 
+	stopOrderWarm := startUtilbotOrderWarmLoop(ctx, trader, utilbotOrderWarmInterval, utilbotOrderWarmTimeout)
+	defer stopOrderWarm()
+
 	fmt.Printf("🚀 Executing: %s %.6f pairs (%.6f shares/side, Est. total value: $%.2f USDC). Confirm? (y/n): ", side, shares, shares, totalValue)
 	var confirm string
 	_, _ = fmt.Scanln(&confirm)
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+		stopOrderWarm()
 		log.Fatal("Cancelled.")
 	}
 	if side == "BUY" {
@@ -635,6 +683,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		}{outcome: out, shares: shares, rate: rate})
 	}
 
+	stopOrderWarm()
 	startReq := time.Now()
 	if len(batchReqs) > 0 {
 		batchResults, batchErr := trader.ExecuteBatch(ctx, batchReqs)
