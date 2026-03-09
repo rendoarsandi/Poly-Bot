@@ -31,12 +31,28 @@ const (
 	UseLiveUI               = true // Set to false for traditional logging
 	realbotLocalQuoteMaxAge = 250 * time.Millisecond
 	realbotExecQuoteTimeout = 1500 * time.Millisecond
+	realbotOrderWarmTimeout = 1500 * time.Millisecond
 	realbotRestBookMaxAge   = 2 * time.Second
 	realbotMergeTimeout     = 120 * time.Second
 	realbotCleanupVerifyTTL = 20 * time.Second
 	realbotFastVerifyTTL    = 6 * time.Second
 	minOnChainActionShares  = 0.01
 )
+
+type realbotOrderPathWarmer interface {
+	GetTradingAllowance(ctx context.Context) (float64, error)
+}
+
+func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWarmer) {
+	if warmer == nil {
+		return
+	}
+	go func() {
+		warmCtx, cancel := context.WithTimeout(parentCtx, realbotOrderWarmTimeout)
+		defer cancel()
+		_, _ = warmer.GetTradingAllowance(warmCtx)
+	}()
+}
 
 type realbotQuoteState struct {
 	UpdatedAt time.Time
@@ -2553,6 +2569,8 @@ func executeMarketOrderBatchWithSignals(ctx context.Context, trader *trading.Rea
 		return nil
 	}
 
+	primeRealbotOrderPath(ctx, trader)
+
 	batchReqs := make([]*api.OrderRequest, len(reqs))
 	for i, req := range reqs {
 		batchReqs[i] = buildDirectMarketOrderRequest(req)
@@ -2594,6 +2612,8 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 }
 
 func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*trading.TradeResult, error) {
+	primeRealbotOrderPath(ctx, trader)
+
 	if side == api.SideSell {
 		return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
 	}
