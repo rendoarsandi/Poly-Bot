@@ -116,6 +116,53 @@ func TestChooseLatestMarketsPenalizesIncompleteCandidate(t *testing.T) {
 	}
 }
 
+func TestChooseLatestMarketsWithoutCurrentPrefersNearestCycle(t *testing.T) {
+	now := time.Date(2026, 3, 9, 6, 14, 0, 0, time.UTC)
+	near := marketForTest("sol-updown-15m-near", "cond-near", now.Add(16*time.Minute), true, false, "up", "down")
+	far := marketForTest("sol-updown-15m-far", "cond-far", now.Add(31*time.Minute), true, false, "up", "down")
+
+	selected := chooseLatestMarkets(
+		[]api.Market{far, near},
+		nil,
+		map[string]marketQuality{
+			"cond-near": {Available: true, Complete: true, UpBid: 0.49, UpAsk: 0.52, DownBid: 0.47, DownAsk: 0.50, UpBidDepth: 80, UpAskDepth: 80, DownBidDepth: 80, DownAskDepth: 80, PairBidSum: 0.96, PairAskSum: 1.02, MaxSpread: 0.03},
+			"cond-far":  {Available: true, Complete: true, UpBid: 0.50, UpAsk: 0.51, DownBid: 0.49, DownAsk: 0.50, UpBidDepth: 400, UpAskDepth: 400, DownBidDepth: 400, DownAskDepth: 400, PairBidSum: 0.99, PairAskSum: 1.01, MaxSpread: 0.01},
+		},
+		[]string{"sol"},
+		"15m",
+		4,
+		now,
+	)
+
+	if got := selected["SOL"]; got == nil || got.ConditionID != near.ConditionID {
+		t.Fatalf("expected nearest cycle to be selected, got %+v", got)
+	}
+}
+
+func TestChooseLatestMarketsNearExpiryRotatesToNextCycle(t *testing.T) {
+	now := time.Date(2026, 3, 9, 6, 14, 0, 0, time.UTC)
+	current := marketForTest("sol-updown-15m-current", "cond-current", now.Add(70*time.Second), true, false, "up", "down")
+	next := marketForTest("sol-updown-15m-next", "cond-next", now.Add(16*time.Minute), true, false, "up", "down")
+	later := marketForTest("sol-updown-15m-later", "cond-later", now.Add(31*time.Minute), true, false, "up", "down")
+
+	selected := chooseLatestMarkets(
+		[]api.Market{later, current, next},
+		map[string]*trackedMarket{"SOL": {Market: &current}},
+		map[string]marketQuality{
+			"cond-next":  {Available: true, Complete: true, UpBid: 0.49, UpAsk: 0.51, DownBid: 0.48, DownAsk: 0.50, UpBidDepth: 120, UpAskDepth: 120, DownBidDepth: 120, DownAskDepth: 120, PairBidSum: 0.97, PairAskSum: 1.01, MaxSpread: 0.02},
+			"cond-later": {Available: true, Complete: true, UpBid: 0.50, UpAsk: 0.51, DownBid: 0.49, DownAsk: 0.50, UpBidDepth: 350, UpAskDepth: 350, DownBidDepth: 350, DownAskDepth: 350, PairBidSum: 0.99, PairAskSum: 1.01, MaxSpread: 0.01},
+		},
+		[]string{"sol"},
+		"15m",
+		4,
+		now,
+	)
+
+	if got := selected["SOL"]; got == nil || got.ConditionID != next.ConditionID {
+		t.Fatalf("expected next cycle instead of later cycle, got %+v", got)
+	}
+}
+
 func TestMarketQuoteHealthDetectsMissingAsk(t *testing.T) {
 	health := marketQuoteHealth(
 		map[string]float64{"Up": 0.52, "Down": 0.46},

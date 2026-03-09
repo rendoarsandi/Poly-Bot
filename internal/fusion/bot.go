@@ -929,6 +929,7 @@ func chooseBestMarketCandidate(candidates []api.Market, qualities map[string]mar
 	}
 	rotateLead := marketRotateLead(tf)
 	fallbackLead := marketFallbackLead(tf)
+	cycleTolerance := marketCycleSelectionTolerance(tf)
 	var currentCandidate *api.Market
 	for i := range candidates {
 		candidate := &candidates[i]
@@ -940,35 +941,46 @@ func chooseBestMarketCandidate(candidates []api.Market, qualities map[string]mar
 			break
 		}
 	}
-	if chosen := bestQualityCandidate(candidates, qualities, currentCondition, rotateLead, now); chosen != nil {
-		return chosen
+	if anchor := firstCandidateAfterLead(candidates, rotateLead, now); anchor != nil {
+		if chosen := bestCandidateForCycle(candidates, qualities, currentCondition, anchor.EndTime, cycleTolerance, now); chosen != nil {
+			return chosen
+		}
 	}
 	if currentCandidate != nil && currentCandidate.EndTime.After(now.Add(15*time.Second)) {
 		return currentCandidate
 	}
-	if chosen := bestQualityCandidate(candidates, qualities, currentCondition, fallbackLead, now); chosen != nil {
-		return chosen
-	}
-	bestScore := math.Inf(-1)
-	var best *api.Market
-	for i := range candidates {
-		candidate := &candidates[i]
-		if candidate.EndTime.After(now) {
-			score := marketSelectionScore(*candidate, qualities[candidate.ConditionID], currentCondition, now)
-			if best == nil || score > bestScore {
-				best, bestScore = candidate, score
-			}
+	if anchor := firstCandidateAfterLead(candidates, fallbackLead, now); anchor != nil {
+		if chosen := bestCandidateForCycle(candidates, qualities, currentCondition, anchor.EndTime, cycleTolerance, now); chosen != nil {
+			return chosen
 		}
 	}
-	return best
+	if anchor := firstCandidateAfterLead(candidates, 0, now); anchor != nil {
+		if chosen := bestCandidateForCycle(candidates, qualities, currentCondition, anchor.EndTime, cycleTolerance, now); chosen != nil {
+			return chosen
+		}
+	}
+	return nil
 }
 
-func bestQualityCandidate(candidates []api.Market, qualities map[string]marketQuality, currentCondition string, minLead time.Duration, now time.Time) *api.Market {
+func firstCandidateAfterLead(candidates []api.Market, minLead time.Duration, now time.Time) *api.Market {
+	for i := range candidates {
+		candidate := &candidates[i]
+		if candidate.EndTime.Sub(now) > minLead {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func bestCandidateForCycle(candidates []api.Market, qualities map[string]marketQuality, currentCondition string, anchorEnd time.Time, tolerance time.Duration, now time.Time) *api.Market {
 	bestScore := math.Inf(-1)
 	var best *api.Market
 	for i := range candidates {
 		candidate := &candidates[i]
-		if candidate.EndTime.Sub(now) <= minLead {
+		if !candidate.EndTime.After(now) {
+			continue
+		}
+		if !sameSelectionCycle(candidate.EndTime, anchorEnd, tolerance) {
 			continue
 		}
 		score := marketSelectionScore(*candidate, qualities[candidate.ConditionID], currentCondition, now)
@@ -977,6 +989,31 @@ func bestQualityCandidate(candidates []api.Market, qualities map[string]marketQu
 		}
 	}
 	return best
+}
+
+func sameSelectionCycle(a, b time.Time, tolerance time.Duration) bool {
+	if tolerance <= 0 {
+		return a.Equal(b)
+	}
+	delta := a.Sub(b)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= tolerance
+}
+
+func marketCycleSelectionTolerance(tf time.Duration) time.Duration {
+	if tf <= 0 {
+		return 5 * time.Minute
+	}
+	tolerance := tf / 2
+	if tolerance < 90*time.Second {
+		tolerance = 90 * time.Second
+	}
+	if tolerance > 10*time.Minute {
+		tolerance = 10 * time.Minute
+	}
+	return tolerance
 }
 
 func marketSelectionScore(candidate api.Market, quality marketQuality, currentCondition string, now time.Time) float64 {
