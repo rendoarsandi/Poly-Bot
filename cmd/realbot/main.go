@@ -1061,20 +1061,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					// Update best bids/asks based on the new full depth
-					for outcome := range tokenToOutcome {
-						bids := tokenFullBids[outcome]
-						if len(bids) > 0 {
-							tokenBids[outcome] = bids[0].Price
-						} else {
-							tokenBids[outcome] = 0
-						}
-
-						asks := tokenFullAsks[outcome]
-						if len(asks) > 0 {
-							tokenAsks[outcome] = asks[0].Price
-						} else {
-							tokenAsks[outcome] = 0
-						}
+					mkt.RefreshTopOfBookFromDepth(outcomes, tokenFullBids, tokenFullAsks, tokenBids, tokenAsks)
+					for _, outcome := range outcomes {
 
 						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
 							// Check for crossed book (WS state corruption or missing delete delta)

@@ -220,6 +220,73 @@ var (
 	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
+var settingsMarketOptions = []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+
+const settingsMaxMarketsLimit = 4
+
+func normalizeMarketSelection(slug string) string {
+	trimmed := strings.TrimSpace(slug)
+	if trimmed == "" || strings.EqualFold(trimmed, "ALL") {
+		return "ALL"
+	}
+
+	parts := make([]string, 0, settingsMaxMarketsLimit)
+	seen := make(map[string]struct{}, settingsMaxMarketsLimit)
+	for _, part := range strings.Split(trimmed, ",") {
+		asset := strings.ToUpper(strings.TrimSpace(part))
+		if asset == "" || strings.EqualFold(asset, "ALL") {
+			continue
+		}
+		if _, ok := seen[asset]; ok {
+			continue
+		}
+		seen[asset] = struct{}{}
+		parts = append(parts, asset)
+		if len(parts) >= settingsMaxMarketsLimit {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return "ALL"
+	}
+	return strings.Join(parts, ",")
+}
+
+func marketSelectionLimit(slug string) int {
+	normalized := normalizeMarketSelection(slug)
+	if normalized == "ALL" {
+		return settingsMaxMarketsLimit
+	}
+	count := len(strings.Split(normalized, ","))
+	if count < 1 {
+		return 1
+	}
+	if count > settingsMaxMarketsLimit {
+		return settingsMaxMarketsLimit
+	}
+	return count
+}
+
+func clampMaxMarketsForSelection(slug string, maxMarkets int) int {
+	limit := marketSelectionLimit(slug)
+	if maxMarkets < 1 {
+		return 1
+	}
+	if maxMarkets > limit {
+		return limit
+	}
+	return maxMarkets
+}
+
+func normalizeTUISettings(cfg TUISettings) TUISettings {
+	cfg.MarketSlug = normalizeMarketSelection(cfg.MarketSlug)
+	cfg.MaxMarkets = clampMaxMarketsForSelection(cfg.MarketSlug, cfg.MaxMarkets)
+	if strings.TrimSpace(cfg.Timeframe) == "" {
+		cfg.Timeframe = "15m"
+	}
+	return cfg
+}
+
 // ─── TUI struct ───────────────────────────────────────────────────────────────
 
 // TUI provides a live bubbletea-driven terminal user interface.
@@ -660,7 +727,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				changed := false
 				switch m.settingsCursor {
 				case 0: // Market
-					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+					markets := settingsMarketOptions
 					idx := 0
 					for i, mkt := range markets {
 						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
@@ -742,6 +809,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				}
+				m.tui.settings = normalizeTUISettings(m.tui.settings)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -753,7 +821,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				changed := false
 				switch m.settingsCursor {
 				case 0: // Market
-					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+					markets := settingsMarketOptions
 					idx := 0
 					for i, mkt := range markets {
 						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
@@ -832,6 +900,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				}
+				m.tui.settings = normalizeTUISettings(m.tui.settings)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -841,20 +910,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Quick presets
 			case "1":
 				m.tui.mu.Lock()
-				m.tui.settings = SettingsConservative
+				m.tui.settings = normalizeTUISettings(SettingsConservative)
 				m.tui.tradeFactor = SettingsConservative.TradeScaleFactor
+				if m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "2":
 				m.tui.mu.Lock()
-				m.tui.settings = SettingsModerate
+				m.tui.settings = normalizeTUISettings(SettingsModerate)
 				m.tui.tradeFactor = SettingsModerate.TradeScaleFactor
+				if m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "3":
 				m.tui.mu.Lock()
-				m.tui.settings = SettingsAggressive
+				m.tui.settings = normalizeTUISettings(SettingsAggressive)
 				m.tui.tradeFactor = SettingsAggressive.TradeScaleFactor
+				if m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			}
@@ -2472,8 +2550,8 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: "Max Concurrent",
-			value: fmt.Sprintf(" %d ", cfg.MaxMarkets),
-			bar:   renderBar(float64(cfg.MaxMarkets)/4.0, 20),
+			value: fmt.Sprintf(" %d / %d ", cfg.MaxMarkets, marketSelectionLimit(cfg.MarketSlug)),
+			bar:   renderBar(float64(cfg.MaxMarkets)/float64(marketSelectionLimit(cfg.MarketSlug)), 20),
 		},
 		{
 			label: "Timeframe",
@@ -2635,10 +2713,10 @@ func (t *TUI) GetSettings() TUISettings {
 func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.settings = s
+	t.settings = normalizeTUISettings(s)
 	t.onSettingsChange = onChange
 	// Keep tradeFactor in sync so the account panel shows the right value.
-	if s.TradeScaleFactor > 0 {
-		t.tradeFactor = s.TradeScaleFactor
+	if t.settings.TradeScaleFactor > 0 {
+		t.tradeFactor = t.settings.TradeScaleFactor
 	}
 }

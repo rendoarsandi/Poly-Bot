@@ -1500,21 +1500,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 						}
 
-						for outcome := range t.TokenMap {
-							bids := t.TokenFullBids[outcome]
-							if len(bids) > 0 {
-								t.TokenBids[outcome] = bids[0].Price
-							} else {
-								t.TokenBids[outcome] = 0
-							}
+						mkt.RefreshTopOfBookFromDepth(t.Outcomes, t.TokenFullBids, t.TokenFullAsks, t.TokenBids, t.TokenAsks)
 
-							asks := t.TokenFullAsks[outcome]
-							if len(asks) > 0 {
-								t.TokenAsks[outcome] = asks[0].Price
-							} else {
-								t.TokenAsks[outcome] = 0
-							}
-
+						for _, outcome := range t.Outcomes {
 							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
 								// Check for crossed book
 								if t.TokenBids[outcome] >= t.TokenAsks[outcome] {
@@ -1612,7 +1600,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Check WebSocket connection health for REST fallback decision
 			wsConnected := wsMgr.IsConnected()
-			wsLastMsg := wsMgr.TimeSinceLastMessage()
+			wsLastMsg := wsMgr.TimeSinceLastDataMessage()
 
 			// Update WS staleness and ping latency in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)

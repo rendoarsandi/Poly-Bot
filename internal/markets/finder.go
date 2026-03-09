@@ -13,6 +13,31 @@ import (
 	"Market-bot/internal/paper"
 )
 
+func requestedAssetsFromSettings(cfg paper.TUISettings) []string {
+	marketSlug := strings.TrimSpace(cfg.MarketSlug)
+	if marketSlug == "" || strings.EqualFold(marketSlug, "ALL") {
+		return []string{"btc", "eth", "sol", "xrp"}
+	}
+
+	assets := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	for _, p := range strings.Split(marketSlug, ",") {
+		asset := strings.ToLower(strings.TrimSpace(p))
+		if asset == "" {
+			continue
+		}
+		if _, ok := seen[asset]; ok {
+			continue
+		}
+		seen[asset] = struct{}{}
+		assets = append(assets, asset)
+	}
+	if len(assets) == 0 {
+		return []string{"btc", "eth", "sol", "xrp"}
+	}
+	return assets
+}
+
 // FindMarkets polls the REST API until at least one active BTC or ETH 15-minute
 // market is found, then returns a map keyed by asset (e.g. "BTC", "ETH").
 //
@@ -40,20 +65,7 @@ func FindMarkets(
 		}
 
 		cfg := getConfig()
-		var assets []string
-		if cfg.MarketSlug != "" && cfg.MarketSlug != "ALL" {
-			// User specified multiple markets separated by comma?
-			// Let's support split by comma, e.g. "BTC,ETH"
-			for _, p := range strings.Split(cfg.MarketSlug, ",") {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					assets = append(assets, p)
-				}
-			}
-		}
-		if len(assets) == 0 {
-			assets = []string{"btc", "eth", "sol", "xrp"}
-		}
+		assets := requestedAssetsFromSettings(cfg)
 		timeframe := cfg.Timeframe
 		if timeframe == "" {
 			timeframe = "15m"
@@ -65,14 +77,14 @@ func FindMarkets(
 
 		var markets []api.Market
 		var exactMarkets []api.Market
-		
+
 		// Always fetch both 15m and 5m for maximum coverage, unless a specific timeframe is enforced
 		// The user steering specifically requested adding both 5m and 15m
 		markets15m, err15m := restClient.GetMarketsByTimeframe(ctx, assets, "15m")
 		if err15m == nil {
 			markets = append(markets, markets15m...)
 		}
-		
+
 		markets5m, err5m := restClient.GetMarketsByTimeframe(ctx, assets, "5m")
 		if err5m == nil {
 			markets = append(markets, markets5m...)

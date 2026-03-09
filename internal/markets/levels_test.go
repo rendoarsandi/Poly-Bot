@@ -67,3 +67,35 @@ func TestApplyDelta(t *testing.T) {
 		t.Errorf("ApplyDelta failed to insert bid level correctly: %v", updatedBids)
 	}
 }
+
+func TestRefreshTopOfBookFromDepthUsesOutcomeKeys(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	bidDepth := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.42, Size: 4}, {Price: 0.41, Size: 2}},
+		"Up":   {{Price: 0.58, Size: 3}},
+	}
+	askDepth := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.44, Size: 5}},
+		"Up":   {{Price: 0.61, Size: 7}, {Price: 0.63, Size: 1}},
+	}
+	bestBids := map[string]float64{"token-down": 0.99}
+	bestAsks := map[string]float64{"token-up": 0.99}
+
+	RefreshTopOfBookFromDepth(outcomes, bidDepth, askDepth, bestBids, bestAsks)
+
+	if got := bestBids["Down"]; got != 0.42 {
+		t.Fatalf("expected Down best bid 0.42, got %.2f", got)
+	}
+	if got := bestAsks["Down"]; got != 0.44 {
+		t.Fatalf("expected Down best ask 0.44, got %.2f", got)
+	}
+	if got := bestBids["Up"]; got != 0.58 {
+		t.Fatalf("expected Up best bid 0.58, got %.2f", got)
+	}
+	if got := bestAsks["Up"]; got != 0.61 {
+		t.Fatalf("expected Up best ask 0.61, got %.2f", got)
+	}
+	if got := bestBids["token-down"]; got != 0.99 {
+		t.Fatalf("expected unrelated token-id key to remain untouched, got %.2f", got)
+	}
+}

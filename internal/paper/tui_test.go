@@ -449,3 +449,21 @@ func TestRenderFooterShowsScrollStatus(t *testing.T) {
 		t.Fatalf("expected footer controls, got %q", rendered)
 	}
 }
+
+func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{MarketSlug: "btc", MaxMarkets: 4, Timeframe: "15m"})
+	if got.MarketSlug != "BTC" {
+		t.Fatalf("expected normalized market slug BTC, got %q", got.MarketSlug)
+	}
+	if got.MaxMarkets != 1 {
+		t.Fatalf("expected single-market selection to clamp MaxMarkets to 1, got %d", got.MaxMarkets)
+	}
+
+	got = normalizeTUISettings(TUISettings{MarketSlug: "BTC,eth", MaxMarkets: 4, Timeframe: "15m"})
+	if got.MarketSlug != "BTC,ETH" {
+		t.Fatalf("expected normalized multi-market slug BTC,ETH, got %q", got.MarketSlug)
+	}
+	if got.MaxMarkets != 2 {
+		t.Fatalf("expected two-market selection to clamp MaxMarkets to 2, got %d", got.MaxMarkets)
+	}
+}
