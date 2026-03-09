@@ -65,22 +65,23 @@ func FindMarkets(
 
 		var markets []api.Market
 		var exactMarkets []api.Market
-
-		// Always fetch both 15m and 5m for maximum coverage, unless a specific timeframe is enforced
-		// The user steering specifically requested adding both 5m and 15m
-		markets15m, err15m := restClient.GetMarketsByTimeframe(ctx, assets, "15m")
-		if err15m == nil {
-			markets = append(markets, markets15m...)
+		timeframes := discoveryTimeframes(timeframe)
+		var fetchErrors []error
+		for _, tf := range timeframes {
+			fetched, err := restClient.GetMarketsByTimeframe(ctx, assets, tf)
+			if err != nil {
+				fetchErrors = append(fetchErrors, err)
+				continue
+			}
+			markets = append(markets, fetched...)
+			if len(markets) > 0 {
+				break
+			}
 		}
 
-		markets5m, err5m := restClient.GetMarketsByTimeframe(ctx, assets, "5m")
-		if err5m == nil {
-			markets = append(markets, markets5m...)
-		}
-
-		if err15m != nil && err5m != nil {
+		if len(fetchErrors) == len(timeframes) {
 			if attempts == 0 && logFn != nil {
-				logFn("⚠️ Market fetch error: 15m=%v, 5m=%v, retrying...", err15m, err5m)
+				logFn("⚠️ Market fetch error: %v, retrying...", fetchErrors[0])
 			}
 			// Don't immediately continue, allow exact slug fallback
 		}
@@ -171,4 +172,14 @@ func FindMarkets(
 		logFn("⚠️ No 15m markets found after polling")
 	}
 	return found
+}
+
+func discoveryTimeframes(requested string) []string {
+	requested = strings.TrimSpace(strings.ToLower(requested))
+	switch requested {
+	case "", "all":
+		return []string{"15m", "5m"}
+	default:
+		return []string{requested}
+	}
 }

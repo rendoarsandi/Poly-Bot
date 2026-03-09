@@ -70,3 +70,28 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 		t.Errorf("Expected market 'BTC' to be found, got %v", markets)
 	}
 }
+
+func TestDiscoveryTimeframes(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		want      []string
+	}{
+		{name: "default", requested: "", want: []string{"15m", "5m"}},
+		{name: "explicit 15m", requested: "15m", want: []string{"15m"}},
+		{name: "explicit all", requested: "all", want: []string{"15m", "5m"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := discoveryTimeframes(tt.requested)
+			if len(got) != len(tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("expected %v, got %v", tt.want, got)
+				}
+			}
+		})
+	}
+}

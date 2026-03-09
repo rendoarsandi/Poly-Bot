@@ -129,6 +129,18 @@ func TestMarketQuoteHealthDetectsMissingAsk(t *testing.T) {
 	}
 }
 
+func TestShouldProbeMarketQualities(t *testing.T) {
+	if shouldProbeMarketQualities(nil) {
+		t.Fatal("expected nil current markets to skip quality probing")
+	}
+	if shouldProbeMarketQualities(map[string]*trackedMarket{"BTC": nil}) {
+		t.Fatal("expected empty tracked entries to skip quality probing")
+	}
+	if !shouldProbeMarketQualities(map[string]*trackedMarket{"BTC": {Market: &api.Market{ConditionID: "cond"}}}) {
+		t.Fatal("expected existing tracked market to enable quality probing")
+	}
+}
+
 func marketForTest(slug, condition string, end time.Time, active, closed bool, outcomes ...string) api.Market {
 	tokens := make([]api.Token, 0, len(outcomes))
 	for i, outcome := range outcomes {
