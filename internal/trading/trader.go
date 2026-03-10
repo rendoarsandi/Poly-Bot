@@ -1071,7 +1071,49 @@ func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (fl
 
 // WaitForFill waits for an order to be filled
 func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout time.Duration) (bool, error) {
-	return t.clob.WaitForFill(ctx, orderID, timeout)
+	if orderID == "" {
+		return false, nil
+	}
+	if t.GetConfirmedFillSize(orderID) > 0 {
+		return true, nil
+	}
+
+	deadline := time.Now().Add(timeout)
+	wsTicker := time.NewTicker(25 * time.Millisecond)
+	defer wsTicker.Stop()
+	fallbackTicker := time.NewTicker(200 * time.Millisecond)
+	defer fallbackTicker.Stop()
+
+	for {
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-wsTicker.C:
+			if t.GetConfirmedFillSize(orderID) > 0 {
+				return true, nil
+			}
+		case <-fallbackTicker.C:
+			order, err := t.clob.GetOrder(ctx, orderID)
+			if err != nil {
+				continue
+			}
+
+			switch strings.ToUpper(strings.TrimSpace(order.Status)) {
+			case "FILLED", "CONFIRMED":
+				return true, nil
+			case "NOT_FOUND", "FAILED", "CANCELLED", "EXPIRED", "REJECTED":
+				return false, nil
+			case "OPEN", "LIVE":
+				if order.RemainingSize == 0 && order.OriginalSize > 0 {
+					return true, nil
+				}
+			}
+		}
+	}
 }
 
 func (t *RealTrader) EnableRawAPILog(path string) error {

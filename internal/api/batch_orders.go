@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 )
 
 func normalizeBatchOrderResponse(resp *OrderResponse) {
@@ -33,148 +35,193 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 		return nil, nil
 	}
 
-	payloads := make([]map[string]interface{}, 0, len(reqs))
-
-	for _, req := range reqs {
-		salt := generateSalt()
-		var makerAmount, takerAmount string
-
-		if req.Side == SideBuy {
-			sizeMicro := int64(req.Size*1e6 + 0.5)
-			priceMicro := int64(req.Price*1e6 + 0.5)
-
-			if usesMarketLikePrecision(req) {
-				// Market Buy Restrictions (per API error):
-				// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
-				// - Taker (Shares): Max 4 decimals (multiple of 100 units)
-
-				// Truncate size (taker) to 4 decimals
-				sizeMicro = (sizeMicro / 100) * 100
-
-				// Calculate USDC cost with truncated size
-				usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-				usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
-
-				// Round up USDC (maker) to nearest 2 decimals (multiple of 10000 units)
-				// to ensure implied price remains >= limit price
-				usdcVal := usdcMicroBig.Int64()
-				if usdcVal%10000 != 0 {
-					usdcVal = ((usdcVal / 10000) + 1) * 10000
-				}
-				usdcMicroBig.SetInt64(usdcVal)
-
-				makerAmount = usdcMicroBig.String()
-				takerAmount = strconv.FormatInt(sizeMicro, 10)
-			} else {
-				usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-				usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
-				makerAmount = usdcMicroBig.String()
-				takerAmount = strconv.FormatInt(sizeMicro, 10)
-			}
-		} else {
-			sizeMicro := int64(req.Size*1e6 + 0.5)
-			priceMicro := int64(req.Price*1e6 + 0.5)
-
-			if usesMarketLikePrecision(req) {
-				sizeMicro = (sizeMicro / 10000) * 10000
-				usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-				divisor := big.NewInt(1e6)
-				remainder := new(big.Int).Mod(usdcMicroBig, divisor)
-				usdcMicroBig.Div(usdcMicroBig, divisor)
-				if remainder.Sign() > 0 {
-					usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
-				}
-				usdcVal := usdcMicroBig.Int64()
-				if usdcVal%100 != 0 {
-					usdcVal = ((usdcVal / 100) + 1) * 100
-				}
-				usdcMicroBig.SetInt64(usdcVal)
-				makerAmount = strconv.FormatInt(sizeMicro, 10)
-				takerAmount = usdcMicroBig.String()
-			} else {
-				usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-				divisor := big.NewInt(1e6)
-				remainder := new(big.Int).Mod(usdcMicroBig, divisor)
-				usdcMicroBig.Div(usdcMicroBig, divisor)
-				if remainder.Sign() > 0 {
-					usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
-				}
-				makerAmount = strconv.FormatInt(sizeMicro, 10)
-				takerAmount = usdcMicroBig.String()
-			}
-		}
-
-		expirationStr := "0"
-		if req.Expiration > 0 {
-			expirationStr = strconv.FormatInt(req.Expiration, 10)
-		}
-
-		sideInt := 0
-		if req.Side == SideSell {
-			sideInt = 1
-		}
-
-		orderData := &OrderData{
-			Salt:          strconv.FormatInt(salt, 10),
-			Maker:         c.signer.Address(),
-			Signer:        c.signer.Address(),
-			Taker:         "0x0000000000000000000000000000000000000000",
-			TokenID:       req.TokenID,
-			MakerAmount:   makerAmount,
-			TakerAmount:   takerAmount,
-			Expiration:    expirationStr,
-			Nonce:         "0",
-			FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-			Side:          sideInt,
-			SignatureType: 0,
-		}
-
-		signature, err := c.signer.SignOrder(orderData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign order: %w", err)
-		}
-
-		orderPayload := OrderPayload{
-			Salt:          salt,
-			Maker:         orderData.Maker,
-			Signer:        orderData.Signer,
-			Taker:         orderData.Taker,
-			TokenID:       req.TokenID,
-			MakerAmount:   orderData.MakerAmount,
-			TakerAmount:   orderData.TakerAmount,
-			Expiration:    orderData.Expiration,
-			Nonce:         orderData.Nonce,
-			FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-			Side:          string(req.Side),
-			SignatureType: orderData.SignatureType,
-			Signature:     signature,
-		}
-
-		payload := make(map[string]interface{})
-		payload["order"] = orderPayload
-		payload["owner"] = c.auth.APIKey
-
-		if req.TimeInForce != "" {
-			payload["orderType"] = string(req.TimeInForce)
-		} else {
-			payload["orderType"] = string(req.OrderType)
-		}
-
-		payloads = append(payloads, payload)
+	type preparedBatchPayload struct {
+		payload   map[string]interface{}
+		signMs    int64
+		computeMs int64
 	}
 
+	prepared := make([]preparedBatchPayload, len(reqs))
+	prepStart := time.Now()
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(reqs))
+
+	for idx, req := range reqs {
+		idx, req := idx, req
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			computeStart := time.Now()
+			salt := generateSalt()
+			var makerAmount, takerAmount string
+
+			if req.Side == SideBuy {
+				sizeMicro := int64(req.Size*1e6 + 0.5)
+				priceMicro := int64(req.Price*1e6 + 0.5)
+
+				if usesMarketLikePrecision(req) {
+					// Market Buy Restrictions (per API error):
+					// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
+					// - Taker (Shares): Max 4 decimals (multiple of 100 units)
+
+					// Truncate size (taker) to 4 decimals
+					sizeMicro = (sizeMicro / 100) * 100
+
+					// Calculate USDC cost with truncated size
+					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+					usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
+
+					// Round up USDC (maker) to nearest 2 decimals (multiple of 10000 units)
+					// to ensure implied price remains >= limit price
+					usdcVal := usdcMicroBig.Int64()
+					if usdcVal%10000 != 0 {
+						usdcVal = ((usdcVal / 10000) + 1) * 10000
+					}
+					usdcMicroBig.SetInt64(usdcVal)
+
+					makerAmount = usdcMicroBig.String()
+					takerAmount = strconv.FormatInt(sizeMicro, 10)
+				} else {
+					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+					usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
+					makerAmount = usdcMicroBig.String()
+					takerAmount = strconv.FormatInt(sizeMicro, 10)
+				}
+			} else {
+				sizeMicro := int64(req.Size*1e6 + 0.5)
+				priceMicro := int64(req.Price*1e6 + 0.5)
+
+				if usesMarketLikePrecision(req) {
+					sizeMicro = (sizeMicro / 10000) * 10000
+					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+					divisor := big.NewInt(1e6)
+					remainder := new(big.Int).Mod(usdcMicroBig, divisor)
+					usdcMicroBig.Div(usdcMicroBig, divisor)
+					if remainder.Sign() > 0 {
+						usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
+					}
+					usdcVal := usdcMicroBig.Int64()
+					if usdcVal%100 != 0 {
+						usdcVal = ((usdcVal / 100) + 1) * 100
+					}
+					usdcMicroBig.SetInt64(usdcVal)
+					makerAmount = strconv.FormatInt(sizeMicro, 10)
+					takerAmount = usdcMicroBig.String()
+				} else {
+					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
+					divisor := big.NewInt(1e6)
+					remainder := new(big.Int).Mod(usdcMicroBig, divisor)
+					usdcMicroBig.Div(usdcMicroBig, divisor)
+					if remainder.Sign() > 0 {
+						usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
+					}
+					makerAmount = strconv.FormatInt(sizeMicro, 10)
+					takerAmount = usdcMicroBig.String()
+				}
+			}
+			computeMs := time.Since(computeStart).Milliseconds()
+
+			expirationStr := "0"
+			if req.Expiration > 0 {
+				expirationStr = strconv.FormatInt(req.Expiration, 10)
+			}
+
+			sideInt := 0
+			if req.Side == SideSell {
+				sideInt = 1
+			}
+
+			orderData := &OrderData{
+				Salt:          strconv.FormatInt(salt, 10),
+				Maker:         c.signer.Address(),
+				Signer:        c.signer.Address(),
+				Taker:         "0x0000000000000000000000000000000000000000",
+				TokenID:       req.TokenID,
+				MakerAmount:   makerAmount,
+				TakerAmount:   takerAmount,
+				Expiration:    expirationStr,
+				Nonce:         "0",
+				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
+				Side:          sideInt,
+				SignatureType: 0,
+			}
+
+			signStart := time.Now()
+			signature, err := c.signer.SignOrder(orderData)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to sign order: %w", err)
+				return
+			}
+			signMs := time.Since(signStart).Milliseconds()
+
+			orderPayload := OrderPayload{
+				Salt:          salt,
+				Maker:         orderData.Maker,
+				Signer:        orderData.Signer,
+				Taker:         orderData.Taker,
+				TokenID:       req.TokenID,
+				MakerAmount:   orderData.MakerAmount,
+				TakerAmount:   orderData.TakerAmount,
+				Expiration:    orderData.Expiration,
+				Nonce:         orderData.Nonce,
+				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
+				Side:          string(req.Side),
+				SignatureType: orderData.SignatureType,
+				Signature:     signature,
+			}
+
+			payload := make(map[string]interface{})
+			payload["order"] = orderPayload
+			payload["owner"] = c.auth.APIKey
+
+			if req.TimeInForce != "" {
+				payload["orderType"] = string(req.TimeInForce)
+			} else {
+				payload["orderType"] = string(req.OrderType)
+			}
+
+			prepared[idx] = preparedBatchPayload{
+				payload:   payload,
+				signMs:    signMs,
+				computeMs: computeMs,
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+	if err, ok := <-errCh; ok {
+		return nil, err
+	}
+
+	payloads := make([]map[string]interface{}, 0, len(prepared))
+	latencyMs := c.newLatencyMetrics()
+	for _, item := range prepared {
+		payloads = append(payloads, item.payload)
+		if latencyMs != nil {
+			latencyMs["prep_compute_ms"] += item.computeMs
+			latencyMs["sign_ms"] += item.signMs
+		}
+	}
+	captureLatency(latencyMs, "prep_wall_ms", prepStart)
+
+	marshalStart := time.Now()
 	body, err := json.Marshal(payloads)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal orders: %w", err)
 	}
+	captureLatency(latencyMs, "marshal_ms", marshalStart)
 
 	path := "/orders"
-	timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
 
 	if c.testMode {
 		return nil, fmt.Errorf("batch orders not fully supported in testMode")
 	}
 
+	authStart := time.Now()
+	timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
+	captureLatency(latencyMs, "auth_ms", authStart)
+	postStart := time.Now()
 	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -188,13 +235,18 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 	req.Header.Set("POLY_SIGNATURE", signature)
 
 	resp, err := httpClient.Do(req)
+	captureLatency(latencyMs, "post_ms", postStart)
 	if err != nil {
+		c.logRawLatencyDebug(path, latencyMs, "submit_error")
 		return nil, fmt.Errorf("failed to submit batch orders: %w", err)
 	}
 	defer resp.Body.Close()
+	readStart := time.Now()
 	bodyBytes, _ := io.ReadAll(resp.Body)
+	captureLatency(latencyMs, "read_ms", readStart)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		c.logRawLatencyDebug(path, latencyMs, "http_error")
 		var result []OrderResponse
 		if err := json.Unmarshal(bodyBytes, &result); err != nil {
 			var singleResp OrderResponse
@@ -214,6 +266,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 
 	var result []OrderResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		c.logRawLatencyDebug(path, latencyMs, "decode_error")
 		var singleResp OrderResponse
 		if err2 := json.Unmarshal(bodyBytes, &singleResp); err2 == nil {
 			normalizeBatchOrderResponse(&singleResp)
@@ -223,10 +276,15 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 	}
 
 	resPtrs := make([]*OrderResponse, len(result))
+	outcome := "success"
 	for i := range result {
 		resPtrs[i] = &result[i]
 		normalizeBatchOrderResponse(resPtrs[i])
+		if !resPtrs[i].Success {
+			outcome = "order_unsuccessful"
+		}
 	}
+	c.logRawLatencyDebug(path, latencyMs, outcome)
 
 	return resPtrs, nil
 }

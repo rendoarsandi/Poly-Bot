@@ -10,15 +10,16 @@ import (
 )
 
 type rawAPILogEntry struct {
-	Timestamp    string `json:"timestamp"`
-	Source       string `json:"source"`
-	Method       string `json:"method"`
-	Path         string `json:"path"`
-	StatusCode   int    `json:"status_code,omitempty"`
-	RequestBody  string `json:"request_body,omitempty"`
-	ResponseBody string `json:"response_body,omitempty"`
-	Error        string `json:"error,omitempty"`
-	Outcome      string `json:"outcome,omitempty"`
+	Timestamp    string           `json:"timestamp"`
+	Source       string           `json:"source"`
+	Method       string           `json:"method"`
+	Path         string           `json:"path"`
+	StatusCode   int              `json:"status_code,omitempty"`
+	RequestBody  string           `json:"request_body,omitempty"`
+	ResponseBody string           `json:"response_body,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	Outcome      string           `json:"outcome,omitempty"`
+	LatencyMs    map[string]int64 `json:"latency_ms,omitempty"`
 }
 
 type rawAPILogger struct {

@@ -49,6 +49,8 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 type Signer struct {
 	privateKey *ecdsa.PrivateKey
 	address    string
+	domainSep  [32]byte
+	orderType  [32]byte
 }
 
 // NewSigner creates a new signer from a hex-encoded private key
@@ -60,10 +62,14 @@ func NewSigner(privateKeyHex string) (*Signer, error) {
 	}
 
 	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	domainSep := buildDomainSeparator()
+	orderType := buildOrderTypeHash()
 
 	return &Signer{
 		privateKey: privateKey,
 		address:    address,
+		domainSep:  domainSep,
+		orderType:  orderType,
 	}, nil
 }
 
@@ -116,37 +122,11 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 
 // getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
 func (s *Signer) getDomainSeparator() [32]byte {
-	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
-
-	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
-	versionHash := keccak256([]byte("1"))
-	chainId := big.NewInt(137) // Polygon mainnet
-	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
-
-	// Encode: typeHash + nameHash + versionHash + chainId + verifyingContract
-	encoded := make([]byte, 32*5)
-	copy(encoded[0:32], typeHash[:])
-	copy(encoded[32:64], nameHash[:])
-	copy(encoded[64:96], versionHash[:])
-
-	// ChainId as uint256 (32 bytes)
-	chainIdBytes := padLeft(chainId.Bytes(), 32)
-	copy(encoded[96:128], chainIdBytes)
-
-	// address as uint256 (32 bytes, padded left)
-	copy(encoded[128:160], padLeft(verifyingContract, 32))
-
-	return keccak256(encoded)
+	return s.domainSep
 }
 
 // getOrderStructHash returns the struct hash for an order
 func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
-	// Order struct type hash (EXACT field order and casing required by Polymarket)
-	typeHash := keccak256([]byte(
-		"Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)",
-	))
-
 	// Parse values
 	salt := parseBigInt(order.Salt)
 	maker := parseAddress(order.Maker)
@@ -165,7 +145,7 @@ func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
 	// Encode all fields (32 bytes each, padded)
 	// Sequence: salt, maker, signer, taker, tokenId, makerAmount, takerAmount, expiration, nonce, feeRateBps, side, signatureType
 	encoded := make([]byte, 13*32) // typeHash + 12 fields
-	copy(encoded[0:32], typeHash[:])
+	copy(encoded[0:32], s.orderType[:])
 	copy(encoded[32:64], padLeft(salt.Bytes(), 32))
 	copy(encoded[64:96], padLeft(maker, 32))
 	copy(encoded[96:128], padLeft(signer, 32))
@@ -205,6 +185,16 @@ type APIAuth struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string
+	signingKey []byte
+}
+
+func NewAPIAuth(apiKey, apiSecret, passphrase string) *APIAuth {
+	return &APIAuth{
+		APIKey:     apiKey,
+		APISecret:  apiSecret,
+		Passphrase: passphrase,
+		signingKey: decodeAPISecret(apiSecret),
+	}
 }
 
 // SignL2Request signs an L2 API request for authentication
@@ -220,17 +210,45 @@ func (a *APIAuth) SignL2Request(method, path string, body string) (timestamp, si
 	message := ts + method + signPath + body
 
 	// Polymarket uses URL-safe base64 for both decoding secret AND encoding signature
-	key, err := base64.URLEncoding.DecodeString(a.APISecret)
-	if err != nil {
-		// Fallback to standard encoding for decoding
-		key, _ = base64.StdEncoding.DecodeString(a.APISecret)
-	}
-	h := hmac.New(sha256.New, key)
+	h := hmac.New(sha256.New, a.signingKey)
 	h.Write([]byte(message))
 	// Use URL-safe base64 for output signature (matches Python/TS clients)
 	sig := base64.URLEncoding.EncodeToString(h.Sum(nil))
 
 	return ts, sig
+}
+
+func decodeAPISecret(secret string) []byte {
+	key, err := base64.URLEncoding.DecodeString(secret)
+	if err == nil {
+		return key
+	}
+	key, _ = base64.StdEncoding.DecodeString(secret)
+	return key
+}
+
+func buildDomainSeparator() [32]byte {
+	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
+	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
+	versionHash := keccak256([]byte("1"))
+	chainID := big.NewInt(137)
+	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+
+	encoded := make([]byte, 32*5)
+	copy(encoded[0:32], typeHash[:])
+	copy(encoded[32:64], nameHash[:])
+	copy(encoded[64:96], versionHash[:])
+	copy(encoded[96:128], padLeft(chainID.Bytes(), 32))
+	copy(encoded[128:160], padLeft(verifyingContract, 32))
+
+	return keccak256(encoded)
+}
+
+func buildOrderTypeHash() [32]byte {
+	return keccak256([]byte(
+		"Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)",
+	))
 }
 
 // Helper functions

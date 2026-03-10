@@ -501,6 +501,9 @@ func TestPlaceOrder_WritesRawDebugLogOnKilled(t *testing.T) {
 	if !strings.Contains(text, `[redacted-signature]`) {
 		t.Fatalf("expected raw log to redact signature, got %s", text)
 	}
+	if !strings.Contains(text, `"latency_ms"`) {
+		t.Fatalf("expected raw log to include latency metrics, got %s", text)
+	}
 }
 
 func TestWaitForFill_IgnoresMatchedUntilConfirmed(t *testing.T) {

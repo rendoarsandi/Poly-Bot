@@ -33,13 +33,9 @@ func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLO
 	}
 
 	return &CLOBClient{
-		BaseURL: "https://clob.polymarket.com",
-		signer:  signer,
-		auth: &APIAuth{
-			APIKey:     apiKey,
-			APISecret:  apiSecret,
-			Passphrase: apiPassphrase,
-		},
+		BaseURL:  "https://clob.polymarket.com",
+		signer:   signer,
+		auth:     NewAPIAuth(apiKey, apiSecret, apiPassphrase),
 		testMode: false,
 	}, nil
 }
@@ -337,6 +333,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			SignatureType: 0, // EOA signature
 		}
 
+		signStart := time.Now()
 		signature, err := c.signer.SignOrder(orderData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign order: %w", err)
@@ -362,7 +359,11 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 			OrderType: string(req.OrderType),
 		}
 
-		return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, req.Side)
+		latencyMs := c.newLatencyMetrics()
+		if latencyMs != nil {
+			latencyMs["sign_ms"] = time.Since(signStart).Milliseconds()
+		}
+		return c.submitOrder(ctx, signedOrder, req.TimeInForce, req.Price, req.Side, latencyMs)
 	}
 
 	sideInt := 0
@@ -379,7 +380,7 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 }
 
 // submitOrder sends the signed order to the CLOB API
-func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce, price float64, side Side) (*OrderResponse, error) {
+func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, tif TimeInForce, price float64, side Side, latencyMs map[string]int64) (*OrderResponse, error) {
 	// Build the payload (needed for both test mode validation and real submission)
 	payload := make(map[string]interface{})
 
@@ -396,17 +397,20 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	// Match official CLOB client payload shape: signed order + owner + orderType.
 	// (No top-level side/price fields.)
 
+	marshalStart := time.Now()
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal order: %w", err)
 	}
+	captureLatency(latencyMs, "marshal_ms", marshalStart)
 
-	// Generate auth headers (validates credentials are working)
 	path := "/order"
-	timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
 
 	// In test mode: validate everything but don't actually submit
 	if c.testMode {
+		authStart := time.Now()
+		timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
+		captureLatency(latencyMs, "auth_ms", authStart)
 		// Verify we can build the request (validates auth setup)
 		req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
 		if err != nil {
@@ -451,7 +455,9 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 
 	// Real submission helper
 	doSubmit := func(body []byte) (int, []byte, error) {
+		authStart := time.Now()
 		timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
+		captureLatency(latencyMs, "auth_ms", authStart)
 		req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
 		if err != nil {
 			return 0, nil, err
@@ -464,23 +470,31 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		req.Header.Set("POLY_TIMESTAMP", timestamp)
 		req.Header.Set("POLY_SIGNATURE", signature)
 
+		postStart := time.Now()
 		resp, err := httpClient.Do(req)
+		captureLatency(latencyMs, "post_ms", postStart)
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to submit order: %w", err)
 		}
 		defer resp.Body.Close()
+		readStart := time.Now()
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		captureLatency(latencyMs, "read_ms", readStart)
 		return resp.StatusCode, bodyBytes, nil
 	}
 
+	submitStart := time.Now()
 	statusCode, bodyBytes, err := doSubmit(body)
+	captureLatency(latencyMs, "submit_ms", submitStart)
 	if err != nil {
 		c.logRawOrderDebug("POST", path, body, nil, 0, err, "submit_error")
+		c.logRawLatencyDebug(path, latencyMs, "submit_error")
 		return nil, err
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
 		c.logRawOrderDebug("POST", path, body, bodyBytes, statusCode, nil, "http_error")
+		c.logRawLatencyDebug(path, latencyMs, "http_error")
 		// Suppress raw HTTP logging in TUI mode to avoid breaking the UI layout
 		// The error will be passed back in the ErrorMsg field and logged cleanly by the TUI.
 		// log.Printf("[CLOB] API error: HTTP %d | Body: %s", statusCode, string(bodyBytes))
@@ -499,6 +513,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 	var result OrderResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		c.logRawOrderDebug("POST", path, body, bodyBytes, statusCode, err, "decode_error")
+		c.logRawLatencyDebug(path, latencyMs, "decode_error")
 		return &OrderResponse{
 			Success:  true,
 			ErrorMsg: fmt.Sprintf("Success but decode failed: %v", err),
@@ -521,7 +536,10 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 			outcome = "order_unsuccessful"
 		}
 		c.logRawOrderDebug("POST", path, body, bodyBytes, statusCode, nil, outcome)
+		c.logRawLatencyDebug(path, latencyMs, outcome)
+		return &result, nil
 	}
+	c.logRawLatencyDebug(path, latencyMs, "success")
 
 	return &result, nil
 }
@@ -543,6 +561,33 @@ func (c *CLOBClient) logRawOrderDebug(method, path string, requestBody, response
 		entry.Error = err.Error()
 	}
 	c.rawLogger.Log(entry)
+}
+
+func (c *CLOBClient) logRawLatencyDebug(path string, latencyMs map[string]int64, outcome string) {
+	if c.rawLogger == nil || len(latencyMs) == 0 {
+		return
+	}
+	c.rawLogger.Log(rawAPILogEntry{
+		Source:    "clob",
+		Method:    "LATENCY",
+		Path:      path,
+		Outcome:   outcome,
+		LatencyMs: latencyMs,
+	})
+}
+
+func (c *CLOBClient) newLatencyMetrics() map[string]int64 {
+	if c.rawLogger == nil {
+		return nil
+	}
+	return make(map[string]int64, 6)
+}
+
+func captureLatency(latencyMs map[string]int64, key string, start time.Time) {
+	if latencyMs == nil {
+		return
+	}
+	latencyMs[key] = time.Since(start).Milliseconds()
 }
 
 // CancelOrder cancels an existing order
