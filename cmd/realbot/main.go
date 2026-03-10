@@ -31,11 +31,9 @@ const (
 	UseLiveUI               = true // Set to false for traditional logging
 	paperArbModeTaker       = "taker"
 	paperArbModeMaker       = "maker"
-	realbotLocalQuoteMaxAge = 250 * time.Millisecond
 	realbotExecQuoteTimeout = 1500 * time.Millisecond
 	realbotOrderWarmTimeout = 1500 * time.Millisecond
 	realbotRestBookMaxAge   = 2 * time.Second
-	realbotRestPollInterval = 1 * time.Second
 	realbotWSWarnInterval   = 10 * time.Second
 	realbotWSForceReconnect = 10 * time.Second
 	realbotMergeTimeout     = 120 * time.Second
@@ -78,8 +76,8 @@ func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWar
 	}()
 }
 
-func shouldRealbotRestFallback(quoteAge, sinceLastRest time.Duration) bool {
-	return quoteAge > 3*time.Second && sinceLastRest > realbotRestPollInterval
+func shouldRealbotRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
+	return quoteAge > staleAfter && sinceLastRest > pollInterval
 }
 
 func normalizePaperArbMode(mode string) string {
@@ -1286,7 +1284,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
-		shouldPollREST := forceRestFallback || (wsUnhealthy && shouldRealbotRestFallback(staleTime, sinceLastRest))
+		shouldPollREST := forceRestFallback || (wsUnhealthy && shouldRealbotRestFallback(staleTime, sinceLastRest, core.ResolveRestFallbackQuoteAge(cfg), core.ResolveRestFallbackPollInterval(cfg)))
 		if shouldPollREST {
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
@@ -1634,7 +1632,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 							execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
-							quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshSellExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+							quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshSellExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, core.ResolveExecutionLocalQuoteMaxAge(cfg))
 							cancelExecQuote()
 							if quoteErr != nil {
 								tui.LogEvent("[%s] ⚠️ Split-sell execution quote unavailable: %v", id, quoteErr)
@@ -1850,7 +1848,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					requestedShares := shares
 
 					// Fee estimation and balance check logging removed per user request
-					localBuyFresh, _, localBuyReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenAsks, tokenFullAsks, quoteState, realbotLocalQuoteMaxAge)
+					localBuyFresh, _, localBuyReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenAsks, tokenFullAsks, quoteState, core.ResolveExecutionLocalQuoteMaxAge(cfg))
 					if !localBuyFresh {
 						tui.LogEvent("[%s] ⚠️ Skipping buy: local WS ask depth unavailable (%s)", id, localBuyReason)
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
@@ -3432,9 +3430,9 @@ func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClien
 	return maxLatency, nil
 }
 
-func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (source string, metric time.Duration, detail string, err error) {
+func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, localQuoteMaxAge time.Duration) (source string, metric time.Duration, detail string, err error) {
 	now := time.Now()
-	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenAsks, tokenFullAsks, quoteState, realbotLocalQuoteMaxAge)
+	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenAsks, tokenFullAsks, quoteState, localQuoteMaxAge)
 	if fresh {
 		return "local", age, "", nil
 	}
@@ -3445,9 +3443,9 @@ func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.Re
 	return "rest", latency, reason, nil
 }
 
-func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (source string, metric time.Duration, detail string, err error) {
+func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, localQuoteMaxAge time.Duration) (source string, metric time.Duration, detail string, err error) {
 	now := time.Now()
-	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenFullBids, quoteState, realbotLocalQuoteMaxAge)
+	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenFullBids, quoteState, localQuoteMaxAge)
 	if fresh {
 		return "local", age, "", nil
 	}

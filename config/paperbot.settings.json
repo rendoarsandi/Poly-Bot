@@ -12,6 +12,8 @@
   "requireConfirm": false,
   "enableCsvLogger": false,
   "enableRawApiLog": false,
+  "restFallbackQuoteAgeMs": 3000,
+  "restFallbackPollIntervalMs": 1000,
   "enableMarginAggression": true,
   "maxAggressionMultiplier": 5,
   "minAskPrice": 0.1,

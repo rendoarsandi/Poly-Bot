@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -16,6 +17,10 @@ type TradingMode string
 const (
 	ModePaper TradingMode = "paper"
 	ModeReal  TradingMode = "real"
+
+	defaultExecutionLocalQuoteMaxAge = 750 * time.Millisecond
+	defaultRestFallbackQuoteAge      = 3 * time.Second
+	defaultRestFallbackPollInterval  = 1 * time.Second
 )
 
 type Config struct {
@@ -56,6 +61,11 @@ type Config struct {
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
 	EnableRawAPILog bool // Whether to enable raw Polymarket request/response logging
+
+	// Market data freshness / fallback settings
+	ExecutionLocalQuoteMaxAgeMs int // Max age for a local quote before execution refreshes from REST
+	RestFallbackQuoteAgeMs      int // Quote age required before REST fallback is allowed when WS is unhealthy
+	RestFallbackPollIntervalMs  int // Minimum interval between REST fallback polls
 
 	// Aggression settings
 	EnableMarginAggression  bool    // Scale trade size by margin (e.g., 2% margin = 2x size)
@@ -107,6 +117,9 @@ type RuntimeSettings struct {
 	RequireConfirm                 bool    `json:"requireConfirm"`
 	EnableCSVLogger                bool    `json:"enableCsvLogger"`
 	EnableRawAPILog                bool    `json:"enableRawApiLog"`
+	ExecutionLocalQuoteMaxAgeMs    int     `json:"executionLocalQuoteMaxAgeMs"`
+	RestFallbackQuoteAgeMs         int     `json:"restFallbackQuoteAgeMs"`
+	RestFallbackPollIntervalMs     int     `json:"restFallbackPollIntervalMs"`
 	EnableMarginAggression         bool    `json:"enableMarginAggression"`
 	MaxAggressionMultiplier        float64 `json:"maxAggressionMultiplier"`
 	MinAskPrice                    float64 `json:"minAskPrice"`
@@ -146,11 +159,14 @@ func LoadConfig() (*Config, error) {
 		// Fee settings (paper trading)
 		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 312), // Calibrated: ~1.6% effective at p=0.50
 		// Safety settings
-		MaxTradeSize:    parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
-		MaxDailyLoss:    parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
-		RequireConfirm:  os.Getenv("REQUIRE_CONFIRM") == "true",
-		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",
-			EnableRawAPILog: os.Getenv("ENABLE_RAW_API_LOG") == "true",
+		MaxTradeSize:                parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
+		MaxDailyLoss:                parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
+		RequireConfirm:              os.Getenv("REQUIRE_CONFIRM") == "true",
+		EnableCSVLogger:             os.Getenv("ENABLE_CSV_LOGGER") == "true",
+		EnableRawAPILog:             os.Getenv("ENABLE_RAW_API_LOG") == "true",
+		ExecutionLocalQuoteMaxAgeMs: parseEnvInt("EXECUTION_LOCAL_QUOTE_MAX_AGE_MS", int(defaultExecutionLocalQuoteMaxAge/time.Millisecond)),
+		RestFallbackQuoteAgeMs:      parseEnvInt("REST_FALLBACK_QUOTE_AGE_MS", int(defaultRestFallbackQuoteAge/time.Millisecond)),
+		RestFallbackPollIntervalMs:  parseEnvInt("REST_FALLBACK_POLL_INTERVAL_MS", int(defaultRestFallbackPollInterval/time.Millisecond)),
 		// Aggression settings
 		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
 		MaxAggressionMultiplier: parseEnvFloat("MAX_AGGRESSION_MULTIPLIER", 5.0),
@@ -209,6 +225,27 @@ func loadBotConfigWithPath(profile, path string) (*Config, error) {
 	}
 	cfg.applyRuntimeSettings(runtime)
 	return cfg, nil
+}
+
+func ResolveExecutionLocalQuoteMaxAge(cfg *Config) time.Duration {
+	if cfg != nil && cfg.ExecutionLocalQuoteMaxAgeMs > 0 {
+		return time.Duration(cfg.ExecutionLocalQuoteMaxAgeMs) * time.Millisecond
+	}
+	return defaultExecutionLocalQuoteMaxAge
+}
+
+func ResolveRestFallbackQuoteAge(cfg *Config) time.Duration {
+	if cfg != nil && cfg.RestFallbackQuoteAgeMs > 0 {
+		return time.Duration(cfg.RestFallbackQuoteAgeMs) * time.Millisecond
+	}
+	return defaultRestFallbackQuoteAge
+}
+
+func ResolveRestFallbackPollInterval(cfg *Config) time.Duration {
+	if cfg != nil && cfg.RestFallbackPollIntervalMs > 0 {
+		return time.Duration(cfg.RestFallbackPollIntervalMs) * time.Millisecond
+	}
+	return defaultRestFallbackPollInterval
 }
 
 // UseRealTrading marks the config as intended for real trading. Bot entrypoints infer
@@ -385,7 +422,10 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MaxDailyLoss:                   c.MaxDailyLoss,
 		RequireConfirm:                 c.RequireConfirm,
 		EnableCSVLogger:                c.EnableCSVLogger,
-			EnableRawAPILog:                c.EnableRawAPILog,
+		EnableRawAPILog:                c.EnableRawAPILog,
+		ExecutionLocalQuoteMaxAgeMs:    c.ExecutionLocalQuoteMaxAgeMs,
+		RestFallbackQuoteAgeMs:         c.RestFallbackQuoteAgeMs,
+		RestFallbackPollIntervalMs:     c.RestFallbackPollIntervalMs,
 		EnableMarginAggression:         c.EnableMarginAggression,
 		MaxAggressionMultiplier:        c.MaxAggressionMultiplier,
 		MinAskPrice:                    c.MinAskPrice,
@@ -418,6 +458,9 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.RequireConfirm = s.RequireConfirm
 	c.EnableCSVLogger = s.EnableCSVLogger
 	c.EnableRawAPILog = s.EnableRawAPILog
+	c.ExecutionLocalQuoteMaxAgeMs = s.ExecutionLocalQuoteMaxAgeMs
+	c.RestFallbackQuoteAgeMs = s.RestFallbackQuoteAgeMs
+	c.RestFallbackPollIntervalMs = s.RestFallbackPollIntervalMs
 	c.EnableMarginAggression = s.EnableMarginAggression
 	c.MaxAggressionMultiplier = s.MaxAggressionMultiplier
 	c.MinAskPrice = s.MinAskPrice

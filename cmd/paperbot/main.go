@@ -205,8 +205,8 @@ func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) floa
 	return paperMakerBaseOffset
 }
 
-func shouldPaperRestFallback(quoteAge, sinceLastRest time.Duration) bool {
-	return quoteAge > 3*time.Second && sinceLastRest > time.Second
+func shouldPaperRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
+	return quoteAge > staleAfter && sinceLastRest > pollInterval
 }
 
 func computePaperMakerArbPrices(bid1, ask1, bid2, ask2, maxSum float64) (float64, float64, bool) {
@@ -1609,11 +1609,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Update WS staleness and ping latency in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
+			restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
+			restFallbackPollInterval := core.ResolveRestFallbackPollInterval(t.Config)
 
 			forceRestFallback := false
 			for outcome := range t.TokenBids {
 				if t.TokenBids[outcome] == 0 || t.TokenAsks[outcome] == 0 || t.TokenBids[outcome] >= t.TokenAsks[outcome] {
-					if staleTime > 3*time.Second {
+					if staleTime > restFallbackQuoteAge {
 						forceRestFallback = true
 						break
 					}
@@ -1621,7 +1623,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			if forceRestFallback || (wsUnhealthy && staleTime > 3*time.Second) {
+			if forceRestFallback || (wsUnhealthy && shouldPaperRestFallback(staleTime, time.Since(t.LastRestPoll), restFallbackQuoteAge, restFallbackPollInterval)) {
 				t.handleRestFallback(ctx, tokenPrices, staleTime)
 			}
 

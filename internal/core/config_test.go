@@ -50,6 +50,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"marketSlug": "json-market",
 		"minMarginPercent": 1.5,
 		"enableRawApiLog": true,
+		"executionLocalQuoteMaxAgeMs": 900,
+		"restFallbackQuoteAgeMs": 2500,
+		"restFallbackPollIntervalMs": 700,
 		"paperArbMode": "maker",
 		"makerQuoteGap": 0.004
 	}`)
@@ -73,6 +76,15 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if !cfg.EnableRawAPILog {
 		t.Fatal("expected JSON EnableRawAPILog to override env/default")
 	}
+	if cfg.ExecutionLocalQuoteMaxAgeMs != 900 {
+		t.Fatalf("expected JSON ExecutionLocalQuoteMaxAgeMs 900, got %d", cfg.ExecutionLocalQuoteMaxAgeMs)
+	}
+	if cfg.RestFallbackQuoteAgeMs != 2500 {
+		t.Fatalf("expected JSON RestFallbackQuoteAgeMs 2500, got %d", cfg.RestFallbackQuoteAgeMs)
+	}
+	if cfg.RestFallbackPollIntervalMs != 700 {
+		t.Fatalf("expected JSON RestFallbackPollIntervalMs 700, got %d", cfg.RestFallbackPollIntervalMs)
+	}
 	if cfg.PaperArbMode != "maker" {
 		t.Fatalf("expected JSON PaperArbMode maker, got %q", cfg.PaperArbMode)
 	}
@@ -94,6 +106,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.MarketSlug = "paper-json"
 	cfg.MinMarginPercent = 2.75
 	cfg.EnableRawAPILog = true
+	cfg.ExecutionLocalQuoteMaxAgeMs = 850
+	cfg.RestFallbackQuoteAgeMs = 2800
+	cfg.RestFallbackPollIntervalMs = 900
 	cfg.PaperArbMode = "maker"
 	cfg.MakerQuoteGap = 0.005
 
@@ -117,6 +132,15 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if !settings.EnableRawAPILog {
 		t.Fatal("expected saved EnableRawAPILog true")
+	}
+	if settings.ExecutionLocalQuoteMaxAgeMs != 850 {
+		t.Fatalf("expected saved ExecutionLocalQuoteMaxAgeMs 850, got %d", settings.ExecutionLocalQuoteMaxAgeMs)
+	}
+	if settings.RestFallbackQuoteAgeMs != 2800 {
+		t.Fatalf("expected saved RestFallbackQuoteAgeMs 2800, got %d", settings.RestFallbackQuoteAgeMs)
+	}
+	if settings.RestFallbackPollIntervalMs != 900 {
+		t.Fatalf("expected saved RestFallbackPollIntervalMs 900, got %d", settings.RestFallbackPollIntervalMs)
 	}
 	if settings.PaperArbMode != "maker" {
 		t.Fatalf("expected saved PaperArbMode maker, got %q", settings.PaperArbMode)
