@@ -336,11 +336,25 @@ type stubUtilbotOrderWarmer struct {
 	calls chan struct{}
 }
 
-func (s *stubUtilbotOrderWarmer) GetTradingAllowance(context.Context) (float64, error) {
+func (s *stubUtilbotOrderWarmer) WarmOrderPath(context.Context) error {
 	select {
 	case s.calls <- struct{}{}:
 	default:
 	}
+	return nil
+}
+
+type stubUtilbotPingWarmer struct{ calls int }
+
+func (s *stubUtilbotPingWarmer) Ping(context.Context) error {
+	s.calls++
+	return nil
+}
+
+type stubUtilbotAllowanceWarmer struct{ calls int }
+
+func (s *stubUtilbotAllowanceWarmer) GetTradingAllowance(context.Context) (float64, error) {
+	s.calls++
 	return 1, nil
 }
 
@@ -369,5 +383,24 @@ func TestStartUtilbotOrderWarmLoopWarmsImmediatelyAndStops(t *testing.T) {
 	case <-warmer.calls:
 		t.Fatal("expected utilbot order-path warm loop to stop after cancel")
 	case <-time.After(40 * time.Millisecond):
+	}
+}
+
+func TestUtilbotCLOBWarmerPingsEveryWarmAndAuthsSparsely(t *testing.T) {
+	pinger := &stubUtilbotPingWarmer{}
+	allowance := &stubUtilbotAllowanceWarmer{}
+	warmer := newUtilbotCLOBWarmer(pinger, allowance)
+
+	for i := 0; i < utilbotOrderWarmAuthEvery+1; i++ {
+		if err := warmer.WarmOrderPath(context.Background()); err != nil {
+			t.Fatalf("warm attempt %d failed: %v", i+1, err)
+		}
+	}
+
+	if pinger.calls != utilbotOrderWarmAuthEvery+1 {
+		t.Fatalf("ping calls got %d want %d", pinger.calls, utilbotOrderWarmAuthEvery+1)
+	}
+	if allowance.calls != 2 {
+		t.Fatalf("allowance calls got %d want 2", allowance.calls)
 	}
 }

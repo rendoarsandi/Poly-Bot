@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -26,23 +27,66 @@ import (
 )
 
 const (
-	utilbotLocalQuoteMaxAge  = 250 * time.Millisecond
-	utilbotJITRequoteTimeout = 750 * time.Millisecond
-	utilbotOrderWarmInterval = 2 * time.Second
-	utilbotOrderWarmTimeout  = 1500 * time.Millisecond
-	utilbotOnChainActionTTL  = 180 * time.Second
+	utilbotLocalQuoteMaxAge   = 250 * time.Millisecond
+	utilbotJITRequoteTimeout  = 750 * time.Millisecond
+	utilbotOrderWarmInterval  = 900 * time.Millisecond
+	utilbotOrderWarmTimeout   = 1200 * time.Millisecond
+	utilbotOrderWarmAuthEvery = 15
+	utilbotOnChainActionTTL   = 180 * time.Second
 )
 
-type utilbotOrderPathWarmer interface {
+type utilbotCLOBPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type utilbotTradingAllowanceWarmer interface {
 	GetTradingAllowance(ctx context.Context) (float64, error)
+}
+
+type utilbotOrderPathWarmer interface {
+	WarmOrderPath(ctx context.Context) error
+}
+
+type utilbotCLOBWarmer struct {
+	pinger    utilbotCLOBPinger
+	allowance utilbotTradingAllowanceWarmer
+	warmCount uint32
+}
+
+func newUtilbotCLOBWarmer(pinger utilbotCLOBPinger, allowance utilbotTradingAllowanceWarmer) *utilbotCLOBWarmer {
+	if pinger == nil && allowance == nil {
+		return nil
+	}
+	return &utilbotCLOBWarmer{pinger: pinger, allowance: allowance}
+}
+
+func (w *utilbotCLOBWarmer) WarmOrderPath(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+
+	var firstErr error
+	if w.pinger != nil {
+		if err := w.pinger.Ping(ctx); err != nil {
+			firstErr = err
+		}
+	}
+
+	count := atomic.AddUint32(&w.warmCount, 1)
+	if w.allowance != nil && (count == 1 || count%utilbotOrderWarmAuthEvery == 0) {
+		if _, err := w.allowance.GetTradingAllowance(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
 }
 
 func warmUtilbotOrderPath(ctx context.Context, warmer utilbotOrderPathWarmer) error {
 	if warmer == nil {
 		return nil
 	}
-	_, err := warmer.GetTradingAllowance(ctx)
-	return err
+	return warmer.WarmOrderPath(ctx)
 }
 
 func startUtilbotOrderWarmLoop(parentCtx context.Context, warmer utilbotOrderPathWarmer, interval, timeout time.Duration) func() {
@@ -176,6 +220,9 @@ func main() {
 	client := api.NewRestClient("")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	orderWarmer := newUtilbotCLOBWarmer(client, trader)
+	stopGlobalOrderWarm := startUtilbotOrderWarmLoop(ctx, orderWarmer, utilbotOrderWarmInterval, utilbotOrderWarmTimeout)
+	defer stopGlobalOrderWarm()
 
 	// Sync CLOB cached allowance with on-chain state
 	fmt.Println("🔄 Syncing CLOB balance allowance...")
@@ -358,11 +405,11 @@ takeAction:
 	if choice == 1 {
 		fmt.Print("Pairs to Panic Buy (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, quoteStore, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
 	} else if choice == 2 {
 		fmt.Print("Pairs to Panic Sell (shares per side): ")
 		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, quoteStore, tokenFeeRates)
+		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
 	} else {
 		log.Fatal("Invalid choice.")
 	}
@@ -478,7 +525,7 @@ func utilbotFinderPollInterval(timeframe string) time.Duration {
 	}
 }
 
-func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, quoteStore *utilbotQuoteStore, tokenFeeRates map[string]int) {
+func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *api.RestClient, cfg *core.Config, market *api.Market, outcomes []string, side string, targetShares float64, quoteStore *utilbotQuoteStore, tokenFeeRates map[string]int, orderWarmer utilbotOrderPathWarmer) {
 	snapshot := quoteStore.Snapshot(outcomes)
 	tokenFullBids := snapshot.TokenFullBids
 	tokenFullAsks := snapshot.TokenFullAsks
@@ -592,14 +639,10 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		fmt.Printf("💸 Expected fee deduction: %s=$%.4f, %s=$%.4f\n", outcomes[0], expectedUsdcFee0, outcomes[1], expectedUsdcFee1)
 	}
 
-	stopOrderWarm := startUtilbotOrderWarmLoop(ctx, trader, utilbotOrderWarmInterval, utilbotOrderWarmTimeout)
-	defer stopOrderWarm()
-
 	fmt.Printf("🚀 Executing: %s %.6f pairs (%.6f shares/side, Est. total value: $%.2f USDC). Confirm? (y/n): ", side, shares, shares, totalValue)
 	var confirm string
 	_, _ = fmt.Scanln(&confirm)
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-		stopOrderWarm()
 		log.Fatal("Cancelled.")
 	}
 	if side == "BUY" {
@@ -684,7 +727,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 		}{outcome: out, shares: shares, rate: rate})
 	}
 
-	stopOrderWarm()
+	warmCtx, cancelWarm := context.WithTimeout(ctx, utilbotOrderWarmTimeout)
+	_ = warmUtilbotOrderPath(warmCtx, orderWarmer)
+	cancelWarm()
 	startReq := time.Now()
 	if len(batchReqs) > 0 {
 		batchResults, batchErr := trader.ExecuteBatch(ctx, batchReqs)
