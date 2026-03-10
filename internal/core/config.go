@@ -55,6 +55,7 @@ type Config struct {
 
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
+	EnableRawAPILog bool // Whether to enable raw Polymarket request/response logging
 
 	// Aggression settings
 	EnableMarginAggression  bool    // Scale trade size by margin (e.g., 2% margin = 2x size)
@@ -105,6 +106,7 @@ type RuntimeSettings struct {
 	MaxDailyLoss                   float64 `json:"maxDailyLoss"`
 	RequireConfirm                 bool    `json:"requireConfirm"`
 	EnableCSVLogger                bool    `json:"enableCsvLogger"`
+	EnableRawAPILog                bool    `json:"enableRawApiLog"`
 	EnableMarginAggression         bool    `json:"enableMarginAggression"`
 	MaxAggressionMultiplier        float64 `json:"maxAggressionMultiplier"`
 	MinAskPrice                    float64 `json:"minAskPrice"`
@@ -148,6 +150,7 @@ func LoadConfig() (*Config, error) {
 		MaxDailyLoss:    parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
 		RequireConfirm:  os.Getenv("REQUIRE_CONFIRM") == "true",
 		EnableCSVLogger: os.Getenv("ENABLE_CSV_LOGGER") == "true",
+			EnableRawAPILog: os.Getenv("ENABLE_RAW_API_LOG") == "true",
 		// Aggression settings
 		EnableMarginAggression:  os.Getenv("ENABLE_MARGIN_AGGRESSION") != "false", // Default true
 		MaxAggressionMultiplier: parseEnvFloat("MAX_AGGRESSION_MULTIPLIER", 5.0),
@@ -382,6 +385,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MaxDailyLoss:                   c.MaxDailyLoss,
 		RequireConfirm:                 c.RequireConfirm,
 		EnableCSVLogger:                c.EnableCSVLogger,
+			EnableRawAPILog:                c.EnableRawAPILog,
 		EnableMarginAggression:         c.EnableMarginAggression,
 		MaxAggressionMultiplier:        c.MaxAggressionMultiplier,
 		MinAskPrice:                    c.MinAskPrice,
@@ -413,6 +417,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.MaxDailyLoss = s.MaxDailyLoss
 	c.RequireConfirm = s.RequireConfirm
 	c.EnableCSVLogger = s.EnableCSVLogger
+	c.EnableRawAPILog = s.EnableRawAPILog
 	c.EnableMarginAggression = s.EnableMarginAggression
 	c.MaxAggressionMultiplier = s.MaxAggressionMultiplier
 	c.MinAskPrice = s.MinAskPrice

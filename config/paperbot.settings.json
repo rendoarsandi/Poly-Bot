@@ -11,10 +11,11 @@
   "maxDailyLoss": 0,
   "requireConfirm": false,
   "enableCsvLogger": false,
+  "enableRawApiLog": false,
   "enableMarginAggression": true,
   "maxAggressionMultiplier": 5,
   "minAskPrice": 0.1,
-  "maxAskPrice": 0.9,
+  "maxAskPrice": 0.99,
   "paperArbMode": "maker",
   "buyExecutionMarginFloorPercent": -1,
   "splitStrategyEnabled": false,
@@ -23,7 +24,7 @@
   "splitReplenishThreshold": 50,
   "splitMergeBufferSeconds": 30,
   "makerMergeBufferSeconds": 30,
-  "makerQuoteGap": 0.008,
+  "makerQuoteGap": 0.010000000000000002,
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5
 }

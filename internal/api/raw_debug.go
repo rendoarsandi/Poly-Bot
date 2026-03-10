@@ -48,6 +48,7 @@ func (l *rawAPILogger) Close() error {
 	if l.file == nil {
 		return nil
 	}
+	_ = l.file.Sync()
 	err := l.file.Close()
 	l.file = nil
 	return err
@@ -66,7 +67,6 @@ func (l *rawAPILogger) Log(entry rawAPILogEntry) {
 		return
 	}
 	_ = l.enc.Encode(entry)
-	_ = l.file.Sync()
 }
 
 func sanitizeDebugBody(body string) string {

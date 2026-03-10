@@ -540,12 +540,16 @@ func run() error {
 			fmt.Printf("📝 Critical issue log: %s\n", issueLogPath)
 		}
 	}
-	rawAPILogPath := filepath.Join("logs", "realbot-polymarket-raw.jsonl")
-	if err := realTrader.EnableRawAPILog(rawAPILogPath); err != nil {
-		fmt.Printf("⚠️  Could not start raw Polymarket API log: %v\n", err)
+	if cfg.EnableRawAPILog {
+		rawAPILogPath := filepath.Join("logs", "realbot-polymarket-raw.jsonl")
+		if err := realTrader.EnableRawAPILog(rawAPILogPath); err != nil {
+			fmt.Printf("⚠️  Could not start raw Polymarket API log: %v\n", err)
+		} else {
+			defer func() { _ = realTrader.CloseRawAPILog() }()
+			fmt.Printf("🧾 Raw Polymarket debug log: %s\n", rawAPILogPath)
+		}
 	} else {
-		defer func() { _ = realTrader.CloseRawAPILog() }()
-		fmt.Printf("🧾 Raw Polymarket debug log: %s\n", rawAPILogPath)
+		fmt.Println("⚡ Raw Polymarket API debug log disabled for lower latency")
 	}
 
 	// Seed settings panel with values from config (.env)

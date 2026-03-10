@@ -49,6 +49,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	data := []byte(`{
 		"marketSlug": "json-market",
 		"minMarginPercent": 1.5,
+		"enableRawApiLog": true,
 		"paperArbMode": "maker",
 		"makerQuoteGap": 0.004
 	}`)
@@ -68,6 +69,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.MinMarginPercent != 1.5 {
 		t.Fatalf("expected JSON MinMarginPercent 1.5, got %.2f", cfg.MinMarginPercent)
+	}
+	if !cfg.EnableRawAPILog {
+		t.Fatal("expected JSON EnableRawAPILog to override env/default")
 	}
 	if cfg.PaperArbMode != "maker" {
 		t.Fatalf("expected JSON PaperArbMode maker, got %q", cfg.PaperArbMode)
@@ -89,6 +93,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.settingsPath = filepath.Join(t.TempDir(), "paperbot.settings.json")
 	cfg.MarketSlug = "paper-json"
 	cfg.MinMarginPercent = 2.75
+	cfg.EnableRawAPILog = true
 	cfg.PaperArbMode = "maker"
 	cfg.MakerQuoteGap = 0.005
 
@@ -109,6 +114,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.MinMarginPercent != 2.75 {
 		t.Fatalf("expected saved MinMarginPercent 2.75, got %.2f", settings.MinMarginPercent)
+	}
+	if !settings.EnableRawAPILog {
+		t.Fatal("expected saved EnableRawAPILog true")
 	}
 	if settings.PaperArbMode != "maker" {
 		t.Fatalf("expected saved PaperArbMode maker, got %q", settings.PaperArbMode)

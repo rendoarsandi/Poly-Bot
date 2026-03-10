@@ -11,6 +11,7 @@
   "maxDailyLoss": 0,
   "requireConfirm": true,
   "enableCsvLogger": false,
+  "enableRawApiLog": false,
   "enableMarginAggression": true,
   "maxAggressionMultiplier": 5,
   "minAskPrice": 0.1,
