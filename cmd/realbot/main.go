@@ -2533,7 +2533,7 @@ func venueExecutionEffectivePrice(exec directMarketExecution) float64 {
 	return exec.AcknowledgedNotional / exec.AcknowledgedQty
 }
 
-func clampAttributedBuyQty(qty, requestedQty float64) float64 {
+func clampRequestedExecutionQty(qty, requestedQty float64) float64 {
 	if qty < 0 {
 		return 0
 	}
@@ -2545,13 +2545,13 @@ func clampAttributedBuyQty(qty, requestedQty float64) float64 {
 
 func attributedBuyFill(exec directMarketExecution, requestedQty, acquiredQty float64, trustAcquired bool) float64 {
 	if trustAcquired {
-		return clampAttributedBuyQty(acquiredQty, requestedQty)
+		return clampRequestedExecutionQty(acquiredQty, requestedQty)
 	}
 	qty := exec.ExecutedQty
 	if qty <= 0 && exec.AcknowledgedQty > 0 {
 		qty = exec.AcknowledgedQty
 	}
-	return clampAttributedBuyQty(qty, requestedQty)
+	return clampRequestedExecutionQty(qty, requestedQty)
 }
 
 func ackNotionalMatchesAttributedBuy(exec directMarketExecution, attributedQty float64) bool {
@@ -2563,7 +2563,7 @@ func ackNotionalMatchesAttributedBuy(exec directMarketExecution, attributedQty f
 }
 
 func reportedBuyCost(exec directMarketExecution, observedPrice, attributedQty, requestedQty float64) float64 {
-	qty := clampAttributedBuyQty(attributedQty, requestedQty)
+	qty := clampRequestedExecutionQty(attributedQty, requestedQty)
 	if ackNotionalMatchesAttributedBuy(exec, qty) {
 		return exec.AcknowledgedNotional
 	}
@@ -2662,6 +2662,7 @@ func finalizeDirectMarketExecutionWithSignals(ctx context.Context, trader *tradi
 	if acknowledgedQty > executedQty {
 		executedQty = acknowledgedQty
 	}
+	executedQty = clampRequestedExecutionQty(executedQty, req.Size)
 	success := hasConfirmedExecutedQty(req.Side, executedQty) || orderConfirmed
 
 	if success {

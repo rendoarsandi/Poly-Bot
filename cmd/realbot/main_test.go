@@ -356,6 +356,24 @@ func TestHydrateDirectMarketTradeResultBackfillsBatchMetadata(t *testing.T) {
 	}
 }
 
+func TestClampRequestedExecutionQtyCapsAttributedOverfill(t *testing.T) {
+	if got := clampRequestedExecutionQty(4.2, 4.0); got != 4.0 {
+		t.Fatalf("expected attributed execution to cap at request, got %.2f", got)
+	}
+}
+
+func TestClampRequestedExecutionQtyPreservesPartialFill(t *testing.T) {
+	if got := clampRequestedExecutionQty(3.7, 4.0); got != 3.7 {
+		t.Fatalf("expected partial fill to remain unchanged, got %.2f", got)
+	}
+}
+
+func TestClampRequestedExecutionQtyAllowsRawQtyWithoutRequestCap(t *testing.T) {
+	if got := clampRequestedExecutionQty(4.2, 0); got != 4.2 {
+		t.Fatalf("expected uncapped qty when request size is unavailable, got %.2f", got)
+	}
+}
+
 func TestSubtractMergedPairBalancesUsesActualMergeQty(t *testing.T) {
 	bal0, bal1 := subtractMergedPairBalances(5.0, 4.0, 1.5)
 	if math.Abs(bal0-3.5) > 0.000001 || math.Abs(bal1-2.5) > 0.000001 {
