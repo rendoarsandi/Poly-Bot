@@ -1286,6 +1286,10 @@ func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64)
 }
 
 func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[string]float64, source string) {
+	t.UpdateMarketPricesWithSourceAt(marketID, bids, asks, source, time.Now())
+}
+
+func (t *TUI) UpdateMarketPricesWithSourceAt(marketID string, bids, asks map[string]float64, source string, updatedAt time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
@@ -1301,7 +1305,10 @@ func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[strin
 				m.RealAsks[k] = v
 			}
 		}
-		m.LastUpdate = time.Now()
+		if updatedAt.IsZero() {
+			updatedAt = time.Now()
+		}
+		m.LastUpdate = updatedAt
 		m.DataSource = source
 	}
 }
@@ -1857,7 +1864,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			}
 		*/
 
-		if ask1 > 0 && ask2 > 0 {
+		pairFreshForDisplay := age <= recentQuoteDisplayGrace
+		if pairFreshForDisplay && bid1 > 0 && ask1 > 0 && bid2 > 0 && ask2 > 0 {
 			askSum := ask1 + ask2
 			buyMargin = (1.0 - askSum) * 100
 			bidSum := bid1 + bid2

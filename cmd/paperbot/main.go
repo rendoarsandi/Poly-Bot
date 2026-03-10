@@ -81,6 +81,8 @@ type MarketTrader struct {
 
 	// Last time ANY price update was received for this trader
 	LastUpdate time.Time
+	// Last time both sides had a valid, non-crossed local quote at once.
+	LastPairUpdate time.Time
 
 	// Last time we performed a REST fallback poll
 	LastRestPoll time.Time
@@ -207,6 +209,40 @@ func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) floa
 
 func shouldPaperRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
 	return quoteAge > staleAfter && sinceLastRest > pollInterval
+}
+
+func hasValidPaperPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
+	if len(outcomes) != 2 {
+		return false
+	}
+	for _, outcome := range outcomes[:2] {
+		bid := bids[outcome]
+		ask := asks[outcome]
+		if bid <= 0 || ask <= 0 || bid >= ask {
+			return false
+		}
+	}
+	return true
+}
+
+func paperPairQuoteAge(lastPairUpdate, now time.Time) time.Duration {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if lastPairUpdate.IsZero() {
+		return time.Duration(1 << 62)
+	}
+	return now.Sub(lastPairUpdate)
+}
+
+func shouldUseLocalPaperPair(outcomes []string, bids, asks map[string]float64, lastPairUpdate time.Time, maxAge time.Duration, now time.Time) bool {
+	return hasValidPaperPairQuotes(outcomes, bids, asks) && paperPairQuoteAge(lastPairUpdate, now) <= maxAge
+}
+
+func syncPaperPairUpdate(t *MarketTrader, now time.Time) {
+	if hasValidPaperPairQuotes(t.Outcomes, t.TokenBids, t.TokenAsks) {
+		t.LastPairUpdate = now
+	}
 }
 
 func computePaperMakerArbPrices(bid1, ask1, bid2, ask2, maxSum float64) (float64, float64, bool) {
@@ -485,6 +521,11 @@ func ensurePaperMakerSplitInventory(t *MarketTrader, currentEquity, currentCash,
 func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	if len(t.Outcomes) != 2 {
 		cancelAllPaperMakerQuotes(t, "maker mode requires exactly 2 outcomes")
+		return
+	}
+	localQuoteMaxAge := core.ResolveExecutionLocalQuoteMaxAge(t.Config)
+	if !shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now) {
+		cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
 		return
 	}
 	if !t.LastMakerSync.IsZero() && now.Sub(t.LastMakerSync) < paperMakerRequoteInterval {
@@ -1085,6 +1126,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		TokenFullAsks:    make(map[string][]paper.MarketLevel),
 		FloatPrices:      make(map[string]float64),
 		LastUpdate:       time.Now(),
+		LastPairUpdate:   time.Now(),
 		LastRestPoll:     time.Now(),
 		SplitInventory:   splitInv,
 		ReplenishCtrl:    paper.NewReplenishController(),
@@ -1454,8 +1496,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 						}
 						if foundForThisTrader {
+							now := time.Now()
 							t.mu.Lock()
-							t.LastUpdate = time.Now()
+							t.LastUpdate = now
+							syncPaperPairUpdate(t, now)
 							t.mu.Unlock()
 						}
 					} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
@@ -1515,13 +1559,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
 							}
 						}
-						t.mu.Unlock()
-
+						now := time.Now()
 						if foundForThisTrader {
-							t.mu.Lock()
-							t.LastUpdate = time.Now()
-							t.mu.Unlock()
+							t.LastUpdate = now
+							syncPaperPairUpdate(t, now)
 						}
+						t.mu.Unlock()
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						// ── Book snapshot (single object) ──────────────────────
 						bid, ask := 0.0, 0.0
@@ -1545,7 +1588,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						outcome := t.TokenMap[book.AssetID]
 						if outcome != "" {
 							t.mu.Lock()
-							t.LastUpdate = time.Now()
+							now := time.Now()
+							t.LastUpdate = now
 							// Guard: only persist valid (non-zero) prices.
 							if bid > 0 {
 								t.TokenBids[outcome] = bid
@@ -1561,6 +1605,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
+							syncPaperPairUpdate(t, now)
 							t.mu.Unlock()
 						}
 					}
@@ -1586,7 +1631,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Update TUI after processing WS messages
 			if messagesProcessed > 0 {
-				t.TUI.UpdateMarketPricesWithSource(t.ID, t.TokenBids, t.TokenAsks, "WS")
+				t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "WS", t.LastPairUpdate)
 			}
 			// NOTE: Removed TouchMarket call - WS connection being "alive" doesn't mean
 			// data is fresh. WS often doesn't send liquidity updates, so we should only
@@ -1604,31 +1649,26 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// ============ REST FALLBACK ============
 			// WS is primary for liquidity data via full depth updates and deltas.
 			// Only poll REST if WS is unhealthy or stale.
-			staleTime := time.Since(t.LastUpdate)
+			now := time.Now()
+			pairQuoteAge := paperPairQuoteAge(t.LastPairUpdate, now)
 
 			// Update WS staleness and ping latency in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
+			localQuoteMaxAge := core.ResolveExecutionLocalQuoteMaxAge(t.Config)
+			localPairFresh := shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
 			restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
 			restFallbackPollInterval := core.ResolveRestFallbackPollInterval(t.Config)
 
-			forceRestFallback := false
-			for outcome := range t.TokenBids {
-				if t.TokenBids[outcome] == 0 || t.TokenAsks[outcome] == 0 || t.TokenBids[outcome] >= t.TokenAsks[outcome] {
-					if staleTime > restFallbackQuoteAge {
-						forceRestFallback = true
-						break
-					}
-				}
-			}
+			forceRestFallback := !localPairFresh && pairQuoteAge > restFallbackQuoteAge
 
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			if forceRestFallback || (wsUnhealthy && shouldPaperRestFallback(staleTime, time.Since(t.LastRestPoll), restFallbackQuoteAge, restFallbackPollInterval)) {
-				t.handleRestFallback(ctx, tokenPrices, staleTime)
+			if forceRestFallback || (wsUnhealthy && shouldPaperRestFallback(pairQuoteAge, time.Since(t.LastRestPoll), restFallbackQuoteAge, restFallbackPollInterval)) {
+				t.handleRestFallback(ctx, tokenPrices, pairQuoteAge)
 			}
 
 			// FORCE RECONNECT: If stale for 10s for faster recovery
-			if time.Since(t.LastUpdate) > 10*time.Second {
+			if pairQuoteAge > 10*time.Second {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
 					t.TUI.LogEvent("[%s] ⚠️ STALE (10s) - forcing WS reconnect", t.ID)
 					lastForceReconnect = time.Now()
@@ -1695,12 +1735,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Trading logic - check every tick for arbitrage opportunities
 			liveCfg := t.TUI.GetSettings()
 			arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
+			localQuoteMaxAge = core.ResolveExecutionLocalQuoteMaxAge(t.Config)
+			localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, time.Now())
 			if arbMode != paperArbModeMaker {
 				cancelAllPaperMakerQuotes(t, "maker mode disabled")
 			} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
 				cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 			}
 			if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
+				if !localPairFresh {
+					if arbMode == paperArbModeMaker {
+						cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
+					}
+					continue
+				}
 				if arbMode == paperArbModeMaker {
 					if killSwitchActive {
 						cancelAllPaperMakerQuotes(t, "risk pause active")
@@ -2063,7 +2111,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// SPLIT STRATEGY SIMULATION: Sell when bid_sum > $1.00 + margin
 			// This simulates the panic sell strategy without real blockchain calls
 			// ═══════════════════════════════════════════════════════════════════════════
-			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled {
+			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled && localPairFresh {
 				bid1 := t.TokenBids[t.Outcomes[0]]
 				bid2 := t.TokenBids[t.Outcomes[1]]
 				currentEquity := t.Engine.GetEquity()
@@ -2430,8 +2478,10 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 
 	// Log result - minimal spam, maximum info
 	if restSuccess > 0 {
-		t.LastUpdate = time.Now()
-		t.TUI.UpdateMarketPricesWithSource(t.ID, t.TokenBids, t.TokenAsks, "REST")
+		now := time.Now()
+		t.LastUpdate = now
+		syncPaperPairUpdate(t, now)
+		t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "REST", t.LastPairUpdate)
 		// Only log recovery if WS was significantly stale (not normal polling)
 		if staleSeconds >= 10 {
 			t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)

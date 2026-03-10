@@ -253,6 +253,29 @@ func TestRenderMarketPanelShowsAwaitingWhenGapIsStale(t *testing.T) {
 	}
 }
 
+func TestRenderMarketPanelHidesGapWhenCurrentPairQuotesAreStale(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "btc-market",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now().Add(-(recentQuoteDisplayGrace + 250*time.Millisecond)),
+		Bids:       map[string]float64{"Yes": 0.41, "No": 0.57},
+		Asks:       map[string]float64{"Yes": 0.43, "No": 0.59},
+		RealBids:   map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:   map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "Buy $") {
+		t.Fatalf("expected stale current pair quotes to suppress gap line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "awaiting price data") {
+		t.Fatalf("expected stale current pair quotes to show awaiting state, got %q", rendered)
+	}
+}
+
 func TestTUI_getSplitPositions(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
