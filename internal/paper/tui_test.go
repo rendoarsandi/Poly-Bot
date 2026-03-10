@@ -183,6 +183,76 @@ func TestTUILogEvent_WritesOnlyCriticalEventsToIssueLog(t *testing.T) {
 	_ = time.Now()
 }
 
+func TestTUIUpdateMarketPricesWithSourceRetainsLastNonZeroQuotes(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.AddMarket("BTC", "btc-market", []string{"Yes", "No"}, time.Now().Add(10*time.Minute))
+
+	tui.UpdateMarketPricesWithSource("BTC",
+		map[string]float64{"Yes": 0.41, "No": 0.57},
+		map[string]float64{"Yes": 0.43, "No": 0.59},
+		"WS",
+	)
+	tui.UpdateMarketPricesWithSource("BTC",
+		map[string]float64{"Yes": 0, "No": 0},
+		map[string]float64{"Yes": 0, "No": 0},
+		"WS",
+	)
+
+	mkt := tui.markets["BTC"]
+	if got := mkt.Bids["Yes"]; got != 0 {
+		t.Fatalf("expected live bid to clear to 0, got %.2f", got)
+	}
+	if got := mkt.RealBids["Yes"]; got != 0.41 {
+		t.Fatalf("expected last good bid to remain 0.41, got %.2f", got)
+	}
+	if got := mkt.RealAsks["No"]; got != 0.59 {
+		t.Fatalf("expected last good ask to remain 0.59, got %.2f", got)
+	}
+}
+
+func TestRenderMarketPanelUsesRecentLastGoodQuotesDuringBriefGap(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "btc-market",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now(),
+		Bids:       map[string]float64{"Yes": 0, "No": 0},
+		Asks:       map[string]float64{"Yes": 0, "No": 0},
+		RealBids:   map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:   map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "awaiting price data") {
+		t.Fatalf("expected recent last-good quotes to be displayed, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "$0.43") || !strings.Contains(rendered, "$0.59") {
+		t.Fatalf("expected last-good asks to be rendered, got %q", rendered)
+	}
+}
+
+func TestRenderMarketPanelShowsAwaitingWhenGapIsStale(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "btc-market",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now().Add(-(recentQuoteDisplayGrace + 250*time.Millisecond)),
+		Bids:       map[string]float64{"Yes": 0, "No": 0},
+		Asks:       map[string]float64{"Yes": 0, "No": 0},
+		RealBids:   map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:   map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if !strings.Contains(rendered, "awaiting price data") {
+		t.Fatalf("expected stale gap to show awaiting state, got %q", rendered)
+	}
+}
+
 func TestTUI_getSplitPositions(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()

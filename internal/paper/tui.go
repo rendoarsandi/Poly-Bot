@@ -58,12 +58,13 @@ var (
 )
 
 const (
-	defaultMaxOrderHistory = 20
-	defaultMaxEventHistory = 250
-	defaultTwoColOrderRows = 8
-	defaultOneColOrderRows = 6
-	defaultTwoColEventRows = 18
-	defaultOneColEventRows = 14
+	defaultMaxOrderHistory  = 20
+	defaultMaxEventHistory  = 250
+	defaultTwoColOrderRows  = 8
+	defaultOneColOrderRows  = 6
+	defaultTwoColEventRows  = 18
+	defaultOneColEventRows  = 14
+	recentQuoteDisplayGrace = 1500 * time.Millisecond
 )
 
 // ─── Asset style helpers ──────────────────────────────────────────────────────
@@ -94,6 +95,16 @@ func marginStyle(pct float64) lipgloss.Style {
 	default:
 		return styleWhite
 	}
+}
+
+func recentDisplayQuote(current, lastGood float64, age time.Duration) float64 {
+	if current > 0 {
+		return current
+	}
+	if lastGood > 0 && age <= recentQuoteDisplayGrace {
+		return lastGood
+	}
+	return current
 }
 
 // ─── Panel utilities ──────────────────────────────────────────────────────────
@@ -1280,11 +1291,15 @@ func (t *TUI) UpdateMarketPricesWithSource(marketID string, bids, asks map[strin
 	if m, ok := t.markets[marketID]; ok {
 		for k, v := range bids {
 			m.Bids[k] = v
-			m.RealBids[k] = v
+			if v > 0 {
+				m.RealBids[k] = v
+			}
 		}
 		for k, v := range asks {
 			m.Asks[k] = v
-			m.RealAsks[k] = v
+			if v > 0 {
+				m.RealAsks[k] = v
+			}
 		}
 		m.LastUpdate = time.Now()
 		m.DataSource = source
@@ -1720,6 +1735,11 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		ask1 := mkt.Asks[mkt.Outcomes[0]]
 		bid2 := mkt.Bids[mkt.Outcomes[1]]
 		ask2 := mkt.Asks[mkt.Outcomes[1]]
+
+		bid1 = recentDisplayQuote(bid1, mkt.RealBids[mkt.Outcomes[0]], age)
+		ask1 = recentDisplayQuote(ask1, mkt.RealAsks[mkt.Outcomes[0]], age)
+		bid2 = recentDisplayQuote(bid2, mkt.RealBids[mkt.Outcomes[1]], age)
+		ask2 = recentDisplayQuote(ask2, mkt.RealAsks[mkt.Outcomes[1]], age)
 
 		// Supplement from order-book depth logic removed to prevent UI from pulling ghost prices from stale depth maps
 		/*
