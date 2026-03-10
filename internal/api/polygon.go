@@ -24,6 +24,14 @@ const CTFExchange = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 // Polygon Negative Risk Exchange (Multi-outcome) contract address
 const NegRiskExchange = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 
+const (
+	polygonInitialReceiptPollInterval = 2 * time.Second
+	polygonMaxReceiptPollInterval     = 5 * time.Second
+	polygonTimeoutStatusProbeTimeout  = 3 * time.Second
+	polygonGasPriceBumpNumerator      = 12
+	polygonGasPriceBumpDenominator    = 10
+)
+
 // PolygonClient handles Polygon RPC calls
 type PolygonClient struct {
 	RPCURL string
@@ -113,7 +121,7 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 		return "", err
 	}
 
-	gasPrice, err := c.GetGasPrice(ctx)
+	gasPrice, err := c.gasPriceForWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -161,7 +169,7 @@ func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, cond
 		return "", err
 	}
 
-	gasPrice, err := c.GetGasPrice(ctx)
+	gasPrice, err := c.gasPriceForWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -208,7 +216,7 @@ func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, cond
 		return "", err
 	}
 
-	gasPrice, err := c.GetGasPrice(ctx)
+	gasPrice, err := c.gasPriceForWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -244,6 +252,14 @@ func (c *PolygonClient) GetGasPrice(ctx context.Context) (*big.Int, error) {
 	return parseHexBigInt(hexResult)
 }
 
+func (c *PolygonClient) gasPriceForWriteTx(ctx context.Context) (*big.Int, error) {
+	gasPrice, err := c.GetGasPrice(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return bumpGasPrice(gasPrice), nil
+}
+
 func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string) (string, error) {
 	result, err := c.call(ctx, "eth_sendRawTransaction", []interface{}{signedTx})
 	if err != nil {
@@ -269,6 +285,11 @@ type TransactionReceipt struct {
 	Logs        []TransactionLog `json:"logs"`
 }
 
+type Transaction struct {
+	Hash        string `json:"hash"`
+	BlockNumber string `json:"blockNumber"`
+}
+
 // GetTransactionReceipt fetches the receipt for a mined transaction
 // Returns nil if transaction is still pending (not yet mined)
 func (c *PolygonClient) GetTransactionReceipt(ctx context.Context, txHash string) (*TransactionReceipt, error) {
@@ -290,21 +311,38 @@ func (c *PolygonClient) GetTransactionReceipt(ctx context.Context, txHash string
 	return &receipt, nil
 }
 
+// GetTransactionByHash fetches the transaction if it is still known by the node.
+// Returns nil if the tx is unknown/dropped.
+func (c *PolygonClient) GetTransactionByHash(ctx context.Context, txHash string) (*Transaction, error) {
+	result, err := c.call(ctx, "eth_getTransactionByHash", []interface{}{txHash})
+	if err != nil {
+		return nil, err
+	}
+	if string(result) == "null" {
+		return nil, nil
+	}
+	var tx Transaction
+	if err := json.Unmarshal(result, &tx); err != nil {
+		return nil, fmt.Errorf("failed to parse transaction: %w", err)
+	}
+	return &tx, nil
+}
+
 // WaitForTransaction polls for transaction confirmation until mined or timeout
 // Returns (success, error) where success indicates if the tx executed successfully on-chain
 func (c *PolygonClient) WaitForTransaction(ctx context.Context, txHash string) (bool, error) {
-	// Poll every 1 second for up to context deadline
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
 	rpcErrors := 0
 	const maxRPCErrors = 10
+	pollInterval := polygonInitialReceiptPollInterval
+	timer := time.NewTimer(pollInterval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return false, fmt.Errorf("timeout waiting for transaction %s", txHash)
-		case <-ticker.C:
+			status := c.describePendingTransaction(txHash)
+			return false, fmt.Errorf("timeout waiting for transaction %s (%s)", txHash, status)
+		case <-timer.C:
 			receipt, err := c.GetTransactionReceipt(ctx, txHash)
 			if err != nil {
 				// RPC error - keep trying up to a limit
@@ -320,6 +358,8 @@ func (c *PolygonClient) WaitForTransaction(ctx context.Context, txHash string) (
 
 			if receipt == nil {
 				// Still pending, keep waiting
+				pollInterval = nextReceiptPollInterval(pollInterval)
+				resetTimer(timer, pollInterval)
 				continue
 			}
 
@@ -492,7 +532,7 @@ func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender
 		return "", err
 	}
 
-	gasPrice, err := c.GetGasPrice(ctx)
+	gasPrice, err := c.gasPriceForWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -530,7 +570,7 @@ func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender 
 		return "", err
 	}
 
-	gasPrice, err := c.GetGasPrice(ctx)
+	gasPrice, err := c.gasPriceForWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -672,4 +712,54 @@ func parseHexBigInt(s string) (*big.Int, error) {
 		return nil, fmt.Errorf("failed to parse hex string: %s", s)
 	}
 	return n, nil
+}
+
+func bumpGasPrice(base *big.Int) *big.Int {
+	if base == nil {
+		return nil
+	}
+	bumped := new(big.Int).Mul(base, big.NewInt(polygonGasPriceBumpNumerator))
+	bumped.Div(bumped, big.NewInt(polygonGasPriceBumpDenominator))
+	if bumped.Cmp(base) < 0 {
+		return new(big.Int).Set(base)
+	}
+	return bumped
+}
+
+func nextReceiptPollInterval(current time.Duration) time.Duration {
+	if current >= polygonMaxReceiptPollInterval {
+		return polygonMaxReceiptPollInterval
+	}
+	next := current + time.Second
+	if next > polygonMaxReceiptPollInterval {
+		return polygonMaxReceiptPollInterval
+	}
+	return next
+}
+
+func resetTimer(timer *time.Timer, d time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(d)
+}
+
+func (c *PolygonClient) describePendingTransaction(txHash string) string {
+	statusCtx, cancel := context.WithTimeout(context.Background(), polygonTimeoutStatusProbeTimeout)
+	defer cancel()
+
+	tx, err := c.GetTransactionByHash(statusCtx, txHash)
+	if err != nil {
+		return fmt.Sprintf("timed out; unable to probe tx status: %v", err)
+	}
+	if tx == nil {
+		return "timed out; transaction not found on RPC (dropped or not propagated)"
+	}
+	if tx.BlockNumber == "" || tx.BlockNumber == "0x" || tx.BlockNumber == "0x0" {
+		return "timed out; transaction still pending in RPC/mempool"
+	}
+	return fmt.Sprintf("timed out; transaction seen in block %s but receipt unavailable", tx.BlockNumber)
 }

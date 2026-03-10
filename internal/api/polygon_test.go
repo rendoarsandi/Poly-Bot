@@ -1,9 +1,15 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestMergePositions_CallDataEncoding verifies the merge calldata is correctly encoded
@@ -140,4 +146,58 @@ func padToHex64(n *big.Int) string {
 		hex = strings.Repeat("0", 64-len(hex)) + hex
 	}
 	return hex
+}
+
+func TestWaitForTransactionTimeoutReportsPendingState(t *testing.T) {
+	var receiptCalls atomic.Int32
+	var txCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "eth_getTransactionReceipt":
+			receiptCalls.Add(1)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+		case "eth_getTransactionByHash":
+			txCalls.Add(1)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"hash":"0xabc","blockNumber":"0x"}}`))
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewPolygonClient(server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 2200*time.Millisecond)
+	defer cancel()
+
+	success, err := client.WaitForTransaction(ctx, "0xabc")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if success {
+		t.Fatal("expected unsuccessful confirmation")
+	}
+	if !strings.Contains(err.Error(), "still pending in RPC/mempool") {
+		t.Fatalf("expected pending-state timeout detail, got %v", err)
+	}
+	if receiptCalls.Load() > 1 {
+		t.Fatalf("expected at most one receipt poll before timeout, got %d", receiptCalls.Load())
+	}
+	if txCalls.Load() != 1 {
+		t.Fatalf("expected one tx status probe on timeout, got %d", txCalls.Load())
+	}
+}
+
+func TestBumpGasPrice(t *testing.T) {
+	base := big.NewInt(100)
+	bumped := bumpGasPrice(base)
+	if bumped.String() != "120" {
+		t.Fatalf("expected 20%% gas bump from 100 to 120, got %s", bumped.String())
+	}
+	if base.String() != "100" {
+		t.Fatalf("expected original gas price to remain unchanged, got %s", base.String())
+	}
 }

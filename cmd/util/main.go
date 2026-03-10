@@ -30,6 +30,7 @@ const (
 	utilbotJITRequoteTimeout = 750 * time.Millisecond
 	utilbotOrderWarmInterval = 2 * time.Second
 	utilbotOrderWarmTimeout  = 1500 * time.Millisecond
+	utilbotOnChainActionTTL  = 180 * time.Second
 )
 
 type utilbotOrderPathWarmer interface {
@@ -626,7 +627,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 
 		splitAmount := shares // 1 USDC per split → 1 YES + 1 NO
 		fmt.Printf("🔄 Splitting $%.6f USDC into %.6f token pairs...\n", splitAmount, splitAmount)
-		splitCtx, cancelSplit := context.WithTimeout(ctx, 90*time.Second)
+		splitCtx, cancelSplit := context.WithTimeout(ctx, utilbotOnChainActionTTL)
 		defer cancelSplit()
 		tx, err := trader.SplitOnChain(splitCtx, market.ConditionID, splitAmount, len(market.Tokens))
 		if err != nil {
@@ -1124,7 +1125,7 @@ func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *co
 
 	if minQty >= 0.000001 {
 		fmt.Printf("🔄 Merging %.6f balanced pairs (%s-led)...\n", minQty, strings.ToLower(balanceSource))
-		mergeCtx, cancelMerge := context.WithTimeout(ctx, 90*time.Second)
+		mergeCtx, cancelMerge := context.WithTimeout(ctx, utilbotOnChainActionTTL)
 		tx, mergeErr := trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
 		cancelMerge()
 		if mergeErr != nil {
@@ -1139,7 +1140,7 @@ func finalizeUtilbotBuy(ctx context.Context, trader *trading.RealTrader, cfg *co
 					minQty, excess0, excess1 = utilbotBalancedAndExcessShares(acquired0, acquired1)
 					fmt.Printf("📊 Combined cleanup balances: %s=%.4f, %s=%.4f\n", outcomes[0], bal0, outcomes[1], bal1)
 					if minQty >= 0.000001 {
-						mergeCtx, cancelMerge = context.WithTimeout(ctx, 90*time.Second)
+						mergeCtx, cancelMerge = context.WithTimeout(ctx, utilbotOnChainActionTTL)
 						tx, mergeErr = trader.MergeOnChain(mergeCtx, market.ConditionID, minQty, len(market.Tokens))
 						cancelMerge()
 						if mergeErr != nil {
