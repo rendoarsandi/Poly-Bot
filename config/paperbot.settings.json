@@ -15,7 +15,7 @@
   "maxAggressionMultiplier": 5,
   "minAskPrice": 0.1,
   "maxAskPrice": 0.9,
-  "paperArbMode": "taker",
+  "paperArbMode": "maker",
   "buyExecutionMarginFloorPercent": -1,
   "splitStrategyEnabled": false,
   "splitMinMarginSell": 3,
@@ -27,4 +27,3 @@
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5
 }
-
