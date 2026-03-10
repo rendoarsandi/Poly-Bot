@@ -54,6 +54,18 @@ func TestComputeMakerQuoteSizesRespectNormalizationAndCaps(t *testing.T) {
 	}
 }
 
+func TestComputeMakerSellFeeUsdc(t *testing.T) {
+	if got := ComputeMakerSellFeeUsdc(100, 0.5, 100); got != 0.78125 {
+		t.Fatalf("expected fee 0.78125, got %.8f", got)
+	}
+	if got := ComputeMakerSellFeeUsdc(100, 0.5, 0); got != 0 {
+		t.Fatalf("expected zero fee when fee rate disabled, got %.8f", got)
+	}
+	if got := ComputeMakerSellFeeUsdc(0, 0.5, 100); got != 0 {
+		t.Fatalf("expected zero fee for zero shares, got %.8f", got)
+	}
+}
+
 func TestComputeMakerProtectedSellQuoteHonorsCostFloor(t *testing.T) {
 	price, ok := ComputeMakerProtectedSellQuote(0.47, 0.60, 0.52, 0.02, 0.0, 0.008, 0, testMakerParams)
 	if !ok {

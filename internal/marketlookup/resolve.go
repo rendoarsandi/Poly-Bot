@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"sync"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
@@ -21,6 +22,45 @@ const (
 
 var recentScanAssets = []string{"btc", "eth", "sol", "xrp"}
 var recentScanTimeframes = []string{"15m", "5m"}
+
+func collectMarketsByTimeframesConcurrently(ctx context.Context, timeframes []string, fetch func(context.Context, string) ([]api.Market, error)) (map[string]api.Market, error) {
+	type timeframeFetchResult struct {
+		markets []api.Market
+		err     error
+	}
+
+	results := make(chan timeframeFetchResult, len(timeframes))
+	var wg sync.WaitGroup
+	for _, timeframe := range timeframes {
+		timeframe := timeframe
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			markets, err := fetch(ctx, timeframe)
+			results <- timeframeFetchResult{markets: markets, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	candidates := make(map[string]api.Market)
+	var lastErr error
+	for result := range results {
+		if result.err != nil {
+			lastErr = result.err
+			continue
+		}
+		for _, market := range result.markets {
+			if market.ConditionID == "" {
+				continue
+			}
+			candidates[market.ConditionID] = market
+		}
+	}
+	return candidates, lastErr
+}
 
 func ResolveMarkets(ctx context.Context, trader *trading.RealTrader, polygon *api.PolygonClient, target string) ([]api.Market, string, error) {
 	target = core.SanitizeString(strings.TrimSpace(target))
@@ -130,22 +170,9 @@ func collectMarketsFromPositions(ctx context.Context, trader *trading.RealTrader
 }
 
 func collectMarketsFromRecentWalletScan(ctx context.Context, trader *trading.RealTrader, rest *api.RestClient, dest map[string]api.Market) (int, error) {
-	candidates := make(map[string]api.Market)
-	var lastErr error
-
-	for _, timeframe := range recentScanTimeframes {
-		markets, err := rest.GetMarketsByTimeframe(ctx, recentScanAssets, timeframe)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		for _, market := range markets {
-			if market.ConditionID == "" {
-				continue
-			}
-			candidates[market.ConditionID] = market
-		}
-	}
+	candidates, lastErr := collectMarketsByTimeframesConcurrently(ctx, recentScanTimeframes, func(ctx context.Context, timeframe string) ([]api.Market, error) {
+		return rest.GetMarketsByTimeframe(ctx, recentScanAssets, timeframe)
+	})
 
 	added := 0
 	for _, market := range candidates {

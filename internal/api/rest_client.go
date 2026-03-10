@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -607,35 +608,58 @@ func (c *RestClient) GetGammaBidAskBySlug(ctx context.Context, slug string) (map
 // tokenMap maps token ID to outcome name (e.g., "Up" or "Down")
 func (c *RestClient) GetCLOBBidAsk(ctx context.Context, tokenMap map[string]string) (map[string]GammaPriceResult, error) {
 	prices := make(map[string]GammaPriceResult)
+	type clobBidAskResult struct {
+		outcome string
+		price   GammaPriceResult
+		err     error
+	}
 
+	results := make(chan clobBidAskResult, len(tokenMap))
+	var wg sync.WaitGroup
 	for tokenID, outcome := range tokenMap {
-		book, err := c.GetOrderBook(ctx, tokenID)
-		if err != nil {
+		tokenID, outcome := tokenID, outcome
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			book, err := c.GetOrderBook(ctx, tokenID)
+			if err != nil {
+				results <- clobBidAskResult{err: err}
+				return
+			}
+
+			var bestBid, bestAsk float64
+			for _, b := range book.Bids {
+				p, _ := parseFloat(b.Price)
+				if p > bestBid {
+					bestBid = p
+				}
+			}
+			for _, a := range book.Asks {
+				p, _ := parseFloat(a.Price)
+				if p > 0 && (bestAsk == 0 || p < bestAsk) {
+					bestAsk = p
+				}
+			}
+
+			results <- clobBidAskResult{
+				outcome: outcome,
+				price: GammaPriceResult{
+					Bid: bestBid,
+					Ask: bestAsk,
+				},
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		if result.err != nil {
 			continue
 		}
-
-		var bestBid, bestAsk float64 = 0, 0
-
-		// Find best bid (highest)
-		for _, b := range book.Bids {
-			p, _ := parseFloat(b.Price)
-			if p > bestBid {
-				bestBid = p
-			}
-		}
-
-		// Find best ask (lowest)
-		for _, a := range book.Asks {
-			p, _ := parseFloat(a.Price)
-			if p > 0 && (bestAsk == 0 || p < bestAsk) {
-				bestAsk = p
-			}
-		}
-
-		prices[outcome] = GammaPriceResult{
-			Bid: bestBid,
-			Ask: bestAsk,
-		}
+		prices[result.outcome] = result.price
 	}
 
 	// For binary markets with Up/Down, infer missing prices from complement

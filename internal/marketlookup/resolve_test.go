@@ -1,8 +1,11 @@
 package marketlookup
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"Market-bot/internal/api"
@@ -46,6 +49,51 @@ func TestTokenIDsFromReceiptParsesTransferSingleAndBatch(t *testing.T) {
 	want := []string{"12345", "777", "888"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected token IDs: got %v want %v", got, want)
+	}
+}
+
+func TestCollectMarketsByTimeframesConcurrentlyMergesResults(t *testing.T) {
+	timeframes := []string{"15m", "5m", "1h"}
+	var inflight int32
+	var maxInflight int32
+	var started int32
+	release := make(chan struct{})
+
+	fetch := func(ctx context.Context, timeframe string) ([]api.Market, error) {
+		current := atomic.AddInt32(&inflight, 1)
+		for {
+			observed := atomic.LoadInt32(&maxInflight)
+			if current <= observed || atomic.CompareAndSwapInt32(&maxInflight, observed, current) {
+				break
+			}
+		}
+		if atomic.AddInt32(&started, 1) == int32(len(timeframes)) {
+			close(release)
+		}
+		<-release
+		defer atomic.AddInt32(&inflight, -1)
+
+		if timeframe == "5m" {
+			return nil, fmt.Errorf("boom")
+		}
+		return []api.Market{{ConditionID: timeframe + "-cond", Slug: timeframe + "-slug"}}, nil
+	}
+
+	candidates, err := collectMarketsByTimeframesConcurrently(context.Background(), timeframes, fetch)
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("expected fetch error to be retained, got %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 successful candidate markets, got %d", len(candidates))
+	}
+	if _, ok := candidates["15m-cond"]; !ok {
+		t.Fatalf("expected 15m result in candidates, got %+v", candidates)
+	}
+	if _, ok := candidates["1h-cond"]; !ok {
+		t.Fatalf("expected 1h result in candidates, got %+v", candidates)
+	}
+	if atomic.LoadInt32(&maxInflight) < 2 {
+		t.Fatalf("expected concurrent timeframe fetches, max inflight=%d", atomic.LoadInt32(&maxInflight))
 	}
 }
 

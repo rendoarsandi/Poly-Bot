@@ -839,6 +839,66 @@ func utilbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	return bestBid, true
 }
 
+func utilbotBestBidAskFromOrderBook(book *api.OrderBookResponse) (float64, float64) {
+	bestBid, bestAsk := 0.0, 1.0
+	for _, bid := range book.Bids {
+		p, _ := strconv.ParseFloat(bid.Price, 64)
+		if p > bestBid {
+			bestBid = p
+		}
+	}
+	for _, ask := range book.Asks {
+		p, _ := strconv.ParseFloat(ask.Price, 64)
+		if p < bestAsk && p > 0 {
+			bestAsk = p
+		}
+	}
+	if bestAsk >= 1.0 {
+		bestAsk = 0
+	}
+	return bestBid, bestAsk
+}
+
+func utilbotRefreshRestQuotes(ctx context.Context, client *api.RestClient, tokenMap map[string]string, store *utilbotQuoteStore) {
+	type utilbotRestBookResult struct {
+		outcome string
+		book    *api.OrderBookResponse
+		err     error
+	}
+
+	results := make(chan utilbotRestBookResult, len(tokenMap))
+	var wg sync.WaitGroup
+	for tokenID, outcome := range tokenMap {
+		tokenID, outcome := tokenID, outcome
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			book, err := client.GetOrderBook(ctx, tokenID)
+			results <- utilbotRestBookResult{outcome: outcome, book: book, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		if result.err != nil || result.book == nil {
+			continue
+		}
+		bid, ask := utilbotBestBidAskFromOrderBook(result.book)
+		store.Update(
+			result.outcome,
+			bid,
+			ask,
+			mkt.LevelsToPriceDepth(result.book.Bids, true),
+			mkt.LevelsToPriceDepth(result.book.Asks, false),
+			"rest",
+			time.Now(),
+		)
+	}
+}
+
 func utilbotRunQuotePump(ctx context.Context, client *api.RestClient, tokenMap, tokenToOutcome map[string]string, wsMsgChan <-chan []byte, store *utilbotQuoteStore) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -881,30 +941,7 @@ func utilbotRunQuotePump(ctx context.Context, client *api.RestClient, tokenMap, 
 				store.Update(out, bid, ask, mkt.LevelsToPriceDepth(b.Bids, true), mkt.LevelsToPriceDepth(b.Asks, false), "ws", updatedAt)
 			}
 		case <-ticker.C:
-			for tid, out := range tokenMap {
-				book, err := client.GetOrderBook(ctx, tid)
-				if err != nil {
-					continue
-				}
-				updatedAt := time.Now()
-				bid, ask := 0.0, 1.0
-				for _, b := range book.Bids {
-					p, _ := strconv.ParseFloat(b.Price, 64)
-					if p > bid {
-						bid = p
-					}
-				}
-				for _, a := range book.Asks {
-					p, _ := strconv.ParseFloat(a.Price, 64)
-					if p < ask && p > 0 {
-						ask = p
-					}
-				}
-				if ask >= 1.0 {
-					ask = 0
-				}
-				store.Update(out, bid, ask, mkt.LevelsToPriceDepth(book.Bids, true), mkt.LevelsToPriceDepth(book.Asks, false), "rest", updatedAt)
-			}
+			utilbotRefreshRestQuotes(ctx, client, tokenMap, store)
 		}
 	}
 }

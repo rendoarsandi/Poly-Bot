@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -124,5 +125,50 @@ func TestOrderBookAgeAt(t *testing.T) {
 
 	if _, err := OrderBookAgeAt(&OrderBookResponse{Timestamp: "bad"}, now); err == nil {
 		t.Fatal("expected invalid timestamp to fail")
+	}
+}
+
+func TestGetCLOBBidAskFetchesOrderBooksConcurrently(t *testing.T) {
+	var inflight int32
+	var maxInflight int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := atomic.AddInt32(&inflight, 1)
+		for {
+			observed := atomic.LoadInt32(&maxInflight)
+			if current <= observed || atomic.CompareAndSwapInt32(&maxInflight, observed, current) {
+				break
+			}
+		}
+		defer atomic.AddInt32(&inflight, -1)
+		time.Sleep(25 * time.Millisecond)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("token_id") {
+		case "up-token":
+			_, _ = w.Write([]byte(`{"asset_id":"up-token","bids":[{"price":"0.41","size":"10"}],"asks":[{"price":"0.43","size":"11"}]}`))
+		case "down-token":
+			_, _ = w.Write([]byte(`{"asset_id":"down-token","bids":[{"price":"0.57","size":"8"}],"asks":[{"price":"0.59","size":"9"}]}`))
+		default:
+			http.Error(w, "unexpected token", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewRestClient(server.URL)
+	prices, err := client.GetCLOBBidAsk(context.Background(), map[string]string{
+		"up-token":   "Up",
+		"down-token": "Down",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if prices["Up"].Bid != 0.41 || prices["Up"].Ask != 0.43 {
+		t.Fatalf("unexpected Up price %+v", prices["Up"])
+	}
+	if prices["Down"].Bid != 0.57 || prices["Down"].Ask != 0.59 {
+		t.Fatalf("unexpected Down price %+v", prices["Down"])
+	}
+	if atomic.LoadInt32(&maxInflight) < 2 {
+		t.Fatalf("expected concurrent order book fetches, max inflight=%d", atomic.LoadInt32(&maxInflight))
 	}
 }
