@@ -107,3 +107,44 @@ func TestWSManagerTimeSinceLastDataMessageUnsetIsLarge(t *testing.T) {
 		t.Fatalf("expected unset data age to appear stale, got %v", got)
 	}
 }
+
+func TestWSManagerReadMessageSkipsPONGAndTracksPingLatency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close(websocket.StatusInternalError, "the sky is falling")
+
+		_ = c.Write(r.Context(), websocket.MessageText, []byte("PONG"))
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	mgr := NewWSManager(wsURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := mgr.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer mgr.Close()
+
+	mgr.lastPingSentNs.Store(time.Now().Add(-20 * time.Millisecond).UnixNano())
+
+	msg, err := mgr.ReadMessage(ctx)
+	if err != nil {
+		t.Fatalf("Failed to read message: %v", err)
+	}
+	if string(msg) != `{"status":"ok"}` {
+		t.Fatalf("expected data message after PONG, got %s", string(msg))
+	}
+	if got := mgr.PingLatency(); got <= 0 {
+		t.Fatalf("expected positive ping latency after PONG, got %v", got)
+	}
+	if got := mgr.TimeSinceLastDataMessage(); got > time.Second {
+		t.Fatalf("expected recent data message timestamp, got age %v", got)
+	}
+}

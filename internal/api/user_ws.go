@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -283,6 +284,7 @@ func (c *UserWSClient) snapshotMarketsLocked() []string {
 	for marketID := range c.subscribedMarkets {
 		markets = append(markets, marketID)
 	}
+	sort.Strings(markets)
 	return markets
 }
 

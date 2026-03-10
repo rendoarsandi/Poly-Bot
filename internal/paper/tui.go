@@ -209,82 +209,107 @@ type TUISettings struct {
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
 	SplitInitialCapPct             float64 // Initial Split Cap percentage
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
+	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
+	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
-var settingsMarketOptions = []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
+func isMakerSettingsMode(cfg TUISettings) bool {
+	return strings.EqualFold(cfg.PaperArbMode, "maker")
+}
 
-const settingsMaxMarketsLimit = 4
+func settingsRowEditable(cfg TUISettings, idx int) bool {
+	if !isMakerSettingsMode(cfg) {
+		return true
+	}
+	switch idx {
+	case 6, 7, 8, 9, 10:
+		return false
+	default:
+		return true
+	}
+}
+
+func settingsRowLabel(cfg TUISettings, idx int) string {
+	maker := isMakerSettingsMode(cfg)
+	switch idx {
+	case 4:
+		if maker {
+			return "Maker Min Sell Edge %"
+		}
+		return "Buy Min Margin %"
+	case 6:
+		if maker {
+			return "Exec Floor % (taker only)"
+		}
+		return "Buy/Sell Exec Floor %"
+	case 7:
+		return "Split Min Margin"
+	case 8:
+		return "Split Strategy"
+	case 9:
+		return "Split Initial Cap"
+	case 10:
+		return "Split Replenish Cap"
+	case 11:
+		if maker {
+			return "Maker Merge Buffer"
+		}
+		return "Min Ask Price"
+	case 12:
+		if maker {
+			return "Maker Max Buy Price"
+		}
+		return "Max Ask Price"
+	case 13:
+		return "Maker Quote Gap"
+	default:
+		return ""
+	}
+}
 
 func normalizeMarketSelection(slug string) string {
-	trimmed := strings.TrimSpace(slug)
-	if trimmed == "" || strings.EqualFold(trimmed, "ALL") {
+	slug = strings.TrimSpace(slug)
+	if slug == "" || strings.EqualFold(slug, "ALL") {
 		return "ALL"
 	}
-
-	parts := make([]string, 0, settingsMaxMarketsLimit)
-	seen := make(map[string]struct{}, settingsMaxMarketsLimit)
-	for _, part := range strings.Split(trimmed, ",") {
-		asset := strings.ToUpper(strings.TrimSpace(part))
-		if asset == "" || strings.EqualFold(asset, "ALL") {
+	parts := strings.Split(slug, ",")
+	seen := make(map[string]bool, len(parts))
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.ToUpper(strings.TrimSpace(part))
+		if part == "" || part == "ALL" || seen[part] {
 			continue
 		}
-		if _, ok := seen[asset]; ok {
-			continue
-		}
-		seen[asset] = struct{}{}
-		parts = append(parts, asset)
-		if len(parts) >= settingsMaxMarketsLimit {
-			break
-		}
+		seen[part] = true
+		normalized = append(normalized, part)
 	}
-	if len(parts) == 0 {
+	if len(normalized) == 0 {
 		return "ALL"
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(normalized, ",")
 }
 
-func marketSelectionLimit(slug string) int {
-	normalized := normalizeMarketSelection(slug)
-	if normalized == "ALL" {
-		return settingsMaxMarketsLimit
+func normalizeTUISettings(s TUISettings) TUISettings {
+	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	if s.MaxMarkets < 1 {
+		s.MaxMarkets = 1
 	}
-	count := len(strings.Split(normalized, ","))
-	if count < 1 {
-		return 1
+	if s.MarketSlug != "ALL" {
+		selected := len(strings.Split(s.MarketSlug, ","))
+		if selected > 0 && s.MaxMarkets > selected {
+			s.MaxMarkets = selected
+		}
 	}
-	if count > settingsMaxMarketsLimit {
-		return settingsMaxMarketsLimit
-	}
-	return count
-}
-
-func clampMaxMarketsForSelection(slug string, maxMarkets int) int {
-	limit := marketSelectionLimit(slug)
-	if maxMarkets < 1 {
-		return 1
-	}
-	if maxMarkets > limit {
-		return limit
-	}
-	return maxMarkets
-}
-
-func normalizeTUISettings(cfg TUISettings) TUISettings {
-	cfg.MarketSlug = normalizeMarketSelection(cfg.MarketSlug)
-	cfg.MaxMarkets = clampMaxMarketsForSelection(cfg.MarketSlug, cfg.MaxMarkets)
-	if strings.TrimSpace(cfg.Timeframe) == "" {
-		cfg.Timeframe = "15m"
-	}
-	return cfg
+	return s
 }
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -716,18 +741,22 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 12
+					m.settingsCursor = 13
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 13
+				m.settingsCursor = (m.settingsCursor + 1) % 14
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
 				changed := false
+				if !settingsRowEditable(m.tui.settings, m.settingsCursor) {
+					m.tui.mu.Unlock()
+					return m, nil
+				}
 				switch m.settingsCursor {
 				case 0: // Market
-					markets := settingsMarketOptions
+					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
 					idx := 0
 					for i, mkt := range markets {
 						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
@@ -797,9 +826,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
-					m.tui.settings.MinAskPrice -= 0.01
-					if m.tui.settings.MinAskPrice < 0.01 {
-						m.tui.settings.MinAskPrice = 0.01
+					if isMakerSettingsMode(m.tui.settings) {
+						m.tui.settings.MakerMergeBufferSeconds -= 5
+						if m.tui.settings.MakerMergeBufferSeconds < 5 {
+							m.tui.settings.MakerMergeBufferSeconds = 5
+						}
+					} else {
+						m.tui.settings.MinAskPrice -= 0.01
+						if m.tui.settings.MinAskPrice < 0.01 {
+							m.tui.settings.MinAskPrice = 0.01
+						}
 					}
 					changed = true
 				case 12:
@@ -808,8 +844,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.MaxAskPrice = 0.01
 					}
 					changed = true
+				case 13:
+					m.tui.settings.MakerQuoteGap -= 0.001
+					if m.tui.settings.MakerQuoteGap < 0.001 {
+						m.tui.settings.MakerQuoteGap = 0.001
+					}
+					changed = true
 				}
-				m.tui.settings = normalizeTUISettings(m.tui.settings)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -819,9 +860,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
+				if !settingsRowEditable(m.tui.settings, m.settingsCursor) {
+					m.tui.mu.Unlock()
+					return m, nil
+				}
 				switch m.settingsCursor {
 				case 0: // Market
-					markets := settingsMarketOptions
+					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
 					idx := 0
 					for i, mkt := range markets {
 						if strings.EqualFold(m.tui.settings.MarketSlug, mkt) {
@@ -888,9 +933,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
-					m.tui.settings.MinAskPrice += 0.01
-					if m.tui.settings.MinAskPrice > 0.99 {
-						m.tui.settings.MinAskPrice = 0.99
+					if isMakerSettingsMode(m.tui.settings) {
+						m.tui.settings.MakerMergeBufferSeconds += 5
+						if m.tui.settings.MakerMergeBufferSeconds > 120 {
+							m.tui.settings.MakerMergeBufferSeconds = 120
+						}
+					} else {
+						m.tui.settings.MinAskPrice += 0.01
+						if m.tui.settings.MinAskPrice > 0.99 {
+							m.tui.settings.MinAskPrice = 0.99
+						}
 					}
 					changed = true
 				case 12:
@@ -899,8 +951,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.MaxAskPrice = 0.99
 					}
 					changed = true
+				case 13:
+					m.tui.settings.MakerQuoteGap += 0.001
+					if m.tui.settings.MakerQuoteGap > 0.050 {
+						m.tui.settings.MakerQuoteGap = 0.050
+					}
+					changed = true
 				}
-				m.tui.settings = normalizeTUISettings(m.tui.settings)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -910,29 +967,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Quick presets
 			case "1":
 				m.tui.mu.Lock()
-				m.tui.settings = normalizeTUISettings(SettingsConservative)
+				m.tui.settings = SettingsConservative
 				m.tui.tradeFactor = SettingsConservative.TradeScaleFactor
-				if m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "2":
 				m.tui.mu.Lock()
-				m.tui.settings = normalizeTUISettings(SettingsModerate)
+				m.tui.settings = SettingsModerate
 				m.tui.tradeFactor = SettingsModerate.TradeScaleFactor
-				if m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "3":
 				m.tui.mu.Lock()
-				m.tui.settings = normalizeTUISettings(SettingsAggressive)
+				m.tui.settings = SettingsAggressive
 				m.tui.tradeFactor = SettingsAggressive.TradeScaleFactor
-				if m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
 				m.tui.mu.Unlock()
 				return m, nil
 			}
@@ -1001,7 +1049,7 @@ func (m tuiModel) View() string {
 // ─── TUI Public API ───────────────────────────────────────────────────────────
 
 func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
-	tui := &TUI{
+	return &TUI{
 		engine:          engine,
 		orderBook:       orderBook,
 		orderBooks:      make(map[string]*OrderBook),
@@ -1022,83 +1070,6 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		width:           80,
 		height:          24,
 		startTime:       time.Now(),
-	}
-	if orderBook != nil {
-		tui.orderBooks[""] = orderBook
-	}
-	return tui
-}
-
-func (t *TUI) RegisterOrderBook(marketID string, orderBook *OrderBook) {
-	if orderBook == nil {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.orderBooks == nil {
-		t.orderBooks = make(map[string]*OrderBook)
-	}
-	t.orderBooks[marketID] = orderBook
-	if marketID == "" {
-		t.orderBook = orderBook
-	}
-}
-
-func (t *TUI) ClearOrderBooks() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.orderBook = nil
-	t.orderBooks = make(map[string]*OrderBook)
-}
-
-func (t *TUI) getOpenOrdersSnapshot() []ScopedLimitOrder {
-	t.mu.Lock()
-	books := make(map[string]*OrderBook, len(t.orderBooks))
-	for marketID, ob := range t.orderBooks {
-		books[marketID] = ob
-	}
-	t.mu.Unlock()
-
-	marketIDs := make([]string, 0, len(books))
-	for marketID := range books {
-		marketIDs = append(marketIDs, marketID)
-	}
-	sort.Strings(marketIDs)
-
-	orders := make([]ScopedLimitOrder, 0)
-	for _, marketID := range marketIDs {
-		for _, order := range books[marketID].GetOpenOrders() {
-			orders = append(orders, ScopedLimitOrder{MarketID: marketID, Order: order})
-		}
-	}
-	return orders
-}
-
-func (t *TUI) CancelAllOrders() int {
-	t.mu.Lock()
-	books := make([]*OrderBook, 0, len(t.orderBooks))
-	for _, ob := range t.orderBooks {
-		books = append(books, ob)
-	}
-	t.mu.Unlock()
-
-	total := 0
-	for _, ob := range books {
-		total += ob.CancelAllOrders()
-	}
-	return total
-}
-
-func (t *TUI) CleanupOrderBooks(maxAge time.Duration) {
-	t.mu.Lock()
-	books := make([]*OrderBook, 0, len(t.orderBooks))
-	for _, ob := range t.orderBooks {
-		books = append(books, ob)
-	}
-	t.mu.Unlock()
-
-	for _, ob := range books {
-		ob.CleanupOldOrders(maxAge)
 	}
 }
 
@@ -1210,9 +1181,93 @@ func (t *TUI) ClearMarkets() {
 	t.lastAsks = make(map[string]float64)
 	t.orderBookDepth = make(map[string]map[string][]MarketLevel)
 	t.pendingOrders = make(map[string][]PendingOrder)
-	t.splitInventories = nil
-	t.orderBook = nil
 	t.orderBooks = make(map[string]*OrderBook)
+	t.splitInventories = nil
+}
+
+func (t *TUI) RegisterOrderBook(marketID string, orderBook *OrderBook) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.orderBooks == nil {
+		t.orderBooks = make(map[string]*OrderBook)
+	}
+	t.orderBooks[marketID] = orderBook
+}
+
+func (t *TUI) getOpenOrdersSnapshot() []ScopedLimitOrder {
+	t.mu.Lock()
+	books := make(map[string]*OrderBook, len(t.orderBooks))
+	for marketID, orderBook := range t.orderBooks {
+		if orderBook != nil {
+			books[marketID] = orderBook
+		}
+	}
+	fallback := t.orderBook
+	t.mu.Unlock()
+
+	if len(books) == 0 {
+		if fallback == nil {
+			return nil
+		}
+		open := fallback.GetOpenOrders()
+		scoped := make([]ScopedLimitOrder, 0, len(open))
+		for _, order := range open {
+			scoped = append(scoped, ScopedLimitOrder{Order: order})
+		}
+		return scoped
+	}
+
+	orders := make([]ScopedLimitOrder, 0)
+	for marketID, orderBook := range books {
+		for _, order := range orderBook.GetOpenOrders() {
+			orders = append(orders, ScopedLimitOrder{MarketID: marketID, Order: order})
+		}
+	}
+	return orders
+}
+
+func (t *TUI) CancelAllOrders() {
+	t.mu.Lock()
+	books := make([]*OrderBook, 0, len(t.orderBooks))
+	for _, orderBook := range t.orderBooks {
+		if orderBook != nil {
+			books = append(books, orderBook)
+		}
+	}
+	fallback := t.orderBook
+	t.mu.Unlock()
+
+	if len(books) == 0 {
+		if fallback != nil {
+			fallback.CancelAllOrders()
+		}
+		return
+	}
+	for _, orderBook := range books {
+		orderBook.CancelAllOrders()
+	}
+}
+
+func (t *TUI) CleanupOrderBooks(maxAge time.Duration) {
+	t.mu.Lock()
+	books := make([]*OrderBook, 0, len(t.orderBooks))
+	for _, orderBook := range t.orderBooks {
+		if orderBook != nil {
+			books = append(books, orderBook)
+		}
+	}
+	fallback := t.orderBook
+	t.mu.Unlock()
+
+	if len(books) == 0 {
+		if fallback != nil {
+			fallback.CleanupOldOrders(maxAge)
+		}
+		return
+	}
+	for _, orderBook := range books {
+		orderBook.CleanupOldOrders(maxAge)
+	}
 }
 
 func (t *TUI) UpdateMarketPrices(marketID string, bids, asks map[string]float64) {
@@ -1310,14 +1365,17 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.pendingOrders == nil {
+		t.pendingOrders = make(map[string][]PendingOrder)
+	}
 	flattened := make([]PendingOrder, 0)
-	for outcome, entries := range orders {
-		for _, entry := range entries {
-			entry.MarketID = marketID
-			if entry.Outcome == "" {
-				entry.Outcome = outcome
+	for outcome, batch := range orders {
+		for _, order := range batch {
+			if order.Outcome == "" {
+				order.Outcome = outcome
 			}
-			flattened = append(flattened, entry)
+			order.MarketID = marketID
+			flattened = append(flattened, order)
 		}
 	}
 	if len(flattened) == 0 {
@@ -1954,21 +2012,10 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 
 	// ── Pending orders ──
 	sb.WriteString(styleGreen.Render("  └─ 📋 Planned Orders") + "\n")
-	if len(s.pendingOrders) > 0 {
-		marketIDs := make([]string, 0, len(s.pendingOrders))
-		for marketID := range s.pendingOrders {
-			marketIDs = append(marketIDs, marketID)
-		}
-		sort.Strings(marketIDs)
-		for _, marketID := range marketIDs {
-			for _, o := range s.pendingOrders[marketID] {
-				label := core.SanitizeString(o.Outcome)
-				if marketID != "" {
-					label = marketID + "/" + label
-				}
-				sb.WriteString(fmt.Sprintf("       %s %-10s %.0f @ $%.2f\n",
-					o.Side, label, o.Qty, o.Price))
-			}
+	if orders := s.pendingOrders[s.marketSlug]; len(orders) > 0 {
+		for _, o := range orders {
+			sb.WriteString(fmt.Sprintf("       %s %-6s  %.0f @ $%.2f\n",
+				o.Side, core.SanitizeString(o.Outcome), o.Qty, o.Price))
 		}
 	} else {
 		sb.WriteString(styleDimmed.Render("       (no pending orders)") + "\n")
@@ -2314,11 +2361,14 @@ func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 
 	byOutcome := make(map[string][]ScopedLimitOrder)
 	for _, o := range orders {
-		label := o.Order.Outcome
-		if o.MarketID != "" {
-			label = o.MarketID + "/" + label
+		if o.Order == nil {
+			continue
 		}
-		byOutcome[label] = append(byOutcome[label], o)
+		key := o.Order.Outcome
+		if o.MarketID != "" {
+			key = o.MarketID + ":" + key
+		}
+		byOutcome[key] = append(byOutcome[key], o)
 	}
 	// Sorted outcomes for stable render
 	outcomes := make([]string, 0, len(byOutcome))
@@ -2535,13 +2585,15 @@ func (m tuiModel) renderSettings(w int) string {
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
 
 	type row struct {
-		label string
-		value string
-		bar   string
+		label    string
+		value    string
+		bar      string
+		disabled bool
 	}
 
 	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
 
+	makerMode := isMakerSettingsMode(cfg)
 	rows := []row{
 		{
 			label: "Market",
@@ -2550,8 +2602,8 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: "Max Concurrent",
-			value: fmt.Sprintf(" %d / %d ", cfg.MaxMarkets, marketSelectionLimit(cfg.MarketSlug)),
-			bar:   renderBar(float64(cfg.MaxMarkets)/float64(marketSelectionLimit(cfg.MarketSlug)), 20),
+			value: fmt.Sprintf(" %d ", cfg.MaxMarkets),
+			bar:   renderBar(float64(cfg.MaxMarkets)/4.0, 20),
 		},
 		{
 			label: "Timeframe",
@@ -2564,59 +2616,102 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   renderBar(cfg.TradeScaleFactor/1.0, 20),
 		},
 		{
-			label: "Buy Min Margin %",
+			label: settingsRowLabel(cfg, 4),
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
 		{
-			label: "Buy Arb Mode",
+			label: "Paper Arb Mode",
 			value: func() string {
 				if strings.EqualFold(cfg.PaperArbMode, "maker") {
-					return styleCyan.Render(" MAKER ")
+					return styleGreen.Render(" maker ")
 				}
-				return styleYellow.Render(" TAKER ")
+				return styleYellow.Render(" taker ")
 			}(),
 			bar: "",
 		},
 		{
-			label: "Buy/Sell Exec Floor %",
-			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
-			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
-		},
-		{
-			label: "Split Min Margin",
-			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
-			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
-		},
-		{
-			label: "Split Strategy",
+			label: settingsRowLabel(cfg, 6),
 			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" maker ignores ")
+				}
+				return fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent)
+			}(),
+			bar:      renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
+			disabled: makerMode,
+		},
+		{
+			label: settingsRowLabel(cfg, 7),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
+				return fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell)
+			}(),
+			bar:      renderBar(cfg.SplitMinMarginSell/20.0, 20),
+			disabled: makerMode,
+		},
+		{
+			label: settingsRowLabel(cfg, 8),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
 				if cfg.SplitStrategyEnabled {
 					return styleGreen.Render("  ON ")
 				}
 				return styleMuted.Render(" OFF ")
 			}(),
-			bar: "",
+			bar:      "",
+			disabled: makerMode,
 		},
 		{
-			label: "Split Initial Cap",
-			value: fmtPct(cfg.SplitInitialCapPct),
-			bar:   renderBar(cfg.SplitInitialCapPct, 20),
+			label: settingsRowLabel(cfg, 9),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
+				return fmtPct(cfg.SplitInitialCapPct)
+			}(),
+			bar:      renderBar(cfg.SplitInitialCapPct, 20),
+			disabled: makerMode,
 		},
 		{
-			label: "Split Replenish Cap",
-			value: fmtPct(cfg.SplitReplenishCapPct),
-			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
+			label: settingsRowLabel(cfg, 10),
+			value: func() string {
+				if makerMode {
+					return styleMuted.Render(" split only ")
+				}
+				return fmtPct(cfg.SplitReplenishCapPct)
+			}(),
+			bar:      renderBar(cfg.SplitReplenishCapPct, 20),
+			disabled: makerMode,
 		},
 		{
-			label: "Min Ask Price",
-			value: fmt.Sprintf(" $%.2f ", cfg.MinAskPrice),
-			bar:   renderBar(cfg.MinAskPrice, 20),
+			label: settingsRowLabel(cfg, 11),
+			value: func() string {
+				if makerMode {
+					return fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds)
+				}
+				return fmt.Sprintf(" $%.2f ", cfg.MinAskPrice)
+			}(),
+			bar: func() string {
+				if makerMode {
+					return renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20)
+				}
+				return renderBar(cfg.MinAskPrice, 20)
+			}(),
 		},
 		{
-			label: "Max Ask Price",
+			label: settingsRowLabel(cfg, 12),
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 13),
+			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
+			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
 		},
 	}
 
@@ -2631,8 +2726,16 @@ func (m tuiModel) renderSettings(w int) string {
 		vSt := valueStyle
 		if i == m.settingsCursor {
 			cursor = cursorStyle.Render("> ")
-			lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
-			vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
+			if r.disabled {
+				lSt = lipgloss.NewStyle().Bold(true).Foreground(clrDim)
+				vSt = lipgloss.NewStyle().Bold(true).Foreground(clrDim)
+			} else {
+				lSt = lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
+				vSt = lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
+			}
+		} else if r.disabled {
+			lSt = lipgloss.NewStyle().Foreground(clrDim)
+			vSt = lipgloss.NewStyle().Foreground(clrDim)
 		}
 
 		// Use fixed-width padding to perfectly align the bars
@@ -2683,6 +2786,10 @@ func (m tuiModel) renderSettings(w int) string {
 		100*cfg.TradeScaleFactor,
 		500*cfg.TradeScaleFactor,
 	))
+	modeNote := ""
+	if makerMode {
+		modeNote = styleDimmed.Render("  Maker mode: split/taker-only rows are shown for reference and ignored live") + "\n"
+	}
 
 	content := title + "\n" +
 		keysLine + "\n\n" +
@@ -2693,6 +2800,7 @@ func (m tuiModel) renderSettings(w int) string {
 		p2 + "\n" +
 		p3 + "\n\n" +
 		divider + "\n" +
+		modeNote +
 		balanceNote
 
 	return makePanel(inner, clrBrand, content)
@@ -2713,10 +2821,14 @@ func (t *TUI) GetSettings() TUISettings {
 func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.settings = normalizeTUISettings(s)
+	s = normalizeTUISettings(s)
+	if s.MakerQuoteGap <= 0 {
+		s.MakerQuoteGap = 0.008
+	}
+	t.settings = s
 	t.onSettingsChange = onChange
 	// Keep tradeFactor in sync so the account panel shows the right value.
-	if t.settings.TradeScaleFactor > 0 {
-		t.tradeFactor = t.settings.TradeScaleFactor
+	if s.TradeScaleFactor > 0 {
+		t.tradeFactor = s.TradeScaleFactor
 	}
 }

@@ -1,8 +1,10 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -17,7 +19,7 @@ const (
 )
 
 type Config struct {
-	// Trading mode: "paper" (default) or "real"
+	// Trading mode is inferred internally from the selected bot/profile.
 	TradingMode TradingMode
 
 	// Polymarket API credentials (required for real trading)
@@ -81,21 +83,51 @@ type Config struct {
 	SplitTargetMarginReserve float64 // Maintain inventory for this margin level (default: 6%)
 	SplitReplenishThreshold  float64 // Trigger new split when shares fall below this (default: 50)
 	SplitMergeBufferSeconds  int     // Seconds before expiry to merge unsold shares (default: 30)
+	MakerMergeBufferSeconds  int     // Seconds before expiry to merge paired maker inventory (default: 30)
+	MakerQuoteGap            float64 // Distance from mid for maker quotes (default: 0.008)
 	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
+
+	settingsProfile string
+	settingsPath    string
+}
+
+type RuntimeSettings struct {
+	MarketSlug                     string  `json:"marketSlug"`
+	Timeframe                      string  `json:"timeframe"`
+	MaxMarkets                     int     `json:"maxMarkets"`
+	BaseBalance                    float64 `json:"baseBalance"`
+	BaseTradeSize                  float64 `json:"baseTradeSize"`
+	MinMarginPercent               float64 `json:"minMarginPercent"`
+	TradeScaleFactor               float64 `json:"tradeScaleFactor"`
+	FeeRateBps                     int     `json:"feeRateBps"`
+	MaxTradeSize                   float64 `json:"maxTradeSize"`
+	MaxDailyLoss                   float64 `json:"maxDailyLoss"`
+	RequireConfirm                 bool    `json:"requireConfirm"`
+	EnableCSVLogger                bool    `json:"enableCsvLogger"`
+	EnableMarginAggression         bool    `json:"enableMarginAggression"`
+	MaxAggressionMultiplier        float64 `json:"maxAggressionMultiplier"`
+	MinAskPrice                    float64 `json:"minAskPrice"`
+	MaxAskPrice                    float64 `json:"maxAskPrice"`
+	PaperArbMode                   string  `json:"paperArbMode"`
+	BuyExecutionMarginFloorPercent float64 `json:"buyExecutionMarginFloorPercent"`
+	SplitStrategyEnabled           bool    `json:"splitStrategyEnabled"`
+	SplitMinMarginSell             float64 `json:"splitMinMarginSell"`
+	SplitTargetMarginReserve       float64 `json:"splitTargetMarginReserve"`
+	SplitReplenishThreshold        float64 `json:"splitReplenishThreshold"`
+	SplitMergeBufferSeconds        int     `json:"splitMergeBufferSeconds"`
+	MakerMergeBufferSeconds        int     `json:"makerMergeBufferSeconds"`
+	MakerQuoteGap                  float64 `json:"makerQuoteGap"`
+	SplitInitialCapPct             float64 `json:"splitInitialCapPct"`
+	SplitReplenishCapPct           float64 `json:"splitReplenishCapPct"`
 }
 
 func LoadConfig() (*Config, error) {
 	// Load .env file if it exists, but don't fail if it doesn't (env vars might be set already)
 	_ = godotenv.Load()
 
-	mode := TradingMode(strings.ToLower(os.Getenv("TRADING_MODE")))
-	if mode == "" {
-		mode = ModePaper
-	}
-
 	cfg := &Config{
-		TradingMode:   mode,
+		TradingMode:   ModePaper,
 		PK:            getEnvWithFallback("POLY_PK", "PK"),
 		APIKey:        getEnvWithFallback("POLY_API_KEY", "API_KEY"),
 		APISecret:     getEnvWithFallback("POLY_API_SECRET", "API_SECRET"),
@@ -136,6 +168,8 @@ func LoadConfig() (*Config, error) {
 		SplitTargetMarginReserve: parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
 		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
 		SplitMergeBufferSeconds:  parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
+		MakerMergeBufferSeconds:  parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
+		MakerQuoteGap:            parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
 		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
 	}
@@ -143,12 +177,54 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
-// ValidateForRealTrading checks that all required credentials are present for real trading
-func (c *Config) ValidateForRealTrading() error {
-	if c.TradingMode != ModeReal {
-		return nil // No validation needed for paper trading
-	}
+func LoadBotConfig(profile string) (*Config, error) {
+	return loadBotConfigWithPath(profile, settingsPathForProfile(profile))
+}
 
+func loadBotConfigWithPath(profile, path string) (*Config, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.settingsProfile = strings.ToLower(strings.TrimSpace(profile))
+	cfg.settingsPath = path
+	switch cfg.settingsProfile {
+	case "paperbot":
+		cfg.TradingMode = ModePaper
+	case "realbot":
+		cfg.TradingMode = ModeReal
+	}
+	if cfg.settingsPath == "" {
+		return cfg, nil
+	}
+	runtime, err := readRuntimeSettings(cfg.settingsPath, cfg.runtimeSettings())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
+		return nil, err
+	}
+	cfg.applyRuntimeSettings(runtime)
+	return cfg, nil
+}
+
+// UseRealTrading marks the config as intended for real trading. Bot entrypoints infer
+// this automatically; explicit real-only utilities can call it directly.
+func (c *Config) UseRealTrading() {
+	c.TradingMode = ModeReal
+}
+
+// ReloadSecretsFromEnv refreshes env-backed credentials without touching bot JSON settings.
+func (c *Config) ReloadSecretsFromEnv() {
+	c.PK = getEnvWithFallback("POLY_PK", "PK")
+	c.APIKey = getEnvWithFallback("POLY_API_KEY", "API_KEY")
+	c.APISecret = getEnvWithFallback("POLY_API_SECRET", "API_SECRET")
+	c.APIPassphrase = getEnvWithFallback("POLY_PASSPHRASE", "API_PASSPHRASE")
+	c.PolygonRPCURL = os.Getenv("POLYGON_RPC_URL")
+}
+
+// ValidateForRealTrading checks that all required credentials are present for real trading.
+func (c *Config) ValidateForRealTrading() error {
 	var missing []string
 
 	if c.PK == "" {
@@ -254,8 +330,113 @@ func parseEnvInt(key string, defaultVal int) int {
 	return i
 }
 
-// SaveSettings writes the mutable runtime settings back to the .env file.
+func settingsPathForProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "paperbot":
+		return filepath.Join("config", "paperbot.settings.json")
+	case "realbot":
+		return filepath.Join("config", "realbot.settings.json")
+	default:
+		return ""
+	}
+}
+
+func readRuntimeSettings(path string, base RuntimeSettings) (RuntimeSettings, error) {
+	settings := base
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return settings, err
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return settings, err
+	}
+	return settings, nil
+}
+
+func writeRuntimeSettings(path string, settings RuntimeSettings) error {
+	if path == "" {
+		return errors.New("settings path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+func (c *Config) runtimeSettings() RuntimeSettings {
+	return RuntimeSettings{
+		MarketSlug:                     c.MarketSlug,
+		Timeframe:                      c.Timeframe,
+		MaxMarkets:                     c.MaxMarkets,
+		BaseBalance:                    c.BaseBalance,
+		BaseTradeSize:                  c.BaseTradeSize,
+		MinMarginPercent:               c.MinMarginPercent,
+		TradeScaleFactor:               c.TradeScaleFactor,
+		FeeRateBps:                     c.FeeRateBps,
+		MaxTradeSize:                   c.MaxTradeSize,
+		MaxDailyLoss:                   c.MaxDailyLoss,
+		RequireConfirm:                 c.RequireConfirm,
+		EnableCSVLogger:                c.EnableCSVLogger,
+		EnableMarginAggression:         c.EnableMarginAggression,
+		MaxAggressionMultiplier:        c.MaxAggressionMultiplier,
+		MinAskPrice:                    c.MinAskPrice,
+		MaxAskPrice:                    c.MaxAskPrice,
+		PaperArbMode:                   c.PaperArbMode,
+		BuyExecutionMarginFloorPercent: c.BuyExecutionMarginFloorPercent,
+		SplitStrategyEnabled:           c.SplitStrategyEnabled,
+		SplitMinMarginSell:             c.SplitMinMarginSell,
+		SplitTargetMarginReserve:       c.SplitTargetMarginReserve,
+		SplitReplenishThreshold:        c.SplitReplenishThreshold,
+		SplitMergeBufferSeconds:        c.SplitMergeBufferSeconds,
+		MakerMergeBufferSeconds:        c.MakerMergeBufferSeconds,
+		MakerQuoteGap:                  c.MakerQuoteGap,
+		SplitInitialCapPct:             c.SplitInitialCapPct,
+		SplitReplenishCapPct:           c.SplitReplenishCapPct,
+	}
+}
+
+func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
+	c.MarketSlug = s.MarketSlug
+	c.Timeframe = s.Timeframe
+	c.MaxMarkets = s.MaxMarkets
+	c.BaseBalance = s.BaseBalance
+	c.BaseTradeSize = s.BaseTradeSize
+	c.MinMarginPercent = s.MinMarginPercent
+	c.TradeScaleFactor = s.TradeScaleFactor
+	c.FeeRateBps = s.FeeRateBps
+	c.MaxTradeSize = s.MaxTradeSize
+	c.MaxDailyLoss = s.MaxDailyLoss
+	c.RequireConfirm = s.RequireConfirm
+	c.EnableCSVLogger = s.EnableCSVLogger
+	c.EnableMarginAggression = s.EnableMarginAggression
+	c.MaxAggressionMultiplier = s.MaxAggressionMultiplier
+	c.MinAskPrice = s.MinAskPrice
+	c.MaxAskPrice = s.MaxAskPrice
+	c.PaperArbMode = s.PaperArbMode
+	c.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
+	c.SplitStrategyEnabled = s.SplitStrategyEnabled
+	c.SplitMinMarginSell = s.SplitMinMarginSell
+	c.SplitTargetMarginReserve = s.SplitTargetMarginReserve
+	c.SplitReplenishThreshold = s.SplitReplenishThreshold
+	c.SplitMergeBufferSeconds = s.SplitMergeBufferSeconds
+	c.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
+	c.MakerQuoteGap = s.MakerQuoteGap
+	c.SplitInitialCapPct = s.SplitInitialCapPct
+	c.SplitReplenishCapPct = s.SplitReplenishCapPct
+}
+
+// SaveSettings writes mutable runtime settings to the bot-specific JSON file when
+// the config was loaded through LoadBotConfig. Generic configs keep the legacy
+// .env fallback for non-bot tools.
 func (c *Config) SaveSettings() error {
+	if c.settingsPath != "" {
+		return writeRuntimeSettings(c.settingsPath, c.runtimeSettings())
+	}
 	envMap, err := godotenv.Read(".env")
 	if err != nil {
 		// If .env doesn't exist, create an empty map
@@ -267,12 +448,15 @@ func (c *Config) SaveSettings() error {
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
+	envMap["PAPER_ARB_MODE"] = c.PaperArbMode
 	envMap["MIN_ASK_PRICE"] = strconv.FormatFloat(c.MinAskPrice, 'f', -1, 64)
 	envMap["MAX_ASK_PRICE"] = strconv.FormatFloat(c.MaxAskPrice, 'f', -1, 64)
 	envMap["PAPER_ARB_MODE"] = c.PaperArbMode
 	envMap["BUY_EXECUTION_MARGIN_FLOOR_PERCENT"] = strconv.FormatFloat(c.BuyExecutionMarginFloorPercent, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)
+	envMap["MAKER_MERGE_BUFFER_SECONDS"] = strconv.Itoa(c.MakerMergeBufferSeconds)
+	envMap["MAKER_QUOTE_GAP"] = strconv.FormatFloat(c.MakerQuoteGap, 'f', -1, 64)
 	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
 	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
 

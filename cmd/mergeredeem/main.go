@@ -29,8 +29,7 @@ func main() {
 	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelSetup()
 
-	// Ensure trading mode is set and credentials exist
-	cfg.TradingMode = core.ModeReal
+	// Ensure credentials exist and allowances are ready for real trading
 	trader, err := setup.EnsureRealTradingSetup(setupCtx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to setup or create trader: %v", err)
