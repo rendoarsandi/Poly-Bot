@@ -683,25 +683,31 @@ func (t *RealTrader) CancelAll(ctx context.Context) error {
 
 func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	// If background sync is keeping this fresh, we can rely on it.
 	// We use a 30s TTL here so if the background ticker is delayed, we still use the cache instead of blocking the WS loop.
 	if time.Since(t.lastBalanceUpdate) < 30*time.Second && !t.lastBalanceUpdate.IsZero() {
-		return t.cachedBalance, nil
+		bal := t.cachedBalance
+		t.mu.Unlock()
+		return bal, nil
 	}
+	cachedBal := t.cachedBalance
+	hasCache := !t.lastBalanceUpdate.IsZero()
+	t.mu.Unlock()
 
 	bal, err := t.polygon.GetUSDCBalance(ctx, t.clob.Address())
 	if err != nil {
 		// Return cached balance on error if available
-		if !t.lastBalanceUpdate.IsZero() {
-			return t.cachedBalance, nil
+		if hasCache {
+			return cachedBal, nil
 		}
 		return 0, err
 	}
 
+	t.mu.Lock()
 	t.cachedBalance = bal
 	t.lastBalanceUpdate = time.Now()
+	t.mu.Unlock()
+	
 	return bal, nil
 }
 
