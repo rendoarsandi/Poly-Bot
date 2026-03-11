@@ -1675,10 +1675,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// the CLOB loses sync with on-chain state between startup and trade time.
 							// Background ticker keeps allowance synced.
 
-							initialBal0, initialBal1, _ := loadPairPositionBalances(ctx, trader, token0, token1)
-							snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, 5*time.Second)
-							initialSnapshot0, initialSnapshot1, _, haveInitialSnapshot := captureInitialPairSnapshot(snapshotCtx, trader, token0, token1)
-							cancelSnapshot()
+							// Capture an instant websocket-backed baseline so the split-sell legs can
+							// be submitted immediately without waiting on slow on-chain snapshots.
+							initialSnapshot0 := trader.GetLivePositionSize(token0)
+							initialSnapshot1 := trader.GetLivePositionSize(token1)
+							initialBal0 := initialSnapshot0
+							initialBal1 := initialSnapshot1
+							haveInitialSnapshot := true
 
 							rate1 := tokenFeeRates[outcomes[0]]
 							if rate1 == 0 {

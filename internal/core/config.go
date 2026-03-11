@@ -18,7 +18,7 @@ const (
 	ModePaper TradingMode = "paper"
 	ModeReal  TradingMode = "real"
 
-	defaultExecutionLocalQuoteMaxAge = 750 * time.Millisecond
+	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
 	defaultRestFallbackPollInterval  = 1 * time.Second
 )

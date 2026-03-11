@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	utilbotLocalQuoteMaxAge   = 250 * time.Millisecond
+	utilbotLocalQuoteMaxAge   = 5 * time.Second
 	utilbotJITRequoteTimeout  = 750 * time.Millisecond
 	utilbotOrderWarmInterval  = 900 * time.Millisecond
 	utilbotOrderWarmTimeout   = 1200 * time.Millisecond
@@ -537,15 +537,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 	var initialBal0, initialBal1 float64
 	haveInitialSnapshot := false
 	if side == "BUY" {
-		b0, err0 := trader.GetCTFBalanceFloat(ctx, token0)
-		b1, err1 := trader.GetCTFBalanceFloat(ctx, token1)
-		if err0 == nil && err1 == nil {
-			initialBal0 = b0
-			initialBal1 = b1
-			haveInitialSnapshot = true
-		} else {
-			fmt.Printf("⚠️ Could not snapshot pre-buy CTF balances (err0=%v, err1=%v). Merge will use live balances only.\n", err0, err1)
-		}
+		initialBal0 = trader.GetLivePositionSize(token0)
+		initialBal1 = trader.GetLivePositionSize(token1)
+		haveInitialSnapshot = true
 	}
 	for _, out := range outcomes {
 		var price float64
