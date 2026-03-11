@@ -1030,9 +1030,6 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 
 // checkSafetyLimits verifies the trade doesn't exceed safety limits
 func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	// Reset daily loss if new day
 	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
 		t.dailyLoss = 0
