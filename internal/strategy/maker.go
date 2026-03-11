@@ -109,16 +109,10 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 		return 0, false
 	}
 
-	requiredNet := avgCost + minEdge
+	// Rely purely on inventory skew instead of a stubborn cost-basis check.
+	// This prevents accumulating toxic bags of losing outcomes.
 	price = roundToStep(clampFloat64(price, minPrice, maxPrice), params.QuoteStep)
-	for price <= maxPrice+1e-9 {
-		netPrice := price - ComputeMakerSellFeeUsdc(1.0, price, feeRateBps)
-		if netPrice+1e-9 >= requiredNet {
-			return price, true
-		}
-		price = roundToStep(price+params.QuoteStep, params.QuoteStep)
-	}
-	return 0, false
+	return price, true
 }
 
 func ShouldMakerBlockBuy(positionShares float64, sellOK bool, peerShares, peerAvgCost, price, minEdge float64) bool {

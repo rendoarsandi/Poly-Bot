@@ -222,6 +222,9 @@ type TUISettings struct {
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
 	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
 	MakerQuoteGap                  float64 // distance from mid for maker quotes
+	MakerInventoryTargetMult       float64
+	MakerInventoryCapMult          float64
+	MakerMinQuoteShares            float64
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 	MaxTradeSize                   float64 // e.g. 50.00 = max trade size $50
@@ -230,25 +233,32 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteShares: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteShares: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteShares: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 func isMakerSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "maker")
 }
 
-func settingsRowEditable(cfg TUISettings, idx int) bool {
-	if !isMakerSettingsMode(cfg) {
-		return true
-	}
+func isRowVisible(cfg TUISettings, idx int) bool {
+	maker := isMakerSettingsMode(cfg)
 	switch idx {
-	case 6, 7, 8, 9, 10:
-		return false
+	case 6, 7, 8, 9, 10, 11, 12: // Taker specific
+		return !maker
+	case 13, 14, 15, 16, 17: // Maker specific
+		return maker
 	default:
 		return true
 	}
+}
+
+func settingsRowEditable(cfg TUISettings, idx int) bool {
+	if !isRowVisible(cfg, idx) {
+		return false
+	}
+	return true
 }
 
 func settingsRowLabel(cfg TUISettings, idx int) string {
@@ -260,9 +270,6 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		}
 		return "Buy Min Margin %"
 	case 6:
-		if maker {
-			return "Exec Floor % (taker only)"
-		}
 		return "Buy/Sell Exec Floor %"
 	case 7:
 		return "Split Min Margin"
@@ -273,20 +280,22 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case 10:
 		return "Split Replenish Cap"
 	case 11:
-		if maker {
-			return "Maker Merge Buffer"
-		}
 		return "Min Ask Price"
 	case 12:
-		if maker {
-			return "Maker Max Buy Price"
-		}
 		return "Max Ask Price"
 	case 13:
-		return "Maker Quote Gap"
+		return "Maker Merge Buffer"
 	case 14:
-		return "Max Trade Size"
+		return "Maker Quote Gap"
 	case 15:
+		return "Maker Target Mult"
+	case 16:
+		return "Maker Cap Mult"
+	case 17:
+		return "Maker Min Quote"
+	case 18:
+		return "Max Trade Size"
+	case 19:
 		return "Max Daily Loss"
 	default:
 		return ""
@@ -755,14 +764,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showSettings = false
 				m.refreshScrollMetrics()
 				return m, nil
-			case "up", "k":
-				m.settingsCursor--
-				if m.settingsCursor < 0 {
-					m.settingsCursor = 15
+						case "up", "k":
+				for {
+					m.settingsCursor--
+					if m.settingsCursor < 0 {
+						m.settingsCursor = 19
+					}
+					if isRowVisible(m.tui.settings, m.settingsCursor) {
+						break
+					}
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 16
+				for {
+					m.settingsCursor = (m.settingsCursor + 1) % 20
+					if isRowVisible(m.tui.settings, m.settingsCursor) {
+						break
+					}
+				}
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -843,16 +862,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
-					if isMakerSettingsMode(m.tui.settings) {
-						m.tui.settings.MakerMergeBufferSeconds -= 5
-						if m.tui.settings.MakerMergeBufferSeconds < 5 {
-							m.tui.settings.MakerMergeBufferSeconds = 5
-						}
-					} else {
-						m.tui.settings.MinAskPrice -= 0.01
-						if m.tui.settings.MinAskPrice < 0.01 {
-							m.tui.settings.MinAskPrice = 0.01
-						}
+					m.tui.settings.MinAskPrice -= 0.01
+					if m.tui.settings.MinAskPrice < 0.01 {
+						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
 				case 12:
@@ -862,18 +874,42 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 13:
+					m.tui.settings.MakerMergeBufferSeconds -= 5
+					if m.tui.settings.MakerMergeBufferSeconds < 5 {
+						m.tui.settings.MakerMergeBufferSeconds = 5
+					}
+					changed = true
+				case 14:
 					m.tui.settings.MakerQuoteGap -= 0.001
 					if m.tui.settings.MakerQuoteGap < 0.001 {
 						m.tui.settings.MakerQuoteGap = 0.001
 					}
 					changed = true
-				case 14:
+				case 15:
+					m.tui.settings.MakerInventoryTargetMult -= 0.5
+					if m.tui.settings.MakerInventoryTargetMult < 1.0 {
+						m.tui.settings.MakerInventoryTargetMult = 1.0
+					}
+					changed = true
+				case 16:
+					m.tui.settings.MakerInventoryCapMult -= 0.5
+					if m.tui.settings.MakerInventoryCapMult < 1.0 {
+						m.tui.settings.MakerInventoryCapMult = 1.0
+					}
+					changed = true
+				case 17:
+					m.tui.settings.MakerMinQuoteShares -= 1.0
+					if m.tui.settings.MakerMinQuoteShares < 1.0 {
+						m.tui.settings.MakerMinQuoteShares = 1.0
+					}
+					changed = true
+				case 18:
 					m.tui.settings.MaxTradeSize -= 5.0
 					if m.tui.settings.MaxTradeSize < 0.0 {
 						m.tui.settings.MaxTradeSize = 0.0
 					}
 					changed = true
-				case 15:
+				case 19:
 					m.tui.settings.MaxDailyLoss -= 5.0
 					if m.tui.settings.MaxDailyLoss < 0.0 {
 						m.tui.settings.MaxDailyLoss = 0.0
@@ -908,8 +944,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case 1: // MaxMarkets
 					m.tui.settings.MaxMarkets++
-					if m.tui.settings.MaxMarkets > 4 {
-						m.tui.settings.MaxMarkets = 4
+					if m.tui.settings.MaxMarkets > 20 {
+						m.tui.settings.MaxMarkets = 20
 					}
 					changed = true
 				case 2: // Timeframe
@@ -921,8 +957,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case 3:
 					m.tui.settings.TradeScaleFactor += 0.01
-					if m.tui.settings.TradeScaleFactor > 0.50 {
-						m.tui.settings.TradeScaleFactor = 0.50
+					if m.tui.settings.TradeScaleFactor > 1.0 {
+						m.tui.settings.TradeScaleFactor = 1.0
 					}
 					changed = true
 				case 4:
@@ -936,8 +972,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case 6:
 					m.tui.settings.BuyExecutionMarginFloorPercent += 0.5
-					if m.tui.settings.BuyExecutionMarginFloorPercent > 5.0 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = 5.0
+					if m.tui.settings.BuyExecutionMarginFloorPercent > 10.0 {
+						m.tui.settings.BuyExecutionMarginFloorPercent = 10.0
 					}
 					changed = true
 				case 7:
@@ -962,16 +998,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
-					if isMakerSettingsMode(m.tui.settings) {
-						m.tui.settings.MakerMergeBufferSeconds += 5
-						if m.tui.settings.MakerMergeBufferSeconds > 120 {
-							m.tui.settings.MakerMergeBufferSeconds = 120
-						}
-					} else {
-						m.tui.settings.MinAskPrice += 0.01
-						if m.tui.settings.MinAskPrice > 0.99 {
-							m.tui.settings.MinAskPrice = 0.99
-						}
+					m.tui.settings.MinAskPrice += 0.01
+					if m.tui.settings.MinAskPrice > 0.99 {
+						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
 				case 12:
@@ -981,22 +1010,40 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 13:
-					m.tui.settings.MakerQuoteGap += 0.001
-					if m.tui.settings.MakerQuoteGap > 0.050 {
-						m.tui.settings.MakerQuoteGap = 0.050
+					m.tui.settings.MakerMergeBufferSeconds += 5
+					if m.tui.settings.MakerMergeBufferSeconds > 300 {
+						m.tui.settings.MakerMergeBufferSeconds = 300
 					}
 					changed = true
 				case 14:
-					m.tui.settings.MaxTradeSize += 5.0
-					if m.tui.settings.MaxTradeSize > 1000.0 {
-						m.tui.settings.MaxTradeSize = 1000.0
+					m.tui.settings.MakerQuoteGap += 0.001
+					if m.tui.settings.MakerQuoteGap > 0.100 {
+						m.tui.settings.MakerQuoteGap = 0.100
 					}
 					changed = true
 				case 15:
-					m.tui.settings.MaxDailyLoss += 5.0
-					if m.tui.settings.MaxDailyLoss > 5000.0 {
-						m.tui.settings.MaxDailyLoss = 5000.0
+					m.tui.settings.MakerInventoryTargetMult += 0.5
+					if m.tui.settings.MakerInventoryTargetMult > 20.0 {
+						m.tui.settings.MakerInventoryTargetMult = 20.0
 					}
+					changed = true
+				case 16:
+					m.tui.settings.MakerInventoryCapMult += 0.5
+					if m.tui.settings.MakerInventoryCapMult > 50.0 {
+						m.tui.settings.MakerInventoryCapMult = 50.0
+					}
+					changed = true
+				case 17:
+					m.tui.settings.MakerMinQuoteShares += 1.0
+					if m.tui.settings.MakerMinQuoteShares > 500.0 {
+						m.tui.settings.MakerMinQuoteShares = 500.0
+					}
+					changed = true
+				case 18:
+					m.tui.settings.MaxTradeSize += 5.0
+					changed = true
+				case 19:
+					m.tui.settings.MaxDailyLoss += 5.0
 					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
@@ -1030,12 +1077,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Normal key handling ──────────────────────────────────────────────
 		switch key {
-		case "up", "k":
-			m.scrollBy(-1)
-			return m, nil
-		case "down", "j":
-			m.scrollBy(1)
-			return m, nil
+					case "up", "k":
+				for {
+					m.settingsCursor--
+					if m.settingsCursor < 0 {
+						m.settingsCursor = 19
+					}
+					if isRowVisible(m.tui.settings, m.settingsCursor) {
+						break
+					}
+				}
+				return m, nil
+			case "down", "j":
+				for {
+					m.settingsCursor = (m.settingsCursor + 1) % 20
+					if isRowVisible(m.tui.settings, m.settingsCursor) {
+						break
+					}
+				}
+				return m, nil
 		case "pgup", "b":
 			m.scrollBy(-(m.bodyViewportHeight() - 2))
 			return m, nil
@@ -2652,7 +2712,7 @@ func (m tuiModel) renderSettings(w int) string {
 	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
 
 	makerMode := isMakerSettingsMode(cfg)
-	rows := []row{
+		rows := []row{
 		{
 			label: "Market",
 			value: fmt.Sprintf(" %s ", cfg.MarketSlug),
@@ -2690,76 +2750,38 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, 6),
-			value: func() string {
-				if makerMode {
-					return styleMuted.Render(" maker ignores ")
-				}
-				return fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent)
-			}(),
-			bar:      renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
-			disabled: makerMode,
+			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
+			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 7),
-			value: func() string {
-				if makerMode {
-					return styleMuted.Render(" split only ")
-				}
-				return fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell)
-			}(),
-			bar:      renderBar(cfg.SplitMinMarginSell/20.0, 20),
-			disabled: makerMode,
+			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
+			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 8),
 			value: func() string {
-				if makerMode {
-					return styleMuted.Render(" split only ")
-				}
 				if cfg.SplitStrategyEnabled {
 					return styleGreen.Render("  ON ")
 				}
 				return styleMuted.Render(" OFF ")
 			}(),
-			bar:      "",
-			disabled: makerMode,
+			bar:   "",
 		},
 		{
 			label: settingsRowLabel(cfg, 9),
-			value: func() string {
-				if makerMode {
-					return styleMuted.Render(" split only ")
-				}
-				return fmtPct(cfg.SplitInitialCapPct)
-			}(),
-			bar:      renderBar(cfg.SplitInitialCapPct, 20),
-			disabled: makerMode,
+			value: fmtPct(cfg.SplitInitialCapPct),
+			bar:   renderBar(cfg.SplitInitialCapPct, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 10),
-			value: func() string {
-				if makerMode {
-					return styleMuted.Render(" split only ")
-				}
-				return fmtPct(cfg.SplitReplenishCapPct)
-			}(),
-			bar:      renderBar(cfg.SplitReplenishCapPct, 20),
-			disabled: makerMode,
+			value: fmtPct(cfg.SplitReplenishCapPct),
+			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 11),
-			value: func() string {
-				if makerMode {
-					return fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds)
-				}
-				return fmt.Sprintf(" $%.2f ", cfg.MinAskPrice)
-			}(),
-			bar: func() string {
-				if makerMode {
-					return renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20)
-				}
-				return renderBar(cfg.MinAskPrice, 20)
-			}(),
+			value: fmt.Sprintf(" $%.2f ", cfg.MinAskPrice),
+			bar:   renderBar(cfg.MinAskPrice, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 12),
@@ -2768,11 +2790,31 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, 13),
+			value: fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds),
+			bar:   renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 14),
 			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
 			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 14),
+			label: settingsRowLabel(cfg, 15),
+			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryTargetMult),
+			bar:   renderBar(cfg.MakerInventoryTargetMult/10.0, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 16),
+			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryCapMult),
+			bar:   renderBar(cfg.MakerInventoryCapMult/20.0, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 17),
+			value: fmt.Sprintf(" %.1f sh ", cfg.MakerMinQuoteShares),
+			bar:   renderBar(cfg.MakerMinQuoteShares/50.0, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 18),
 			value: func() string {
 				if cfg.MaxTradeSize <= 0 {
 					return styleMuted.Render(" disabled ")
@@ -2787,7 +2829,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}(),
 		},
 		{
-			label: settingsRowLabel(cfg, 15),
+			label: settingsRowLabel(cfg, 19),
 			value: func() string {
 				if cfg.MaxDailyLoss <= 0 {
 					return styleMuted.Render(" disabled ")
@@ -2807,9 +2849,13 @@ func (m tuiModel) renderSettings(w int) string {
 	labelStyle := lipgloss.NewStyle().Foreground(clrDim)
 	valueStyle := lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
 
-	var rowLines []string
+		var rowLines []string
 	for i, r := range rows {
+		if !isRowVisible(cfg, i) {
+			continue
+		}
 		cursor := "  "
+
 		lSt := labelStyle
 		vSt := valueStyle
 		if i == m.settingsCursor {

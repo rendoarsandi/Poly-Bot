@@ -96,6 +96,9 @@ type Config struct {
 	SplitMergeBufferSeconds  int     // Seconds before expiry to merge unsold shares (default: 30)
 	MakerMergeBufferSeconds  int     // Seconds before expiry to merge paired maker inventory (default: 30)
 	MakerQuoteGap            float64 // Distance from mid for maker quotes (default: 0.008)
+	MakerInventoryTargetMult float64 // Target multiplier for inventory skew (default: 3.0)
+	MakerInventoryCapMult    float64 // Cap multiplier for inventory skew (default: 5.0)
+	MakerMinQuoteShares      float64 // Minimum shares to quote (default: 10.0)
 	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
 
@@ -133,6 +136,9 @@ type RuntimeSettings struct {
 	SplitMergeBufferSeconds        int     `json:"splitMergeBufferSeconds"`
 	MakerMergeBufferSeconds        int     `json:"makerMergeBufferSeconds"`
 	MakerQuoteGap                  float64 `json:"makerQuoteGap"`
+	MakerInventoryTargetMult       float64 `json:"makerInventoryTargetMult"`
+	MakerInventoryCapMult          float64 `json:"makerInventoryCapMult"`
+	MakerMinQuoteShares            float64 `json:"makerMinQuoteShares"`
 	SplitInitialCapPct             float64 `json:"splitInitialCapPct"`
 	SplitReplenishCapPct           float64 `json:"splitReplenishCapPct"`
 }
@@ -188,7 +194,10 @@ func LoadConfig() (*Config, error) {
 		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
 		SplitMergeBufferSeconds:  parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
 		MakerMergeBufferSeconds:  parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
-		MakerQuoteGap:            parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
+		MakerQuoteGap: parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
+		MakerInventoryTargetMult: parseEnvFloat("MAKER_INVENTORY_TARGET_MULT", 3.0),
+		MakerInventoryCapMult: parseEnvFloat("MAKER_INVENTORY_CAP_MULT", 5.0),
+		MakerMinQuoteShares: parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
 		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
 	}
@@ -438,7 +447,10 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		SplitReplenishThreshold:        c.SplitReplenishThreshold,
 		SplitMergeBufferSeconds:        c.SplitMergeBufferSeconds,
 		MakerMergeBufferSeconds:        c.MakerMergeBufferSeconds,
-		MakerQuoteGap:                  c.MakerQuoteGap,
+		MakerQuoteGap: c.MakerQuoteGap,
+		MakerInventoryTargetMult: c.MakerInventoryTargetMult,
+		MakerInventoryCapMult: c.MakerInventoryCapMult,
+		MakerMinQuoteShares: c.MakerMinQuoteShares,
 		SplitInitialCapPct:             c.SplitInitialCapPct,
 		SplitReplenishCapPct:           c.SplitReplenishCapPct,
 	}
@@ -474,6 +486,9 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.SplitMergeBufferSeconds = s.SplitMergeBufferSeconds
 	c.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
 	c.MakerQuoteGap = s.MakerQuoteGap
+	c.MakerInventoryTargetMult = s.MakerInventoryTargetMult
+	c.MakerInventoryCapMult = s.MakerInventoryCapMult
+	c.MakerMinQuoteShares = s.MakerMinQuoteShares
 	c.SplitInitialCapPct = s.SplitInitialCapPct
 	c.SplitReplenishCapPct = s.SplitReplenishCapPct
 }
