@@ -267,6 +267,47 @@ func main() {
 	}
 }
 
+
+type realbotCLOBWarmer struct {
+	client *api.RestClient
+	trader *trading.RealTrader
+}
+
+func (w *realbotCLOBWarmer) WarmOrderPath(ctx context.Context) error {
+	var firstErr error
+	if w.client != nil {
+		if err := w.client.Ping(ctx); err != nil {
+			firstErr = err
+		}
+	}
+	// Occasional balance check to keep auth paths warm
+	if w.trader != nil && time.Now().Unix()%15 == 0 {
+		if _, err := w.trader.GetTradingAllowance(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func startRealbotOrderWarmLoop(ctx context.Context, warmer *realbotCLOBWarmer) func() {
+	warmCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(900 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-warmCtx.Done():
+				return
+			case <-ticker.C:
+				singleCtx, singleCancel := context.WithTimeout(warmCtx, 1200*time.Millisecond)
+				_ = warmer.WarmOrderPath(singleCtx)
+				singleCancel()
+			}
+		}
+	}()
+	return cancel
+}
+
 func run() error {
 	startTime := time.Now()
 	fmt.Print("\033[H\033[2J") // Clear screen

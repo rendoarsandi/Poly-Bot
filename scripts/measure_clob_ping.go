@@ -26,6 +26,7 @@ import (
 	"os"
 	"sort"
 	"sync/atomic"
+	"sync"
 	"time"
 
 	"Market-bot/internal/api"
@@ -380,7 +381,7 @@ func main() {
 	fmt.Printf("   📊 Profit-seen → settle:    %s\n", signalToSettleStats.report())
 	fmt.Println()
 
-	var authGetStats, orderStats, batchStats *stats
+	var authGetStats, orderStats, batchStats, concurrentStats *stats
 	if authBench {
 		if !hasAuthCreds(cfg) {
 			fmt.Println("── 3. Authenticated probes skipped: missing API credentials ──")
@@ -441,7 +442,7 @@ func main() {
 			fmt.Printf("   📊 %s\n\n", orderStats.report())
 
 			fmt.Printf("── 5. Batch POST /orders: Atomic execution of 2 legs (%d samples) ──\n", samples)
-			fmt.Println("   ℹ️  This is what the bot uses for synchronized panic buys & split sells")
+			fmt.Println("   ℹ️  This is what the bot used previously for synchronized buys")
 			batchStats = &stats{}
 			var errCount int64
 			for i := 0; i < samples; i++ {
@@ -474,6 +475,49 @@ func main() {
 				fmt.Printf("   ⚠️  %d errors encountered — results may not reflect real latency\n", errCount)
 			}
 			fmt.Printf("   📊 Batch RTT: %s\n\n", batchStats.report())
+
+			fmt.Printf("── 6. Concurrent POST /order: Parallel execution of 2 legs (%d samples) ──\n", samples)
+			fmt.Println("   ℹ️  This is what the bot NOW uses for synchronized panic buys & split sells")
+			concurrentStats := &stats{}
+			var concErrCount int64
+			for i := 0; i < samples; i++ {
+				reqs := []*api.OrderRequest{
+					{
+						TokenID: market.Tokens[0].TokenID, Price: 0.01, Size: 5.0,
+						Side: api.SideBuy, OrderType: api.OrderTypeMarket,
+						TimeInForce: api.TIFFillAndKill, FeeRateBps: 100,
+					},
+					{
+						TokenID: market.Tokens[1].TokenID, Price: 0.01, Size: 5.0,
+						Side: api.SideBuy, OrderType: api.OrderTypeMarket,
+						TimeInForce: api.TIFFillAndKill, FeeRateBps: 100,
+					},
+				}
+
+				s := time.Now()
+				var wg sync.WaitGroup
+				for _, r := range reqs {
+					r := r
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						_, err := clob.PlaceOrder(ctx, r)
+						if err != nil {
+							atomic.AddInt64(&concErrCount, 1)
+						}
+					}()
+				}
+				wg.Wait()
+				total := time.Since(s)
+
+				concurrentStats.add(total)
+				fmt.Printf("   %2d: total=%v\n", i+1, total.Round(100*time.Microsecond))
+				time.Sleep(300 * time.Millisecond)
+			}
+			if concErrCount > 0 {
+				fmt.Printf("   ⚠️  %d errors encountered — results may not reflect real latency\n", concErrCount)
+			}
+			fmt.Printf("   📊 Concurrent RTT: %s\n\n", concurrentStats.report())
 		}
 	} else {
 		fmt.Println("── 3. Authenticated probes skipped (use -auth to enable) ──")
@@ -498,6 +542,9 @@ func main() {
 	}
 	if batchStats != nil {
 		fmt.Printf("  Batch POST /orders (2x):  %s\n", batchStats.report())
+		if concurrentStats != nil {
+			fmt.Printf("  Concurrent POST /order:   %s\n", concurrentStats.report())
+		}
 	}
 	fmt.Println("──────────────────────────────────────────────────────────")
 	if orderStats != nil && len(orderStats.samples) > 0 && len(rawStats.samples) > 0 {
