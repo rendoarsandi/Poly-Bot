@@ -1805,6 +1805,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
+			bid1 := tokenBids[outcomes[0]]
+			bid2 := tokenBids[outcomes[1]]
+
+			// Prevent trading on transient WS glitches where the book is one-sided or crossed
+			if bid1 <= 0 || bid2 <= 0 || ask1 <= bid1 || ask2 <= bid2 {
+				continue
+			}
 
 			// Read live price-range filter from settings panel (adjustable at runtime)
 			realbotCfg := tui.GetSettings()
@@ -1876,6 +1883,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}
+
+					// Recalculate shares based on the fresh, confirmed sum to prevent over-execution from transient WS glitches
+					shares = math.Floor(tradeSize / sum)
+					requestedShares = shares
+
 					if block, reason := realbotPanicBuyCompletionGuard(engine, id, outcomes[0], outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
 						tui.LogEvent("[%s] ⚠️ Skipping buy: %s", id, reason)
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
