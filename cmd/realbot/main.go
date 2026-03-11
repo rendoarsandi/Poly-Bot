@@ -567,6 +567,8 @@ func run() error {
 		MakerQuoteGap:                  cfg.MakerQuoteGap,
 		MinAskPrice:                    cfg.MinAskPrice,
 		MaxAskPrice:                    cfg.MaxAskPrice,
+		MaxTradeSize:                   cfg.MaxTradeSize,
+		MaxDailyLoss:                   cfg.MaxDailyLoss,
 	}, func(s paper.TUISettings) {
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
@@ -583,6 +585,8 @@ func run() error {
 		cfg.MakerQuoteGap = s.MakerQuoteGap
 		cfg.MinAskPrice = s.MinAskPrice
 		cfg.MaxAskPrice = s.MaxAskPrice
+		cfg.MaxTradeSize = s.MaxTradeSize
+		cfg.MaxDailyLoss = s.MaxDailyLoss
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)

@@ -224,6 +224,8 @@ type TUISettings struct {
 	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
+	MaxTradeSize                   float64 // e.g. 50.00 = max trade size $50
+	MaxDailyLoss                   float64 // e.g. 0.0 = disabled, else max drawdown limit
 }
 
 // Preset quick-select settings.
@@ -282,6 +284,10 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Max Ask Price"
 	case 13:
 		return "Maker Quote Gap"
+	case 14:
+		return "Max Trade Size"
+	case 15:
+		return "Max Daily Loss"
 	default:
 		return ""
 	}
@@ -752,11 +758,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				m.settingsCursor--
 				if m.settingsCursor < 0 {
-					m.settingsCursor = 13
+					m.settingsCursor = 15
 				}
 				return m, nil
 			case "down", "j":
-				m.settingsCursor = (m.settingsCursor + 1) % 14
+				m.settingsCursor = (m.settingsCursor + 1) % 16
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -859,6 +865,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MakerQuoteGap -= 0.001
 					if m.tui.settings.MakerQuoteGap < 0.001 {
 						m.tui.settings.MakerQuoteGap = 0.001
+					}
+					changed = true
+				case 14:
+					m.tui.settings.MaxTradeSize -= 5.0
+					if m.tui.settings.MaxTradeSize < 0.0 {
+						m.tui.settings.MaxTradeSize = 0.0
+					}
+					changed = true
+				case 15:
+					m.tui.settings.MaxDailyLoss -= 5.0
+					if m.tui.settings.MaxDailyLoss < 0.0 {
+						m.tui.settings.MaxDailyLoss = 0.0
 					}
 					changed = true
 				}
@@ -966,6 +984,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MakerQuoteGap += 0.001
 					if m.tui.settings.MakerQuoteGap > 0.050 {
 						m.tui.settings.MakerQuoteGap = 0.050
+					}
+					changed = true
+				case 14:
+					m.tui.settings.MaxTradeSize += 5.0
+					if m.tui.settings.MaxTradeSize > 1000.0 {
+						m.tui.settings.MaxTradeSize = 1000.0
+					}
+					changed = true
+				case 15:
+					m.tui.settings.MaxDailyLoss += 5.0
+					if m.tui.settings.MaxDailyLoss > 5000.0 {
+						m.tui.settings.MaxDailyLoss = 5000.0
 					}
 					changed = true
 				}
@@ -2740,6 +2770,36 @@ func (m tuiModel) renderSettings(w int) string {
 			label: settingsRowLabel(cfg, 13),
 			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
 			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 14),
+			value: func() string {
+				if cfg.MaxTradeSize <= 0 {
+					return styleMuted.Render(" disabled ")
+				}
+				return fmt.Sprintf(" $%.2f ", cfg.MaxTradeSize)
+			}(),
+			bar: func() string {
+				if cfg.MaxTradeSize <= 0 {
+					return ""
+				}
+				return renderBar(cfg.MaxTradeSize/1000.0, 20)
+			}(),
+		},
+		{
+			label: settingsRowLabel(cfg, 15),
+			value: func() string {
+				if cfg.MaxDailyLoss <= 0 {
+					return styleMuted.Render(" disabled ")
+				}
+				return fmt.Sprintf(" $%.2f ", cfg.MaxDailyLoss)
+			}(),
+			bar: func() string {
+				if cfg.MaxDailyLoss <= 0 {
+					return ""
+				}
+				return renderBar(cfg.MaxDailyLoss/5000.0, 20)
+			}(),
 		},
 	}
 
