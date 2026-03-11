@@ -31,19 +31,19 @@ const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        500,               // Drastically increased to keep connections warm
-		MaxIdleConnsPerHost: 100,               // Never drop a connection to CLOB/Gamma
-		MaxConnsPerHost:     0,                 // No limit — HTTP/2 multiplexes on one conn
-		IdleConnTimeout:     300 * time.Second, // Keep alive for 5 minutes instead of 90s
-		DisableCompression:  true,              // Skip compression for speed on small JSON
+		MaxIdleConns:          500,
+		MaxIdleConnsPerHost:   500,
+		MaxConnsPerHost:       0,
+		IdleConnTimeout:       30 * time.Minute, // Extremely long idle timeout to prevent cold starts
+		DisableCompression:    true,
+		ForceAttemptHTTP2:     true,
+		ExpectContinueTimeout: 1 * time.Second,
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
-			KeepAlive: 120 * time.Second, // More aggressive TCP keep-alive
+			KeepAlive: 15 * time.Second, // Aggressive TCP keep-alive pings to bypass NAT/LB timeouts
 			Control: func(network, address string, c syscall.RawConn) error {
 				var opErr error
 				err := c.Control(func(fd uintptr) {
-					// Force TCP_NODELAY to bypass Nagle's algorithm at the OS level
-					// This ensures tiny order packets are blasted immediately without buffering
 					opErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
 				})
 				if err != nil {
@@ -54,8 +54,6 @@ var httpClient = &http.Client{
 		}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true, // Enable HTTP/2 via ALPN negotiation
 	},
 }
 

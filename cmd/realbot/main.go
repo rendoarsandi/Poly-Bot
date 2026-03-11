@@ -275,10 +275,24 @@ type realbotCLOBWarmer struct {
 
 func (w *realbotCLOBWarmer) WarmOrderPath(ctx context.Context) error {
 	var firstErr error
+	var errMu sync.Mutex
+
 	if w.client != nil {
-		if err := w.client.Ping(ctx); err != nil {
-			firstErr = err
+		var wg sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := w.client.Ping(ctx); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
+			}()
 		}
+		wg.Wait()
 	}
 	// Occasional balance check to keep auth paths warm
 	if w.trader != nil && time.Now().Unix()%15 == 0 {

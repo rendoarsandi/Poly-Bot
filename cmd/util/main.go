@@ -66,10 +66,26 @@ func (w *utilbotCLOBWarmer) WarmOrderPath(ctx context.Context) error {
 	}
 
 	var firstErr error
+	var errMu sync.Mutex
+
 	if w.pinger != nil {
-		if err := w.pinger.Ping(ctx); err != nil {
-			firstErr = err
+		var wg sync.WaitGroup
+		// Ping twice concurrently to ensure the HTTP pool has at least 2 hot connections
+		// ready for our 2-leg parallel arbitrage execution.
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := w.pinger.Ping(ctx); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
+			}()
 		}
+		wg.Wait()
 	}
 
 	count := atomic.AddUint32(&w.warmCount, 1)
