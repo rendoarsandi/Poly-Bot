@@ -465,9 +465,23 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 		}
 	}
 
-	resps, err := t.clob.PlaceOrders(ctx, reqs)
-	if err != nil {
-		return nil, err
+	resps := make([]*api.OrderResponse, len(reqs))
+	errs := make([]error, len(reqs))
+	var wg sync.WaitGroup
+	for i, req := range reqs {
+		i, req := i, req
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resps[i], errs[i] = t.clob.PlaceOrder(ctx, req)
+		}()
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	results := make([]*TradeResult, len(resps))
