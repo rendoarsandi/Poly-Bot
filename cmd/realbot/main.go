@@ -1817,7 +1817,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				executionMarginFloor := clampExecutionMarginFloor(realbotCfg.MinMarginPercent, realbotCfg.BuyExecutionMarginFloorPercent)
 				maxExecutionSum := maxExecutablePairSum(executionMarginFloor, rMaxAsk)
 
-				if observedMargin >= cfg.MinMarginPercent-1e-4 {
+				if observedMargin >= realbotCfg.MinMarginPercent-1e-4 {
 					// Evaluate risk
 					riskAction, riskReason := riskMgr.Evaluate()
 					if riskAction == paper.RiskActionKillSwitch {
@@ -1847,10 +1847,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					shares = math.Floor(shares) // Round down to integer shares for cleaner execution matching utilbot
 					requestedShares := shares
 
-					// Fee estimation and balance check logging removed per user request
-					localBuyFresh, _, localBuyReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenAsks, tokenFullAsks, quoteState, core.ResolveExecutionLocalQuoteMaxAge(cfg))
-					if !localBuyFresh {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: local WS ask depth unavailable (%s)", id, localBuyReason)
+					// Fee estimation and balance check logging removed per user request.
+					// If local WS books are stale or incomplete, force a fresh REST quote
+					// instead of skipping the opportunity outright.
+					execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+					quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshBuyExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, core.ResolveExecutionLocalQuoteMaxAge(cfg))
+					cancelExecQuote()
+					if quoteErr != nil {
+						tui.LogEvent("[%s] ⚠️ Skipping buy: execution quote unavailable (%v)", id, quoteErr)
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
+					}
+					if quoteSource == "rest" {
+						tui.LogEvent("[%s] 📡 Refreshed buy books via REST in %s after %s", id, quoteMetric.Round(time.Millisecond), quoteDetail)
+					}
+
+					ask1 = tokenAsks[outcomes[0]]
+					ask2 = tokenAsks[outcomes[1]]
+					if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
+						tui.LogEvent("[%s] ⚠️ Skipping buy: refreshed asks %.3f / %.3f outside configured range %.3f-%.3f", id, ask1, ask2, rMinAsk, rMaxAsk)
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
+					}
+					sum = ask1 + ask2
+					observedMargin = pairMarginPercent(sum)
+					if observedMargin < realbotCfg.MinMarginPercent-1e-4 {
+						tui.LogEvent("[%s] ⚠️ Skipping buy: refreshed pair margin %.2f%% below configured %.2f%%", id, observedMargin, realbotCfg.MinMarginPercent)
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}

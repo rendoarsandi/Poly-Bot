@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -264,6 +266,58 @@ func TestRealbotCanUseLocalBuyQuote(t *testing.T) {
 	fresh, _, reason = realbotCanUseLocalBuyQuote(now, outcomes, asks, depth, state, 250*time.Millisecond)
 	if fresh || reason == "" {
 		t.Fatalf("expected stale quote rejection, got fresh=%v reason=%q", fresh, reason)
+	}
+}
+
+func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/book" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ts := time.Now().UTC().Format(time.RFC3339Nano)
+		switch r.URL.Query().Get("token_id") {
+		case "down-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"down-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.34\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.35\",\"size\":\"9\"}]}"))
+		case "up-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.61\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.62\",\"size\":\"10\"}]}"))
+		default:
+			http.Error(w, "unexpected token", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient(server.URL)
+	market := &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}}
+	outcomes := []string{"Down", "Up"}
+	tokenBids := map[string]float64{"Down": 0.30, "Up": 0.60}
+	tokenAsks := map[string]float64{"Down": 0.31, "Up": 0.61}
+	tokenFullBids := map[string][]paper.MarketLevel{}
+	tokenFullAsks := map[string][]paper.MarketLevel{}
+	quoteState := map[string]realbotQuoteState{
+		"Down": {UpdatedAt: time.Now().Add(-10 * time.Second), Source: "ws"},
+		"Up":   {UpdatedAt: time.Now().Add(-10 * time.Second), Source: "ws"},
+	}
+
+	source, _, detail, err := realbotEnsureFreshBuyExecutionQuote(context.Background(), client, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, 250*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected REST refresh to succeed, got %v", err)
+	}
+	if source != "rest" {
+		t.Fatalf("expected REST source, got %q", source)
+	}
+	if !strings.Contains(detail, "local ask depth") {
+		t.Fatalf("expected stale-local detail, got %q", detail)
+	}
+	if math.Abs(tokenAsks["Down"]-0.35) > 0.000001 || math.Abs(tokenAsks["Up"]-0.62) > 0.000001 {
+		t.Fatalf("expected refreshed asks, got Down=%.3f Up=%.3f", tokenAsks["Down"], tokenAsks["Up"])
+	}
+	if len(tokenFullAsks["Down"]) == 0 || len(tokenFullAsks["Up"]) == 0 {
+		t.Fatalf("expected refreshed ask depth, got Down=%d Up=%d", len(tokenFullAsks["Down"]), len(tokenFullAsks["Up"]))
+	}
+	if quoteState["Down"].Source != "rest-exec" || quoteState["Up"].Source != "rest-exec" {
+		t.Fatalf("expected refreshed quote source, got Down=%q Up=%q", quoteState["Down"].Source, quoteState["Up"].Source)
 	}
 }
 
