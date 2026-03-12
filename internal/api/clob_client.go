@@ -124,6 +124,7 @@ func usesMarketLikePrecision(req *OrderRequest) bool {
 // OrderRequest represents a new order request
 type OrderRequest struct {
 	TokenID     string      `json:"tokenID"`
+	Outcome     string      `json:"outcome,omitempty"`
 	Price       float64     `json:"price"`
 	Size        float64     `json:"size"`
 	Side        Side        `json:"side"`

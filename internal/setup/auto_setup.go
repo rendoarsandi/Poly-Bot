@@ -19,35 +19,70 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 
 	err := cfg.ValidateForRealTrading()
 	if err != nil {
-		fmt.Println("\n⚠️ Polymarket credentials missing or incomplete.")
+		if cfg.Exchange == "kalshi" {
+			fmt.Println("\n⚠️ Kalshi credentials missing or incomplete.")
 
-		pk := cfg.PK
-		if pk == "" {
-			fmt.Print("Please enter your Polygon Private Key (starts with 0x): ")
-			reader := bufio.NewReader(os.Stdin)
-			input, _ := reader.ReadString('\n')
-			pk = strings.TrimSpace(input)
-			if pk == "" {
-				return nil, fmt.Errorf("private key is required for real trading")
+			kalshiKey := cfg.KalshiAPIKey
+			if kalshiKey == "" {
+				fmt.Print("Please enter your Kalshi API Key: ")
+				reader := bufio.NewReader(os.Stdin)
+				input, _ := reader.ReadString('\n')
+				kalshiKey = strings.TrimSpace(input)
+				if kalshiKey == "" {
+					return nil, fmt.Errorf("kalshi api key is required for real trading")
+				}
 			}
-		}
 
-		fmt.Println("🔄 Deriving API credentials from your private key...")
-		creds, deriveErr := deriveOrBuildAPIKey(pk)
-		if deriveErr != nil {
-			return nil, fmt.Errorf("failed to derive API credentials: %w", deriveErr)
-		}
+			kalshiPK := cfg.KalshiPK
+			if kalshiPK == "" {
+				fmt.Print("Please enter your Kalshi Private Key: ")
+				reader := bufio.NewReader(os.Stdin)
+				input, _ := reader.ReadString('\n')
+				kalshiPK = strings.TrimSpace(input)
+				if kalshiPK == "" {
+					return nil, fmt.Errorf("kalshi private key is required for real trading")
+				}
+			}
 
-		fmt.Println("✅ Credentials derived successfully. Saving to .env...")
-		err = updateEnvFile(pk, creds)
-		if err != nil {
-			return nil, fmt.Errorf("failed to save .env file: %w", err)
-		}
+			fmt.Println("✅ Credentials collected. Saving to .env...")
+			err = UpdateKalshiEnvFile(kalshiKey, kalshiPK)
+			if err != nil {
+				return nil, fmt.Errorf("failed to save .env file: %w", err)
+			}
 
-		// Reload env-backed credentials while preserving any bot/profile-specific
-		// runtime settings already loaded from JSON.
-		_ = godotenv.Load()
-		cfg.ReloadSecretsFromEnv()
+			_ = godotenv.Load()
+			cfg.ReloadSecretsFromEnv()
+		} else {
+			fmt.Println("\n⚠️ Polymarket credentials missing or incomplete.")
+
+			pk := cfg.PK
+			if pk == "" {
+				fmt.Print("Please enter your Polygon Private Key (starts with 0x): ")
+				reader := bufio.NewReader(os.Stdin)
+				input, _ := reader.ReadString('\n')
+				pk = strings.TrimSpace(input)
+				if pk == "" {
+					return nil, fmt.Errorf("private key is required for real trading")
+				}
+			}
+
+			fmt.Println("🔄 Deriving API credentials from your private key...")
+			creds, deriveErr := deriveOrBuildAPIKey(pk)
+			if deriveErr != nil {
+				return nil, fmt.Errorf("failed to derive API credentials: %w", deriveErr)
+			}
+
+			fmt.Println("✅ Credentials derived successfully. Saving to .env...")
+			err = updateEnvFile(pk, creds)
+			if err != nil {
+				return nil, fmt.Errorf("failed to save .env file: %w", err)
+			}
+
+			// Reload env-backed credentials while preserving any bot/profile-specific
+			// runtime settings already loaded from JSON.
+			_ = godotenv.Load()
+			cfg.ReloadSecretsFromEnv()
+		}
 	}
 
 	trader, err := trading.NewRealTrader(cfg)
@@ -65,6 +100,50 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 	}
 
 	return trader, nil
+}
+
+func UpdateKalshiEnvFile(kalshiKey, kalshiPK string) error {
+	envFile := ".env"
+	lines := []string{}
+
+	if _, err := os.Stat(envFile); err == nil {
+		content, err := os.ReadFile(envFile)
+		if err == nil {
+			lines = strings.Split(string(content), "\n")
+		}
+	}
+
+	updated := map[string]bool{
+		"KALSHI_API_KEY": false,
+		"KALSHI_PK":      false,
+	}
+
+	for i, line := range lines {
+		for key := range updated {
+			if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+				switch key {
+				case "KALSHI_API_KEY":
+					lines[i] = key + "=" + kalshiKey
+				case "KALSHI_PK":
+					lines[i] = key + "=" + kalshiPK
+				}
+				updated[key] = true
+			}
+		}
+	}
+
+	for key, isUpdated := range updated {
+		if !isUpdated {
+			switch key {
+			case "KALSHI_API_KEY":
+				lines = append(lines, key+"="+kalshiKey)
+			case "KALSHI_PK":
+				lines = append(lines, key+"="+kalshiPK)
+			}
+		}
+	}
+
+	return os.WriteFile(envFile, []byte(strings.Join(lines, "\n")), 0600)
 }
 
 func updateEnvFile(pk string, creds *APICredentials) error {

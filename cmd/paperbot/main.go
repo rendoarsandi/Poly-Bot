@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -20,7 +21,9 @@ import (
 	"Market-bot/internal/core"
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/setup"
 	"Market-bot/internal/strategy"
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -807,6 +810,31 @@ func run() error {
 	}
 	fmt.Println("✅ Config loaded successfully")
 
+	// Setup Kalshi keys if missing and exchange is kalshi
+	if cfg.Exchange == "kalshi" {
+		kalshiKey := cfg.KalshiAPIKey
+		kalshiPK := cfg.KalshiPK
+		if kalshiKey == "" || kalshiPK == "" {
+			fmt.Println("\n⚠️ Kalshi credentials missing or incomplete.")
+			if kalshiKey == "" {
+				fmt.Print("Please enter your Kalshi API Key: ")
+				reader := bufio.NewReader(os.Stdin)
+				key, _ := reader.ReadString('\n')
+				kalshiKey = strings.TrimSpace(key)
+			}
+			if kalshiPK == "" {
+				fmt.Print("Please enter your Kalshi Private Key: ")
+				reader := bufio.NewReader(os.Stdin)
+				pk, _ := reader.ReadString('\n')
+				kalshiPK = strings.TrimSpace(pk)
+			}
+			fmt.Println("✅ Credentials collected. Saving to .env...")
+			setup.UpdateKalshiEnvFile(kalshiKey, kalshiPK)
+			_ = godotenv.Load()
+			cfg.ReloadSecretsFromEnv()
+		}
+	}
+
 	// Apply fee settings to engine
 	engine.SetFeeRateBps(cfg.FeeRateBps)
 
@@ -818,7 +846,7 @@ func run() error {
 		fmt.Printf("💰 Fee simulation enabled: %d bps base (~%.1f%% effective at p=0.50)\n", cfg.FeeRateBps, effectiveAt50)
 	}
 
-	restClient := api.NewRestClient("")
+	restClient := api.NewRestClient(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK)
 
 	// Create shared TUI (persistent across market rotations)
 	tui = paper.NewTUI(engine, nil)

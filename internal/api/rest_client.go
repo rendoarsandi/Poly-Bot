@@ -77,23 +77,33 @@ type ListMarketsResponse struct {
 }
 
 type RestClient struct {
+	Exchange      string
+	KalshiBaseURL string
+	kalshiSigner  *KalshiSigner
+
 	BaseURL  string
 	GammaURL string
 	// Rate limiting: strictly enforce max requests per second
 	limiter <-chan time.Time
 }
 
-func NewRestClient(baseURL string) *RestClient {
-	if baseURL == "" {
-		baseURL = "https://clob.polymarket.com"
-	}
-	// Rate limit to 500 RPS (matches Polymarket burst limit)
+func NewRestClient(exchange, kalshiKey, kalshiPK string) *RestClient {
 	limiter := time.NewTicker(time.Second / 500)
-	return &RestClient{
-		BaseURL:  baseURL,
-		GammaURL: "https://gamma-api.polymarket.com",
-		limiter:  limiter.C,
+	
+	client := &RestClient{
+		Exchange:      exchange,
+		BaseURL:       "https://clob.polymarket.com",
+		GammaURL:      "https://gamma-api.polymarket.com",
+		KalshiBaseURL: KalshiBaseURL,
+		limiter:       limiter.C,
 	}
+
+	if exchange == "kalshi" && kalshiKey != "" && kalshiPK != "" {
+		signer, _ := NewKalshiSigner(kalshiKey, kalshiPK)
+		client.kalshiSigner = signer
+	}
+
+	return client
 }
 
 type GammaEvent struct {
@@ -216,7 +226,69 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 	return markets, nil
 }
 
+func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
+	if len(assets) == 0 {
+		assets = []string{"btc", "eth"}
+	}
+	var markets []Market
+
+	for _, asset := range assets {
+		// Example kalshi series ticker: KXBTC
+		seriesTicker := "KX" + strings.ToUpper(asset)
+		url := fmt.Sprintf("%s/events?series_ticker=%s", c.KalshiBaseURL, seriesTicker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+
+		var kalshiResp struct {
+			Events []struct {
+				Ticker   string `json:"ticker"`
+				MutuallyExclusive bool `json:"mutually_exclusive"`
+			} `json:"events"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&kalshiResp); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		for _, event := range kalshiResp.Events {
+			// Basic filtering, usually we match timeframe in ticker (e.g. KXBTC-15M)
+			// For simplicity we just return the events as markets.
+			
+			markets = append(markets, Market{
+				ConditionID: event.Ticker, // Kalshi ticker
+				Slug:        event.Ticker,
+				Active:      true,
+				Closed:      false,
+				EndTime:     time.Now().Add(1 * time.Hour), // stub
+				Tokens: []Token{
+					{TokenID: event.Ticker, Outcome: "Yes"},
+					{TokenID: event.Ticker, Outcome: "No"},
+				},
+			})
+		}
+	}
+
+	return markets, nil
+}
+
 func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
+	if c.Exchange == "kalshi" {
+		return c.kalshiGetMarketsByTimeframe(ctx, assets, timeframe)
+	}
 	if len(assets) == 0 {
 		assets = []string{"btc", "eth"}
 	}
@@ -452,8 +524,70 @@ func OrderBookAgeAt(book *OrderBookResponse, now time.Time) (time.Duration, erro
 	return now.Sub(ts), nil
 }
 
+func (c *RestClient) kalshiGetOrderBook(ctx context.Context, ticker string) (*OrderBookResponse, error) {
+	url := fmt.Sprintf("%s/markets/%s/orderbook?depth=100", c.KalshiBaseURL, ticker)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("kalshi orderbook error: %d %s", resp.StatusCode, string(b))
+	}
+
+	var kalshiResp struct {
+		Orderbook struct {
+			Yes []struct {
+				Price    int `json:"price"`
+				Quantity int `json:"quantity"`
+			} `json:"yes"`
+			No []struct {
+				Price    int `json:"price"`
+				Quantity int `json:"quantity"`
+			} `json:"no"`
+		} `json:"orderbook"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&kalshiResp); err != nil {
+		return nil, err
+	}
+
+	// Convert Kalshi Bids to standard Bids/Asks
+	// Yes Bids = Bids for Yes
+	// No Bids = Asks for Yes (Ask Price = 100 - No Bid Price)
+	
+	book := &OrderBookResponse{
+		Bids: make([]PriceLevel, 0),
+		Asks: make([]PriceLevel, 0),
+		Timestamp: fmt.Sprintf("%d", time.Now().UnixMilli()),
+	}
+
+	for _, yb := range kalshiResp.Orderbook.Yes {
+		price := float64(yb.Price) / 100.0
+		size := float64(yb.Quantity)
+		book.Bids = append(book.Bids, PriceLevel{Price: fmt.Sprintf("%.3f", price), Size: fmt.Sprintf("%.2f", size)})
+	}
+	for _, nb := range kalshiResp.Orderbook.No {
+		askPrice := float64(100 - nb.Price) / 100.0
+		size := float64(nb.Quantity)
+		book.Asks = append(book.Asks, PriceLevel{Price: fmt.Sprintf("%.3f", askPrice), Size: fmt.Sprintf("%.2f", size)})
+	}
+
+	return book, nil
+}
+
 // GetOrderBook fetches the current order book for a token from REST API
 func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBookResponse, error) {
+	if c.Exchange == "kalshi" {
+		return c.kalshiGetOrderBook(ctx, tokenID)
+	}
 	// Rate limit check
 	select {
 	case <-c.limiter:

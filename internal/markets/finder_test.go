@@ -52,7 +52,7 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	restClient := api.NewRestClient("")
+	restClient := api.NewRestClient("", "", "")
 	restClient.GammaURL = server.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

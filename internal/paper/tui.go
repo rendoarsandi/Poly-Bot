@@ -3,6 +3,7 @@ package paper
 import (
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -209,6 +210,7 @@ type OrderHistoryEntry struct {
 // TUISettings holds runtime-adjustable trading parameters.
 // These can be changed live from the settings panel (press 's').
 type TUISettings struct {
+	Exchange                       string  // "polymarket" or "kalshi"
 	MarketSlug                     string  // Current selected market slug or ALL or BTC,ETH
 	MaxMarkets                     int     // Max concurrent markets to trade
 	Timeframe                      string  // "5m" or "15m"
@@ -233,9 +235,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 func isMakerSettingsMode(cfg TUISettings) bool {
@@ -244,6 +246,16 @@ func isMakerSettingsMode(cfg TUISettings) bool {
 
 func isRowVisible(cfg TUISettings, idx int) bool {
 	maker := isMakerSettingsMode(cfg)
+	kalshi := cfg.Exchange == "kalshi"
+
+	if kalshi {
+		// Hide Timeframe (2), Split settings (7,8,9,10), Maker Merge Buffer (13)
+		switch idx {
+		case 2, 7, 8, 9, 10, 13:
+			return false
+		}
+	}
+
 	switch idx {
 	case 6, 7, 8, 9, 10: // Taker specific
 		return !maker
@@ -300,6 +312,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Max Trade Size"
 	case 19:
 		return "Max Daily Loss"
+	case 20:
+		return "Exchange"
 	default:
 		return ""
 	}
@@ -771,7 +785,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for {
 					m.settingsCursor--
 					if m.settingsCursor < 0 {
-						m.settingsCursor = 19
+						m.settingsCursor = 20
 					}
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
@@ -780,7 +794,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "down", "j":
 				for {
-					m.settingsCursor = (m.settingsCursor + 1) % 20
+					m.settingsCursor = (m.settingsCursor + 1) % 21
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
 					}
@@ -918,6 +932,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.MaxDailyLoss = 0.0
 					}
 					changed = true
+				case 20:
+					if m.tui.settings.Exchange == "polymarket" {
+						if os.Getenv("KALSHI_API_KEY") == "" {
+							m.tui.isKilled = true
+							m.tui.killReason = "Kalshi API key missing. Please restart PaperBot to configure."
+							return m, tea.Quit
+						}
+						m.tui.settings.Exchange = "kalshi"
+					} else {
+						m.tui.settings.Exchange = "polymarket"
+					}
+					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
@@ -1047,6 +1073,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case 19:
 					m.tui.settings.MaxDailyLoss += 5.0
+					changed = true
+				case 20:
+					if m.tui.settings.Exchange == "polymarket" {
+						if os.Getenv("KALSHI_API_KEY") == "" {
+							m.tui.isKilled = true
+							m.tui.killReason = "Kalshi API key missing. Please restart PaperBot to configure."
+							return m, tea.Quit
+						}
+						m.tui.settings.Exchange = "kalshi"
+					} else {
+						m.tui.settings.Exchange = "polymarket"
+					}
 					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
@@ -2850,6 +2888,16 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return renderBar(cfg.MaxDailyLoss/5000.0, 20)
 			}(),
+		},
+		{
+			label: settingsRowLabel(cfg, 20),
+			value: func() string {
+				if cfg.Exchange == "kalshi" {
+					return styleGreen.Render(" kalshi ")
+				}
+				return styleYellow.Render(" polymarket ")
+			}(),
+			bar: "",
 		},
 	}
 

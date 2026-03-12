@@ -446,7 +446,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	restClient := api.NewRestClient("")
+	restClient := api.NewRestClient(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK)
 
 	// emergencyCleanup ensures we don't leave hanging orders or unmerged positions
 	emergencyCleanup := func() {

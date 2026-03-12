@@ -247,7 +247,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	benchRest = api.NewRestClient("")
+	benchRest = api.NewRestClient("", "", "")
 	ctx := context.Background()
 
 	fmt.Println("⏳ Finding an active 2-token market...")

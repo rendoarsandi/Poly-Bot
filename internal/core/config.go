@@ -33,6 +33,11 @@ type Config struct {
 	APISecret     string // CLOB API secret (base64 encoded)
 	APIPassphrase string // CLOB API passphrase
 
+	// Kalshi API credentials
+	Exchange     string // "polymarket" or "kalshi"
+	KalshiAPIKey string // Kalshi API key
+	KalshiPK     string // Kalshi Private Key (RSA)
+
 	// Polygon network
 	PolygonRPCURL string
 
@@ -107,6 +112,7 @@ type Config struct {
 }
 
 type RuntimeSettings struct {
+	Exchange                       string  `json:"exchange"`
 	MarketSlug                     string  `json:"marketSlug"`
 	Timeframe                      string  `json:"timeframe"`
 	MaxMarkets                     int     `json:"maxMarkets"`
@@ -149,6 +155,9 @@ func LoadConfig() (*Config, error) {
 
 	cfg := &Config{
 		TradingMode:   ModePaper,
+		Exchange:      getEnvWithFallback("EXCHANGE", "polymarket"),
+		KalshiAPIKey:  getEnvWithFallback("KALSHI_API_KEY", ""),
+		KalshiPK:      getEnvWithFallback("KALSHI_PK", ""),
 		PK:            getEnvWithFallback("POLY_PK", "PK"),
 		APIKey:        getEnvWithFallback("POLY_API_KEY", "API_KEY"),
 		APISecret:     getEnvWithFallback("POLY_API_SECRET", "API_SECRET"),
@@ -265,6 +274,9 @@ func (c *Config) UseRealTrading() {
 
 // ReloadSecretsFromEnv refreshes env-backed credentials without touching bot JSON settings.
 func (c *Config) ReloadSecretsFromEnv() {
+	c.Exchange = getEnvWithFallback("EXCHANGE", "polymarket")
+	c.KalshiAPIKey = getEnvWithFallback("KALSHI_API_KEY", "")
+	c.KalshiPK = getEnvWithFallback("KALSHI_PK", "")
 	c.PK = getEnvWithFallback("POLY_PK", "PK")
 	c.APIKey = getEnvWithFallback("POLY_API_KEY", "API_KEY")
 	c.APISecret = getEnvWithFallback("POLY_API_SECRET", "API_SECRET")
@@ -275,6 +287,19 @@ func (c *Config) ReloadSecretsFromEnv() {
 // ValidateForRealTrading checks that all required credentials are present for real trading.
 func (c *Config) ValidateForRealTrading() error {
 	var missing []string
+
+	if c.Exchange == "kalshi" {
+		if c.KalshiAPIKey == "" {
+			missing = append(missing, "KALSHI_API_KEY")
+		}
+		if c.KalshiPK == "" {
+			missing = append(missing, "KALSHI_PK")
+		}
+		if len(missing) > 0 {
+			return errors.New("missing required credentials for kalshi real trading: " + strings.Join(missing, ", "))
+		}
+		return nil
+	}
 
 	if c.PK == "" {
 		missing = append(missing, "POLY_PK")
@@ -419,6 +444,7 @@ func writeRuntimeSettings(path string, settings RuntimeSettings) error {
 
 func (c *Config) runtimeSettings() RuntimeSettings {
 	return RuntimeSettings{
+		Exchange:                       c.Exchange,
 		MarketSlug:                     c.MarketSlug,
 		Timeframe:                      c.Timeframe,
 		MaxMarkets:                     c.MaxMarkets,
@@ -457,6 +483,9 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 }
 
 func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
+	if s.Exchange != "" {
+		c.Exchange = s.Exchange
+	}
 	c.MarketSlug = s.MarketSlug
 	c.Timeframe = s.Timeframe
 	c.MaxMarkets = s.MaxMarkets
@@ -491,6 +520,12 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.MakerMinQuoteValue = s.MakerMinQuoteValue
 	c.SplitInitialCapPct = s.SplitInitialCapPct
 	c.SplitReplenishCapPct = s.SplitReplenishCapPct
+
+	// Force disable split/merge for Kalshi
+	if c.Exchange == "kalshi" {
+		c.SplitStrategyEnabled = false
+		c.MakerMergeBufferSeconds = 0
+	}
 }
 
 // SaveSettings writes mutable runtime settings to the bot-specific JSON file when

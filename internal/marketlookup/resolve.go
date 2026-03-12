@@ -64,7 +64,7 @@ func collectMarketsByTimeframesConcurrently(ctx context.Context, timeframes []st
 
 func ResolveMarkets(ctx context.Context, trader *trading.RealTrader, polygon *api.PolygonClient, target string) ([]api.Market, string, error) {
 	target = core.SanitizeString(strings.TrimSpace(target))
-	rest := api.NewRestClient("")
+	rest := api.NewRestClient("", "", "")
 
 	if target != "" {
 		return resolveExplicitTarget(ctx, trader, polygon, rest, target)

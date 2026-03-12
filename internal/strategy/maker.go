@@ -68,7 +68,7 @@ func ComputeMakerSkewedQuote(isBuy bool, bid, ask, skew, quoteGap float64, param
 	return price, true
 }
 
-func ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
+func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventory, cash, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
 	if price <= 0 || cash <= 0 || positionShares >= maxInventory {
 		return 0
 	}
@@ -79,7 +79,10 @@ func ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, pr
 		return 0
 	}
 
+	// Convert our target dollar amount into shares based on the quoted price
+	baseShares := baseTradeValue / price
 	qty := baseShares * (1.0 - math.Max(0, skew)*params.QuoteSizeSkewFactor)
+	
 	remainingInventory := maxInventory - positionShares
 	if qty > remainingInventory {
 		qty = remainingInventory
@@ -103,11 +106,15 @@ func ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, pr
 	return qty
 }
 
-func ComputeMakerSellQty(baseShares, positionShares, skew, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
+func ComputeMakerSellQty(baseTradeValue, positionShares, skew, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
 	if positionShares <= 0 || price <= 0 {
 		return 0
 	}
+	
+	// Convert our target dollar amount into shares based on the quoted price
+	baseShares := baseTradeValue / price
 	qty := baseShares * (1.0 + math.Max(0, skew)*params.QuoteSizeSkewFactor)
+	
 	if qty > positionShares {
 		qty = positionShares
 	}

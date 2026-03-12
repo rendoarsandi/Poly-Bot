@@ -71,7 +71,7 @@ func setupRealClients(t *testing.T) (*api.PolygonClient, *api.Signer, *core.Conf
 // Get a valid condition ID from an active market
 func getActiveMarketConditionID(t *testing.T) string {
 	ctx := context.Background()
-	rest := api.NewRestClient("")
+	rest := api.NewRestClient("", "", "")
 
 	// Find current and next 15-minute windows
 	now := time.Now().UTC().Unix()

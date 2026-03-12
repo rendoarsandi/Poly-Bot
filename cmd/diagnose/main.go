@@ -29,7 +29,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	rest := api.NewRestClient("")
+	rest := api.NewRestClient(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK)
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 	address := trader.Address()
 

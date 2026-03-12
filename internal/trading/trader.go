@@ -254,7 +254,7 @@ func (t *PaperTrader) GetTradingAllowance(ctx context.Context) (float64, error) 
 
 // RealTrader implements Trader for real Polymarket trading
 type RealTrader struct {
-	clob      *api.CLOBClient
+	client    api.ExchangeClient
 	polygon   *api.PolygonClient
 	config    *core.Config
 	userWS    *api.UserWSClient
@@ -278,15 +278,25 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		return nil, err
 	}
 
-	clob, err := api.NewCLOBClient(cfg.PK, cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CLOB client: %w", err)
+	var client api.ExchangeClient
+	var err error
+
+	if cfg.Exchange == "kalshi" {
+		client, err = api.NewKalshiClient(cfg.KalshiAPIKey, cfg.KalshiPK)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Kalshi client: %w", err)
+		}
+	} else {
+		client, err = api.NewCLOBClient(cfg.PK, cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create CLOB client: %w", err)
+		}
 	}
 
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
 	trader := &RealTrader{
-		clob:                clob,
+		client:              client,
 		polygon:             polygon,
 		config:              cfg,
 		startOfDay:          time.Now().Truncate(24 * time.Hour),
@@ -295,10 +305,13 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	}
 
 	// Initialize User WebSocket for real-time fills
-	trader.userWS = api.NewUserWSClient(cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
-	trader.userWS.SetOnFill(func(fill api.OrderFillData) {
-		trader.applyLiveFill(fill)
-	})
+	// Kalshi user WS logic to be implemented, fallback to polling or ignore for now if kalshi
+	if cfg.Exchange != "kalshi" {
+		trader.userWS = api.NewUserWSClient(cfg.APIKey, cfg.APISecret, cfg.APIPassphrase)
+		trader.userWS.SetOnFill(func(fill api.OrderFillData) {
+			trader.applyLiveFill(fill)
+		})
+	}
 
 	return trader, nil
 }
@@ -408,7 +421,7 @@ func (t *RealTrader) WaitForLivePairPositions(ctx context.Context, token0, token
 // StartUserWS connects the user websocket and primes the position cache
 func (t *RealTrader) StartUserWS(ctx context.Context) error {
 	// Prime the cache with a REST call
-	initialPos, err := t.clob.GetPositions(ctx)
+	initialPos, err := t.client.GetPositions(ctx)
 	conditionSet := make(map[string]struct{})
 	if err == nil {
 		t.posMu.Lock()
@@ -426,23 +439,29 @@ func (t *RealTrader) StartUserWS(ctx context.Context) error {
 		conditionIDs = append(conditionIDs, conditionID)
 	}
 
+	if t.userWS == nil {
+		return nil
+	}
 	return t.userWS.SubscribeMarkets(ctx, conditionIDs)
 }
 
 // SubscribeUserWSMarkets ensures the user websocket is subscribed to the
 // provided condition IDs so live trade updates are received for active markets.
 func (t *RealTrader) SubscribeUserWSMarkets(ctx context.Context, conditionIDs ...string) error {
+	if t.userWS == nil {
+		return nil
+	}
 	return t.userWS.SubscribeMarkets(ctx, conditionIDs)
 }
 
 // SetTestMode enables/disables test mode
 func (t *RealTrader) SetTestMode(enabled bool) {
-	t.clob.SetTestMode(enabled)
+	t.client.SetTestMode(enabled)
 }
 
 // GetSigner returns the internal signer
 func (t *RealTrader) GetSigner() *api.Signer {
-	return t.clob.GetSigner()
+	return t.client.GetSigner()
 }
 
 // ExecuteBatch places multiple orders in a single HTTP request (e.g. for panic buys or split sells)
@@ -473,7 +492,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resps[i], errs[i] = t.clob.PlaceOrder(ctx, req)
+			resps[i], errs[i] = t.client.PlaceOrder(ctx, req)
 		}()
 	}
 	wg.Wait()
@@ -545,8 +564,9 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		}, nil
 	}
 
-	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
+	resp, err := t.client.PlaceOrder(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
+		Outcome:     outcome,
 		Price:       price,
 		Size:        size,
 		Side:        api.SideBuy,
@@ -577,7 +597,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}
 
 	status := "PENDING"
-	if t.clob.IsTestMode() {
+	if t.client.IsTestMode() {
 		status = "TEST"
 	}
 	ackQty, ackNotional := deriveAcknowledgedExecution(resp, api.SideBuy)
@@ -614,8 +634,9 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
-	resp, err := t.clob.PlaceOrder(ctx, &api.OrderRequest{
+	resp, err := t.client.PlaceOrder(ctx, &api.OrderRequest{
 		TokenID:     tokenID,
+		Outcome:     outcome,
 		Price:       price,
 		Size:        size,
 		Side:        api.SideSell,
@@ -646,7 +667,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 	}
 
 	status := "PENDING"
-	if t.clob.IsTestMode() {
+	if t.client.IsTestMode() {
 		status = "TEST"
 	}
 	ackQty, ackNotional := deriveAcknowledgedExecution(resp, api.SideSell)
@@ -674,11 +695,11 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 }
 
 func (t *RealTrader) CancelOrder(ctx context.Context, orderID string) error {
-	return t.clob.CancelOrder(ctx, orderID)
+	return t.client.CancelOrder(ctx, orderID)
 }
 
 func (t *RealTrader) CancelAll(ctx context.Context) error {
-	return t.clob.CancelAllOrders(ctx)
+	return t.client.CancelAllOrders(ctx)
 }
 
 func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
@@ -694,7 +715,7 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	hasCache := !t.lastBalanceUpdate.IsZero()
 	t.mu.Unlock()
 
-	bal, err := t.polygon.GetUSDCBalance(ctx, t.clob.Address())
+	bal, err := t.polygon.GetUSDCBalance(ctx, t.client.Address())
 	if err != nil {
 		// Return cached balance on error if available
 		if hasCache {
@@ -723,16 +744,16 @@ func (t *RealTrader) ForceRefreshBalance(ctx context.Context) (float64, error) {
 // UpdateBalanceAllowance syncs the CLOB's cached allowance with on-chain state.
 // Call this before trading to ensure the CLOB knows about unlimited on-chain allowance.
 func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
-	return t.clob.UpdateBalanceAllowance(ctx)
+	return t.client.UpdateBalanceAllowance(ctx)
 }
 
 // ForceRefreshPositions fetches an authoritative external position snapshot and
 // refreshes the local WS-backed cache to match it.
 func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo, error) {
-	if t.clob == nil {
+	if t.client == nil {
 		return nil, fmt.Errorf("clob client not initialized")
 	}
-	positions, err := t.clob.GetPositions(ctx)
+	positions, err := t.client.GetPositions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -768,15 +789,15 @@ func (t *RealTrader) IsPaperMode() bool {
 }
 
 func (t *RealTrader) IsTestMode() bool {
-	return t.clob.IsTestMode()
+	return t.client.IsTestMode()
 }
 
 func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
-	return t.clob.GetMarketInfo(ctx, conditionID)
+	return t.client.GetMarketInfo(ctx, conditionID)
 }
 
 func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
-	res, err := t.clob.GetBalanceAllowance(ctx)
+	res, err := t.client.GetBalanceAllowance(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -785,6 +806,10 @@ func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
 
 // RedeemOnChain performs the on-chain redemption of winning tokens
 func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("redeem not supported/needed on kalshi")
+	}
+
 	// First check if resolved on-chain (FREE READ)
 	resolved, err := t.polygon.IsMarketResolved(ctx, conditionID)
 	if err != nil {
@@ -796,7 +821,7 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numO
 	}
 
 	// Get signer from clob (we need to export it or add a helper)
-	return t.polygon.RedeemPositions(ctx, t.clob.GetSigner(), conditionID, numOutcomes)
+	return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
 }
 
 // retryOnChainTx executes an on-chain transaction with retry logic and confirmation waiting.
@@ -868,6 +893,10 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64, numOutcomes int) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("merge not supported on kalshi")
+	}
+
 	// CTF tokens use 6 decimals (same as USDC)
 	// Convert shares to the proper amount with decimals
 	amount := new(big.Int)
@@ -876,7 +905,7 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	amount.SetInt64(int64(math.Round(amountFloat)))
 
 	return t.retryOnChainTx(ctx, "merge", func() (string, error) {
-		return t.polygon.MergePositions(ctx, t.clob.GetSigner(), conditionID, amount, numOutcomes)
+		return t.polygon.MergePositions(ctx, t.client.GetSigner(), conditionID, amount, numOutcomes)
 	})
 }
 
@@ -887,13 +916,17 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcAmount float64, numOutcomes int) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("split not supported on kalshi")
+	}
+
 	// CTF tokens use 6 decimals (same as USDC)
 	amount := new(big.Int)
 	amountFloat := usdcAmount * 1e6
 	amount.SetInt64(int64(math.Round(amountFloat)))
 
 	return t.retryOnChainTx(ctx, "split", func() (string, error) {
-		return t.polygon.SplitPositions(ctx, t.clob.GetSigner(), conditionID, amount, numOutcomes)
+		return t.polygon.SplitPositions(ctx, t.client.GetSigner(), conditionID, amount, numOutcomes)
 	})
 }
 
@@ -923,10 +956,17 @@ func retryRPC[T any](ctx context.Context, op func() (T, error)) (T, error) {
 // ApproveTrading checks and approves all necessary contracts for trading
 // Returns true if any approval transaction was sent
 func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
+	if t.config.Exchange == "kalshi" {
+		return false, nil // Kalshi operates in cash, no approvals needed
+	}
+
 	t.onChainMu.Lock()
 	defer t.onChainMu.Unlock()
 
-	signer := t.clob.GetSigner()
+	signer := t.client.GetSigner()
+	if signer == nil {
+		return false, fmt.Errorf("signer is nil, cannot approve trading")
+	}
 	address := signer.Address()
 	sentTx := false
 
@@ -1069,14 +1109,14 @@ func (t *RealTrader) RecordLoss(amount float64) {
 
 // Address returns the wallet address
 func (t *RealTrader) Address() string {
-	return t.clob.Address()
+	return t.client.Address()
 }
 
 // GetCTFBalanceFloat returns the on-chain CTF token balance as a float64 (human-readable shares)
 func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
 	tid := new(big.Int)
 	tid.SetString(tokenID, 10)
-	bal, err := t.polygon.GetCTFBalance(ctx, t.clob.Address(), tid)
+	bal, err := t.polygon.GetCTFBalance(ctx, t.client.Address(), tid)
 	if err != nil {
 		return 0, err
 	}
@@ -1114,7 +1154,7 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 				return true, nil
 			}
 		case <-fallbackTicker.C:
-			order, err := t.clob.GetOrder(ctx, orderID)
+			order, err := t.client.GetOrder(ctx, orderID)
 			if err != nil {
 				continue
 			}
@@ -1134,21 +1174,21 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 }
 
 func (t *RealTrader) EnableRawAPILog(path string) error {
-	return t.clob.EnableRawAPILog(path)
+	return t.client.EnableRawAPILog(path)
 }
 
 func (t *RealTrader) CloseRawAPILog() error {
-	return t.clob.CloseRawAPILog()
+	return t.client.CloseRawAPILog()
 }
 
 // GetOpenOrders returns all open orders
 func (t *RealTrader) GetOpenOrders(ctx context.Context) ([]api.OpenOrder, error) {
-	return t.clob.GetOpenOrders(ctx)
+	return t.client.GetOpenOrders(ctx)
 }
 
 // CancelOrder cancels a specific order
 func (t *RealTrader) CancelOrderByID(ctx context.Context, orderID string) error {
-	return t.clob.CancelOrder(ctx, orderID)
+	return t.client.CancelOrder(ctx, orderID)
 }
 
 // BuyWithConfirmation places a buy order and waits for fill confirmation
