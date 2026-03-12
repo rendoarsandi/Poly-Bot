@@ -41,3 +41,5 @@ utilbot
 paperbot
 realbot
 measure_clob_ping
+codex_login*.log
+codex_login.pid
