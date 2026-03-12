@@ -104,8 +104,18 @@ func (c *KalshiClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*Orde
 		"action": kalshiAction,
 		"side":   kalshiSide,
 		"count":  count,
-		"type":   "limit",
-		"price":  priceCents,
+	}
+
+	// Kalshi API requires yes_price for limit orders, or type market
+	if req.OrderType == OrderTypeMarket {
+		kalshiReq["type"] = "market"
+	} else {
+		kalshiReq["type"] = "limit"
+		if kalshiSide == "yes" {
+			kalshiReq["yes_price"] = priceCents
+		} else {
+			kalshiReq["no_price"] = priceCents
+		}
 	}
 
 	var kalshiResp struct {
