@@ -654,7 +654,8 @@ func BenchmarkSplitMergeCycle(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-	        amount := big.NewInt(1e6)
-	        _, _ = polygon.SplitPositions(ctx, nil, conditionID, amount, 2)
-	        _, _ = polygon.MergePositions(ctx, nil, conditionID, amount, 2)
-	}}
+		amount := big.NewInt(1e6)
+		_, _ = polygon.SplitPositions(ctx, nil, conditionID, amount, 2)
+		_, _ = polygon.MergePositions(ctx, nil, conditionID, amount, 2)
+	}
+}

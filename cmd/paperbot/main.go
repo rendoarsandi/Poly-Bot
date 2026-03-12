@@ -568,7 +568,7 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 			if result != nil && result.PnL != 0 {
 				t.TUI.LogEvent("[%s] 💰 Auto-merge realized PnL: $%.2f", t.ID, result.PnL)
 			}
-			
+
 			// Re-fetch after merge
 			positions = t.Engine.GetPositions()
 			pos1, hasPos1 = getPaperMarketPosition(positions, t.ID, t.Outcomes[0])
@@ -1090,14 +1090,25 @@ func run() error {
 		}()
 
 		// Collect results
-		// range over the channel safely processes only successful returns and cleanly exits
-		// once the background goroutine closes the channel after wg.Wait() finishes.
+		// Read exact number of expected results to avoid hanging if results channel isn't closed due to stuck trader
 		totalPnL := 0.0
 		totalTrades := 0
-		for result := range results {
-			if result != nil {
-				totalPnL += result.realizedPnL
-				totalTrades += result.trades
+		for i := 0; i < tradersStarted; i++ {
+			select {
+			case result, ok := <-results:
+				if !ok {
+					// Channel was closed early (shouldn't happen but safe to check)
+					i = tradersStarted
+					continue
+				}
+				if result != nil {
+					totalPnL += result.realizedPnL
+					totalTrades += result.trades
+				}
+			case <-time.After(5 * time.Second):
+				tui.LogEvent("⚠️ Timed out waiting for some traders to return results")
+				// Force break out of the loop
+				i = tradersStarted
 			}
 		}
 

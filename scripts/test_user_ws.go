@@ -26,7 +26,7 @@ func main() {
 		log.Fatalf("failed to dial: %v", err)
 	}
 	defer c.Close(websocket.StatusInternalError, "the sky is falling")
-	
+
 	fmt.Printf("Connected!\n")
 
 	apiKey := os.Getenv("POLY_API_KEY")
@@ -34,14 +34,14 @@ func main() {
 	passphrase := os.Getenv("POLY_PASSPHRASE")
 
 	authMsg := fmt.Sprintf(`{"type":"user","auth":{"key":"%s","secret":"%s","passphrase":"%s"}}`, apiKey, secret, passphrase)
-	
+
 	err = c.Write(ctx, websocket.MessageText, []byte(authMsg))
 	if err != nil {
 		log.Fatalf("Failed to write: %v", err)
 	}
-	
+
 	fmt.Println("Wrote auth message. Reading response...")
-	
+
 	for {
 		_, msg, err := c.Read(ctx)
 		if err != nil {

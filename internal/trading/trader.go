@@ -707,7 +707,7 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.cachedBalance = bal
 	t.lastBalanceUpdate = time.Now()
 	t.mu.Unlock()
-	
+
 	return bal, nil
 }
 

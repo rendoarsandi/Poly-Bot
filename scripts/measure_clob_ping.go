@@ -25,8 +25,8 @@ import (
 	"math"
 	"os"
 	"sort"
-	"sync/atomic"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"Market-bot/internal/api"

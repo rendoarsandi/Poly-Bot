@@ -767,7 +767,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showSettings = false
 				m.refreshScrollMetrics()
 				return m, nil
-						case "up", "k":
+			case "up", "k":
 				for {
 					m.settingsCursor--
 					if m.settingsCursor < 0 {
@@ -2219,12 +2219,21 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	uptime := time.Since(s.startTime).Round(time.Second)
 
+	drawdownSt := styleWhite
+	if stats.MaxDrawdown > 0.05 {
+		drawdownSt = styleYellow
+	}
+	if stats.MaxDrawdown > 0.10 {
+		drawdownSt = styleRed
+	}
+
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
-	row1 := fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)",
+	row1 := fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
 		styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", equity)),
 		changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, netChange)),
+		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown*100)),
 	)
 	row3 := tradeLine
 	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds (%d profitable)  ·  ⏱ %s",
@@ -2711,7 +2720,7 @@ func (m tuiModel) renderSettings(w int) string {
 	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
 
 	makerMode := isMakerSettingsMode(cfg)
-		rows := []row{
+	rows := []row{
 		{
 			label: "Market",
 			value: fmt.Sprintf(" %s ", cfg.MarketSlug),
@@ -2765,7 +2774,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return styleMuted.Render(" OFF ")
 			}(),
-			bar:   "",
+			bar: "",
 		},
 		{
 			label: settingsRowLabel(cfg, 9),
@@ -2848,7 +2857,7 @@ func (m tuiModel) renderSettings(w int) string {
 	labelStyle := lipgloss.NewStyle().Foreground(clrDim)
 	valueStyle := lipgloss.NewStyle().Bold(true).Foreground(clrWhite)
 
-		var rowLines []string
+	var rowLines []string
 	for i, r := range rows {
 		if !isRowVisible(cfg, i) {
 			continue

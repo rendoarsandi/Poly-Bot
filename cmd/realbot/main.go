@@ -47,7 +47,7 @@ const (
 	realbotMakerInventoryTargetMult = 2.5
 	realbotMakerInventoryCapMult    = 5.0
 	realbotMakerQuoteSizeSkewFactor = 0.75
-	realbotMakerRequoteInterval     = 1500 * time.Millisecond
+	realbotMakerRequoteInterval     = 500 * time.Millisecond
 	realbotMakerMinQuoteShares      = 5.0
 	realbotMakerCashUsagePerOutcome = 0.35
 )
@@ -266,7 +266,6 @@ func main() {
 		log.Fatalf("Error: %v", err)
 	}
 }
-
 
 type realbotCLOBWarmer struct {
 	client *api.RestClient

@@ -38,10 +38,11 @@ func setupRealClients(t *testing.T) (*api.PolygonClient, *api.Signer, *core.Conf
 	}
 	for _, p := range envPaths {
 		if abs, err := filepath.Abs(p); err == nil {
-		        if _, err := os.Stat(abs); err == nil {
-		                _ = godotenv.Load(abs)
-		                break
-		        }		}
+			if _, err := os.Stat(abs); err == nil {
+				_ = godotenv.Load(abs)
+				break
+			}
+		}
 	}
 
 	cfg, err := core.LoadConfig()

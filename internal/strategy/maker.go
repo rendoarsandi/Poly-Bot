@@ -121,6 +121,18 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 	if bid > 0 {
 		minPrice = roundToStep(bid+params.QuoteStep, params.QuoteStep)
 	}
+
+	// Add strict cost-basis protection to prevent bleeding from small skews
+	if avgCost > 0 {
+		// Only ignore cost basis if we are severely overloaded (toxic bag)
+		if skew < 0.75 {
+			minProfitablePrice := avgCost + minEdge
+			if price < minProfitablePrice {
+				price = roundToStep(minProfitablePrice, params.QuoteStep)
+			}
+		}
+	}
+
 	maxPrice := 1.0 - params.QuoteStep
 	if maxPrice < minPrice {
 		return 0, false
