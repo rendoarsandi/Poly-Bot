@@ -211,7 +211,7 @@ func (e *Engine) BuyForMarket(marketID, outcome string, price, quantity float64)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.executeBuy(marketID, outcome, price, quantity)
+	return e.executeBuy(marketID, outcome, price, quantity, false)
 }
 
 // MarketBuy executes a market order by consuming liquidity from provided levels
@@ -250,7 +250,7 @@ func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []
 	}
 
 	avgPrice := totalCost / filledQty
-	trade, err := e.executeBuy(marketID, outcome, avgPrice, filledQty)
+	trade, err := e.executeBuy(marketID, outcome, avgPrice, filledQty, false)
 	return trade, avgPrice, err
 }
 
@@ -350,12 +350,12 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 	}
 
 	// 5. Execute both buys (guaranteed to succeed since we hold the lock and checked balance)
-	trade1, err1 := e.executeBuy(marketID, outcome1, avgPrice1, minFilled)
+	trade1, err1 := e.executeBuy(marketID, outcome1, avgPrice1, minFilled, false)
 	if err1 != nil {
 		return nil, nil, 0, 0, err1
 	}
 
-	trade2, err2 := e.executeBuy(marketID, outcome2, avgPrice2, minFilled)
+	trade2, err2 := e.executeBuy(marketID, outcome2, avgPrice2, minFilled, false)
 	if err2 != nil {
 		return nil, nil, 0, 0, err2
 	}
@@ -363,8 +363,28 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 	return trade1, trade2, avgPrice1, avgPrice2, nil
 }
 
+// MakerBuyForMarket executes a simulated maker buy order for a specific market (zero fees)
+func (e *Engine) MakerBuyForMarket(marketID, outcome string, price, quantity float64) (*Trade, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.executeBuy(marketID, outcome, price, quantity, true)
+}
+
+// MakerSellForMarket executes a simulated maker sell order for a market-specific position (zero fees).
+func (e *Engine) MakerSellForMarket(marketID, outcome string, price, quantity float64) (*Trade, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+	return e.executeSell(posKey, outcome, price, quantity, true)
+}
+
 // executeBuy is the internal implementation of a buy (must be called with lock)
-func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (*Trade, error) {
+func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, isMaker bool) (*Trade, error) {
 	cost := price * quantity
 	if cost > e.currentBalance+1e-8 {
 		return nil, fmt.Errorf("insufficient balance: need %.4f, have %.4f", cost, e.currentBalance)
@@ -378,7 +398,7 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (
 
 	// Calculate fee (collected in shares for BUY)
 	feeTokens := 0.0
-	if e.feeRateBps > 0 {
+	if !isMaker && e.feeRateBps > 0 {
 		// Calculate curve fee for crypto markets (feeRate=0.25, exponent=2.0)
 		feeTokens = quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
 	}
@@ -425,7 +445,7 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64) (
 func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.executeSell(outcome, outcome, price, quantity)
+	return e.executeSell(outcome, outcome, price, quantity, false)
 }
 
 // SellForMarket executes a simulated sell order for a market-specific position.
@@ -437,10 +457,10 @@ func (e *Engine) SellForMarket(marketID, outcome string, price, quantity float64
 	if marketID != "" {
 		posKey = marketID + ":" + outcome
 	}
-	return e.executeSell(posKey, outcome, price, quantity)
+	return e.executeSell(posKey, outcome, price, quantity, false)
 }
 
-func (e *Engine) executeSell(posKey, outcome string, price, quantity float64) (*Trade, error) {
+func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, isMaker bool) (*Trade, error) {
 
 	pos, exists := e.positions[posKey]
 	if !exists || pos.Quantity < quantity {
@@ -453,7 +473,7 @@ func (e *Engine) executeSell(posKey, outcome string, price, quantity float64) (*
 
 	// Calculate fee (collected in USDC for SELL)
 	feeUsdc := 0.0
-	if e.feeRateBps > 0 {
+	if !isMaker && e.feeRateBps > 0 {
 		feeTokens := quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
 		feeUsdc = feeTokens * price
 	}

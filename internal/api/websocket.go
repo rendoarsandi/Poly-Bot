@@ -158,6 +158,15 @@ func (m *WSManager) heartbeatLoop() {
 			m.mu.Unlock()
 
 			if conn != nil {
+				// Check for stale connection BEFORE sending the next ping
+				// 3 * heartbeatInterval gives it ~30 seconds to receive any data or a PONG
+				lastMsg := time.Unix(m.lastMessage.Load(), 0)
+				if time.Since(lastMsg) > 3*heartbeatInterval {
+					m.handleConnectionFailure(conn, websocket.StatusGoingAway, "stale connection (no messages or PONG)")
+					go m.tryReconnect()
+					continue
+				}
+
 				// Send ping outside of lock to prevent blocking
 				// 5s timeout balances Android throttle concerns vs stale-data detection speed
 				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)

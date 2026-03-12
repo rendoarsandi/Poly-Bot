@@ -245,7 +245,7 @@ func isMakerSettingsMode(cfg TUISettings) bool {
 func isRowVisible(cfg TUISettings, idx int) bool {
 	maker := isMakerSettingsMode(cfg)
 	switch idx {
-	case 6, 7, 8, 9, 10, 11, 12: // Taker specific
+	case 6, 7, 8, 9, 10: // Taker specific
 		return !maker
 	case 13, 14, 15, 16, 17: // Maker specific
 		return maker
@@ -282,6 +282,9 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case 11:
 		return "Min Ask Price"
 	case 12:
+		if maker {
+			return "Maker Max Buy Price"
+		}
 		return "Max Ask Price"
 	case 13:
 		return "Maker Merge Buffer"
@@ -1077,25 +1080,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Normal key handling ──────────────────────────────────────────────
 		switch key {
-					case "up", "k":
-				for {
-					m.settingsCursor--
-					if m.settingsCursor < 0 {
-						m.settingsCursor = 19
-					}
-					if isRowVisible(m.tui.settings, m.settingsCursor) {
-						break
-					}
-				}
-				return m, nil
-			case "down", "j":
-				for {
-					m.settingsCursor = (m.settingsCursor + 1) % 20
-					if isRowVisible(m.tui.settings, m.settingsCursor) {
-						break
-					}
-				}
-				return m, nil
+		case "up", "k":
+			m.scrollBy(-1)
+			return m, nil
+		case "down", "j":
+			m.scrollBy(1)
+			return m, nil
 		case "pgup", "b":
 			m.scrollBy(-(m.bodyViewportHeight() - 2))
 			return m, nil
@@ -2557,9 +2547,18 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 				sg = "-"
 				marginSt = styleRed
 			}
-			marginText = fmt.Sprintf("%s$%.2f (%.1f%%)", sg, math.Abs(o.Profit), o.Margin)
+			if o.Margin == 0.0 {
+				marginText = fmt.Sprintf("%s$%.2f (maker)", sg, math.Abs(o.Profit))
+			} else {
+				marginText = fmt.Sprintf("%s$%.2f (%.1f%%)", sg, math.Abs(o.Profit), o.Margin)
+			}
 		} else {
-			marginText = fmt.Sprintf("%.2f%%", o.Margin)
+			if o.Margin == 0.0 {
+				marginText = "maker"
+				marginSt = styleDimmed
+			} else {
+				marginText = fmt.Sprintf("%.2f%%", o.Margin)
+			}
 		}
 
 		aStyle := getAssetStyle(o.MarketID)

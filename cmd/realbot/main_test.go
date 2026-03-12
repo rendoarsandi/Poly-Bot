@@ -169,25 +169,26 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 	}
 }
 
-func TestComputeRealbotMakerProtectedSellQuoteRequiresEdge(t *testing.T) {
-	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000)
+func TestComputeRealbotMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
+	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000, realbotMakerStrategyParams)
 	if !ok {
 		t.Fatal("expected protected sell quote to exist")
 	}
-	if price < 0.58 {
-		t.Fatalf("expected sell quote to clear required edge, got %.3f", price)
+	if price != 0.578 {
+		t.Fatalf("expected sell quote to be based on mid and gap, got %.3f", price)
 	}
-	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 0.008, 1000); ok {
-		t.Fatal("expected narrow market to fail protected sell quote")
+	// Even in a narrow market, it should still place a quote (no longer rejects purely on cost)
+	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 0.008, 1000, realbotMakerStrategyParams); !ok {
+		t.Fatal("expected narrow market to still place a sell quote")
 	}
 }
 
 func TestComputeRealbotMakerSkewedQuoteRespectsConfiguredGap(t *testing.T) {
-	tight, ok := computeRealbotMakerSkewedQuote(api.SideBuy, 0.47, 0.53, 0.0, 0.003)
+	tight, ok := computeRealbotMakerSkewedQuote(api.SideBuy, 0.47, 0.53, 0.0, 0.003, realbotMakerStrategyParams)
 	if !ok {
 		t.Fatal("expected tight maker buy quote")
 	}
-	wide, ok := computeRealbotMakerSkewedQuote(api.SideBuy, 0.47, 0.53, 0.0, 0.012)
+	wide, ok := computeRealbotMakerSkewedQuote(api.SideBuy, 0.47, 0.53, 0.0, 0.012, realbotMakerStrategyParams)
 	if !ok {
 		t.Fatal("expected wide maker buy quote")
 	}

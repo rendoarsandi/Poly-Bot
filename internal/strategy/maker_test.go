@@ -66,7 +66,7 @@ func TestComputeMakerSellFeeUsdc(t *testing.T) {
 	}
 }
 
-func TestComputeMakerProtectedSellQuoteHonorsCostFloor(t *testing.T) {
+func TestComputeMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
 	price, ok := ComputeMakerProtectedSellQuote(0.47, 0.60, 0.52, 0.02, 0.0, 0.008, 0, testMakerParams)
 	if !ok {
 		t.Fatal("expected protected sell quote to be available")
@@ -74,8 +74,9 @@ func TestComputeMakerProtectedSellQuoteHonorsCostFloor(t *testing.T) {
 	if price < 0.54 {
 		t.Fatalf("sell quote = %.3f, want at least 0.540", price)
 	}
-	if _, ok := ComputeMakerProtectedSellQuote(0.47, 0.54, 0.53, 0.02, 0.0, 0.008, 0, testMakerParams); ok {
-		t.Fatal("expected protected sell quote to fail when spread cannot clear cost floor")
+	// The implementation now ignores the cost-basis check to prevent accumulating toxic bags.
+	if _, ok := ComputeMakerProtectedSellQuote(0.47, 0.54, 0.53, 0.02, 0.0, 0.008, 0, testMakerParams); !ok {
+		t.Fatal("expected protected sell quote to succeed even when spread cannot clear cost floor")
 	}
 }
 

@@ -33,14 +33,23 @@ func ComputeMakerSkewedQuote(isBuy bool, bid, ask, skew, quoteGap float64, param
 	if quoteGap <= 0 {
 		quoteGap = params.DefaultQuoteGap
 	}
-	minPrice := params.QuoteStep
-	if bid > 0 {
-		minPrice = bid + params.QuoteStep
+
+	var minPrice, maxPrice float64
+	if isBuy {
+		minPrice = params.QuoteStep
+		maxPrice = ask - params.QuoteStep
+	} else {
+		minPrice = params.QuoteStep
+		if bid > 0 {
+			minPrice = bid + params.QuoteStep
+		}
+		maxPrice = 1.0 - params.QuoteStep
 	}
-	maxPrice := ask - params.QuoteStep
+
 	if maxPrice < minPrice {
 		return 0, false
 	}
+
 	mid := (bid + ask) / 2
 	base := mid
 	if isBuy {
@@ -48,6 +57,7 @@ func ComputeMakerSkewedQuote(isBuy bool, bid, ask, skew, quoteGap float64, param
 	} else {
 		base = mid + quoteGap - (skew * params.InventorySkewStep)
 	}
+
 	price := roundToStep(clampFloat64(base, minPrice, maxPrice), params.QuoteStep)
 	if price < minPrice || price > maxPrice {
 		return 0, false
@@ -59,6 +69,13 @@ func ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, pr
 	if price <= 0 || cash <= 0 || positionShares >= maxInventory {
 		return 0
 	}
+
+	// PROTECT AGAINST ADVERSE SELECTION: Stop accumulating toxic bags.
+	// If our inventory is already heavily skewed to this side, do not buy more.
+	if skew >= 0.8 {
+		return 0
+	}
+
 	qty := baseShares * (1.0 - math.Max(0, skew)*params.QuoteSizeSkewFactor)
 	remainingInventory := maxInventory - positionShares
 	if qty > remainingInventory {
@@ -104,7 +121,7 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 	if bid > 0 {
 		minPrice = roundToStep(bid+params.QuoteStep, params.QuoteStep)
 	}
-	maxPrice := roundToStep(ask-params.QuoteStep, params.QuoteStep)
+	maxPrice := 1.0 - params.QuoteStep
 	if maxPrice < minPrice {
 		return 0, false
 	}
@@ -119,6 +136,15 @@ func ShouldMakerBlockBuy(positionShares float64, sellOK bool, peerShares, peerAv
 	if price <= 0 {
 		return true
 	}
+
+	// ADVERSE SELECTION PROTECTION:
+	// If our position is significantly larger than the peer position, block further
+	// buying. This prevents us from accumulating a massive "trash bag" when the
+	// market trends strongly one way and our sells aren't getting filled.
+	if positionShares > 0 && positionShares >= peerShares*2.0 && positionShares >= 10.0 {
+		return true
+	}
+
 	if positionShares > 0 && !sellOK && positionShares >= peerShares {
 		return true
 	}

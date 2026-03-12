@@ -1,6 +1,6 @@
 {
   "marketSlug": "ALL",
-  "timeframe": "15m",
+  "timeframe": "5m",
   "maxMarkets": 4,
   "baseBalance": 1000,
   "baseTradeSize": 50,
@@ -28,6 +28,9 @@
   "splitMergeBufferSeconds": 30,
   "makerMergeBufferSeconds": 30,
   "makerQuoteGap": 0.010000000000000002,
+  "makerInventoryTargetMult": 3,
+  "makerInventoryCapMult": 5,
+  "makerMinQuoteShares": 10,
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5
 }
