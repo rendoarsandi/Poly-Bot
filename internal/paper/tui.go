@@ -224,7 +224,7 @@ type TUISettings struct {
 	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MakerInventoryTargetMult       float64
 	MakerInventoryCapMult          float64
-	MakerMinQuoteShares            float64
+	MakerMinQuoteValue            float64
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 	MaxTradeSize                   float64 // e.g. 50.00 = max trade size $50
@@ -233,9 +233,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteShares: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteShares: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteShares: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsModerate     = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsAggressive   = TUISettings{MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
 func isMakerSettingsMode(cfg TUISettings) bool {
@@ -295,7 +295,7 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case 16:
 		return "Maker Cap Mult"
 	case 17:
-		return "Maker Min Quote"
+		return "Maker Min Quote ($)"
 	case 18:
 		return "Max Trade Size"
 	case 19:
@@ -901,9 +901,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 17:
-					m.tui.settings.MakerMinQuoteShares -= 1.0
-					if m.tui.settings.MakerMinQuoteShares < 1.0 {
-						m.tui.settings.MakerMinQuoteShares = 1.0
+					m.tui.settings.MakerMinQuoteValue -= 1.0
+					if m.tui.settings.MakerMinQuoteValue < 1.0 {
+						m.tui.settings.MakerMinQuoteValue = 1.0
 					}
 					changed = true
 				case 18:
@@ -1037,9 +1037,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 17:
-					m.tui.settings.MakerMinQuoteShares += 1.0
-					if m.tui.settings.MakerMinQuoteShares > 500.0 {
-						m.tui.settings.MakerMinQuoteShares = 500.0
+					m.tui.settings.MakerMinQuoteValue += 1.0
+					if m.tui.settings.MakerMinQuoteValue > 500.0 {
+						m.tui.settings.MakerMinQuoteValue = 500.0
 					}
 					changed = true
 				case 18:
@@ -2818,8 +2818,8 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, 17),
-			value: fmt.Sprintf(" %.1f sh ", cfg.MakerMinQuoteShares),
-			bar:   renderBar(cfg.MakerMinQuoteShares/50.0, 20),
+			value: fmt.Sprintf(" $%.1f ", cfg.MakerMinQuoteValue),
+			bar:   renderBar(cfg.MakerMinQuoteValue/50.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 18),

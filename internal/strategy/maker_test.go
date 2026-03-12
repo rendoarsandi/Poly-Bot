@@ -3,6 +3,7 @@ package strategy
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 var testMakerParams = MakerParams{
@@ -11,7 +12,7 @@ var testMakerParams = MakerParams{
 	InventorySkewStep:   0.020,
 	QuoteSizeSkewFactor: 0.75,
 	CashUsagePerOutcome: 0.35,
-	MinQuoteShares:      1.0,
+	MinQuoteValue:      1.0,
 }
 
 func TestComputeMakerInventorySkewClampsToRange(t *testing.T) {
@@ -47,8 +48,8 @@ func TestComputeMakerQuoteSizesRespectNormalizationAndCaps(t *testing.T) {
 	if buyHeavy >= buyLight {
 		t.Fatalf("expected heavy inventory to quote smaller buys: heavy=%.0f light=%.0f", buyHeavy, buyLight)
 	}
-	sellHeavy := ComputeMakerSellQty(10, 30, 1.0, testMakerParams, normalize)
-	sellBalanced := ComputeMakerSellQty(10, 30, 0.0, testMakerParams, normalize)
+	sellHeavy := ComputeMakerSellQty(10, 30, 1.0, 0.50, testMakerParams, normalize)
+	sellBalanced := ComputeMakerSellQty(10, 30, 0.0, 0.50, testMakerParams, normalize)
 	if sellHeavy <= sellBalanced {
 		t.Fatalf("expected heavy inventory to quote larger sells: heavy=%.0f balanced=%.0f", sellHeavy, sellBalanced)
 	}
@@ -67,7 +68,7 @@ func TestComputeMakerSellFeeUsdc(t *testing.T) {
 }
 
 func TestComputeMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
-	price, ok := ComputeMakerProtectedSellQuote(0.47, 0.60, 0.52, 0.02, 0.0, 0.008, 0, testMakerParams)
+	price, ok := ComputeMakerProtectedSellQuote(0.47, 0.60, 0.52, 0.02, 0.0, 0.008, 0, time.Hour, testMakerParams)
 	if !ok {
 		t.Fatal("expected protected sell quote to be available")
 	}
@@ -75,7 +76,7 @@ func TestComputeMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
 		t.Fatalf("sell quote = %.3f, want at least 0.540", price)
 	}
 	// The implementation now ignores the cost-basis check to prevent accumulating toxic bags.
-	if _, ok := ComputeMakerProtectedSellQuote(0.47, 0.54, 0.53, 0.02, 0.0, 0.008, 0, testMakerParams); !ok {
+	if _, ok := ComputeMakerProtectedSellQuote(0.47, 0.54, 0.53, 0.02, 0.0, 0.008, 0, time.Hour, testMakerParams); !ok {
 		t.Fatal("expected protected sell quote to succeed even when spread cannot clear cost floor")
 	}
 }

@@ -170,15 +170,15 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 }
 
 func TestComputeRealbotMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
-	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000, realbotMakerStrategyParams)
+	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000, time.Hour, realbotMakerStrategyParams)
 	if !ok {
 		t.Fatal("expected protected sell quote to exist")
 	}
-	if price != 0.578 {
+	if price != 0.580 {
 		t.Fatalf("expected sell quote to be based on mid and gap, got %.3f", price)
 	}
 	// Even in a narrow market, it should still place a quote (no longer rejects purely on cost)
-	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 0.008, 1000, realbotMakerStrategyParams); !ok {
+	if _, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.56, 0.56, 0.02, 0, 0.008, 1000, time.Hour, realbotMakerStrategyParams); !ok {
 		t.Fatal("expected narrow market to still place a sell quote")
 	}
 }

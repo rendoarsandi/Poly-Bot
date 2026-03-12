@@ -30,7 +30,7 @@
   "makerQuoteGap": 0.005,
   "makerInventoryTargetMult": 2,
   "makerInventoryCapMult": 4,
-  "makerMinQuoteShares": 5,
+  "makerMinQuoteValue": 5,
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5
 }

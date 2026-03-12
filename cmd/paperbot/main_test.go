@@ -191,12 +191,12 @@ func TestComputePaperMakerQuoteSizesRespectSkewAndCaps(t *testing.T) {
 		t.Fatalf("expected long-heavy inventory to quote smaller buys: heavy=%.0f light=%.0f", buyHeavy, buyLight)
 	}
 
-	sellHeavy := computePaperMakerSellQty(10, 30, 1.0, paperMakerStrategyParams)
-	sellBalanced := computePaperMakerSellQty(10, 30, 0.0, paperMakerStrategyParams)
+	sellHeavy := computePaperMakerSellQty(10, 30, 1.0, 0.50, paperMakerStrategyParams)
+	sellBalanced := computePaperMakerSellQty(10, 30, 0.0, 0.50, paperMakerStrategyParams)
 	if sellHeavy <= sellBalanced {
 		t.Fatalf("expected long-heavy inventory to quote larger sells: heavy=%.0f balanced=%.0f", sellHeavy, sellBalanced)
 	}
-	if capped := computePaperMakerSellQty(10, 4, 1.0, paperMakerStrategyParams); capped != 4 {
+	if capped := computePaperMakerSellQty(10, 4, 1.0, 0.50, paperMakerStrategyParams); capped != 4 {
 		t.Fatalf("expected sell qty to cap at available inventory, got %.0f want 4", capped)
 	}
 }
@@ -228,7 +228,7 @@ func TestComputePaperMakerSkewedQuoteRespectsConfiguredGap(t *testing.T) {
 }
 
 func TestComputePaperMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
-	price, ok := computePaperMakerProtectedSellQuote(0.47, 0.60, 0.52, 0.02, 0.0, 0.008, 0, paperMakerStrategyParams)
+	price, ok := computePaperMakerProtectedSellQuote(0.47, 0.60, 0.52, 0.02, 0.0, 0.008, 0, time.Hour, paperMakerStrategyParams)
 	if !ok {
 		t.Fatal("expected protected sell quote to be available")
 	}
@@ -241,7 +241,7 @@ func TestComputePaperMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
 }
 
 func TestComputePaperMakerProtectedSellQuoteSucceedsEvenWhenNoProfitableRoom(t *testing.T) {
-	if _, ok := computePaperMakerProtectedSellQuote(0.47, 0.54, 0.53, 0.02, 0.0, 0.008, 0, paperMakerStrategyParams); !ok {
+	if _, ok := computePaperMakerProtectedSellQuote(0.47, 0.54, 0.53, 0.02, 0.0, 0.008, 0, time.Hour, paperMakerStrategyParams); !ok {
 		t.Fatal("expected protected sell quote to succeed even when spread cannot clear cost floor")
 	}
 }

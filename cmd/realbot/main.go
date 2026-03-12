@@ -48,7 +48,7 @@ const (
 	realbotMakerInventoryCapMult    = 5.0
 	realbotMakerQuoteSizeSkewFactor = 0.75
 	realbotMakerRequoteInterval     = 500 * time.Millisecond
-	realbotMakerMinQuoteShares      = 5.0
+	realbotMakerMinQuoteValue      = 5.0
 	realbotMakerCashUsagePerOutcome = 0.35
 )
 
@@ -58,7 +58,7 @@ var realbotMakerStrategyParams = strategy.MakerParams{
 	InventorySkewStep:   realbotMakerInventorySkewStep,
 	QuoteSizeSkewFactor: realbotMakerQuoteSizeSkewFactor,
 	CashUsagePerOutcome: realbotMakerCashUsagePerOutcome,
-	MinQuoteShares:      realbotMakerMinQuoteShares,
+	MinQuoteValue:      realbotMakerMinQuoteValue,
 }
 
 type realbotOrderPathWarmer interface {
@@ -2983,8 +2983,8 @@ func computeRealbotMakerBuyQty(baseShares, positionShares, skew, maxInventory, c
 	return strategy.ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price, params, normalizeMarketSellShares)
 }
 
-func computeRealbotMakerSellQty(baseShares, positionShares, skew float64, params strategy.MakerParams) float64 {
-	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, params, normalizeMarketSellShares)
+func computeRealbotMakerSellQty(baseShares, positionShares, skew, price float64, params strategy.MakerParams) float64 {
+	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, price, params, normalizeMarketSellShares)
 }
 
 func computeRealbotMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int, timeRemaining time.Duration, params strategy.MakerParams) (float64, bool) {
@@ -3015,7 +3015,7 @@ func realbotUpdateMakerPendingOrders(marketID string, makerQuotes map[string]*re
 	sort.Strings(keys)
 	for _, key := range keys {
 		quote := makerQuotes[key]
-		if quote == nil || quote.RemainingQty < realbotMakerMinQuoteShares || quote.Price <= 0 {
+		if quote == nil || quote.RemainingQty < realbotMakerMinQuoteValue || quote.Price <= 0 {
 			continue
 		}
 		pending[quote.Outcome] = append(pending[quote.Outcome], paper.PendingOrder{
@@ -3066,13 +3066,13 @@ func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, eng
 			if open.Price > 0 {
 				quote.Price = open.Price
 			}
-			if quote.RemainingQty < realbotMakerMinQuoteShares {
+			if quote.RemainingQty < realbotMakerMinQuoteValue {
 				delete(makerQuotes, key)
 			}
 			continue
 		}
 		quote.RemainingQty = normalizeMarketSellShares(math.Max(0, quote.RequestedQty-quote.AccountedFill))
-		if quote.RemainingQty < realbotMakerMinQuoteShares {
+		if quote.RemainingQty < realbotMakerMinQuoteValue {
 			delete(makerQuotes, key)
 		}
 	}
@@ -3106,7 +3106,7 @@ func realbotUpsertMakerQuote(ctx context.Context, marketID string, trader *tradi
 	key := realbotMakerQuoteKey(side, outcome)
 	existing := makerQuotes[key]
 	qty = normalizeMarketSellShares(qty)
-	if qty < realbotMakerMinQuoteShares || price <= 0 || tokenID == "" {
+	if qty < realbotMakerMinQuoteValue || price <= 0 || tokenID == "" {
 		if existing != nil {
 			realbotCancelMakerQuote(ctx, trader, existing)
 			delete(makerQuotes, key)
@@ -3232,12 +3232,12 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	reservedBuyNotional := realbotMakerReservedBuyNotional(makerQuotes)
 	quoteCash := math.Max(0, currentCash-reservedBuyNotional)
 
-	minQuoteShares := cfg.MakerMinQuoteShares
-	if liveCfg.MakerMinQuoteShares > 0 {
-		minQuoteShares = liveCfg.MakerMinQuoteShares
+	minQuoteShares := cfg.MakerMinQuoteValue
+	if liveCfg.MakerMinQuoteValue > 0 {
+		minQuoteShares = liveCfg.MakerMinQuoteValue
 	}
 	if minQuoteShares <= 0 {
-		minQuoteShares = realbotMakerMinQuoteShares
+		minQuoteShares = realbotMakerMinQuoteValue
 	}
 	targetMult := cfg.MakerInventoryTargetMult
 	if liveCfg.MakerInventoryTargetMult > 0 {
@@ -3264,7 +3264,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	quoteGap := resolveRealbotMakerQuoteGap(liveCfg, cfg)
 
 	makerParams := realbotMakerStrategyParams
-	makerParams.MinQuoteShares = minQuoteShares
+	makerParams.MinQuoteValue = minQuoteShares
 
 	skew0 := computeRealbotMakerInventorySkew(shares0, shares1, targetShares)
 	skew1 := computeRealbotMakerInventorySkew(shares1, shares0, targetShares)
@@ -3286,8 +3286,8 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	sellFee1 := tokenFeeRates[outcomes[1]]
 	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, quoteGap, sellFee0, timeToEnd, makerParams)
 	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, quoteGap, sellFee1, timeToEnd, makerParams)
-	sellQty0 := computeRealbotMakerSellQty(baseShares, shares0, skew0, makerParams)
-	sellQty1 := computeRealbotMakerSellQty(baseShares, shares1, skew1, makerParams)
+	sellQty0 := computeRealbotMakerSellQty(baseShares, shares0, skew0, sellPrice0, makerParams)
+	sellQty1 := computeRealbotMakerSellQty(baseShares, shares1, skew1, sellPrice1, makerParams)
 	if !sellOK0 {
 		sellQty0 = 0
 	}

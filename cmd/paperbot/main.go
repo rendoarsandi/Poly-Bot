@@ -41,7 +41,7 @@ const (
 	paperMakerInventoryCapMult    = 5.0
 	paperMakerQuoteSizeSkewFactor = 0.75
 	paperMakerRequoteInterval     = 1500 * time.Millisecond
-	paperMakerMinQuoteShares      = 1.0
+	paperMakerMinQuoteValue      = 1.0
 	paperMakerCashUsagePerOutcome = 0.35
 )
 
@@ -51,7 +51,7 @@ var paperMakerStrategyParams = strategy.MakerParams{
 	InventorySkewStep:   paperMakerInventorySkewStep,
 	QuoteSizeSkewFactor: paperMakerQuoteSizeSkewFactor,
 	CashUsagePerOutcome: paperMakerCashUsagePerOutcome,
-	MinQuoteShares:      paperMakerMinQuoteShares,
+	MinQuoteValue:      paperMakerMinQuoteValue,
 }
 
 // MarketTrader holds state for trading a single market
@@ -355,8 +355,8 @@ func computePaperMakerBuyQty(baseShares, positionShares, skew, maxInventory, cas
 	return strategy.ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price, params, math.Floor)
 }
 
-func computePaperMakerSellQty(baseShares, positionShares, skew float64, params strategy.MakerParams) float64 {
-	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, params, math.Floor)
+func computePaperMakerSellQty(baseShares, positionShares, skew, price float64, params strategy.MakerParams) float64 {
+	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, price, params, math.Floor)
 }
 
 func computePaperMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int, timeRemaining time.Duration, params strategy.MakerParams) (float64, bool) {
@@ -427,7 +427,7 @@ func cancelAllPaperMakerQuotes(t *MarketTrader, reason string) {
 func upsertPaperMakerQuote(t *MarketTrader, side, outcome string, price, qty float64) bool {
 	key := paperMakerQuoteKey(side, outcome)
 	existing := t.MakerQuotes[key]
-	if qty < paperMakerMinQuoteShares || price <= 0 {
+	if qty < paperMakerMinQuoteValue || price <= 0 {
 		return cancelPaperMakerQuote(t, side, outcome)
 	}
 	if isPaperOrderActive(existing) && math.Abs(existing.Price-price) < 1e-9 && math.Abs(existing.RemainingQty()-qty) < 1e-9 {
@@ -609,12 +609,12 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		return
 	}
 
-	minQuoteShares := t.Config.MakerMinQuoteShares
-	if liveCfg.MakerMinQuoteShares > 0 {
-		minQuoteShares = liveCfg.MakerMinQuoteShares
+	minQuoteShares := t.Config.MakerMinQuoteValue
+	if liveCfg.MakerMinQuoteValue > 0 {
+		minQuoteShares = liveCfg.MakerMinQuoteValue
 	}
 	if minQuoteShares <= 0 {
-		minQuoteShares = paperMakerMinQuoteShares
+		minQuoteShares = paperMakerMinQuoteValue
 	}
 	targetMult := t.Config.MakerInventoryTargetMult
 	if liveCfg.MakerInventoryTargetMult > 0 {
@@ -641,7 +641,7 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	quoteGap := resolvePaperMakerQuoteGap(liveCfg, t.Config)
 
 	makerParams := paperMakerStrategyParams
-	makerParams.MinQuoteShares = minQuoteShares
+	makerParams.MinQuoteValue = minQuoteShares
 
 	skew1 := computePaperMakerInventorySkew(shares1, shares2, targetShares)
 	skew2 := computePaperMakerInventorySkew(shares2, shares1, targetShares)
@@ -661,8 +661,8 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 
 	sellPrice1, sellOK1 := computePaperMakerProtectedSellQuote(bid1, ask1, avgCost1, minSellEdge, skew1, quoteGap, t.Config.FeeRateBps, timeToEnd, makerParams)
 	sellPrice2, sellOK2 := computePaperMakerProtectedSellQuote(bid2, ask2, avgCost2, minSellEdge, skew2, quoteGap, t.Config.FeeRateBps, timeToEnd, makerParams)
-	sellQty1 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares1, skew1, makerParams))
-	sellQty2 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares2, skew2, makerParams))
+	sellQty1 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares1, skew1, sellPrice1, makerParams))
+	sellQty2 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares2, skew2, sellPrice2, makerParams))
 	if !sellOK1 {
 		sellQty1 = 0
 	}

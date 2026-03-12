@@ -11,7 +11,7 @@ type MakerParams struct {
 	InventorySkewStep   float64
 	QuoteSizeSkewFactor float64
 	CashUsagePerOutcome float64
-	MinQuoteShares      float64
+	MinQuoteValue       float64
 }
 
 func ComputeMakerSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
@@ -91,14 +91,20 @@ func ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, pr
 	if normalizeQty != nil {
 		qty = normalizeQty(qty)
 	}
-	if qty < params.MinQuoteShares {
+	
+	minShares := 0.0
+	if price > 0 {
+		minShares = params.MinQuoteValue / price
+	}
+
+	if qty < minShares {
 		return 0
 	}
 	return qty
 }
 
-func ComputeMakerSellQty(baseShares, positionShares, skew float64, params MakerParams, normalizeQty func(float64) float64) float64 {
-	if positionShares <= 0 {
+func ComputeMakerSellQty(baseShares, positionShares, skew, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
+	if positionShares <= 0 || price <= 0 {
 		return 0
 	}
 	qty := baseShares * (1.0 + math.Max(0, skew)*params.QuoteSizeSkewFactor)
@@ -108,7 +114,13 @@ func ComputeMakerSellQty(baseShares, positionShares, skew float64, params MakerP
 	if normalizeQty != nil {
 		qty = normalizeQty(qty)
 	}
-	if qty < params.MinQuoteShares {
+	
+	minShares := 0.0
+	if price > 0 {
+		minShares = params.MinQuoteValue / price
+	}
+
+	if qty < minShares {
 		return 0
 	}
 	return qty
