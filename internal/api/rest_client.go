@@ -99,8 +99,10 @@ func NewRestClient(exchange, kalshiKey, kalshiPK string) *RestClient {
 	}
 
 	if exchange == "kalshi" && kalshiKey != "" && kalshiPK != "" {
-		signer, _ := NewKalshiSigner(kalshiKey, kalshiPK)
-		client.kalshiSigner = signer
+		signer, err := NewKalshiSigner(kalshiKey, kalshiPK)
+		if err == nil {
+			client.kalshiSigner = signer
+		}
 	}
 
 	return client

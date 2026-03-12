@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 )
 
@@ -77,12 +78,11 @@ func (c *KalshiClient) doRequest(ctx context.Context, method, path string, body 
 }
 
 func (c *KalshiClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
-	// Kalshi requires whole integer sizes.
-	// We convert our floating point sizes to int by rounding down or standard casting.
-	// req.Size is in dollars / contracts typically.
-	count := int(req.Size)
-	if count <= 0 {
-		count = 1
+	// Kalshi requires whole integer sizes for contracts.
+	// We round to the nearest integer and reject if the result is less than 1.
+	count := int(math.Round(req.Size))
+	if count < 1 {
+		return nil, fmt.Errorf("order size of %.2f is less than the minimum of 1 contract for Kalshi", req.Size)
 	}
 
 	// Normalizing Price: Poly is 0.01 - 0.99. Kalshi is cents 1 - 99.

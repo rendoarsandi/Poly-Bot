@@ -240,6 +240,20 @@ var (
 	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
+func (m *tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
+	if m.tui.settings.Exchange == "polymarket" {
+		if os.Getenv("KALSHI_API_KEY") == "" {
+			m.tui.isKilled = true
+			m.tui.killReason = "Kalshi API key missing. Please restart PaperBot to configure."
+			return m, tea.Quit
+		}
+		m.tui.settings.Exchange = "kalshi"
+	} else {
+		m.tui.settings.Exchange = "polymarket"
+	}
+	return nil, nil
+}
+
 func isMakerSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "maker")
 }
@@ -933,17 +947,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 20:
-					if m.tui.settings.Exchange == "polymarket" {
-						if os.Getenv("KALSHI_API_KEY") == "" {
-							m.tui.isKilled = true
-							m.tui.killReason = "Kalshi API key missing. Please restart PaperBot to configure."
-							return m, tea.Quit
-						}
-						m.tui.settings.Exchange = "kalshi"
-					} else {
-						m.tui.settings.Exchange = "polymarket"
-					}
-					changed = true
+					return m.toggleExchange()
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
@@ -1075,17 +1079,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MaxDailyLoss += 5.0
 					changed = true
 				case 20:
-					if m.tui.settings.Exchange == "polymarket" {
-						if os.Getenv("KALSHI_API_KEY") == "" {
-							m.tui.isKilled = true
-							m.tui.killReason = "Kalshi API key missing. Please restart PaperBot to configure."
-							return m, tea.Quit
-						}
-						m.tui.settings.Exchange = "kalshi"
-					} else {
-						m.tui.settings.Exchange = "polymarket"
-					}
-					changed = true
+					return m.toggleExchange()
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {

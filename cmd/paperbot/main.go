@@ -819,13 +819,19 @@ func run() error {
 			if kalshiKey == "" {
 				fmt.Print("Please enter your Kalshi API Key: ")
 				reader := bufio.NewReader(os.Stdin)
-				key, _ := reader.ReadString('\n')
+				key, err := reader.ReadString('\n')
+				if err != nil {
+					return fmt.Errorf("failed to read Kalshi API key: %w", err)
+				}
 				kalshiKey = strings.TrimSpace(key)
 			}
 			if kalshiPK == "" {
 				fmt.Print("Please enter your Kalshi Private Key: ")
 				reader := bufio.NewReader(os.Stdin)
-				pk, _ := reader.ReadString('\n')
+				pk, err := reader.ReadString('\n')
+				if err != nil {
+					return fmt.Errorf("failed to read Kalshi private key: %w", err)
+				}
 				kalshiPK = strings.TrimSpace(pk)
 			}
 			fmt.Println("✅ Credentials collected. Saving to .env...")

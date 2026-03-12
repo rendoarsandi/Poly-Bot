@@ -104,46 +104,24 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 
 func UpdateKalshiEnvFile(kalshiKey, kalshiPK string) error {
 	envFile := ".env"
-	lines := []string{}
-
-	if _, err := os.Stat(envFile); err == nil {
-		content, err := os.ReadFile(envFile)
-		if err == nil {
-			lines = strings.Split(string(content), "\n")
+	envMap, err := godotenv.Read(envFile)
+	if err != nil {
+		// If file doesn't exist, create an empty map
+		if os.IsNotExist(err) {
+			envMap = make(map[string]string)
+		} else {
+			return err
 		}
 	}
 
-	updated := map[string]bool{
-		"KALSHI_API_KEY": false,
-		"KALSHI_PK":      false,
+	if kalshiKey != "" {
+		envMap["KALSHI_API_KEY"] = kalshiKey
+	}
+	if kalshiPK != "" {
+		envMap["KALSHI_PK"] = kalshiPK
 	}
 
-	for i, line := range lines {
-		for key := range updated {
-			if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
-				switch key {
-				case "KALSHI_API_KEY":
-					lines[i] = key + "=" + kalshiKey
-				case "KALSHI_PK":
-					lines[i] = key + "=" + kalshiPK
-				}
-				updated[key] = true
-			}
-		}
-	}
-
-	for key, isUpdated := range updated {
-		if !isUpdated {
-			switch key {
-			case "KALSHI_API_KEY":
-				lines = append(lines, key+"="+kalshiKey)
-			case "KALSHI_PK":
-				lines = append(lines, key+"="+kalshiPK)
-			}
-		}
-	}
-
-	return os.WriteFile(envFile, []byte(strings.Join(lines, "\n")), 0600)
+	return godotenv.Write(envMap, envFile)
 }
 
 func updateEnvFile(pk string, creds *APICredentials) error {
