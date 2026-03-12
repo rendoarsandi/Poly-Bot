@@ -2987,8 +2987,8 @@ func computeRealbotMakerSellQty(baseShares, positionShares, skew float64, params
 	return strategy.ComputeMakerSellQty(baseShares, positionShares, skew, params, normalizeMarketSellShares)
 }
 
-func computeRealbotMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int, params strategy.MakerParams) (float64, bool) {
-	return strategy.ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap, feeRateBps, params)
+func computeRealbotMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int, timeRemaining time.Duration, params strategy.MakerParams) (float64, bool) {
+	return strategy.ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap, feeRateBps, timeRemaining, params)
 }
 
 func shouldRealbotMakerBlockBuy(positionShares float64, sellOK bool, peerShares, peerAvgCost, price, minEdge float64) bool {
@@ -3284,8 +3284,8 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 
 	sellFee0 := tokenFeeRates[outcomes[0]]
 	sellFee1 := tokenFeeRates[outcomes[1]]
-	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, quoteGap, sellFee0, makerParams)
-	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, quoteGap, sellFee1, makerParams)
+	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, quoteGap, sellFee0, timeToEnd, makerParams)
+	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, quoteGap, sellFee1, timeToEnd, makerParams)
 	sellQty0 := computeRealbotMakerSellQty(baseShares, shares0, skew0, makerParams)
 	sellQty1 := computeRealbotMakerSellQty(baseShares, shares1, skew1, makerParams)
 	if !sellOK0 {

@@ -1,6 +1,9 @@
 package strategy
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 type MakerParams struct {
 	QuoteStep           float64
@@ -111,7 +114,7 @@ func ComputeMakerSellQty(baseShares, positionShares, skew float64, params MakerP
 	return qty
 }
 
-func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int, params MakerParams) (float64, bool) {
+func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap float64, feeRateBps int, timeRemaining time.Duration, params MakerParams) (float64, bool) {
 	price, ok := ComputeMakerSkewedQuote(false, bid, ask, skew, quoteGap, params)
 	if !ok {
 		return 0, false
@@ -122,10 +125,19 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 		minPrice = roundToStep(bid+params.QuoteStep, params.QuoteStep)
 	}
 
+	// Time-Decayed Stop Loss: 
+	// If the market has less than 3 minutes remaining, drop the protection
+	// threshold severely so we dump toxic bags before the market expires.
+	skewThreshold := 0.75
+	if timeRemaining > 0 && timeRemaining < 3*time.Minute {
+		// Panic dump mode - willing to cut losses even on small bags
+		skewThreshold = 0.1
+	}
+
 	// Add strict cost-basis protection to prevent bleeding from small skews
 	if avgCost > 0 {
 		// Only ignore cost basis if we are severely overloaded (toxic bag)
-		if skew < 0.75 {
+		if skew < skewThreshold {
 			minProfitablePrice := avgCost + minEdge
 			if price < minProfitablePrice {
 				price = roundToStep(minProfitablePrice, params.QuoteStep)
@@ -138,8 +150,6 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 		return 0, false
 	}
 
-	// Rely purely on inventory skew instead of a stubborn cost-basis check.
-	// This prevents accumulating toxic bags of losing outcomes.
 	price = roundToStep(clampFloat64(price, minPrice, maxPrice), params.QuoteStep)
 	return price, true
 }
