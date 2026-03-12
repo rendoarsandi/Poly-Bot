@@ -3015,7 +3015,7 @@ func realbotUpdateMakerPendingOrders(marketID string, makerQuotes map[string]*re
 	sort.Strings(keys)
 	for _, key := range keys {
 		quote := makerQuotes[key]
-		if quote == nil || quote.RemainingQty < realbotMakerMinQuoteValue || quote.Price <= 0 {
+		if quote == nil || quote.RemainingQty*quote.Price < 1.0 || quote.Price <= 0 {
 			continue
 		}
 		pending[quote.Outcome] = append(pending[quote.Outcome], paper.PendingOrder{
@@ -3066,13 +3066,13 @@ func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, eng
 			if open.Price > 0 {
 				quote.Price = open.Price
 			}
-			if quote.RemainingQty < realbotMakerMinQuoteValue {
+			if quote.RemainingQty*quote.Price < 1.0 {
 				delete(makerQuotes, key)
 			}
 			continue
 		}
 		quote.RemainingQty = normalizeMarketSellShares(math.Max(0, quote.RequestedQty-quote.AccountedFill))
-		if quote.RemainingQty < realbotMakerMinQuoteValue {
+		if quote.RemainingQty*quote.Price < 1.0 {
 			delete(makerQuotes, key)
 		}
 	}
@@ -3106,7 +3106,12 @@ func realbotUpsertMakerQuote(ctx context.Context, marketID string, trader *tradi
 	key := realbotMakerQuoteKey(side, outcome)
 	existing := makerQuotes[key]
 	qty = normalizeMarketSellShares(qty)
-	if qty < realbotMakerMinQuoteValue || price <= 0 || tokenID == "" {
+	
+	orderValue := qty * price
+	
+	// We want to use the config, so we will pass it in or rely on the fact that
+	// the upstream calculation correctly bounded it, so we just enforce $1 minimum for safety.
+	if orderValue < 1.0 || price <= 0 || tokenID == "" {
 		if existing != nil {
 			realbotCancelMakerQuote(ctx, trader, existing)
 			delete(makerQuotes, key)

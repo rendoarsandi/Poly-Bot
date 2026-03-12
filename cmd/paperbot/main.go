@@ -427,7 +427,10 @@ func cancelAllPaperMakerQuotes(t *MarketTrader, reason string) {
 func upsertPaperMakerQuote(t *MarketTrader, side, outcome string, price, qty float64) bool {
 	key := paperMakerQuoteKey(side, outcome)
 	existing := t.MakerQuotes[key]
-	if qty < paperMakerMinQuoteValue || price <= 0 {
+	
+	// Check if the total dollar value meets the minimum requirement
+	orderValue := qty * price
+	if orderValue < t.Config.MakerMinQuoteValue || price <= 0 {
 		return cancelPaperMakerQuote(t, side, outcome)
 	}
 	if isPaperOrderActive(existing) && math.Abs(existing.Price-price) < 1e-9 && math.Abs(existing.RemainingQty()-qty) < 1e-9 {
