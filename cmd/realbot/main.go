@@ -1342,7 +1342,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
-		shouldPollREST := forceRestFallback || (wsUnhealthy && shouldRealbotRestFallback(staleTime, sinceLastRest, core.ResolveRestFallbackQuoteAge(cfg), core.ResolveRestFallbackPollInterval(cfg)))
+		shouldPollREST := forceRestFallback || wsUnhealthy || shouldRealbotRestFallback(staleTime, sinceLastRest, core.ResolveRestFallbackQuoteAge(cfg), core.ResolveRestFallbackPollInterval(cfg))
 		if shouldPollREST {
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth

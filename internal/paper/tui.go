@@ -2220,10 +2220,10 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	uptime := time.Since(s.startTime).Round(time.Second)
 
 	drawdownSt := styleWhite
-	if stats.MaxDrawdown > 0.05 {
+	if stats.MaxDrawdown > 5.0 {
 		drawdownSt = styleYellow
 	}
-	if stats.MaxDrawdown > 0.10 {
+	if stats.MaxDrawdown > 10.0 {
 		drawdownSt = styleRed
 	}
 
@@ -2233,7 +2233,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", equity)),
 		changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, netChange)),
-		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown*100)),
+		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
 	)
 	row3 := tradeLine
 	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds (%d profitable)  ·  ⏱ %s",

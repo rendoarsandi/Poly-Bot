@@ -1736,7 +1736,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			forceRestFallback := !localPairFresh && pairQuoteAge > restFallbackQuoteAge
 
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			if forceRestFallback || (wsUnhealthy && shouldPaperRestFallback(pairQuoteAge, time.Since(t.LastRestPoll), restFallbackQuoteAge, restFallbackPollInterval)) {
+			if forceRestFallback || wsUnhealthy || shouldPaperRestFallback(pairQuoteAge, time.Since(t.LastRestPoll), restFallbackQuoteAge, restFallbackPollInterval) {
 				t.handleRestFallback(ctx, tokenPrices, pairQuoteAge)
 			}
 
@@ -2489,6 +2489,13 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		// Check if book is empty
 		if len(book.Bids) == 0 && len(book.Asks) == 0 {
 			restEmpty++
+			t.mu.Lock()
+			t.TokenBids[outcome] = 0
+			t.TokenAsks[outcome] = 0
+			t.TokenFullBids[outcome] = nil
+			t.TokenFullAsks[outcome] = nil
+			t.mu.Unlock()
+			restSuccess++
 			continue
 		}
 
