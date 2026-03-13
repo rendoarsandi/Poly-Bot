@@ -947,7 +947,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 20:
-					return m.toggleExchange()
+					newM, cmd := m.toggleExchange()
+					if cmd != nil {
+						m.tui.mu.Unlock()
+						return newM, cmd
+					}
+					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
@@ -1079,7 +1084,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MaxDailyLoss += 5.0
 					changed = true
 				case 20:
-					return m.toggleExchange()
+					newM, cmd := m.toggleExchange()
+					if cmd != nil {
+						m.tui.mu.Unlock()
+						return newM, cmd
+					}
+					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
