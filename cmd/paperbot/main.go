@@ -852,7 +852,7 @@ func run() error {
 		fmt.Printf("💰 Fee simulation enabled: %d bps base (~%.1f%% effective at p=0.50)\n", cfg.FeeRateBps, effectiveAt50)
 	}
 
-	restClient := api.NewRestClient(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK)
+	restClient := api.NewRestClient(cfg.Exchange)
 
 	// Create shared TUI (persistent across market rotations)
 	tui = paper.NewTUI(engine, nil)

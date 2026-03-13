@@ -53,7 +53,9 @@ func (s *KalshiSigner) SignRequest(method, path string) (timestamp string, signa
 	msg := timestamp + method + path
 	hashed := sha256.Sum256([]byte(msg))
 
-	sigBytes, err := rsa.SignPKCS1v15(rand.Reader, s.PrivateKey, crypto.SHA256, hashed[:])
+	sigBytes, err := rsa.SignPSS(rand.Reader, s.PrivateKey, crypto.SHA256, hashed[:], &rsa.PSSOptions{
+		SaltLength: rsa.PSSSaltLengthEqualsHash,
+	})
 	if err != nil {
 		return "", "", err
 	}

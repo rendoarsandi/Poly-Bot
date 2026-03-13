@@ -79,7 +79,6 @@ type ListMarketsResponse struct {
 type RestClient struct {
 	Exchange      string
 	KalshiBaseURL string
-	kalshiSigner  *KalshiSigner
 
 	BaseURL  string
 	GammaURL string
@@ -87,7 +86,7 @@ type RestClient struct {
 	limiter <-chan time.Time
 }
 
-func NewRestClient(exchange, kalshiKey, kalshiPK string) *RestClient {
+func NewRestClient(exchange string) *RestClient {
 	limiter := time.NewTicker(time.Second / 500)
 	
 	client := &RestClient{
@@ -96,13 +95,6 @@ func NewRestClient(exchange, kalshiKey, kalshiPK string) *RestClient {
 		GammaURL:      "https://gamma-api.polymarket.com",
 		KalshiBaseURL: KalshiBaseURL,
 		limiter:       limiter.C,
-	}
-
-	if exchange == "kalshi" && kalshiKey != "" && kalshiPK != "" {
-		signer, err := NewKalshiSigner(kalshiKey, kalshiPK)
-		if err == nil {
-			client.kalshiSigner = signer
-		}
 	}
 
 	return client

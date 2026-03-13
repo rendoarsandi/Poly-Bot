@@ -47,7 +47,9 @@ func (c *KalshiClient) doRequest(ctx context.Context, method, path string, body 
 		return err
 	}
 
-	timestamp, signature, err := c.signer.SignRequest(method, path)
+	// Kalshi requires the /trade-api/v2 prefix in the signature path
+	fullPath := "/trade-api/v2" + path
+	timestamp, signature, err := c.signer.SignRequest(method, fullPath)
 	if err != nil {
 		return err
 	}

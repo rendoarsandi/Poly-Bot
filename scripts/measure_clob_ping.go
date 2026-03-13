@@ -232,9 +232,11 @@ func main() {
 	var samples int
 	var shares float64
 	var authBench bool
+	var exchange string
 	flag.IntVar(&samples, "n", 10, "Number of ping samples per test")
 	flag.Float64Var(&shares, "shares", 5.0, "Shares to use for public end-to-end simulation")
 	flag.BoolVar(&authBench, "auth", false, "Also run authenticated CLOB order probes (requires real credentials)")
+	flag.StringVar(&exchange, "exchange", "polymarket", "Exchange to benchmark (polymarket or kalshi)")
 	flag.Parse()
 
 	// Silence all log output (including [CLOB] API error lines from clob_client)
@@ -246,8 +248,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	
+	if exchange != "" {
+		cfg.Exchange = exchange
+	}
 
-	benchRest = api.NewRestClient("", "", "")
+	benchRest = api.NewRestClient(cfg.Exchange)
 	ctx := context.Background()
 
 	fmt.Println("⏳ Finding an active 2-token market...")

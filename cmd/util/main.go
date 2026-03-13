@@ -233,7 +233,7 @@ func main() {
 		log.Fatalf("Failed to setup or create trader: %v", err)
 	}
 
-	client := api.NewRestClient("", "", "")
+	client := api.NewRestClient("")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	orderWarmer := newUtilbotCLOBWarmer(client, trader)

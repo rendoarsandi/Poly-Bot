@@ -17,7 +17,7 @@ func TestGetMarket(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewRestClient("", "", "")
+	client := NewRestClient("")
 	client.BaseURL = server.URL
 	client.GammaURL = server.URL
 	market, err := client.GetMarket(context.Background(), "test-market")
@@ -35,7 +35,7 @@ func TestGetMarket(t *testing.T) {
 }
 
 func TestNewRestClientDefault(t *testing.T) {
-	client := NewRestClient("", "", "")
+	client := NewRestClient("")
 	if client.BaseURL != "https://clob.polymarket.com" {
 		t.Errorf("Expected default BaseURL, got %s", client.BaseURL)
 	}
@@ -52,7 +52,7 @@ func TestListMarkets(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewRestClient("", "", "")
+	client := NewRestClient("")
 	client.BaseURL = server.URL
 	client.GammaURL = server.URL
 	markets, err := client.ListMarkets(context.Background())
@@ -80,7 +80,7 @@ func TestGetMarketsByEventSlug(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewRestClient("", "", "")
+	client := NewRestClient("")
 	client.BaseURL = server.URL
 	client.GammaURL = server.URL
 	client.GammaURL = server.URL
@@ -160,7 +160,7 @@ func TestGetCLOBBidAskFetchesOrderBooksConcurrently(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewRestClient("", "", "")
+	client := NewRestClient("")
 	client.BaseURL = server.URL
 	client.GammaURL = server.URL
 	prices, err := client.GetCLOBBidAsk(context.Background(), map[string]string{

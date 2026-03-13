@@ -240,7 +240,7 @@ var (
 	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
 )
 
-func (m *tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
+func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
 	if m.tui.settings.Exchange == "polymarket" {
 		if os.Getenv("KALSHI_API_KEY") == "" {
 			m.tui.isKilled = true
@@ -251,7 +251,7 @@ func (m *tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
 	} else {
 		m.tui.settings.Exchange = "polymarket"
 	}
-	return nil, nil
+	return m, nil
 }
 
 func isMakerSettingsMode(cfg TUISettings) bool {

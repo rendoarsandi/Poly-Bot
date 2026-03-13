@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("Failed to create CLOB client: %v", err)
 	}
 
-	rest := api.NewRestClient("", "", "")
+	rest := api.NewRestClient("")
 	ctx := context.Background()
 
 	// Find an active market token to test with

@@ -446,7 +446,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	restClient := api.NewRestClient(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK)
+	restClient := api.NewRestClient(cfg.Exchange)
 
 	// emergencyCleanup ensures we don't leave hanging orders or unmerged positions
 	emergencyCleanup := func() {
@@ -1447,8 +1447,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Split shares are ONLY for selling, bought shares are ONLY for merging
 		// ═══════════════════════════════════════════════════════════════════════════
 		skipPanicBuy := false
+		kalshiHoldMode := liveCfg.Exchange == "kalshi"
 
-		if liveCfg.SplitStrategyEnabled && len(tokenBids) >= 2 && len(outcomes) == 2 {
+		if (liveCfg.SplitStrategyEnabled || kalshiHoldMode) && len(tokenBids) >= 2 && len(outcomes) == 2 {
 			bid1 := tokenBids[outcomes[0]]
 			bid2 := tokenBids[outcomes[1]]
 
@@ -1457,13 +1458,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			splitMu.Lock()
 			isSplit := globalSplitStatus[market.ConditionID]
 
-			// We check the cooldown safely using the global initial split value map (if 0, we can try)
-			// But for cooldown, we'll just move nextSplitAttempt access inside the lock if we use a global cooldown map.
-			// Or better: keep nextSplitAttempt but protect it with splitMu.
 			shouldSplit := !isSplit && time.Now().After(nextSplitAttempt)
 			if shouldSplit {
-				// Optimistically mark as split to prevent concurrent duplicate attempts
-				globalSplitStatus[market.ConditionID] = true
+				if kalshiHoldMode {
+					shouldSplit = false
+				} else {
+					// Optimistically mark as split to prevent concurrent duplicate attempts
+					globalSplitStatus[market.ConditionID] = true
+				}
 			}
 			splitMu.Unlock()
 
@@ -1560,27 +1562,31 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				})
 
 				if decision.ShouldReplenish && replenishCtrl.MarkInProgress() {
-					tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f/%.0f), replenishing +%.0f shares...", id, currentShares, initialSplitAmount, decision.Amount)
-					go func(mID, condID, out0, out1 string, amt float64, targetShares float64) {
-						defer replenishCtrl.MarkComplete()
-						// Use derived context for proper shutdown propagation
-						bgCtx, bgCancel := context.WithTimeout(ctx, 60*time.Second)
-						defer bgCancel()
+					if kalshiHoldMode {
+						replenishCtrl.MarkComplete()
+					} else {
+						tui.LogEvent("[%s] 🔄 SPLIT: Low inventory (%.0f/%.0f), replenishing +%.0f shares...", id, currentShares, initialSplitAmount, decision.Amount)
+						go func(mID, condID, out0, out1 string, amt float64, targetShares float64) {
+							defer replenishCtrl.MarkComplete()
+							// Use derived context for proper shutdown propagation
+							bgCtx, bgCancel := context.WithTimeout(ctx, 60*time.Second)
+							defer bgCancel()
 
-						splitTxMu.Lock()
-						_, bgErr := trader.SplitOnChain(bgCtx, condID, amt, len(outcomes))
-						splitTxMu.Unlock()
+							splitTxMu.Lock()
+							_, bgErr := trader.SplitOnChain(bgCtx, condID, amt, len(outcomes))
+							splitTxMu.Unlock()
 
-						if bgErr == nil {
-							// Update engine simulation immediately
-							splitInventory.RecordSplit(mID, out0, out1, amt)
-							engine.DeductBalance(amt)
-							engine.RecalculateDrawdown()
-							tui.LogEvent("[%s] ✅ SPLIT: Replenished to %.0f shares (+%.0f)", mID, targetShares, amt)
-						} else {
-							tui.LogEvent("[%s] ⚠️ SPLIT: Background replenish failed: %v", mID, bgErr)
-						}
-					}(id, market.ConditionID, outcomes[0], outcomes[1], decision.Amount, initialSplitAmount)
+							if bgErr == nil {
+								// Update engine simulation immediately
+								splitInventory.RecordSplit(mID, out0, out1, amt)
+								engine.DeductBalance(amt)
+								engine.RecalculateDrawdown()
+								tui.LogEvent("[%s] ✅ SPLIT: Replenished to %.0f shares (+%.0f)", mID, targetShares, amt)
+							} else {
+								tui.LogEvent("[%s] ⚠️ SPLIT: Background replenish failed: %v", mID, bgErr)
+							}
+						}(id, market.ConditionID, outcomes[0], outcomes[1], decision.Amount, initialSplitAmount)
+					}
 				}
 
 				if sellMargin >= cfg.SplitMinMarginSell-1e-4 && time.Since(lastSplitSell) > 2*time.Second {
@@ -1589,7 +1595,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					requestedShares := currentBalance * cfg.SplitInitialCapPct
 
 					// GRACEFUL SELL: Sell what we have
-					availableShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
+					var availableShares float64
+					if kalshiHoldMode {
+						pos1 := trader.GetLivePositionSize(market.Tokens[0].TokenID)
+						pos2 := trader.GetLivePositionSize(market.Tokens[1].TokenID)
+						availableShares = math.Min(pos1, pos2)
+					} else {
+						availableShares = splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
+					}
 					sharesToSell := requestedShares
 					if sharesToSell > availableShares {
 						if availableShares >= minOnChainActionShares {
@@ -1682,6 +1695,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						sharesToSell = normalizeMarketSellShares(sharesToSell)
+						if kalshiHoldMode {
+							sharesToSell = math.Floor(sharesToSell)
+						}
 
 						if sharesToSell >= minOnChainActionShares && sharesToSell <= availableShares+1e-6 {
 							// Enhanced log with liquidity and depth info (same format as paper bot)
@@ -1821,28 +1837,44 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							if side1Success && side2Success {
-								// Both sides sold - record in split inventory using actual sold amounts
-								profit1 := splitInventory.RecordSell(id, outcomes[0], sold1, price1)
-								profit2 := splitInventory.RecordSell(id, outcomes[1], sold2, price2)
-								totalProfit := profit1 + profit2
-								engine.AddRealizedPnL(totalProfit)
-								tui.LogEvent("[%s] ✅ SPLIT SOLD! %s: %.2f, %s: %.2f | Profit: +$%.2f", id, outcomes[0], sold1, outcomes[1], sold2, totalProfit)
+								var totalProfit float64
+								var profit1, profit2 float64
+								if kalshiHoldMode {
+									// In kalshi, just deduct cost basis roughly for PNL logging
+									profit1 = (price1 - 0.5) * sold1
+									profit2 = (price2 - 0.5) * sold2
+									totalProfit = profit1 + profit2
+									engine.AddRealizedPnL(totalProfit)
+									tui.LogEvent("[%s] ✅ PANIC SOLD! %s: %.2f, %s: %.2f | Profit: ~+$%.2f", id, outcomes[0], sold1, outcomes[1], sold2, totalProfit)
+								} else {
+									// Both sides sold - record in split inventory using actual sold amounts
+									profit1 = splitInventory.RecordSell(id, outcomes[0], sold1, price1)
+									profit2 = splitInventory.RecordSell(id, outcomes[1], sold2, price2)
+									totalProfit = profit1 + profit2
+									engine.AddRealizedPnL(totalProfit)
+									tui.LogEvent("[%s] ✅ SPLIT SOLD! %s: %.2f, %s: %.2f | Profit: +$%.2f", id, outcomes[0], sold1, outcomes[1], sold2, totalProfit)
+								}
+
 								tui.RecordOrder(id, outcomes[0], "SELL", sold1, price1, sold1*price1, sellMargin, profit1, "FILLED")
 								tui.RecordOrder(id, outcomes[1], "SELL", sold2, price2, sold2*price2, sellMargin, profit2, "FILLED")
 
 								// Refresh balance after successful sell (cash increased)
 								_, _ = trader.ForceRefreshBalance(ctx)
 
-								tui.LogEvent("[%s] ✅ Execution complete after successful split sell.", id)
+								tui.LogEvent("[%s] ✅ Execution complete after successful panic/split sell.", id)
 							} else {
 								// Partial success - record to keep inventory accurate
 								if side1Success {
-									splitInventory.RecordSell(id, outcomes[0], sold1, price1)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold %.2f (one-shot)", id, outcomes[0], sold1)
+									if !kalshiHoldMode {
+										splitInventory.RecordSell(id, outcomes[0], sold1, price1)
+									}
+									tui.LogEvent("[%s] ⚠️ SELL: Only %s sold %.2f (one-shot)", id, outcomes[0], sold1)
 								}
 								if side2Success {
-									splitInventory.RecordSell(id, outcomes[1], sold2, price2)
-									tui.LogEvent("[%s] ⚠️ SPLIT: Only %s sold %.2f (one-shot)", id, outcomes[1], sold2)
+									if !kalshiHoldMode {
+										splitInventory.RecordSell(id, outcomes[1], sold2, price2)
+									}
+									tui.LogEvent("[%s] ⚠️ SELL: Only %s sold %.2f (one-shot)", id, outcomes[1], sold2)
 								}
 							}
 							refreshWalletTruth(5 * time.Second)
