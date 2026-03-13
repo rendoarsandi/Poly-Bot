@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 )
 
 const KalshiBaseURL = "https://trading-api.kalshi.com/trade-api/v2"
@@ -91,23 +92,30 @@ func (c *KalshiClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*Orde
 	priceCents := int(req.Price * 100)
 
 	// Note: You must map 'req.TokenID' or similar to Kalshi 'ticker'.
+	// Strip -YES or -NO suffixes if present
+	ticker := req.TokenID
+	if strings.HasSuffix(ticker, "-YES") {
+		ticker = strings.TrimSuffix(ticker, "-YES")
+	} else if strings.HasSuffix(ticker, "-NO") {
+		ticker = strings.TrimSuffix(ticker, "-NO")
+	}
+
 	kalshiSide := "yes"
-	if req.Outcome == "No" || req.Outcome == "NO" || req.Outcome == "no" {
+	if strings.EqualFold(req.Outcome, "no") {
 		kalshiSide = "no"
 	}
-	
+
 	kalshiAction := "buy"
 	if req.Side == SideSell {
 		kalshiAction = "sell"
 	}
 
 	kalshiReq := map[string]interface{}{
-		"ticker": req.TokenID,
+		"ticker": ticker,
 		"action": kalshiAction,
 		"side":   kalshiSide,
 		"count":  count,
 	}
-
 	// Kalshi API requires yes_price for limit orders, or type market
 	if req.OrderType == OrderTypeMarket {
 		kalshiReq["type"] = "market"
@@ -143,14 +151,50 @@ func (c *KalshiClient) CancelOrder(ctx context.Context, orderID string) error {
 }
 
 func (c *KalshiClient) CancelAllOrders(ctx context.Context) error {
-	// Kalshi supports batch cancel or we can cancel all open. Let's just no-op or fetch & cancel.
-	// For simplicity, we won't implement a perfect match yet unless strictly requested.
-	return nil
+	orders, err := c.GetOpenOrders(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to fetch open orders for cancellation: %w", err)
+	}
+
+	var lastErr error
+	for _, o := range orders {
+		if err := c.CancelOrder(ctx, o.OrderID); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 func (c *KalshiClient) GetPositions(ctx context.Context) ([]Position, error) {
-	// Simple stub for positions since this depends heavily on normalization
-	return []Position{}, nil
+	var resp struct {
+		Positions []struct {
+			Ticker   string `json:"ticker"`
+			Position int    `json:"position"`
+		} `json:"positions"` // Kalshi /portfolio/positions returns positions
+	}
+	err := c.doRequest(ctx, "GET", "/portfolio/positions", nil, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var positions []Position
+	for _, p := range resp.Positions {
+		if p.Position == 0 {
+			continue
+		}
+		outcome := "Yes"
+		size := float64(p.Position)
+		if size < 0 {
+			outcome = "No"
+			size = -size
+		}
+		positions = append(positions, Position{
+			TokenID: p.Ticker,
+			Size:    size,
+			Outcome: outcome,
+		})
+	}
+	return positions, nil
 }
 
 func (c *KalshiClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, error) {
@@ -165,13 +209,33 @@ func (c *KalshiClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder
 	}
 
 	return &OpenOrder{
-		OrderID:     orderID,
-		Status: resp.Order.Status,
+		OrderID: orderID,
+		Status:  resp.Order.Status,
 	}, nil
 }
 
 func (c *KalshiClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
-	return []OpenOrder{}, nil
+	var resp struct {
+		Orders []struct {
+			OrderId string `json:"order_id"`
+			Status  string `json:"status"`
+			Ticker  string `json:"ticker"`
+		} `json:"orders"`
+	}
+	err := c.doRequest(ctx, "GET", "/portfolio/orders?status=resting", nil, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var orders []OpenOrder
+	for _, o := range resp.Orders {
+		orders = append(orders, OpenOrder{
+			OrderID: o.OrderId,
+			Status:  o.Status,
+			TokenID: o.Ticker,
+		})
+	}
+	return orders, nil
 }
 
 func (c *KalshiClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance, error) {

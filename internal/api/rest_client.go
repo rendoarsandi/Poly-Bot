@@ -260,17 +260,21 @@ func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []s
 
 		for _, event := range kalshiResp.Events {
 			// Basic filtering, usually we match timeframe in ticker (e.g. KXBTC-15M)
-			// For simplicity we just return the events as markets.
-			
-			markets = append(markets, Market{
-				ConditionID: event.Ticker, // Kalshi ticker
+			if timeframe != "" {
+				tfUpper := strings.ToUpper(timeframe)
+				if !strings.Contains(event.Ticker, tfUpper) {
+					continue
+				}
+			}
+
+			markets = append(markets, Market{				ConditionID: event.Ticker, // Kalshi ticker
 				Slug:        event.Ticker,
 				Active:      true,
 				Closed:      false,
 				EndTime:     time.Now().Add(1 * time.Hour), // stub
 				Tokens: []Token{
-					{TokenID: event.Ticker, Outcome: "Yes"},
-					{TokenID: event.Ticker, Outcome: "No"},
+					{TokenID: event.Ticker + "-YES", Outcome: "Yes"},
+					{TokenID: event.Ticker + "-NO", Outcome: "No"},
 				},
 			})
 		}

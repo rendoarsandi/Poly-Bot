@@ -35,10 +35,20 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 
 			kalshiPK := cfg.KalshiPK
 			if kalshiPK == "" {
-				fmt.Print("Please enter your Kalshi Private Key: ")
-				reader := bufio.NewReader(os.Stdin)
-				input, _ := reader.ReadString('\n')
-				kalshiPK = strings.TrimSpace(input)
+				fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish):")
+				scanner := bufio.NewScanner(os.Stdin)
+				var lines []string
+				for scanner.Scan() {
+					line := scanner.Text()
+					if strings.TrimSpace(line) == "" {
+						break
+					}
+					lines = append(lines, line)
+				}
+				if err := scanner.Err(); err != nil {
+					return nil, fmt.Errorf("failed to read kalshi private key: %w", err)
+				}
+				kalshiPK = strings.Join(lines, "\n")
 				if kalshiPK == "" {
 					return nil, fmt.Errorf("kalshi private key is required for real trading")
 				}

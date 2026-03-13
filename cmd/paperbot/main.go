@@ -826,13 +826,20 @@ func run() error {
 				kalshiKey = strings.TrimSpace(key)
 			}
 			if kalshiPK == "" {
-				fmt.Print("Please enter your Kalshi Private Key: ")
-				reader := bufio.NewReader(os.Stdin)
-				pk, err := reader.ReadString('\n')
-				if err != nil {
+				fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish):")
+				scanner := bufio.NewScanner(os.Stdin)
+				var lines []string
+				for scanner.Scan() {
+					line := scanner.Text()
+					if strings.TrimSpace(line) == "" {
+						break
+					}
+					lines = append(lines, line)
+				}
+				if err := scanner.Err(); err != nil {
 					return fmt.Errorf("failed to read Kalshi private key: %w", err)
 				}
-				kalshiPK = strings.TrimSpace(pk)
+				kalshiPK = strings.Join(lines, "\n")
 			}
 			fmt.Println("✅ Credentials collected. Saving to .env...")
 			setup.UpdateKalshiEnvFile(kalshiKey, kalshiPK)

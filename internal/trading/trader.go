@@ -715,7 +715,7 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	hasCache := !t.lastBalanceUpdate.IsZero()
 	t.mu.Unlock()
 
-	bal, err := t.polygon.GetUSDCBalance(ctx, t.client.Address())
+	ba, err := t.client.GetBalanceAllowance(ctx)
 	if err != nil {
 		// Return cached balance on error if available
 		if hasCache {
@@ -723,6 +723,7 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 		}
 		return 0, err
 	}
+	bal := ba.Balance
 
 	t.mu.Lock()
 	t.cachedBalance = bal
