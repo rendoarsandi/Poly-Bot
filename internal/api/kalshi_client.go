@@ -55,9 +55,13 @@ func (c *KalshiClient) doRequest(ctx context.Context, method, path string, body 
 		return err
 	}
 
-	req.Header.Set("kalshiAccessKey", c.signer.AccessKey)
-	req.Header.Set("kalshiAccessSignature", signature)
-	req.Header.Set("kalshiAccessTimestamp", timestamp)
+	// Kalshi API requires precise header names (Go's Header.Set canonicalizes them, which might fail)
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	req.Header["KALSHI-ACCESS-KEY"] = []string{c.signer.AccessKey}
+	req.Header["KALSHI-ACCESS-SIGNATURE"] = []string{signature}
+	req.Header["KALSHI-ACCESS-TIMESTAMP"] = []string{timestamp}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(req)
@@ -89,7 +93,7 @@ func (c *KalshiClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*Orde
 	}
 
 	// Normalizing Price: Poly is 0.01 - 0.99. Kalshi is cents 1 - 99.
-	priceCents := int(req.Price * 100)
+	priceCents := int(math.Round(req.Price * 100))
 
 	// Note: You must map 'req.TokenID' or similar to Kalshi 'ticker'.
 	// Strip -YES or -NO suffixes if present
@@ -116,11 +120,11 @@ func (c *KalshiClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*Orde
 		"side":   kalshiSide,
 		"count":  count,
 	}
-	// Kalshi API requires yes_price for limit orders, or type market
-	if req.OrderType == OrderTypeMarket {
-		kalshiReq["type"] = "market"
-	} else {
-		kalshiReq["type"] = "limit"
+	
+	// In Kalshi V2, 'type' is not explicitly required/supported in the payload.
+	// It infers limit orders if yes_price or no_price is provided.
+	// We only pass price for limit orders.
+	if req.OrderType != OrderTypeMarket {
 		if kalshiSide == "yes" {
 			kalshiReq["yes_price"] = priceCents
 		} else {
@@ -167,10 +171,10 @@ func (c *KalshiClient) CancelAllOrders(ctx context.Context) error {
 
 func (c *KalshiClient) GetPositions(ctx context.Context) ([]Position, error) {
 	var resp struct {
-		Positions []struct {
-			Ticker   string `json:"ticker"`
-			Position int    `json:"position"`
-		} `json:"positions"` // Kalshi /portfolio/positions returns positions
+		MarketPositions []struct {
+			Ticker     string `json:"ticker"`
+			PositionFp string `json:"position_fp"`
+		} `json:"market_positions"`
 	}
 	err := c.doRequest(ctx, "GET", "/portfolio/positions", nil, &resp)
 	if err != nil {
@@ -178,18 +182,36 @@ func (c *KalshiClient) GetPositions(ctx context.Context) ([]Position, error) {
 	}
 
 	var positions []Position
-	for _, p := range resp.Positions {
-		if p.Position == 0 {
+	for _, p := range resp.MarketPositions {
+		if p.PositionFp == "" || p.PositionFp == "0" || p.PositionFp == "0.00" {
 			continue
 		}
+		
+		var size float64
+		_, err := fmt.Sscanf(p.PositionFp, "%f", &size)
+		if err != nil {
+			continue
+		}
+
+		if size == 0 {
+			continue
+		}
+
 		outcome := "Yes"
-		size := float64(p.Position)
 		if size < 0 {
 			outcome = "No"
 			size = -size
 		}
+
+		tokenID := p.Ticker
+		if outcome == "Yes" {
+			tokenID += "-YES"
+		} else {
+			tokenID += "-NO"
+		}
+
 		positions = append(positions, Position{
-			TokenID: p.Ticker,
+			TokenID: tokenID,
 			Size:    size,
 			Outcome: outcome,
 		})
@@ -220,6 +242,7 @@ func (c *KalshiClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
 			OrderId string `json:"order_id"`
 			Status  string `json:"status"`
 			Ticker  string `json:"ticker"`
+			Side    string `json:"side"`
 		} `json:"orders"`
 	}
 	err := c.doRequest(ctx, "GET", "/portfolio/orders?status=resting", nil, &resp)
@@ -229,10 +252,16 @@ func (c *KalshiClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
 
 	var orders []OpenOrder
 	for _, o := range resp.Orders {
+		tokenID := o.Ticker
+		if strings.EqualFold(o.Side, "yes") {
+			tokenID += "-YES"
+		} else if strings.EqualFold(o.Side, "no") {
+			tokenID += "-NO"
+		}
 		orders = append(orders, OpenOrder{
 			OrderID: o.OrderId,
 			Status:  o.Status,
-			TokenID: o.Ticker,
+			TokenID: tokenID,
 		})
 	}
 	return orders, nil
