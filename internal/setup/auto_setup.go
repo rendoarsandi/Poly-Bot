@@ -3,6 +3,7 @@ package setup
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,15 +13,26 @@ import (
 	"github.com/joho/godotenv"
 )
 
+var ErrSkipToPolymarket = errors.New("user requested to skip kalshi and use polymarket")
+
 // EnsureRealTradingSetup checks if the environment is ready for real trading.
 // It will prompt for missing private keys, auto-derive API keys, and auto-approve allowances.
 func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.RealTrader, error) {
 	cfg.UseRealTrading()
 
-	err := cfg.ValidateForRealTrading()
-	if err != nil {
+	for {
+		err := cfg.ValidateForRealTrading()
+		if err == nil {
+			break
+		}
+
 		if cfg.Exchange == "kalshi" {
 			if err := EnsureKalshiCredentials(cfg); err != nil {
+				if errors.Is(err, ErrSkipToPolymarket) {
+					cfg.Exchange = "polymarket"
+					_ = cfg.SaveSettings()
+					continue
+				}
 				return nil, err
 			}
 		} else {
@@ -53,6 +65,7 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 			// runtime settings already loaded from JSON.
 			_ = godotenv.Load()
 			cfg.ReloadSecretsFromEnv()
+			break
 		}
 	}
 
@@ -79,10 +92,14 @@ func EnsureKalshiCredentials(cfg *core.Config) error {
 
 	kalshiKey := cfg.KalshiAPIKey
 	if kalshiKey == "" {
-		fmt.Print("Please enter your Kalshi API Key: ")
+		fmt.Print("Please enter your Kalshi API Key (or type 'skip' to use polymarket): ")
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
-		kalshiKey = strings.TrimSpace(input)
+		input = strings.TrimSpace(input)
+		if strings.ToLower(input) == "skip" {
+			return ErrSkipToPolymarket
+		}
+		kalshiKey = input
 		if kalshiKey == "" {
 			return fmt.Errorf("kalshi api key is required")
 		}
@@ -90,11 +107,14 @@ func EnsureKalshiCredentials(cfg *core.Config) error {
 
 	kalshiPK := cfg.KalshiPK
 	if kalshiPK == "" {
-		fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish):")
+		fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish, or type 'skip' to use polymarket):")
 		scanner := bufio.NewScanner(os.Stdin)
 		var lines []string
 		for scanner.Scan() {
 			line := scanner.Text()
+			if len(lines) == 0 && strings.ToLower(strings.TrimSpace(line)) == "skip" {
+				return ErrSkipToPolymarket
+			}
 			if strings.TrimSpace(line) == "" {
 				break
 			}

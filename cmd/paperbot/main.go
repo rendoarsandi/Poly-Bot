@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -807,7 +808,12 @@ func run() error {
 	if cfg.Exchange == "kalshi" {
 		if cfg.KalshiAPIKey == "" || cfg.KalshiPK == "" {
 			if err := setup.EnsureKalshiCredentials(cfg); err != nil {
-				return fmt.Errorf("failed to setup kalshi credentials: %w", err)
+				if errors.Is(err, setup.ErrSkipToPolymarket) {
+					cfg.Exchange = "polymarket"
+					_ = cfg.SaveSettings()
+				} else {
+					return fmt.Errorf("failed to setup kalshi credentials: %w", err)
+				}
 			}
 		}
 	}
