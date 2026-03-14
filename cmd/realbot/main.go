@@ -338,13 +338,18 @@ func run() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Setup signal handling FIRST so Ctrl+C works during prompts
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Create real trader and auto-setup credentials/allowances if missing
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // Increased timeout for setup
-	realTrader, err := setup.EnsureRealTradingSetup(ctx, cfg)
+	setupCtx, cancelSetup := context.WithTimeout(ctx, 2*time.Minute)
+	realTrader, err := setup.EnsureRealTradingSetup(setupCtx, cfg)
 	if err != nil {
-		cancel()
+		cancelSetup()
 		return fmt.Errorf("failed to setup or create trader: %w", err)
 	}
+	cancelSetup() // Done with initial setup queries
 
 	// Sync CLOB cached allowance with on-chain state
 	fmt.Println("🔄 Syncing CLOB balance allowance...")
@@ -367,8 +372,11 @@ func run() error {
 	fmt.Println("═══════════════════════════════════════════════════════")
 	fmt.Printf("🔑 Wallet: %s\n", realTrader.Address())
 
+	// Use a short context for these initial balance checks
+	initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
+	
 	// Get balance from CLOB API
-	balance, err := realTrader.GetBalance(ctx)
+	balance, err := realTrader.GetBalance(initCtx)
 	if err != nil {
 		fmt.Printf("⚠️  Could not fetch balance: %v\n", err)
 	} else {
@@ -376,7 +384,7 @@ func run() error {
 	}
 
 	// Get positions
-	positions, err := realTrader.GetPositions(ctx)
+	positions, err := realTrader.GetPositions(initCtx)
 	if err != nil {
 		fmt.Printf("⚠️  Could not fetch positions: %v\n", err)
 	} else if len(positions) > 0 {
@@ -388,7 +396,7 @@ func run() error {
 
 	// Check MATIC for gas
 	polygonClient := api.NewPolygonClient(cfg.PolygonRPCURL)
-	maticBalance, err := polygonClient.GetMATICBalance(ctx, realTrader.Address())
+	maticBalance, err := polygonClient.GetMATICBalance(initCtx, realTrader.Address())
 	if err != nil {
 		fmt.Printf("⚠️  Could not fetch MATIC balance: %v\n", err)
 	} else {
@@ -399,7 +407,7 @@ func run() error {
 	}
 
 	fmt.Println("═══════════════════════════════════════════════════════")
-	cancel() // Done with initial queries
+	cancelInit() // Done with initial queries
 
 	// Display safety settings
 	fmt.Println()
@@ -441,10 +449,6 @@ func run() error {
 			return nil
 		}
 	}
-
-	// Setup signal handling
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	restClient := api.NewRestClient(cfg.Exchange)
 
@@ -606,6 +610,7 @@ func run() error {
 
 	// Seed settings panel with values from config (.env)
 	tui.InitSettings(paper.TUISettings{
+		Exchange:                       cfg.Exchange,
 		MarketSlug:                     cfg.MarketSlug,
 		MaxMarkets:                     cfg.MaxMarkets,
 		Timeframe:                      cfg.Timeframe,
@@ -624,6 +629,7 @@ func run() error {
 		MaxTradeSize:                   cfg.MaxTradeSize,
 		MaxDailyLoss:                   cfg.MaxDailyLoss,
 	}, func(s paper.TUISettings) {
+		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
 		cfg.Timeframe = s.Timeframe
@@ -641,6 +647,12 @@ func run() error {
 		cfg.MaxAskPrice = s.MaxAskPrice
 		cfg.MaxTradeSize = s.MaxTradeSize
 		cfg.MaxDailyLoss = s.MaxDailyLoss
+
+		// Update the REST client exchange if it changed
+		if restClient.Exchange != s.Exchange {
+			restClient.Exchange = s.Exchange
+		}
+
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
@@ -881,7 +893,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	outcomes := mkt.GetOutcomes(market)
 
 	// Setup WebSocket
-	wsMgr := api.NewWSManager("")
+	wsMgr := api.NewWSManager(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK, "")
 	if err := wsMgr.Connect(ctx); err != nil {
 		tui.LogEvent("[%s] ❌ WS connect failed: %v", id, err)
 		return
@@ -1597,9 +1609,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// GRACEFUL SELL: Sell what we have
 					var availableShares float64
 					if kalshiHoldMode {
-						pos1 := trader.GetLivePositionSize(market.Tokens[0].TokenID)
-						pos2 := trader.GetLivePositionSize(market.Tokens[1].TokenID)
-						availableShares = math.Min(pos1, pos2)
+						// Kalshi nets positions; bypass min constraint to allow selling to open
+						availableShares = requestedShares 
 					} else {
 						availableShares = splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 					}

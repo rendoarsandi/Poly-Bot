@@ -113,18 +113,27 @@ func FindMarkets(
 		markets = append(markets, exactMarkets...)
 
 		for _, m := range markets {
-			// For exact markets, ParseEndTimeFromSlug might fail, which is fine, we just skip the expiration check
-			endTime, err := paper.ParseEndTimeFromSlug(m.Slug)
-			if err == nil && time.Now().After(endTime) {
-				continue // already expired
+			endTime := m.EndTime
+			var err error
+
+			// If EndTime isn't set (e.g. from an older API or simple slug), try to parse it
+			if endTime.IsZero() {
+				endTime, err = paper.ParseEndTimeFromSlug(m.Slug)
 			}
-			if err == nil && time.Until(endTime) < 30*time.Second {
-				continue // expiring too soon
+
+			if err == nil && !endTime.IsZero() {
+				if time.Now().After(endTime) {
+					continue // already expired
+				}
+				if time.Until(endTime) < 30*time.Second {
+					continue // expiring too soon
+				}
 			}
 
 			slug := strings.ToLower(m.Slug)
 			// Ensure strict matching for timeframe (e.g. "-5m-" instead of just "5m" which matches "15m")
-			isTargetTimeframe := strings.Contains(slug, "-"+timeframe+"-")
+			// For Kalshi, we bypass this check since timeframe isn't directly in the slug like this
+			isTargetTimeframe := strings.Contains(slug, "-"+timeframe+"-") || restClient.Exchange == "kalshi"
 
 			// If it's an exact market, bypass the strict name checks
 			isExactMatch := false

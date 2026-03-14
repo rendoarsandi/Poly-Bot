@@ -242,12 +242,14 @@ var (
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
 	if m.tui.settings.Exchange == "polymarket" {
-		if os.Getenv("KALSHI_API_KEY") == "" {
-			m.tui.isKilled = true
-			m.tui.killReason = "Kalshi API key missing. Please restart PaperBot to configure."
-			return m, tea.Quit
-		}
 		m.tui.settings.Exchange = "kalshi"
+		// Kalshi websockets require an API key even for market data.
+		if os.Getenv("KALSHI_API_KEY") == "" {
+			m.tui.eventLog = append(m.tui.eventLog, "⚠️ Kalshi keys missing. Please restart the app to configure.")
+			if len(m.tui.eventLog) > m.tui.maxEvents {
+				m.tui.eventLog = m.tui.eventLog[len(m.tui.eventLog)-m.tui.maxEvents:]
+			}
+		}
 	} else {
 		m.tui.settings.Exchange = "polymarket"
 	}

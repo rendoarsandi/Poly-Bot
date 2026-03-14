@@ -222,6 +222,20 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	fmt.Println("\nSelect Exchange:")
+	fmt.Println("1. Polymarket")
+	fmt.Println("2. Kalshi")
+	fmt.Print("Choice [default 1]: ")
+	var exChoice string
+	_, _ = fmt.Scanln(&exChoice)
+	exChoice = strings.TrimSpace(exChoice)
+	
+	if exChoice == "2" {
+		cfg.Exchange = "kalshi"
+	} else {
+		cfg.Exchange = "polymarket"
+	}
+
 	// Create context for setup
 	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelSetup()
@@ -233,7 +247,7 @@ func main() {
 		log.Fatalf("Failed to setup or create trader: %v", err)
 	}
 
-	client := api.NewRestClient("")
+	client := api.NewRestClient(cfg.Exchange)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	orderWarmer := newUtilbotCLOBWarmer(client, trader)
@@ -307,7 +321,7 @@ func main() {
 	}
 
 	// 1.3 WebSocket Setup
-	wsMgr := api.NewWSManager("")
+	wsMgr := api.NewWSManager(cfg.Exchange, cfg.KalshiAPIKey, cfg.KalshiPK, "")
 	if err := wsMgr.Connect(ctx); err != nil {
 		fmt.Printf("⚠️ WS failed: %v\n", err)
 	}
@@ -412,22 +426,40 @@ func main() {
 
 takeAction:
 	fmt.Print("\033[?25h")
-	fmt.Println("\nActions: 1:Panic Buy, 2:Panic Sell")
-	fmt.Print("Choice: ")
-	var choice int
-	_, _ = fmt.Scanln(&choice)
-
-	var inputAmount float64
-	if choice == 1 {
-		fmt.Print("Pairs to Panic Buy (shares per side): ")
-		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
-	} else if choice == 2 {
-		fmt.Print("Pairs to Panic Sell (shares per side): ")
-		_, _ = fmt.Scanln(&inputAmount)
-		executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
+	if cfg.Exchange == "kalshi" {
+		fmt.Println("\nActions: 1:Panic Buy")
+		fmt.Println("(Panic Sell is disabled for Kalshi because it cannot split shares)")
+		fmt.Print("Choice [default 1]: ")
+		var choice string
+		_, _ = fmt.Scanln(&choice)
+		choice = strings.TrimSpace(choice)
+		
+		if choice == "1" || choice == "" {
+			var inputAmount float64
+			fmt.Print("Pairs to Panic Buy (shares per side): ")
+			_, _ = fmt.Scanln(&inputAmount)
+			executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
+		} else {
+			log.Fatal("Invalid choice.")
+		}
 	} else {
-		log.Fatal("Invalid choice.")
+		fmt.Println("\nActions: 1:Panic Buy, 2:Panic Sell")
+		fmt.Print("Choice: ")
+		var choice int
+		_, _ = fmt.Scanln(&choice)
+
+		var inputAmount float64
+		if choice == 1 {
+			fmt.Print("Pairs to Panic Buy (shares per side): ")
+			_, _ = fmt.Scanln(&inputAmount)
+			executeBoth(ctx, trader, client, cfg, market, outcomes, "BUY", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
+		} else if choice == 2 {
+			fmt.Print("Pairs to Panic Sell (shares per side): ")
+			_, _ = fmt.Scanln(&inputAmount)
+			executeBoth(ctx, trader, client, cfg, market, outcomes, "SELL", inputAmount, quoteStore, tokenFeeRates, orderWarmer)
+		} else {
+			log.Fatal("Invalid choice.")
+		}
 	}
 }
 

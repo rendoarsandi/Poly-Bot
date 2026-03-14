@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -23,7 +22,6 @@ import (
 	"Market-bot/internal/paper"
 	"Market-bot/internal/setup"
 	"Market-bot/internal/strategy"
-	"github.com/joho/godotenv"
 )
 
 const (
@@ -784,12 +782,6 @@ func run() error {
 		os.Exit(1)
 	}()
 
-	// Disable terminal echo to prevent arrow keys from appearing
-	// This is done via stty which works on most Unix systems including Termux
-	disableEcho := exec.Command("stty", "-echo", "-icanon")
-	disableEcho.Stdin = os.Stdin
-	_ = disableEcho.Run() // Ignore errors if stty not available
-
 	// Ensure terminal is restored on any exit
 	defer core.RestoreTerminal()
 
@@ -810,43 +802,21 @@ func run() error {
 	}
 	fmt.Println("✅ Config loaded successfully")
 
-	// Setup Kalshi keys if missing and exchange is kalshi
+	// If Kalshi is selected as the exchange at startup, ensure we have keys
+	// since Kalshi websockets and endpoints require authentication even for market data.
 	if cfg.Exchange == "kalshi" {
-		kalshiKey := cfg.KalshiAPIKey
-		kalshiPK := cfg.KalshiPK
-		if kalshiKey == "" || kalshiPK == "" {
-			fmt.Println("\n⚠️ Kalshi credentials missing or incomplete.")
-			if kalshiKey == "" {
-				fmt.Print("Please enter your Kalshi API Key: ")
-				reader := bufio.NewReader(os.Stdin)
-				key, err := reader.ReadString('\n')
-				if err != nil {
-					return fmt.Errorf("failed to read Kalshi API key: %w", err)
-				}
-				kalshiKey = strings.TrimSpace(key)
+		if cfg.KalshiAPIKey == "" || cfg.KalshiPK == "" {
+			if err := setup.EnsureKalshiCredentials(cfg); err != nil {
+				return fmt.Errorf("failed to setup kalshi credentials: %w", err)
 			}
-			if kalshiPK == "" {
-				fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish):")
-				scanner := bufio.NewScanner(os.Stdin)
-				var lines []string
-				for scanner.Scan() {
-					line := scanner.Text()
-					if strings.TrimSpace(line) == "" {
-						break
-					}
-					lines = append(lines, line)
-				}
-				if err := scanner.Err(); err != nil {
-					return fmt.Errorf("failed to read Kalshi private key: %w", err)
-				}
-				kalshiPK = strings.Join(lines, "\n")
-			}
-			fmt.Println("✅ Credentials collected. Saving to .env...")
-			setup.UpdateKalshiEnvFile(kalshiKey, kalshiPK)
-			_ = godotenv.Load()
-			cfg.ReloadSecretsFromEnv()
 		}
 	}
+
+	// Disable terminal echo to prevent arrow keys from appearing
+	// This is done via stty which works on most Unix systems including Termux
+	disableEcho := exec.Command("stty", "-echo", "-icanon")
+	disableEcho.Stdin = os.Stdin
+	_ = disableEcho.Run() // Ignore errors if stty not available
 
 	// Apply fee settings to engine
 	engine.SetFeeRateBps(cfg.FeeRateBps)
@@ -866,6 +836,7 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
+		Exchange:                cfg.Exchange,
 		MarketSlug:              cfg.MarketSlug,
 		MaxMarkets:              cfg.MaxMarkets,
 		Timeframe:               cfg.Timeframe,
@@ -883,6 +854,7 @@ func run() error {
 		MaxTradeSize:            cfg.MaxTradeSize,
 		MaxDailyLoss:            cfg.MaxDailyLoss,
 	}, func(s paper.TUISettings) {
+		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
 		cfg.Timeframe = s.Timeframe
@@ -899,6 +871,12 @@ func run() error {
 		cfg.MaxAskPrice = s.MaxAskPrice
 		cfg.MaxTradeSize = s.MaxTradeSize
 		cfg.MaxDailyLoss = s.MaxDailyLoss
+		
+		// Update the REST client exchange if it changed
+		if restClient.Exchange != s.Exchange {
+			restClient.Exchange = s.Exchange
+		}
+		
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
@@ -1255,7 +1233,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 
 func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	// Setup WebSocket with retry
-	wsMgr := api.NewWSManager("")
+	wsMgr := api.NewWSManager(t.Config.Exchange, t.Config.KalshiAPIKey, t.Config.KalshiPK, "")
 	var wsErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		select {

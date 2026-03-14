@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,9 +29,11 @@ const (
 var ErrWSConnectionUnhealthy = errors.New("websocket connection unhealthy")
 
 type WSManager struct {
-	URL  string
-	conn *websocket.Conn
-	mu   sync.Mutex
+	URL          string
+	Exchange     string
+	kalshiSigner *KalshiSigner
+	conn         *websocket.Conn
+	mu           sync.Mutex
 
 	// Connection state
 	connected       atomic.Bool
@@ -54,12 +57,24 @@ type WSManager struct {
 	lastPingSentNs atomic.Int64
 }
 
-func NewWSManager(url string) *WSManager {
-	if url == "" {
-		url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+func NewWSManager(exchange, kalshiKey, kalshiPK, customURL string) *WSManager {
+	url := "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+	var kalshiSigner *KalshiSigner
+	if exchange == "kalshi" {
+		url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+		if kalshiKey != "" && kalshiPK != "" {
+			kalshiSigner, _ = NewKalshiSigner(kalshiKey, kalshiPK)
+		}
 	}
+	
+	if customURL != "" {
+		url = customURL
+	}
+
 	return &WSManager{
 		URL:           url,
+		Exchange:      exchange,
+		kalshiSigner:  kalshiSigner,
 		subscriptions: make([]interface{}, 0),
 	}
 }
@@ -97,6 +112,17 @@ func (m *WSManager) connectInternal(ctx context.Context) error {
 
 	opts := &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
+	}
+
+	if m.Exchange == "kalshi" && m.kalshiSigner != nil {
+		timestamp, signature, err := m.kalshiSigner.SignRequest("GET", "/trade-api/ws/v2")
+		if err != nil {
+			return fmt.Errorf("failed to sign kalshi ws request: %w", err)
+		}
+		opts.HTTPHeader = make(http.Header)
+		opts.HTTPHeader.Set("KALSHI-ACCESS-KEY", m.kalshiSigner.AccessKey)
+		opts.HTTPHeader.Set("KALSHI-ACCESS-SIGNATURE", signature)
+		opts.HTTPHeader.Set("KALSHI-ACCESS-TIMESTAMP", timestamp)
 	}
 
 	c, _, err := websocket.Dial(dialCtx, m.URL, opts)

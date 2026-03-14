@@ -226,10 +226,16 @@ func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []s
 	}
 	var markets []Market
 
+	// Default to 15m if not specified, since Kalshi uses explicit timeframe strings
+	tfSuffix := "15M"
+	if timeframe != "" {
+		tfSuffix = strings.ToUpper(timeframe)
+	}
+
 	for _, asset := range assets {
-		// Example kalshi series ticker: KXBTC
-		seriesTicker := "KX" + strings.ToUpper(asset)
-		url := fmt.Sprintf("%s/events?series_ticker=%s", c.KalshiBaseURL, seriesTicker)
+		// Example kalshi series ticker for 15m: KXBTC15M
+		seriesTicker := "KX" + strings.ToUpper(asset) + tfSuffix
+		url := fmt.Sprintf("%s/events?series_ticker=%s&with_nested_markets=true&limit=100", c.KalshiBaseURL, seriesTicker)
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			return nil, err
@@ -247,8 +253,12 @@ func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []s
 
 		var kalshiResp struct {
 			Events []struct {
-				Ticker   string `json:"ticker"`
-				MutuallyExclusive bool `json:"mutually_exclusive"`
+				EventTicker string `json:"event_ticker"`
+				Markets     []struct {
+					Ticker    string `json:"ticker"`
+					Status    string `json:"status"`
+					CloseTime string `json:"close_time"`
+				} `json:"markets"`
 			} `json:"events"`
 		}
 
@@ -258,25 +268,39 @@ func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []s
 		}
 		resp.Body.Close()
 
+		foundForAsset := 0
 		for _, event := range kalshiResp.Events {
-			// Basic filtering, usually we match timeframe in ticker (e.g. KXBTC-15M)
-			if timeframe != "" {
-				tfUpper := strings.ToUpper(timeframe)
-				if !strings.Contains(event.Ticker, tfUpper) {
+			for _, mkt := range event.Markets {
+				if mkt.Status != "active" {
 					continue
 				}
-			}
 
-			markets = append(markets, Market{				ConditionID: event.Ticker, // Kalshi ticker
-				Slug:        event.Ticker,
-				Active:      true,
-				Closed:      false,
-				EndTime:     time.Now().Add(1 * time.Hour), // stub
-				Tokens: []Token{
-					{TokenID: event.Ticker + "-YES", Outcome: "Yes"},
-					{TokenID: event.Ticker + "-NO", Outcome: "No"},
-				},
-			})
+				t, _ := time.Parse(time.RFC3339, mkt.CloseTime)
+				if t.IsZero() {
+					t = time.Now().Add(1 * time.Hour)
+				}
+
+				markets = append(markets, Market{
+					ConditionID: mkt.Ticker, // Kalshi ticker
+					Slug:        mkt.Ticker,
+					Active:      true,
+					Closed:      false,
+					EndTime:     t,
+					Tokens: []Token{
+						{TokenID: mkt.Ticker + "-YES", Outcome: "Yes"},
+						{TokenID: mkt.Ticker + "-NO", Outcome: "No"},
+					},
+				})
+				
+				foundForAsset++
+				// Just grab up to 3 active markets for this asset
+				if foundForAsset >= 3 {
+					break
+				}
+			}
+			if foundForAsset >= 3 {
+				break
+			}
 		}
 	}
 
@@ -523,7 +547,15 @@ func OrderBookAgeAt(book *OrderBookResponse, now time.Time) (time.Duration, erro
 }
 
 func (c *RestClient) kalshiGetOrderBook(ctx context.Context, ticker string) (*OrderBookResponse, error) {
-	url := fmt.Sprintf("%s/markets/%s/orderbook?depth=100", c.KalshiBaseURL, ticker)
+	isNoSide := strings.HasSuffix(ticker, "-NO")
+	baseTicker := ticker
+	if strings.HasSuffix(ticker, "-YES") {
+		baseTicker = strings.TrimSuffix(ticker, "-YES")
+	} else if isNoSide {
+		baseTicker = strings.TrimSuffix(ticker, "-NO")
+	}
+
+	url := fmt.Sprintf("%s/markets/%s/orderbook?depth=100", c.KalshiBaseURL, baseTicker)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -567,15 +599,28 @@ func (c *RestClient) kalshiGetOrderBook(ctx context.Context, ticker string) (*Or
 		Timestamp: fmt.Sprintf("%d", time.Now().UnixMilli()),
 	}
 
-	for _, yb := range kalshiResp.Orderbook.Yes {
-		price := float64(yb.Price) / 100.0
-		size := float64(yb.Quantity)
-		book.Bids = append(book.Bids, PriceLevel{Price: fmt.Sprintf("%.3f", price), Size: fmt.Sprintf("%.2f", size)})
-	}
-	for _, nb := range kalshiResp.Orderbook.No {
-		askPrice := float64(100 - nb.Price) / 100.0
-		size := float64(nb.Quantity)
-		book.Asks = append(book.Asks, PriceLevel{Price: fmt.Sprintf("%.3f", askPrice), Size: fmt.Sprintf("%.2f", size)})
+	if isNoSide {
+		for _, nb := range kalshiResp.Orderbook.No {
+			price := float64(nb.Price) / 100.0
+			size := float64(nb.Quantity)
+			book.Bids = append(book.Bids, PriceLevel{Price: fmt.Sprintf("%.3f", price), Size: fmt.Sprintf("%.2f", size)})
+		}
+		for _, yb := range kalshiResp.Orderbook.Yes {
+			askPrice := float64(100 - yb.Price) / 100.0
+			size := float64(yb.Quantity)
+			book.Asks = append(book.Asks, PriceLevel{Price: fmt.Sprintf("%.3f", askPrice), Size: fmt.Sprintf("%.2f", size)})
+		}
+	} else {
+		for _, yb := range kalshiResp.Orderbook.Yes {
+			price := float64(yb.Price) / 100.0
+			size := float64(yb.Quantity)
+			book.Bids = append(book.Bids, PriceLevel{Price: fmt.Sprintf("%.3f", price), Size: fmt.Sprintf("%.2f", size)})
+		}
+		for _, nb := range kalshiResp.Orderbook.No {
+			askPrice := float64(100 - nb.Price) / 100.0
+			size := float64(nb.Quantity)
+			book.Asks = append(book.Asks, PriceLevel{Price: fmt.Sprintf("%.3f", askPrice), Size: fmt.Sprintf("%.2f", size)})
+		}
 	}
 
 	return book, nil

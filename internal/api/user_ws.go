@@ -55,7 +55,7 @@ type UserWSClient struct {
 
 func NewUserWSClient(apiKey, apiSec, apiPass string) *UserWSClient {
 	return &UserWSClient{
-		manager:           NewWSManager("wss://ws-subscriptions-clob.polymarket.com/ws/user"),
+		manager:           NewWSManager("polymarket", "", "", "wss://ws-subscriptions-clob.polymarket.com/ws/user"),
 		apiKey:            apiKey,
 		apiSec:            apiSec,
 		apiPass:           apiPass,

@@ -20,48 +20,9 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 	err := cfg.ValidateForRealTrading()
 	if err != nil {
 		if cfg.Exchange == "kalshi" {
-			fmt.Println("\n⚠️ Kalshi credentials missing or incomplete.")
-
-			kalshiKey := cfg.KalshiAPIKey
-			if kalshiKey == "" {
-				fmt.Print("Please enter your Kalshi API Key: ")
-				reader := bufio.NewReader(os.Stdin)
-				input, _ := reader.ReadString('\n')
-				kalshiKey = strings.TrimSpace(input)
-				if kalshiKey == "" {
-					return nil, fmt.Errorf("kalshi api key is required for real trading")
-				}
+			if err := EnsureKalshiCredentials(cfg); err != nil {
+				return nil, err
 			}
-
-			kalshiPK := cfg.KalshiPK
-			if kalshiPK == "" {
-				fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish):")
-				scanner := bufio.NewScanner(os.Stdin)
-				var lines []string
-				for scanner.Scan() {
-					line := scanner.Text()
-					if strings.TrimSpace(line) == "" {
-						break
-					}
-					lines = append(lines, line)
-				}
-				if err := scanner.Err(); err != nil {
-					return nil, fmt.Errorf("failed to read kalshi private key: %w", err)
-				}
-				kalshiPK = strings.Join(lines, "\n")
-				if kalshiPK == "" {
-					return nil, fmt.Errorf("kalshi private key is required for real trading")
-				}
-			}
-
-			fmt.Println("✅ Credentials collected. Saving to .env...")
-			err = UpdateKalshiEnvFile(kalshiKey, kalshiPK)
-			if err != nil {
-				return nil, fmt.Errorf("failed to save .env file: %w", err)
-			}
-
-			_ = godotenv.Load()
-			cfg.ReloadSecretsFromEnv()
 		} else {
 			fmt.Println("\n⚠️ Polymarket credentials missing or incomplete.")
 
@@ -110,6 +71,53 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 	}
 
 	return trader, nil
+}
+
+// EnsureKalshiCredentials prompts the user for Kalshi API and Private Keys if missing and saves them to .env
+func EnsureKalshiCredentials(cfg *core.Config) error {
+	fmt.Println("\n⚠️ Kalshi credentials missing or incomplete.")
+
+	kalshiKey := cfg.KalshiAPIKey
+	if kalshiKey == "" {
+		fmt.Print("Please enter your Kalshi API Key: ")
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		kalshiKey = strings.TrimSpace(input)
+		if kalshiKey == "" {
+			return fmt.Errorf("kalshi api key is required")
+		}
+	}
+
+	kalshiPK := cfg.KalshiPK
+	if kalshiPK == "" {
+		fmt.Println("Please enter your Kalshi Private Key (Press Enter on an empty line to finish):")
+		scanner := bufio.NewScanner(os.Stdin)
+		var lines []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) == "" {
+				break
+			}
+			lines = append(lines, line)
+		}
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("failed to read kalshi private key: %w", err)
+		}
+		kalshiPK = strings.Join(lines, "\n")
+		if kalshiPK == "" {
+			return fmt.Errorf("kalshi private key is required")
+		}
+	}
+
+	fmt.Println("✅ Credentials collected. Saving to .env...")
+	err := UpdateKalshiEnvFile(kalshiKey, kalshiPK)
+	if err != nil {
+		return fmt.Errorf("failed to save .env file: %w", err)
+	}
+
+	_ = godotenv.Load()
+	cfg.ReloadSecretsFromEnv()
+	return nil
 }
 
 func UpdateKalshiEnvFile(kalshiKey, kalshiPK string) error {

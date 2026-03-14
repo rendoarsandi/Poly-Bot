@@ -85,14 +85,14 @@ func TestWSManagerSubscribeRead(t *testing.T) {
 }
 
 func TestWSManagerDefault(t *testing.T) {
-	mgr := NewWSManager("")
+	mgr := NewWSManager("polymarket", "", "", "")
 	if mgr.URL != "wss://ws-subscriptions-clob.polymarket.com/ws/market" {
 		t.Errorf("Expected default URL, got %s", mgr.URL)
 	}
 }
 
 func TestWSManagerTimeSinceLastDataMessage(t *testing.T) {
-	mgr := NewWSManager("")
+	mgr := NewWSManager("polymarket", "", "", "")
 	mgr.lastDataMessage.Store(time.Now().Add(-2 * time.Second).UnixNano())
 
 	got := mgr.TimeSinceLastDataMessage()
@@ -102,7 +102,7 @@ func TestWSManagerTimeSinceLastDataMessage(t *testing.T) {
 }
 
 func TestWSManagerTimeSinceLastDataMessageUnsetIsLarge(t *testing.T) {
-	mgr := NewWSManager("")
+	mgr := NewWSManager("polymarket", "", "", "")
 	if got := mgr.TimeSinceLastDataMessage(); got < time.Hour {
 		t.Fatalf("expected unset data age to appear stale, got %v", got)
 	}

@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const KalshiBaseURL = "https://trading-api.kalshi.com/trade-api/v2"
+const KalshiBaseURL = "https://api.elections.kalshi.com/trade-api/v2"
 
 // KalshiClient implements ExchangeClient for the Kalshi exchange
 type KalshiClient struct {

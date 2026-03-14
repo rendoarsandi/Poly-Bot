@@ -132,7 +132,7 @@ func TestUserWSClientSubscribeMarketsSendsAuthAndDynamicSubscribe(t *testing.T) 
 	defer server.Close()
 
 	client := NewUserWSClient("key", "secret", "pass")
-	client.manager = NewWSManager("ws" + strings.TrimPrefix(server.URL, "http"))
+	client.manager = NewWSManager("polymarket", "", "", "ws"+strings.TrimPrefix(server.URL, "http"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -191,7 +191,7 @@ func TestUserWSClientSubscribeMarketsReconnectsAfterClosedConn(t *testing.T) {
 	defer server.Close()
 
 	client := NewUserWSClient("key", "secret", "pass")
-	client.manager = NewWSManager("ws" + strings.TrimPrefix(server.URL, "http"))
+	client.manager = NewWSManager("polymarket", "", "", "ws"+strings.TrimPrefix(server.URL, "http"))
 	client.listenStarted = true
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
