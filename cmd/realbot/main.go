@@ -1087,8 +1087,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		takerCloseTime := time.Duration(tui.GetSettings().TakerCloseMarketTime) * time.Second
 		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted {
-				takerCloseAttempted = true
-
 				bestOutcome := ""
 				highestAsk := 0.0
 				for _, outcome := range outcomes {
@@ -1100,6 +1098,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 
 				if bestOutcome != "" && highestAsk > 0.50 {
+					takerCloseAttempted = true
 					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (ask: $%.2f)", id, bestOutcome, highestAsk)
 					go func(targetOutcome string) {
 						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1496,6 +1495,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			} else {
 				nextLiveRecoveryAttempt = time.Now().Add(5 * time.Second)
 			}
+		}
+
+		// Skip normal trading if we are within the TakerCloseMarket execution window
+		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+			continue
 		}
 
 		if arbMode == paperArbModeMaker {

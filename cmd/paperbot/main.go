@@ -1465,8 +1465,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			takerCloseTime := time.Duration(t.TUI.GetSettings().TakerCloseMarketTime) * time.Second
 			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
 				if !takerCloseAttempted {
-					takerCloseAttempted = true
-
 					t.mu.Lock()
 					bestOutcome := ""
 					highestAsk := 0.0
@@ -1480,6 +1478,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					t.mu.Unlock()
 
 					if bestOutcome != "" && highestAsk > 0.50 {
+						takerCloseAttempted = true
 						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (ask: $%.2f)", t.ID, bestOutcome, highestAsk)
 
 						budget := t.TUI.GetSettings().MaxTradeSize
@@ -1911,6 +1910,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 			}
 			if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
+				// Skip normal trading if we are within the TakerCloseMarket execution window
+				takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
+				if liveCfg.TakerCloseMarket && time.Until(t.EndTime) > 0 && time.Until(t.EndTime) <= takerCloseTime {
+					continue
+				}
+
 				if !localPairFresh {
 					if arbMode == paperArbModeMaker {
 						cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
