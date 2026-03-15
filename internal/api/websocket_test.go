@@ -30,7 +30,7 @@ func TestWSManagerConnect(t *testing.T) {
 	defer server.Close()
 
 	wsURL := strings.Replace(server.URL, "http", "ws", 1)
-	mgr := NewWSManager(wsURL)
+	mgr := NewWSManager("polymarket", "", "", wsURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -62,7 +62,7 @@ func TestWSManagerSubscribeRead(t *testing.T) {
 	defer server.Close()
 
 	wsURL := strings.Replace(server.URL, "http", "ws", 1)
-	mgr := NewWSManager(wsURL)
+	mgr := NewWSManager("polymarket", "", "", wsURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -122,7 +122,7 @@ func TestWSManagerReadMessageSkipsPONGAndTracksPingLatency(t *testing.T) {
 	defer server.Close()
 
 	wsURL := strings.Replace(server.URL, "http", "ws", 1)
-	mgr := NewWSManager(wsURL)
+	mgr := NewWSManager("polymarket", "", "", wsURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

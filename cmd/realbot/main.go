@@ -1007,6 +1007,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
+	takerCloseAttempted := false
 	defer tui.ClearWalletTruthPositions(id)
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
@@ -1081,6 +1082,60 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		timeToExpiry := time.Until(endTime)
+
+		// --- TAKER CLOSE MARKET LOGIC ---
+		takerCloseTime := time.Duration(tui.GetSettings().TakerCloseMarketTime) * time.Second
+		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+			if !takerCloseAttempted {
+				takerCloseAttempted = true
+				
+				bestOutcome := ""
+				highestAsk := 0.0
+				for _, outcome := range outcomes {
+					ask := tokenAsks[outcome]
+					if ask > 0 && ask < 1.0 && ask > highestAsk {
+						highestAsk = ask
+						bestOutcome = outcome
+					}
+				}
+				
+				if bestOutcome != "" {
+					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s", id, bestOutcome)
+					go func(targetOutcome string) {
+						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancelTrade()
+						
+						budget := tui.GetSettings().MaxTradeSize
+						if budget <= 0 {
+							budget = 50.0
+						}
+						limitPrice := tui.GetSettings().TakerCloseMarketSlippage
+						if limitPrice <= 0 || limitPrice >= 1.0 {
+							limitPrice = 0.99
+						}
+						
+						size := budget / limitPrice
+						
+						tokenID := ""
+						for k, v := range tokenMap {
+							if v == targetOutcome {
+								tokenID = k
+								break
+							}
+						}
+						
+						_, err := trader.Buy(tradeCtx, tokenID, targetOutcome, limitPrice, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, tokenFeeRates[targetOutcome])
+						if err != nil {
+							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, err)
+						} else {
+							tui.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.2f", id, size, limitPrice)
+						}
+					}(bestOutcome)
+				}
+			}
+		}
+		// --------------------------------
+
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 		if timeToExpiry > 0 && timeToExpiry <= mergeBuffer {
 			if time.Now().After(nextNearCloseCleanup) {
@@ -3280,12 +3335,12 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	reservedBuyNotional := realbotMakerReservedBuyNotional(makerQuotes)
 	quoteCash := math.Max(0, currentCash-reservedBuyNotional)
 
-	minQuoteShares := cfg.MakerMinQuoteValue
+	minQuoteValue := cfg.MakerMinQuoteValue
 	if liveCfg.MakerMinQuoteValue > 0 {
-		minQuoteShares = liveCfg.MakerMinQuoteValue
+		minQuoteValue = liveCfg.MakerMinQuoteValue
 	}
-	if minQuoteShares <= 0 {
-		minQuoteShares = realbotMakerMinQuoteValue
+	if minQuoteValue <= 0 {
+		minQuoteValue = realbotMakerMinQuoteValue
 	}
 	targetMult := cfg.MakerInventoryTargetMult
 	if liveCfg.MakerInventoryTargetMult > 0 {
@@ -3302,20 +3357,29 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseShares := cfg.CalculateTradeSize(currentEquity)
-	if baseShares < minQuoteShares {
-		baseShares = minQuoteShares
+	baseTradeValue := cfg.CalculateTradeSize(currentEquity)
+	if baseTradeValue < minQuoteValue {
+		baseTradeValue = minQuoteValue
 	}
-	targetShares := math.Max(minQuoteShares, baseShares*targetMult)
-	maxInventory := math.Max(targetShares, baseShares*capMult)
+	targetValue := math.Max(minQuoteValue, baseTradeValue*targetMult)
+	maxInventoryValue := math.Max(targetValue, baseTradeValue*capMult)
 	minSellEdge := liveCfg.MinMarginPercent / 100.0
 	quoteGap := resolveRealbotMakerQuoteGap(liveCfg, cfg)
 
 	makerParams := realbotMakerStrategyParams
-	makerParams.MinQuoteValue = minQuoteShares
+	makerParams.MinQuoteValue = minQuoteValue
 
-	skew0 := computeRealbotMakerInventorySkew(shares0, shares1, targetShares)
-	skew1 := computeRealbotMakerInventorySkew(shares1, shares0, targetShares)
+	targetShares0 := 0.0
+	if bid0 > 0 {
+		targetShares0 = targetValue / bid0
+	}
+	targetShares1 := 0.0
+	if bid1 > 0 {
+		targetShares1 = targetValue / bid1
+	}
+
+	skew0 := computeRealbotMakerInventorySkew(shares0, shares1, targetShares0)
+	skew1 := computeRealbotMakerInventorySkew(shares1, shares0, targetShares1)
 
 	buyPrice0, buyOK0 := computeRealbotMakerSkewedQuote(api.SideBuy, bid0, ask0, skew0, quoteGap, makerParams)
 	buyPrice1, buyOK1 := computeRealbotMakerSkewedQuote(api.SideBuy, bid1, ask1, skew1, quoteGap, makerParams)
@@ -3334,8 +3398,8 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	sellFee1 := tokenFeeRates[outcomes[1]]
 	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, quoteGap, sellFee0, timeToEnd, makerParams)
 	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, quoteGap, sellFee1, timeToEnd, makerParams)
-	sellQty0 := computeRealbotMakerSellQty(baseShares, shares0, skew0, sellPrice0, makerParams)
-	sellQty1 := computeRealbotMakerSellQty(baseShares, shares1, skew1, sellPrice1, makerParams)
+	sellQty0 := computeRealbotMakerSellQty(baseTradeValue, shares0, skew0, sellPrice0, makerParams)
+	sellQty1 := computeRealbotMakerSellQty(baseTradeValue, shares1, skew1, sellPrice1, makerParams)
 	if !sellOK0 {
 		sellQty0 = 0
 	}
@@ -3346,10 +3410,10 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	buyQty0 := 0.0
 	buyQty1 := 0.0
 	if buyOK0 && !shouldRealbotMakerBlockBuy(shares0, sellOK0, shares1, avg1, buyPrice0, minSellEdge) {
-		buyQty0 = computeRealbotMakerBuyQty(baseShares, shares0, skew0, maxInventory, quoteCash, buyPrice0, makerParams)
+		buyQty0 = computeRealbotMakerBuyQty(baseTradeValue, shares0, skew0, maxInventoryValue, quoteCash, buyPrice0, makerParams)
 	}
 	if buyOK1 && !shouldRealbotMakerBlockBuy(shares1, sellOK1, shares0, avg0, buyPrice1, minSellEdge) {
-		buyQty1 = computeRealbotMakerBuyQty(baseShares, shares1, skew1, maxInventory, quoteCash, buyPrice1, makerParams)
+		buyQty1 = computeRealbotMakerBuyQty(baseTradeValue, shares1, skew1, maxInventoryValue, quoteCash, buyPrice1, makerParams)
 	}
 
 	changed := false

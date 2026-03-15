@@ -106,6 +106,9 @@ type Config struct {
 	MakerMinQuoteValue      float64 // Minimum shares to quote (default: 10.0)
 	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
+	TakerCloseMarket         bool    // Force GTC buy right before market closes
+	TakerCloseMarketTime     int     // Seconds before close to trigger (default: 5)
+	TakerCloseMarketSlippage float64 // Limit price for taker close (default: 0.99)
 
 	settingsProfile string
 	settingsPath    string
@@ -147,6 +150,9 @@ type RuntimeSettings struct {
 	MakerMinQuoteValue            float64 `json:"makerMinQuoteValue"`
 	SplitInitialCapPct             float64 `json:"splitInitialCapPct"`
 	SplitReplenishCapPct           float64 `json:"splitReplenishCapPct"`
+	TakerCloseMarket               bool    `json:"takerCloseMarket"`
+	TakerCloseMarketTime           int     `json:"takerCloseMarketTime"`
+	TakerCloseMarketSlippage       float64 `json:"takerCloseMarketSlippage"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -479,6 +485,9 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MakerMinQuoteValue:            c.MakerMinQuoteValue,
 		SplitInitialCapPct:             c.SplitInitialCapPct,
 		SplitReplenishCapPct:           c.SplitReplenishCapPct,
+		TakerCloseMarket:               c.TakerCloseMarket,
+		TakerCloseMarketTime:           c.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
 	}
 }
 
@@ -520,6 +529,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.MakerMinQuoteValue = s.MakerMinQuoteValue
 	c.SplitInitialCapPct = s.SplitInitialCapPct
 	c.SplitReplenishCapPct = s.SplitReplenishCapPct
+	c.TakerCloseMarket = s.TakerCloseMarket
 
 	// Force disable split/merge for Kalshi
 	if c.Exchange == "kalshi" {

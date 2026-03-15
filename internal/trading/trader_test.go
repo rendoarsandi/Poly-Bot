@@ -250,7 +250,7 @@ func TestRealTraderWaitForFill_UsesWSBeforeRESTFallback(t *testing.T) {
 	client.BaseURL = server.URL
 
 	trader := &RealTrader{
-		clob:                client,
+		client:              client,
 		livePositions:       make(map[string]float64),
 		confirmedOrderFills: make(map[string]float64),
 	}

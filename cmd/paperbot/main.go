@@ -614,12 +614,12 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		return
 	}
 
-	minQuoteShares := t.Config.MakerMinQuoteValue
+	minQuoteValue := t.Config.MakerMinQuoteValue
 	if liveCfg.MakerMinQuoteValue > 0 {
-		minQuoteShares = liveCfg.MakerMinQuoteValue
+		minQuoteValue = liveCfg.MakerMinQuoteValue
 	}
-	if minQuoteShares <= 0 {
-		minQuoteShares = paperMakerMinQuoteValue
+	if minQuoteValue <= 0 {
+		minQuoteValue = paperMakerMinQuoteValue
 	}
 	targetMult := t.Config.MakerInventoryTargetMult
 	if liveCfg.MakerInventoryTargetMult > 0 {
@@ -636,20 +636,29 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		capMult = paperMakerInventoryCapMult
 	}
 
-	baseShares := t.Config.CalculateTradeSize(currentEquity)
-	if baseShares < minQuoteShares {
-		baseShares = minQuoteShares
+	baseTradeValue := t.Config.CalculateTradeSize(currentEquity)
+	if baseTradeValue < minQuoteValue {
+		baseTradeValue = minQuoteValue
 	}
-	targetShares := math.Max(minQuoteShares, baseShares*targetMult)
-	maxInventory := math.Max(targetShares, baseShares*capMult)
+	targetValue := math.Max(minQuoteValue, baseTradeValue*targetMult)
+	maxInventoryValue := math.Max(targetValue, baseTradeValue*capMult)
 	minSellEdge := t.Config.MinMarginPercent / 100.0
 	quoteGap := resolvePaperMakerQuoteGap(liveCfg, t.Config)
 
 	makerParams := paperMakerStrategyParams
-	makerParams.MinQuoteValue = minQuoteShares
+	makerParams.MinQuoteValue = minQuoteValue
 
-	skew1 := computePaperMakerInventorySkew(shares1, shares2, targetShares)
-	skew2 := computePaperMakerInventorySkew(shares2, shares1, targetShares)
+	targetShares1 := 0.0
+	if bid1 > 0 {
+		targetShares1 = targetValue / bid1
+	}
+	targetShares2 := 0.0
+	if bid2 > 0 {
+		targetShares2 = targetValue / bid2
+	}
+
+	skew1 := computePaperMakerInventorySkew(shares1, shares2, targetShares1)
+	skew2 := computePaperMakerInventorySkew(shares2, shares1, targetShares2)
 
 	buyPrice1, buyOK1 := computePaperMakerSkewedQuote("buy", bid1, ask1, skew1, quoteGap, makerParams)
 	buyPrice2, buyOK2 := computePaperMakerSkewedQuote("buy", bid2, ask2, skew2, quoteGap, makerParams)
@@ -666,8 +675,8 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 
 	sellPrice1, sellOK1 := computePaperMakerProtectedSellQuote(bid1, ask1, avgCost1, minSellEdge, skew1, quoteGap, t.Config.FeeRateBps, timeToEnd, makerParams)
 	sellPrice2, sellOK2 := computePaperMakerProtectedSellQuote(bid2, ask2, avgCost2, minSellEdge, skew2, quoteGap, t.Config.FeeRateBps, timeToEnd, makerParams)
-	sellQty1 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares1, skew1, sellPrice1, makerParams))
-	sellQty2 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseShares, shares2, skew2, sellPrice2, makerParams))
+	sellQty1 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseTradeValue, shares1, skew1, sellPrice1, makerParams))
+	sellQty2 := math.Min(MaxSharesPerSell, computePaperMakerSellQty(baseTradeValue, shares2, skew2, sellPrice2, makerParams))
 	if !sellOK1 {
 		sellQty1 = 0
 	}
@@ -678,10 +687,10 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	buyQty1 := 0.0
 	buyQty2 := 0.0
 	if buyOK1 && !shouldPaperMakerBlockBuy(shares1, sellOK1, shares2, avgCost2, buyPrice1, minSellEdge) {
-		buyQty1 = math.Min(MaxSharesPerSell, computePaperMakerBuyQty(baseShares, shares1, skew1, maxInventory, currentCash, buyPrice1, makerParams))
+		buyQty1 = math.Min(MaxSharesPerSell, computePaperMakerBuyQty(baseTradeValue, shares1, skew1, maxInventoryValue, currentCash, buyPrice1, makerParams))
 	}
 	if buyOK2 && !shouldPaperMakerBlockBuy(shares2, sellOK2, shares1, avgCost1, buyPrice2, minSellEdge) {
-		buyQty2 = math.Min(MaxSharesPerSell, computePaperMakerBuyQty(baseShares, shares2, skew2, maxInventory, currentCash, buyPrice2, makerParams))
+		buyQty2 = math.Min(MaxSharesPerSell, computePaperMakerBuyQty(baseTradeValue, shares2, skew2, maxInventoryValue, currentCash, buyPrice2, makerParams))
 	}
 
 	changed := false
@@ -1367,6 +1376,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
+	takerCloseAttempted := false
 
 	for {
 		select {
@@ -1450,6 +1460,62 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Handle market ending
 			timeToEnd := time.Until(t.EndTime)
+
+			// --- TAKER CLOSE MARKET LOGIC ---
+			takerCloseTime := time.Duration(t.TUI.GetSettings().TakerCloseMarketTime) * time.Second
+			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
+				if !takerCloseAttempted {
+					takerCloseAttempted = true
+
+					t.mu.Lock()
+					bestOutcome := ""
+					highestAsk := 0.0
+					for _, outcome := range t.Outcomes {
+						ask := t.TokenAsks[outcome]
+						if ask > 0 && ask < 1.0 && ask > highestAsk {
+							highestAsk = ask
+							bestOutcome = outcome
+						}
+					}
+					t.mu.Unlock()
+
+					if bestOutcome != "" {
+						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s", t.ID, bestOutcome)
+						
+						budget := t.TUI.GetSettings().MaxTradeSize
+						if budget <= 0 {
+							budget = 50.0
+						}
+						limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
+						if limitPrice <= 0 || limitPrice >= 1.0 {
+							limitPrice = 0.99
+						}
+						
+						size := budget / limitPrice
+						if size < t.Config.MinOrderSize {
+							size = t.Config.MinOrderSize
+						}
+						
+						tokenID := ""
+						for k, v := range t.TokenMap {
+							if v == bestOutcome {
+								tokenID = k
+								break
+							}
+						}
+						
+						// Paper bot order placement
+						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 5*time.Second)
+						go func(tCtx context.Context, target string, sz float64, price float64, tid string) {
+							defer cancelTrade()
+							order := t.OrderBook.PlaceOrder(target, "buy", price, sz, 0)
+							t.TUI.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.2f (paper ID: %d)", t.ID, sz, price, order.ID)
+						}(tradeCtx, bestOutcome, size, limitPrice, tokenID)
+					}
+				}
+			}
+			// --------------------------------
+
 			isExpired := timeToEnd <= 0
 
 			if isExpired && !t.MarketEnded {

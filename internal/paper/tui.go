@@ -231,13 +231,16 @@ type TUISettings struct {
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 	MaxTradeSize                   float64 // e.g. 50.00 = max trade size $50
 	MaxDailyLoss                   float64 // e.g. 0.0 = disabled, else max drawdown limit
+	TakerCloseMarket               bool    // e.g. force buy higher side close to end
+	TakerCloseMarketTime           int     // e.g. 5 seconds
+	TakerCloseMarketSlippage       float64 // e.g. 0.99 limit price
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 10.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99}
 )
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
@@ -308,28 +311,34 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case 10:
 		return "Split Replenish Cap"
 	case 11:
-		return "Min Ask Price"
+		return "Taker Close Market"
 	case 12:
+		return "Min Ask Price"
+	case 13:
 		if maker {
 			return "Maker Max Buy Price"
 		}
 		return "Max Ask Price"
-	case 13:
-		return "Maker Merge Buffer"
 	case 14:
-		return "Maker Quote Gap"
+		return "Maker Merge Buffer"
 	case 15:
-		return "Maker Target Mult"
+		return "Maker Quote Gap"
 	case 16:
-		return "Maker Cap Mult"
+		return "Maker Target Mult"
 	case 17:
-		return "Maker Min Quote ($)"
+		return "Maker Cap Mult"
 	case 18:
-		return "Max Trade Size"
+		return "Maker Min Quote ($)"
 	case 19:
-		return "Max Daily Loss"
+		return "Max Trade Size"
 	case 20:
+		return "Max Daily Loss"
+	case 21:
 		return "Exchange"
+	case 22:
+		return "Taker Close Time"
+	case 23:
+		return "Taker Close Slippage"
 	default:
 		return ""
 	}
@@ -801,7 +810,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for {
 					m.settingsCursor--
 					if m.settingsCursor < 0 {
-						m.settingsCursor = 20
+						m.settingsCursor = 23
 					}
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
@@ -810,7 +819,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "down", "j":
 				for {
-					m.settingsCursor = (m.settingsCursor + 1) % 21
+					m.settingsCursor = (m.settingsCursor + 1) % 24
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
 					}
@@ -895,64 +904,79 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
+					m.tui.settings.TakerCloseMarket = !m.tui.settings.TakerCloseMarket
+					changed = true
+				case 12:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
 						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
-				case 12:
+				case 13:
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
 					}
 					changed = true
-				case 13:
+				case 14:
 					m.tui.settings.MakerMergeBufferSeconds -= 5
 					if m.tui.settings.MakerMergeBufferSeconds < 5 {
 						m.tui.settings.MakerMergeBufferSeconds = 5
 					}
 					changed = true
-				case 14:
+				case 15:
 					m.tui.settings.MakerQuoteGap -= 0.001
 					if m.tui.settings.MakerQuoteGap < 0.001 {
 						m.tui.settings.MakerQuoteGap = 0.001
 					}
 					changed = true
-				case 15:
+				case 16:
 					m.tui.settings.MakerInventoryTargetMult -= 0.5
 					if m.tui.settings.MakerInventoryTargetMult < 1.0 {
 						m.tui.settings.MakerInventoryTargetMult = 1.0
 					}
 					changed = true
-				case 16:
+				case 17:
 					m.tui.settings.MakerInventoryCapMult -= 0.5
 					if m.tui.settings.MakerInventoryCapMult < 1.0 {
 						m.tui.settings.MakerInventoryCapMult = 1.0
 					}
 					changed = true
-				case 17:
+				case 18:
 					m.tui.settings.MakerMinQuoteValue -= 1.0
 					if m.tui.settings.MakerMinQuoteValue < 1.0 {
 						m.tui.settings.MakerMinQuoteValue = 1.0
 					}
 					changed = true
-				case 18:
+				case 19:
 					m.tui.settings.MaxTradeSize -= 5.0
 					if m.tui.settings.MaxTradeSize < 0.0 {
 						m.tui.settings.MaxTradeSize = 0.0
 					}
 					changed = true
-				case 19:
+				case 20:
 					m.tui.settings.MaxDailyLoss -= 5.0
 					if m.tui.settings.MaxDailyLoss < 0.0 {
 						m.tui.settings.MaxDailyLoss = 0.0
 					}
 					changed = true
-				case 20:
+				case 21:
 					newM, cmd := m.toggleExchange()
 					if cmd != nil {
 						m.tui.mu.Unlock()
 						return newM, cmd
+					}
+					changed = true
+				case 22:
+					m.tui.settings.TakerCloseMarketTime -= 1
+					if m.tui.settings.TakerCloseMarketTime < 1 {
+						m.tui.settings.TakerCloseMarketTime = 1
+					}
+					changed = true
+				case 23:
+					m.tui.settings.TakerCloseMarketSlippage -= 0.01
+					if m.tui.settings.TakerCloseMarketSlippage < 0.50 {
+						m.tui.settings.TakerCloseMarketSlippage = 0.50
 					}
 					changed = true
 				}
@@ -1074,22 +1098,40 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 17:
+					m.tui.settings.MakerInventoryCapMult += 0.5
+					if m.tui.settings.MakerInventoryCapMult > 50.0 {
+						m.tui.settings.MakerInventoryCapMult = 50.0
+					}
+					changed = true
+				case 18:
 					m.tui.settings.MakerMinQuoteValue += 1.0
 					if m.tui.settings.MakerMinQuoteValue > 500.0 {
 						m.tui.settings.MakerMinQuoteValue = 500.0
 					}
 					changed = true
-				case 18:
+				case 19:
 					m.tui.settings.MaxTradeSize += 5.0
 					changed = true
-				case 19:
+				case 20:
 					m.tui.settings.MaxDailyLoss += 5.0
 					changed = true
-				case 20:
+				case 21:
 					newM, cmd := m.toggleExchange()
 					if cmd != nil {
 						m.tui.mu.Unlock()
 						return newM, cmd
+					}
+					changed = true
+				case 22:
+					m.tui.settings.TakerCloseMarketTime += 1
+					if m.tui.settings.TakerCloseMarketTime > 60 {
+						m.tui.settings.TakerCloseMarketTime = 60
+					}
+					changed = true
+				case 23:
+					m.tui.settings.TakerCloseMarketSlippage += 0.01
+					if m.tui.settings.TakerCloseMarketSlippage > 0.99 {
+						m.tui.settings.TakerCloseMarketSlippage = 0.99
 					}
 					changed = true
 				}
@@ -2832,41 +2874,51 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, 11),
+			value: func() string {
+				if cfg.TakerCloseMarket {
+					return styleGreen.Render("  ON ")
+				}
+				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, 12),
 			value: fmt.Sprintf(" $%.2f ", cfg.MinAskPrice),
 			bar:   renderBar(cfg.MinAskPrice, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 12),
+			label: settingsRowLabel(cfg, 13),
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 13),
+			label: settingsRowLabel(cfg, 14),
 			value: fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds),
 			bar:   renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 14),
+			label: settingsRowLabel(cfg, 15),
 			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
 			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 15),
+			label: settingsRowLabel(cfg, 16),
 			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryTargetMult),
 			bar:   renderBar(cfg.MakerInventoryTargetMult/10.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 16),
+			label: settingsRowLabel(cfg, 17),
 			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryCapMult),
 			bar:   renderBar(cfg.MakerInventoryCapMult/20.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 17),
+			label: settingsRowLabel(cfg, 18),
 			value: fmt.Sprintf(" $%.1f ", cfg.MakerMinQuoteValue),
 			bar:   renderBar(cfg.MakerMinQuoteValue/50.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 18),
+			label: settingsRowLabel(cfg, 19),
 			value: func() string {
 				if cfg.MaxTradeSize <= 0 {
 					return styleMuted.Render(" disabled ")
@@ -2881,7 +2933,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}(),
 		},
 		{
-			label: settingsRowLabel(cfg, 19),
+			label: settingsRowLabel(cfg, 20),
 			value: func() string {
 				if cfg.MaxDailyLoss <= 0 {
 					return styleMuted.Render(" disabled ")
@@ -2896,7 +2948,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}(),
 		},
 		{
-			label: settingsRowLabel(cfg, 20),
+			label: settingsRowLabel(cfg, 21),
 			value: func() string {
 				if cfg.Exchange == "kalshi" {
 					return styleGreen.Render(" kalshi ")

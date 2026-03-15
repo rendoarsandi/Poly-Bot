@@ -1,5 +1,5 @@
 {
-  "exchange": "kalshi",
+  "exchange": "polymarket",
   "marketSlug": "ALL",
   "timeframe": "15m",
   "maxMarkets": 4,
@@ -27,7 +27,7 @@
   "splitTargetMarginReserve": 6,
   "splitReplenishThreshold": 50,
   "splitMergeBufferSeconds": 30,
-  "makerMergeBufferSeconds": 15,
+  "makerMergeBufferSeconds": 0,
   "makerQuoteGap": 0.005,
   "makerInventoryTargetMult": 2,
   "makerInventoryCapMult": 4,

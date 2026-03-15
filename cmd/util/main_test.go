@@ -34,12 +34,13 @@ func TestUtilbotRefreshRestQuotesFetchesBooksConcurrently(t *testing.T) {
 		case "no-token":
 			_, _ = fmt.Fprint(w, `{"asset_id":"no-token","bids":[{"price":"0.57","size":"8"}],"asks":[{"price":"0.59","size":"11"}]}`)
 		default:
-			http.Error(w, "unexpected token", http.StatusNotFound)
+			http.Error(w, "unexpected token: " + r.URL.String(), http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	client := api.NewRestClient(server.URL)
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
 	store := newUtilbotQuoteStore()
 	utilbotRefreshRestQuotes(context.Background(), client, map[string]string{
 		"yes-token": "Yes",

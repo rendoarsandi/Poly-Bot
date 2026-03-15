@@ -284,12 +284,13 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 		case "up-token":
 			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.61\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.62\",\"size\":\"10\"}]}"))
 		default:
-			http.Error(w, "unexpected token", http.StatusNotFound)
+			http.Error(w, "unexpected token: " + r.URL.String(), http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	client := api.NewRestClient(server.URL)
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
 	market := &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}}
 	outcomes := []string{"Down", "Up"}
 	tokenBids := map[string]float64{"Down": 0.30, "Up": 0.60}

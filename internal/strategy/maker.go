@@ -68,8 +68,13 @@ func ComputeMakerSkewedQuote(isBuy bool, bid, ask, skew, quoteGap float64, param
 	return price, true
 }
 
-func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventory, cash, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
-	if price <= 0 || cash <= 0 || positionShares >= maxInventory {
+func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventoryValue, cash, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
+	if price <= 0 || cash <= 0 {
+		return 0
+	}
+
+	maxInventoryShares := maxInventoryValue / price
+	if positionShares >= maxInventoryShares {
 		return 0
 	}
 
@@ -83,7 +88,7 @@ func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventory, cash
 	baseShares := baseTradeValue / price
 	qty := baseShares * (1.0 - math.Max(0, skew)*params.QuoteSizeSkewFactor)
 	
-	remainingInventory := maxInventory - positionShares
+	remainingInventory := maxInventoryShares - positionShares
 	if qty > remainingInventory {
 		qty = remainingInventory
 	}
