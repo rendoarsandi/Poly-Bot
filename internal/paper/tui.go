@@ -1062,39 +1062,36 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 11:
+					m.tui.settings.TakerCloseMarket = !m.tui.settings.TakerCloseMarket
+					changed = true
+				case 12:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
 						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
-				case 12:
+				case 13:
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
 					}
 					changed = true
-				case 13:
+				case 14:
 					m.tui.settings.MakerMergeBufferSeconds += 5
 					if m.tui.settings.MakerMergeBufferSeconds > 300 {
 						m.tui.settings.MakerMergeBufferSeconds = 300
 					}
 					changed = true
-				case 14:
+				case 15:
 					m.tui.settings.MakerQuoteGap += 0.001
 					if m.tui.settings.MakerQuoteGap > 0.100 {
 						m.tui.settings.MakerQuoteGap = 0.100
 					}
 					changed = true
-				case 15:
+				case 16:
 					m.tui.settings.MakerInventoryTargetMult += 0.5
 					if m.tui.settings.MakerInventoryTargetMult > 20.0 {
 						m.tui.settings.MakerInventoryTargetMult = 20.0
-					}
-					changed = true
-				case 16:
-					m.tui.settings.MakerInventoryCapMult += 0.5
-					if m.tui.settings.MakerInventoryCapMult > 50.0 {
-						m.tui.settings.MakerInventoryCapMult = 50.0
 					}
 					changed = true
 				case 17:

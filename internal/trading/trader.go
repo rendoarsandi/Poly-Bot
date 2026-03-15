@@ -267,6 +267,10 @@ type RealTrader struct {
 	cachedBalance     float64
 	lastBalanceUpdate time.Time
 
+	ctfBalanceCache      map[string]float64
+	lastCTFBalanceUpdate map[string]time.Time
+	ctfMu                sync.Mutex
+
 	livePositions       map[string]float64
 	confirmedOrderFills map[string]float64
 	posMu               sync.Mutex
@@ -296,12 +300,14 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
 	trader := &RealTrader{
-		client:              client,
-		polygon:             polygon,
-		config:              cfg,
-		startOfDay:          time.Now().Truncate(24 * time.Hour),
-		livePositions:       make(map[string]float64),
-		confirmedOrderFills: make(map[string]float64),
+		client:               client,
+		polygon:              polygon,
+		config:               cfg,
+		startOfDay:           time.Now().Truncate(24 * time.Hour),
+		ctfBalanceCache:      make(map[string]float64),
+		lastCTFBalanceUpdate: make(map[string]time.Time),
+		livePositions:        make(map[string]float64),
+		confirmedOrderFills:  make(map[string]float64),
 	}
 
 	// Initialize User WebSocket for real-time fills
@@ -1115,6 +1121,16 @@ func (t *RealTrader) Address() string {
 
 // GetCTFBalanceFloat returns the on-chain CTF token balance as a float64 (human-readable shares)
 func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
+	t.ctfMu.Lock()
+	cachedBal, ok := t.ctfBalanceCache[tokenID]
+	lastUpdate, okTime := t.lastCTFBalanceUpdate[tokenID]
+	t.ctfMu.Unlock()
+
+	// Use cache if it's less than 2 seconds old
+	if ok && okTime && time.Since(lastUpdate) < 2*time.Second {
+		return cachedBal, nil
+	}
+
 	tid := new(big.Int)
 	tid.SetString(tokenID, 10)
 	bal, err := t.polygon.GetCTFBalance(ctx, t.client.Address(), tid)
@@ -1124,6 +1140,12 @@ func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (fl
 	shares := new(big.Float).SetInt(bal)
 	shares = shares.Quo(shares, big.NewFloat(1e6))
 	s, _ := shares.Float64()
+
+	t.ctfMu.Lock()
+	t.ctfBalanceCache[tokenID] = s
+	t.lastCTFBalanceUpdate[tokenID] = time.Now()
+	t.ctfMu.Unlock()
+
 	return s, nil
 }
 
@@ -1233,10 +1255,10 @@ func (t *RealTrader) QueryBalancedCTFBalances(
 	token0, token1 string,
 	expectedShares float64,
 ) (bal0, bal1 float64, err0, err1 error) {
-	// Increase attempts from 8 to 20, wait 1 second between attempts (total 20s timeout)
+	// Increase attempts from 8 to 20, wait 2.5 seconds between attempts (total 50s timeout)
 	// Position updates via REST/WS might be slightly delayed after on-chain mints
 	const maxAttempts = 20
-	const settleDelay = 1000 * time.Millisecond
+	const settleDelay = 2500 * time.Millisecond
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		bal0, err0 = t.GetCTFBalanceFloat(ctx, token0)
@@ -1274,7 +1296,7 @@ func (t *RealTrader) QueryBalancedCTFBalanceDelta(
 	initial0, initial1, expectedDelta float64,
 ) (delta0, delta1, bal0, bal1 float64, err0, err1 error) {
 	const maxAttempts = 20
-	const settleDelay = 1000 * time.Millisecond
+	const settleDelay = 2500 * time.Millisecond
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		bal0, err0 = t.GetCTFBalanceFloat(ctx, token0)

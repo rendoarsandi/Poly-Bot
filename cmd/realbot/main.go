@@ -1020,7 +1020,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	}
 	refreshWalletTruth(5 * time.Second)
 	go func() {
-		ticker := time.NewTicker(8 * time.Second)
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {

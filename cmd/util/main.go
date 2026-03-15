@@ -1185,7 +1185,7 @@ func utilbotQueryLiveBuyBalanceDelta(ctx context.Context, trader *trading.RealTr
 
 func utilbotQueryBuyBalanceDelta(ctx context.Context, trader *trading.RealTrader, tokenIDs [2]string, initialBal0, initialBal1 float64, haveInitialSnapshot bool) (acquired0, acquired1, bal0, bal1 float64, err0, err1 error) {
 	const maxAttempts = 5
-	const settleDelay = 750 * time.Millisecond
+	const settleDelay = 2500 * time.Millisecond
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		bal0, err0 = trader.GetCTFBalanceFloat(ctx, tokenIDs[0])
