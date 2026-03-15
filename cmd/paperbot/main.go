@@ -1479,9 +1479,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 					t.mu.Unlock()
 
-					if bestOutcome != "" {
-						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s", t.ID, bestOutcome)
-						
+					if bestOutcome != "" && highestAsk > 0.50 {
+						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (ask: $%.2f)", t.ID, bestOutcome, highestAsk)
+
 						budget := t.TUI.GetSettings().MaxTradeSize
 						if budget <= 0 {
 							budget = 50.0
@@ -1490,12 +1490,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if limitPrice <= 0 || limitPrice >= 1.0 {
 							limitPrice = 0.99
 						}
-						
+
 						size := budget / limitPrice
 						if size < t.Config.MinOrderSize {
 							size = t.Config.MinOrderSize
 						}
-						
+
 						tokenID := ""
 						for k, v := range t.TokenMap {
 							if v == bestOutcome {
@@ -1503,7 +1503,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								break
 							}
 						}
-						
+
 						// Paper bot order placement
 						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 5*time.Second)
 						go func(tCtx context.Context, target string, sz float64, price float64, tid string) {
@@ -1513,9 +1513,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}(tradeCtx, bestOutcome, size, limitPrice, tokenID)
 					}
 				}
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			// --------------------------------
-
 			isExpired := timeToEnd <= 0
 
 			if isExpired && !t.MarketEnded {

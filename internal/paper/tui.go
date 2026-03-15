@@ -280,6 +280,8 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 		return !maker
 	case 13, 14, 15, 16, 17: // Maker specific
 		return maker
+	case 22, 23: // Close Market specific
+		return cfg.TakerCloseMarket
 	default:
 		return true
 	}
@@ -2953,6 +2955,16 @@ func (m tuiModel) renderSettings(w int) string {
 				return styleYellow.Render(" polymarket ")
 			}(),
 			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, 22),
+			value: fmt.Sprintf(" %ds ", cfg.TakerCloseMarketTime),
+			bar:   renderBar(float64(cfg.TakerCloseMarketTime)/60.0, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 23),
+			value: fmt.Sprintf(" $%.2f ", cfg.TakerCloseMarketSlippage),
+			bar:   renderBar(cfg.TakerCloseMarketSlippage, 20),
 		},
 	}
 

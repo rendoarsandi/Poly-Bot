@@ -1088,7 +1088,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted {
 				takerCloseAttempted = true
-				
+
 				bestOutcome := ""
 				highestAsk := 0.0
 				for _, outcome := range outcomes {
@@ -1098,13 +1098,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						bestOutcome = outcome
 					}
 				}
-				
-				if bestOutcome != "" {
-					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s", id, bestOutcome)
+
+				if bestOutcome != "" && highestAsk > 0.50 {
+					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (ask: $%.2f)", id, bestOutcome, highestAsk)
 					go func(targetOutcome string) {
 						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancelTrade()
-						
+
 						budget := tui.GetSettings().MaxTradeSize
 						if budget <= 0 {
 							budget = 50.0
@@ -1113,9 +1113,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if limitPrice <= 0 || limitPrice >= 1.0 {
 							limitPrice = 0.99
 						}
-						
+
 						size := budget / limitPrice
-						
+
 						tokenID := ""
 						for k, v := range tokenMap {
 							if v == targetOutcome {
@@ -1123,7 +1123,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								break
 							}
 						}
-						
+
 						_, err := trader.Buy(tradeCtx, tokenID, targetOutcome, limitPrice, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, tokenFeeRates[targetOutcome])
 						if err != nil {
 							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, err)
@@ -1133,9 +1133,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}(bestOutcome)
 				}
 			}
+			time.Sleep(250 * time.Millisecond)
+			continue
 		}
 		// --------------------------------
-
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 		if timeToExpiry > 0 && timeToExpiry <= mergeBuffer {
 			if time.Now().After(nextNearCloseCleanup) {
