@@ -504,6 +504,7 @@ type WalletTruthPosition struct {
 	LocalShares   float64
 	OnChainShares float64
 	Drift         float64
+	Redeemable    bool
 }
 
 type tickMsg time.Time
@@ -1700,6 +1701,21 @@ func (t *TUI) SetWalletTruthPositions(marketID string, positions []WalletTruthPo
 	t.walletTruth[marketID] = append([]WalletTruthPosition(nil), positions...)
 }
 
+func (t *TUI) UpdateWalletTruthRedeemable(marketID string, winningOutcome string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	positions, ok := t.walletTruth[marketID]
+	if !ok {
+		return
+	}
+	for i := range positions {
+		if positions[i].Outcome == winningOutcome && positions[i].OnChainShares > 0 {
+			positions[i].Redeemable = true
+		}
+	}
+	t.walletTruth[marketID] = positions
+}
+
 func (t *TUI) ClearWalletTruthPositions(marketID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -2533,12 +2549,19 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					marker = "⚠"
 					marketWarning = true
 				}
-				parts = append(parts, fmt.Sprintf("%s %s L:%.4f C:%.4f Δ:%s",
+				
+				redeemTag := ""
+				if wt.Redeemable {
+					redeemTag = styleGreen.Render(" [REDEEMABLE]")
+				}
+
+				parts = append(parts, fmt.Sprintf("%s %s L:%.4f C:%.4f Δ:%s%s",
 					marker,
 					core.SanitizeString(wt.Outcome),
 					wt.LocalShares,
 					wt.OnChainShares,
 					driftStyle.Render(fmt.Sprintf("%+.4f", wt.Drift)),
+					redeemTag,
 				))
 			}
 			prefix := "  " + aStyle.Render("["+marketID+"]") + "  "

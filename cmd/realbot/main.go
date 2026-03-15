@@ -4485,28 +4485,26 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 					trader.RecordLoss(-result.TotalPnL)
 				}
 
+				// Update UI to show [REDEEMABLE] tag while we wait for on-chain resolution
+				tui.UpdateWalletTruthRedeemable(id, winner)
+
 				// AUTOMATIC ON-CHAIN REDEMPTION
-				// This is disabled as requested since it takes a long time.
-				// The user can use the manual tools to redeem later.
-				tui.LogEvent("[%s] ℹ️ Skipping auto-redeem. Use manual tool to claim.", id)
-				/*
-					go func(cid string) {
-						tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
-						// Wait a bit for on-chain state to sync
-						time.Sleep(30 * time.Second)
-						// Use fresh context since parent ctx may be cancelled during shutdown
-						redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-						defer cancel()
-						txHash, err := trader.RedeemOnChain(redeemCtx, cid)
-						if err != nil {
-							tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
-						} else if len(txHash) >= 10 {
-							tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
-						} else {
-							tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
-						}
-					}(conditionID)
-				*/
+				go func(cid string, numOutcomes int) {
+					tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
+					// Wait a bit for on-chain state to sync
+					time.Sleep(30 * time.Second)
+					// Use fresh context since parent ctx may be cancelled during shutdown
+					redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					defer cancel()
+					txHash, err := trader.RedeemOnChain(redeemCtx, cid, numOutcomes)
+					if err != nil {
+						tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
+					} else if len(txHash) >= 10 {
+						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
+					} else {
+						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
+					}
+				}(conditionID, len(info.Tokens))
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}

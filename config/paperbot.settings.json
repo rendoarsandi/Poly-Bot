@@ -1,7 +1,7 @@
 {
   "exchange": "polymarket",
   "marketSlug": "ALL",
-  "timeframe": "15m",
+  "timeframe": "5m",
   "maxMarkets": 4,
   "baseBalance": 1000,
   "baseTradeSize": 10,
@@ -18,9 +18,9 @@
   "restFallbackPollIntervalMs": 1000,
   "enableMarginAggression": true,
   "maxAggressionMultiplier": 3,
-  "minAskPrice": 0.05,
+  "minAskPrice": 0.01,
   "maxAskPrice": 0.95,
-  "paperArbMode": "maker",
+  "paperArbMode": "taker",
   "buyExecutionMarginFloorPercent": -1,
   "splitStrategyEnabled": false,
   "splitMinMarginSell": 2,
@@ -33,5 +33,8 @@
   "makerInventoryCapMult": 4,
   "makerMinQuoteValue": 5,
   "splitInitialCapPct": 0.25,
-  "splitReplenishCapPct": 0.5
+  "splitReplenishCapPct": 0.5,
+  "takerCloseMarket": false,
+  "takerCloseMarketTime": 0,
+  "takerCloseMarketSlippage": 0
 }
