@@ -651,6 +651,14 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+			// If market is closed or token not found, return empty book rather than error
+			return &OrderBookResponse{
+				Bids:      make([]PriceLevel, 0),
+				Asks:      make([]PriceLevel, 0),
+				Timestamp: fmt.Sprintf("%d", time.Now().UnixMilli()),
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to fetch order book: status %d", resp.StatusCode)
 	}
 
