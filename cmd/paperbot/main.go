@@ -1839,10 +1839,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			forceRestFallback := !localPairFresh && pairQuoteAge > restFallbackQuoteAge
 
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			if forceRestFallback || wsUnhealthy || shouldPaperRestFallback(pairQuoteAge, time.Since(t.LastRestPoll), restFallbackQuoteAge, restFallbackPollInterval) {
+			if (forceRestFallback || wsUnhealthy || pairQuoteAge > restFallbackQuoteAge) && time.Since(t.LastRestPoll) > restFallbackPollInterval {
 				t.handleRestFallback(ctx, tokenPrices, pairQuoteAge)
 			}
-
 			// FORCE RECONNECT: If stale for 10s for faster recovery
 			if pairQuoteAge > 10*time.Second {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
