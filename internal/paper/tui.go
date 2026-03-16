@@ -2055,7 +2055,24 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		if effBid2 == 0 && effAsk1 > 0 { effBid2 = 1.0 - effAsk1 }
 		if effAsk2 == 0 && effBid1 > 0 { effAsk2 = 1.0 - effBid1 }
 
-		if pairFreshForDisplay && effBid1 > 0 && effAsk1 > 0 && effBid2 > 0 && effAsk2 > 0 {
+		// Extreme/Peak pricing inference
+		if effBid1 >= 0.95 || (effAsk2 > 0 && effAsk2 <= 0.05) {
+			if effAsk1 == 0 { effAsk1 = 1.0 }
+		}
+		if effBid2 >= 0.95 || (effAsk1 > 0 && effAsk1 <= 0.05) {
+			if effAsk2 == 0 { effAsk2 = 1.0 }
+		}
+
+		isExtreme := (effBid1 >= 0.95) || (effBid2 >= 0.95)
+		pairFreshForDisplay = (age <= recentQuoteDisplayGrace) || isExtreme
+
+		// Allow effBid to be 0 in extreme markets so the gap line still renders
+		validLiquidity := effAsk1 > 0 && effAsk2 > 0 && (effBid1 > 0 || effBid2 > 0)
+		if !isExtreme {
+			validLiquidity = effBid1 > 0 && effAsk1 > 0 && effBid2 > 0 && effAsk2 > 0
+		}
+
+		if pairFreshForDisplay && validLiquidity {
 			askSum := effAsk1 + effAsk2
 			buyMargin = (1.0 - askSum) * 100
 			bidSum := effBid1 + effBid2

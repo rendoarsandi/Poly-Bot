@@ -2545,20 +2545,33 @@ func (t *MarketTrader) determineWinner() string {
 		return ""
 	}
 
-	// For 2-outcome markets (Up/Down)
-	if len(t.Outcomes) == 2 {
-		p1 := t.FloatPrices[t.Outcomes[0]]
-		p2 := t.FloatPrices[t.Outcomes[1]]
+	bestOutcome := t.Outcomes[0]
+	highestProb := 0.0
 
-		if p1 > p2 {
-			return t.Outcomes[0]
-		} else if p2 > p1 {
-			return t.Outcomes[1]
+	for _, outcome := range t.Outcomes {
+		prob := t.TokenBids[outcome]
+		if prob == 0 {
+			ask := t.TokenAsks[outcome]
+			if ask > 0 {
+				// If there's an ask but no bid, use 1.0 - opposite ask as a rough guess,
+				// or just use the ask minus a small spread.
+				prob = ask - 0.01
+			}
+		}
+		
+		if prob <= 0 {
+			prob = t.FloatPrices[outcome]
+		}
+
+		if prob > highestProb {
+			highestProb = prob
+			bestOutcome = outcome
 		}
 	}
 
-	// Fallback: Pick first outcome if no data
-	return t.Outcomes[0]
+	// For a market to be resolved, the highest prob should reasonably be above 0.50.
+	// If it's ambiguous, we just return the highest.
+	return bestOutcome
 }
 
 // handleRestFallback polls REST API for fresh liquidity data
