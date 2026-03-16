@@ -1468,19 +1468,24 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				if !takerCloseAttempted {
 					t.mu.Lock()
 					bestOutcome := ""
-					highestAsk := 0.0
+					highestPrice := 0.0
 					for _, outcome := range t.Outcomes {
 						ask := t.TokenAsks[outcome]
-						if ask > 0 && ask < 1.0 && ask > highestAsk {
-							highestAsk = ask
+						bid := t.TokenBids[outcome]
+						price := ask
+						if price <= 0 || price >= 1.0 {
+							price = bid
+						}
+						if price > 0 && price <= 1.0 && price > highestPrice {
+							highestPrice = price
 							bestOutcome = outcome
 						}
 					}
 					t.mu.Unlock()
 
-					if bestOutcome != "" && highestAsk > 0.50 {
+					if bestOutcome != "" && highestPrice > 0.50 {
 						takerCloseAttempted = true
-						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (ask: $%.2f)", t.ID, bestOutcome, highestAsk)
+						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
 						budget := t.TUI.GetSettings().MaxTradeSize
 						if budget <= 0 {
@@ -1513,7 +1518,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}(tradeCtx, bestOutcome, size, limitPrice, tokenID)
 					} else {
 						if time.Since(lastTakerCloseLog) > 1*time.Second {
-							t.TUI.LogEvent("[%s] ⏳ Taker close waiting: highest ask is $%.2f (needs > 0.50)", t.ID, highestAsk)
+							t.TUI.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.2f (needs > 0.50)", t.ID, highestPrice)
 							lastTakerCloseLog = time.Now()
 						}
 					}
