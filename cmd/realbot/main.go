@@ -1137,8 +1137,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						lastTakerCloseLog = time.Now()
 					}
 				}			}
-			time.Sleep(250 * time.Millisecond)
-			continue
 		}
 		// --------------------------------
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second

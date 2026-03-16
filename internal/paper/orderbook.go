@@ -210,7 +210,7 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 		// Price sanity bounds - disabled to defer to config settings
 		const minSanePrice = 0.00
 		const maxSanePrice = 1.00
-		const maxPriceImprovement = 0.30
+		const maxPriceImprovement = 1.00 // Allow up to 100% price improvement (e.g. for TakerCloseMarket $0.99 limits hitting $0.50 asks)
 
 		// Track if we skipped fills due to price sanity issues
 		skippedDueToSanity := false

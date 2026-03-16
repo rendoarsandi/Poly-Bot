@@ -1518,8 +1518,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 					}
 				}
-				time.Sleep(100 * time.Millisecond)
-				continue
 			}
 			// --------------------------------
 			isExpired := timeToEnd <= 0
