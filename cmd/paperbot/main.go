@@ -637,9 +637,10 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	}
 
 	baseTradeValue := t.Config.CalculateTradeSize(currentEquity)
-	if baseTradeValue < minQuoteValue {
-		baseTradeValue = minQuoteValue
-	}
+	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
+	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
+	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
+
 	targetValue := math.Max(minQuoteValue, baseTradeValue*targetMult)
 	maxInventoryValue := math.Max(targetValue, baseTradeValue*capMult)
 	minSellEdge := t.Config.MinMarginPercent / 100.0
@@ -1487,10 +1488,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						takerCloseAttempted = true
 						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
-						budget := t.TUI.GetSettings().MaxTradeSize
-						if budget <= 0 {
-							budget = 50.0
-						}
+						budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
 						limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
 						if limitPrice <= 0 || limitPrice >= 1.0 {
 							limitPrice = 0.99

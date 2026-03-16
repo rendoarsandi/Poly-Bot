@@ -636,6 +636,8 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 		}
 	}
 
+	result.TotalPnL = result.WinningPnL - result.LosingCost
+
 	e.updateDrawdown()
 	return result
 }

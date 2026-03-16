@@ -437,3 +437,47 @@ func TestEngine_SellForMarket(t *testing.T) {
 		t.Fatalf("unexpected remaining position: %+v", pos)
 	}
 }
+
+func TestEngine_RedeemWithDetails(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	// Add winning position: 10 shares @ $0.60
+	engine.positions["m1:Up"] = &Position{
+		MarketID:  "m1",
+		Outcome:   "Up",
+		Quantity:  10.0,
+		TotalCost: 6.0,
+	}
+
+	// Add losing position: 5 shares @ $0.40
+	engine.positions["m1:Down"] = &Position{
+		MarketID:  "m1",
+		Outcome:   "Down",
+		Quantity:  5.0,
+		TotalCost: 2.0,
+	}
+
+	res := engine.RedeemWithDetails("m1", "Up")
+
+	if res.WinningShares != 10.0 {
+		t.Errorf("Expected 10 winning shares, got %f", res.WinningShares)
+	}
+	if res.LosingShares != 5.0 {
+		t.Errorf("Expected 5 losing shares, got %f", res.LosingShares)
+	}
+	if res.WinningPayout != 10.0 {
+		t.Errorf("Expected winning payout $10, got %f", res.WinningPayout)
+	}
+	if res.WinningCost != 6.0 {
+		t.Errorf("Expected winning cost $6, got %f", res.WinningCost)
+	}
+	if res.LosingCost != 2.0 {
+		t.Errorf("Expected losing cost $2, got %f", res.LosingCost)
+	}
+	if res.WinningPnL != 4.0 {
+		t.Errorf("Expected winning PnL $4, got %f", res.WinningPnL)
+	}
+	if res.TotalPnL != 2.0 {
+		t.Errorf("Expected total PnL $2, got %f", res.TotalPnL)
+	}
+}

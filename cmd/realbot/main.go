@@ -1110,10 +1110,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancelTrade()
 
-						budget := tui.GetSettings().MaxTradeSize
-						if budget <= 0 {
-							budget = 50.0
-						}
+						budget := cfg.CalculateTradeSize(engine.GetEquity())
 						limitPrice := tui.GetSettings().TakerCloseMarketSlippage
 						if limitPrice <= 0 || limitPrice >= 1.0 {
 							limitPrice = 0.99
@@ -3376,9 +3373,10 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	}
 
 	baseTradeValue := cfg.CalculateTradeSize(currentEquity)
-	if baseTradeValue < minQuoteValue {
-		baseTradeValue = minQuoteValue
-	}
+	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
+	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
+	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
+
 	targetValue := math.Max(minQuoteValue, baseTradeValue*targetMult)
 	maxInventoryValue := math.Max(targetValue, baseTradeValue*capMult)
 	minSellEdge := liveCfg.MinMarginPercent / 100.0
