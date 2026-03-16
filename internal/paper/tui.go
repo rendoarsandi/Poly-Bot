@@ -2046,17 +2046,28 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		*/
 
 		pairFreshForDisplay := age <= recentQuoteDisplayGrace
-		if pairFreshForDisplay && bid1 > 0 && ask1 > 0 && bid2 > 0 && ask2 > 0 {
-			askSum := ask1 + ask2
+		
+		effBid1, effAsk1 := bid1, ask1
+		effBid2, effAsk2 := bid2, ask2
+
+		if effBid1 == 0 && effAsk2 > 0 { effBid1 = 1.0 - effAsk2 }
+		if effAsk1 == 0 && effBid2 > 0 { effAsk1 = 1.0 - effBid2 }
+		if effBid2 == 0 && effAsk1 > 0 { effBid2 = 1.0 - effAsk1 }
+		if effAsk2 == 0 && effBid1 > 0 { effAsk2 = 1.0 - effBid1 }
+
+		if pairFreshForDisplay && effBid1 > 0 && effAsk1 > 0 && effBid2 > 0 && effAsk2 > 0 {
+			askSum := effAsk1 + effAsk2
 			buyMargin = (1.0 - askSum) * 100
-			bidSum := bid1 + bid2
+			bidSum := effBid1 + effBid2
 			sellMargin := (bidSum - 1.0) * 100
 			priceLinesB.WriteString(fmt.Sprintf("  Buy $%.3f %s  Sell $%.3f %s",
 				askSum, marginStyle(buyMargin).Render(fmt.Sprintf("%+.1f%%", buyMargin)),
 				bidSum, marginStyle(sellMargin).Render(fmt.Sprintf("%+.1f%%", sellMargin)),
 			))
-		} else {
+		} else if !pairFreshForDisplay {
 			priceLinesB.WriteString(styleDimmed.Render("  ↻ awaiting price data…"))
+		} else {
+			priceLinesB.WriteString(styleDimmed.Render("  Waiting for liquidity…"))
 		}
 
 	}

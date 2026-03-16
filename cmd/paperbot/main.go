@@ -1377,6 +1377,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
 	takerCloseAttempted := false
+	var lastTakerCloseLog time.Time
 
 	for {
 		select {
@@ -1510,6 +1511,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							order := t.OrderBook.PlaceOrder(target, "buy", price, sz, 0)
 							t.TUI.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.2f (paper ID: %d)", t.ID, sz, price, order.ID)
 						}(tradeCtx, bestOutcome, size, limitPrice, tokenID)
+					} else {
+						if time.Since(lastTakerCloseLog) > 1*time.Second {
+							t.TUI.LogEvent("[%s] ⏳ Taker close waiting: highest ask is $%.2f (needs > 0.50)", t.ID, highestAsk)
+							lastTakerCloseLog = time.Now()
+						}
 					}
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -1904,15 +1910,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 			localQuoteMaxAge = core.ResolveExecutionLocalQuoteMaxAge(t.Config)
 			localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, time.Now())
-			if arbMode != paperArbModeMaker {
+			if liveCfg.TakerCloseMarket {
+				cancelAllPaperMakerQuotes(t, "taker close market enabled")
+			} else if arbMode != paperArbModeMaker {
 				cancelAllPaperMakerQuotes(t, "maker mode disabled")
 			} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
 				cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 			}
 			if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
-				// Skip normal trading if we are within the TakerCloseMarket execution window
-				takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-				if liveCfg.TakerCloseMarket && time.Until(t.EndTime) > 0 && time.Until(t.EndTime) <= takerCloseTime {
+				// Skip normal trading completely if TakerCloseMarket is enabled
+				if liveCfg.TakerCloseMarket {
 					continue
 				}
 

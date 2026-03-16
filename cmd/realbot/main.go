@@ -1008,6 +1008,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	takerCloseAttempted := false
+	var lastTakerCloseLog time.Time
 	defer tui.ClearWalletTruthPositions(id)
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
@@ -1130,8 +1131,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.2f", id, size, limitPrice)
 						}
 					}(bestOutcome)
-				}
-			}
+				} else {
+					if time.Since(lastTakerCloseLog) > 1*time.Second {
+						tui.LogEvent("[%s] ⏳ Taker close waiting: highest ask is $%.2f (needs > 0.50)", id, highestAsk)
+						lastTakerCloseLog = time.Now()
+					}
+				}			}
 			time.Sleep(250 * time.Millisecond)
 			continue
 		}
@@ -1497,8 +1502,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			}
 		}
 
-		// Skip normal trading if we are within the TakerCloseMarket execution window
-		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+		// Skip normal trading completely if TakerCloseMarket is enabled
+		if liveCfg.TakerCloseMarket {
+			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
+			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "taker close market enabled", trader, engine, tui, makerQuotes)
+			cancelMaker()
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
