@@ -1892,10 +1892,17 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 	age := time.Since(mkt.LastUpdate)
 	ageSt := styleGreen
 	ageWarn := ""
-	if age > 10*time.Second {
+
+	// Only show warning if prices are extremely old (> 60s) or the connection is actively failing
+	wsLatency := time.Duration(0)
+	if m.tui != nil {
+		wsLatency = m.tui.wsLatency
+	}
+	isUnhealthyWS := mkt.DataSource == "WS" && wsLatency > 15*time.Second
+	if age > 60*time.Second || isUnhealthyWS {
 		ageSt = styleRed
 		ageWarn = " ⚠"
-	} else if age > 5*time.Second {
+	} else if age > 10*time.Second {
 		ageSt = styleYellow
 	}
 

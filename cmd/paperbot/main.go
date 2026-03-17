@@ -1847,17 +1847,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			forceRestFallback := (!localPairFresh && pairQuoteAge > restFallbackQuoteAge) || (hasResolvedOutcome && pairQuoteAge > 3*time.Second)
 
+			// Only poll REST automatically if data is extremely stale (60s) or connection is unhealthy.
+			isExtremelyStale := pairQuoteAge > 60*time.Second
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			if (forceRestFallback || wsUnhealthy || pairQuoteAge > restFallbackQuoteAge) && time.Since(t.LastRestPoll) > restFallbackPollInterval {
+			
+			if (forceRestFallback || wsUnhealthy || isExtremelyStale) && time.Since(t.LastRestPoll) > restFallbackPollInterval {
 				t.handleRestFallback(ctx, tokenPrices, pairQuoteAge)
-			}
-			// FORCE RECONNECT: If stale for 10s for faster recovery
-			if pairQuoteAge > 10*time.Second {
-				if time.Since(lastForceReconnect) > wsForceReconnect {
-					t.TUI.LogEvent("[%s] ⚠️ STALE (10s) - forcing WS reconnect", t.ID)
-					lastForceReconnect = time.Now()
-					wsMgr.ForceReconnect()
-				}
 			}
 
 			// Handle WebSocket issues - only reconnect if actually disconnected

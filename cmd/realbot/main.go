@@ -1417,20 +1417,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		pollInterval := core.ResolveRestFallbackPollInterval(cfg)
-		shouldPollREST := (forceRestFallback || wsUnhealthy || staleTime > core.ResolveRestFallbackQuoteAge(cfg)) && sinceLastRest > pollInterval
+		
+		// For quiet markets, we don't spam REST to avoid 429 rate limits unless it's extremely stale (60s).
+		isExtremelyStale := staleTime > 60*time.Second
+		shouldPollREST := (forceRestFallback || wsUnhealthy || isExtremelyStale) && sinceLastRest > pollInterval
 		if shouldPollREST {
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
 			if handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui) {
 				lastUpdate = time.Now()
 			}
-		}
-
-		if staleTime > realbotWSForceReconnect && time.Since(lastForceReconnect) > realbotWSForceReconnect {
-			tui.LogEvent("[%s] ⚠️ STALE (%s) - forcing WS reconnect", id, staleTime.Round(time.Second))
-			lastForceReconnect = time.Now()
-			wsChannelClosed = false
-			wsMgr.ForceReconnect()
 		}
 
 		if !wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
