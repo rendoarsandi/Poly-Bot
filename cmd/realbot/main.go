@@ -1404,7 +1404,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Force REST fallback if a book was just cleared or if it is currently crossed
 		forceRestFallback := false
 		for _, outcome := range outcomes {
-			if tokenBids[outcome] == 0 || tokenAsks[outcome] == 0 || tokenBids[outcome] >= tokenAsks[outcome] {
+			bid := tokenBids[outcome]
+			ask := tokenAsks[outcome]
+			// If a book is empty, crossed, OR price is effectively 1.0/0.99+, it might be stale/resolved
+			if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
 				// Only force if we haven't updated in a few seconds to avoid spamming
 				if staleTime > 3*time.Second {
 					forceRestFallback = true
@@ -1412,7 +1415,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 			}
 		}
-
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		pollInterval := core.ResolveRestFallbackPollInterval(cfg)
 		shouldPollREST := (forceRestFallback || wsUnhealthy || staleTime > core.ResolveRestFallbackQuoteAge(cfg)) && sinceLastRest > pollInterval

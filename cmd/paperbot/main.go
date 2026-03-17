@@ -1834,7 +1834,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
 			restFallbackPollInterval := core.ResolveRestFallbackPollInterval(t.Config)
 
-			forceRestFallback := !localPairFresh && pairQuoteAge > restFallbackQuoteAge
+			// Check for resolved or crossed outcomes to force fallback
+			hasResolvedOutcome := false
+			for _, outcome := range t.Outcomes {
+				bid := t.TokenBids[outcome]
+				ask := t.TokenAsks[outcome]
+				if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
+					hasResolvedOutcome = true
+					break
+				}
+			}
+
+			forceRestFallback := (!localPairFresh && pairQuoteAge > restFallbackQuoteAge) || (hasResolvedOutcome && pairQuoteAge > 3*time.Second)
 
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
 			if (forceRestFallback || wsUnhealthy || pairQuoteAge > restFallbackQuoteAge) && time.Since(t.LastRestPoll) > restFallbackPollInterval {
