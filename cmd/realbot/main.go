@@ -1103,7 +1103,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 				}
 
-				if bestOutcome != "" && highestPrice > 0.50 {
+				minPrice := tui.GetSettings().TakerCloseMarketMinPrice
+				if minPrice <= 0 {
+					minPrice = 0.60
+				}
+				if bestOutcome != "" && highestPrice >= minPrice {
 					takerCloseAttempted = true
 					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", id, bestOutcome, highestPrice)
 					go func(targetOutcome string) {
@@ -1220,7 +1224,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if err != nil {
 								continue
 							}
-							if p > 0 && p < 1.0 && p > bid {
+							if p > 0 && p <= 1.0 && p > bid {
 								bid = p
 							}
 						}
@@ -1229,7 +1233,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if err != nil {
 								continue
 							}
-							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+							if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
 								ask = p
 							}
 						}
@@ -1319,13 +1323,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					bid, ask := 0.0, 0.0
 					for _, b := range book.Bids {
 						p, _ := strconv.ParseFloat(b.Price, 64)
-						if p > 0 && p < 1.0 && p > bid {
+						if p > 0 && p <= 1.0 && p > bid {
 							bid = p
 						}
 					}
 					for _, order := range book.Asks {
 						p, _ := strconv.ParseFloat(order.Price, 64)
-						if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+						if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
 							ask = p
 						}
 					}
@@ -4390,13 +4394,13 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
 			p, _ := strconv.ParseFloat(b.Price, 64)
-			if p > 0 && p < 1.0 && p > bid {
+			if p > 0 && p <= 1.0 && p > bid {
 				bid = p
 			}
 		}
 		for _, a := range book.Asks {
 			p, _ := strconv.ParseFloat(a.Price, 64)
-			if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+			if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
 				ask = p
 			}
 		}

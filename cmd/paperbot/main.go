@@ -1484,7 +1484,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 					t.mu.Unlock()
 
-					if bestOutcome != "" && highestPrice > 0.50 {
+					minPrice := t.TUI.GetSettings().TakerCloseMarketMinPrice
+					if minPrice <= 0 {
+						minPrice = 0.60
+					}
+					if bestOutcome != "" && highestPrice >= minPrice {
 						takerCloseAttempted = true
 						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
@@ -1626,13 +1630,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							bid, ask := 0.0, 0.0
 							for _, order := range b.Bids {
 								p, _ := strconv.ParseFloat(order.Price, 64)
-								if p > 0 && p < 1.0 && p > bid {
+								if p > 0 && p <= 1.0 && p > bid {
 									bid = p
 								}
 							}
 							for _, order := range b.Asks {
 								p, _ := strconv.ParseFloat(order.Price, 64)
-								if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+								if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
 									ask = p
 								}
 							}
@@ -1744,13 +1748,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						bid, ask := 0.0, 0.0
 						for _, b := range book.Bids {
 							p, _ := strconv.ParseFloat(b.Price, 64)
-							if p > 0 && p < 1.0 && p > bid {
+							if p > 0 && p <= 1.0 && p > bid {
 								bid = p
 							}
 						}
 						for _, order := range book.Asks {
 							p, _ := strconv.ParseFloat(order.Price, 64)
-							if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+							if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
 								ask = p
 							}
 						}
@@ -2632,7 +2636,7 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 				t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
 				continue
 			}
-			if p > 0 && p < 1.0 && p > bid {
+			if p > 0 && p <= 1.0 && p > bid {
 				bid = p
 			}
 		}
@@ -2642,7 +2646,7 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 				t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
 				continue
 			}
-			if p > 0 && p < 1.0 && (ask == 0 || p < ask) {
+			if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
 				ask = p
 			}
 		}

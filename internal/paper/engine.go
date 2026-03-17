@@ -850,6 +850,13 @@ func (e *Engine) GetEquity() float64 {
 	return e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue()
 }
 
+// GetPeakEquity returns the highest equity seen so far
+func (e *Engine) GetPeakEquity() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.peakBalance
+}
+
 // getSplitInventoryValue returns the value of all split inventories
 // Split tokens are worth $1.00 per YES+NO pair (can merge anytime)
 func (e *Engine) getSplitInventoryValue() float64 {

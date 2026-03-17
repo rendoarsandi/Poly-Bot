@@ -234,13 +234,14 @@ type TUISettings struct {
 	TakerCloseMarket               bool    // e.g. force buy higher side close to end
 	TakerCloseMarketTime           int     // e.g. 5 seconds
 	TakerCloseMarketSlippage       float64 // e.g. 0.99 limit price
+	TakerCloseMarketMinPrice       float64 // e.g. 0.60 min spike price
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {

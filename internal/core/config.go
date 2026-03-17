@@ -109,6 +109,7 @@ type Config struct {
 	TakerCloseMarket         bool    // Force GTC buy right before market closes
 	TakerCloseMarketTime     int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage float64 // Limit price for taker close (default: 0.99)
+	TakerCloseMarketMinPrice float64 // Min price to trigger close buy (default: 0.60)
 
 	settingsProfile string
 	settingsPath    string
@@ -153,6 +154,7 @@ type RuntimeSettings struct {
 	TakerCloseMarket               bool    `json:"takerCloseMarket"`
 	TakerCloseMarketTime           int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage       float64 `json:"takerCloseMarketSlippage"`
+	TakerCloseMarketMinPrice       float64 `json:"takerCloseMarketMinPrice"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -488,6 +490,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TakerCloseMarket:               c.TakerCloseMarket,
 		TakerCloseMarketTime:           c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:       c.TakerCloseMarketMinPrice,
 	}
 }
 
@@ -530,6 +533,9 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.SplitInitialCapPct = s.SplitInitialCapPct
 	c.SplitReplenishCapPct = s.SplitReplenishCapPct
 	c.TakerCloseMarket = s.TakerCloseMarket
+	c.TakerCloseMarketTime = s.TakerCloseMarketTime
+	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
+	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
 
 	// Force disable split/merge for Kalshi
 	if c.Exchange == "kalshi" {
