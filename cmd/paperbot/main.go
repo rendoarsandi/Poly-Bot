@@ -43,7 +43,7 @@ const (
 	paperMakerInventoryCapMult    = 5.0
 	paperMakerQuoteSizeSkewFactor = 0.75
 	paperMakerRequoteInterval     = 1500 * time.Millisecond
-	paperMakerMinQuoteValue      = 1.0
+	paperMakerMinQuoteValue       = 1.0
 	paperMakerCashUsagePerOutcome = 0.35
 )
 
@@ -53,7 +53,7 @@ var paperMakerStrategyParams = strategy.MakerParams{
 	InventorySkewStep:   paperMakerInventorySkewStep,
 	QuoteSizeSkewFactor: paperMakerQuoteSizeSkewFactor,
 	CashUsagePerOutcome: paperMakerCashUsagePerOutcome,
-	MinQuoteValue:      paperMakerMinQuoteValue,
+	MinQuoteValue:       paperMakerMinQuoteValue,
 }
 
 // MarketTrader holds state for trading a single market
@@ -429,7 +429,7 @@ func cancelAllPaperMakerQuotes(t *MarketTrader, reason string) {
 func upsertPaperMakerQuote(t *MarketTrader, side, outcome string, price, qty float64) bool {
 	key := paperMakerQuoteKey(side, outcome)
 	existing := t.MakerQuotes[key]
-	
+
 	// Check if the total dollar value meets the minimum requirement
 	orderValue := qty * price
 	if orderValue < t.Config.MakerMinQuoteValue || price <= 0 {
@@ -852,23 +852,27 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
-		Exchange:                cfg.Exchange,
-		MarketSlug:              cfg.MarketSlug,
-		MaxMarkets:              cfg.MaxMarkets,
-		Timeframe:               cfg.Timeframe,
-		TradeScaleFactor:        cfg.TradeScaleFactor,
-		MinMarginPercent:        cfg.MinMarginPercent,
-		PaperArbMode:            normalizePaperArbMode(cfg.PaperArbMode),
-		SplitMinMarginSell:      cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:    cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:      cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:    cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds: cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:           cfg.MakerQuoteGap,
-		MinAskPrice:             cfg.MinAskPrice,
-		MaxAskPrice:             cfg.MaxAskPrice,
-		MaxTradeSize:            cfg.MaxTradeSize,
-		MaxDailyLoss:            cfg.MaxDailyLoss,
+		Exchange:                 cfg.Exchange,
+		MarketSlug:               cfg.MarketSlug,
+		MaxMarkets:               cfg.MaxMarkets,
+		Timeframe:                cfg.Timeframe,
+		TradeScaleFactor:         cfg.TradeScaleFactor,
+		MinMarginPercent:         cfg.MinMarginPercent,
+		PaperArbMode:             normalizePaperArbMode(cfg.PaperArbMode),
+		SplitMinMarginSell:       cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:     cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:       cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:     cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:  cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:            cfg.MakerQuoteGap,
+		MinAskPrice:              cfg.MinAskPrice,
+		MaxAskPrice:              cfg.MaxAskPrice,
+		MaxTradeSize:             cfg.MaxTradeSize,
+		MaxDailyLoss:             cfg.MaxDailyLoss,
+		TakerCloseMarket:         cfg.TakerCloseMarket,
+		TakerCloseMarketTime:     cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage: cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice: cfg.TakerCloseMarketMinPrice,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -887,12 +891,16 @@ func run() error {
 		cfg.MaxAskPrice = s.MaxAskPrice
 		cfg.MaxTradeSize = s.MaxTradeSize
 		cfg.MaxDailyLoss = s.MaxDailyLoss
-		
+		cfg.TakerCloseMarket = s.TakerCloseMarket
+		cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
+		cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
+		cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+
 		// Update the REST client exchange if it changed
 		if restClient.Exchange != s.Exchange {
 			restClient.Exchange = s.Exchange
 		}
-		
+
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
@@ -1494,30 +1502,30 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
 						budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
-			                        // Calculate expected execution price (price + absolute slippage allowance)
-			                        // e.g. price 0.70 + (-0.03) = 0.73
-			                        slippageDec := t.TUI.GetSettings().BuyExecutionMarginFloorPercent
-			                        if slippageDec < 0 {
-			                                slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
-			                        }
-			                        sizingPrice := highestPrice + slippageDec
-			                        if sizingPrice > 0.99 {
-			                                sizingPrice = 0.99
-			                        }
-			                        // Execute base USDC based on the expected sizing price
-			                        size := budget / sizingPrice
-			                        if size < t.Config.MinOrderSize {
-			                                size = t.Config.MinOrderSize
-			                        }
+						// Calculate expected execution price (price + absolute slippage allowance)
+						// e.g. price 0.70 + (-0.03) = 0.73
+						slippageDec := t.TUI.GetSettings().BuyExecutionMarginFloorPercent
+						if slippageDec < 0 {
+							slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
+						}
+						sizingPrice := highestPrice + slippageDec
+						if sizingPrice > 0.99 {
+							sizingPrice = 0.99
+						}
+						// Execute base USDC based on the expected sizing price
+						size := budget / sizingPrice
+						if size < t.Config.MinOrderSize {
+							size = t.Config.MinOrderSize
+						}
 
-			                        // But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
-			                        limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
-			                        if limitPrice <= 0 || limitPrice >= 1.0 {
-			                                limitPrice = 0.99
-			                        }
+						// But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
+						limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
+						if limitPrice <= 0 || limitPrice >= 1.0 {
+							limitPrice = 0.99
+						}
 
-			                        tokenID := ""
-			                        for k, v := range t.TokenMap {
+						tokenID := ""
+						for k, v := range t.TokenMap {
 							if v == bestOutcome {
 								tokenID = k
 								break
@@ -1831,7 +1839,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Check WebSocket connection health for REST fallback decision
 			wsConnected := wsMgr.IsConnected()
-			wsLastMsg := wsMgr.TimeSinceLastMessage()
+			wsLastMsg := wsMgr.TimeSinceLastDataMessage()
 
 			// Update WS staleness and ping latency in TUI
 			t.TUI.UpdateWSLatency(wsLastMsg)
@@ -1854,19 +1862,19 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Check for resolved or crossed outcomes to force fallback
 			hasResolvedOutcome := false
 			for _, outcome := range t.Outcomes {
-			        bid := t.TokenBids[outcome]
-			        ask := t.TokenAsks[outcome]
-			        if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
-			                hasResolvedOutcome = true
-			                break
-			        }
+				bid := t.TokenBids[outcome]
+				ask := t.TokenAsks[outcome]
+				if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
+					hasResolvedOutcome = true
+					break
+				}
 			}
 
 			forceRestFallback := (!localPairFresh && pairQuoteAge > restFallbackQuoteAge) || (hasResolvedOutcome && pairQuoteAge > 15*time.Second)
 			// Only poll REST automatically if data is extremely stale (60s) or connection is unhealthy.
 			isExtremelyStale := pairQuoteAge > 60*time.Second
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
-			
+
 			if (forceRestFallback || wsUnhealthy || isExtremelyStale) && time.Since(t.LastRestPoll) > restFallbackPollInterval {
 				t.handleRestFallback(ctx, tokenPrices, pairQuoteAge)
 			}
@@ -2582,7 +2590,7 @@ func (t *MarketTrader) determineWinner() string {
 				prob = ask - 0.01
 			}
 		}
-		
+
 		if prob <= 0 {
 			prob = t.FloatPrices[outcome]
 		}
@@ -2630,18 +2638,18 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 
 		// Check if book is empty
 		if len(book.Bids) == 0 && len(book.Asks) == 0 {
-		        restEmpty++
-		        t.mu.Lock()
-		        t.TokenBids[outcome] = 0
-		        t.TokenAsks[outcome] = 0
-		        t.TokenFullBids[outcome] = nil
-		        t.TokenFullAsks[outcome] = nil
-		        now := time.Now()
-		        t.LastUpdate = now
-		        t.LastPairUpdate = now
-		        t.mu.Unlock()
-		        restSuccess++
-		        continue
+			restEmpty++
+			t.mu.Lock()
+			t.TokenBids[outcome] = 0
+			t.TokenAsks[outcome] = 0
+			t.TokenFullBids[outcome] = nil
+			t.TokenFullAsks[outcome] = nil
+			now := time.Now()
+			t.LastUpdate = now
+			t.LastPairUpdate = now
+			t.mu.Unlock()
+			restSuccess++
+			continue
 		}
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {

@@ -48,7 +48,7 @@ const (
 	realbotMakerInventoryCapMult    = 5.0
 	realbotMakerQuoteSizeSkewFactor = 0.75
 	realbotMakerRequoteInterval     = 500 * time.Millisecond
-	realbotMakerMinQuoteValue      = 5.0
+	realbotMakerMinQuoteValue       = 5.0
 	realbotMakerCashUsagePerOutcome = 0.35
 )
 
@@ -58,7 +58,7 @@ var realbotMakerStrategyParams = strategy.MakerParams{
 	InventorySkewStep:   realbotMakerInventorySkewStep,
 	QuoteSizeSkewFactor: realbotMakerQuoteSizeSkewFactor,
 	CashUsagePerOutcome: realbotMakerCashUsagePerOutcome,
-	MinQuoteValue:      realbotMakerMinQuoteValue,
+	MinQuoteValue:       realbotMakerMinQuoteValue,
 }
 
 type realbotOrderPathWarmer interface {
@@ -374,7 +374,7 @@ func run() error {
 
 	// Use a short context for these initial balance checks
 	initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
-	
+
 	// Get balance from CLOB API
 	balance, err := realTrader.GetBalance(initCtx)
 	if err != nil {
@@ -628,6 +628,10 @@ func run() error {
 		MaxAskPrice:                    cfg.MaxAskPrice,
 		MaxTradeSize:                   cfg.MaxTradeSize,
 		MaxDailyLoss:                   cfg.MaxDailyLoss,
+		TakerCloseMarket:               cfg.TakerCloseMarket,
+		TakerCloseMarketTime:           cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -647,6 +651,10 @@ func run() error {
 		cfg.MaxAskPrice = s.MaxAskPrice
 		cfg.MaxTradeSize = s.MaxTradeSize
 		cfg.MaxDailyLoss = s.MaxDailyLoss
+		cfg.TakerCloseMarket = s.TakerCloseMarket
+		cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
+		cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
+		cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
 
 		// Update the REST client exchange if it changed
 		if restClient.Exchange != s.Exchange {
@@ -1119,24 +1127,25 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// Calculate expected execution price (price + absolute slippage allowance)
 						// e.g. price 0.70 + (-0.03) = 0.73
-						slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent		                                if slippageDec < 0 {
-		                                        slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
-		                                }
-		                                sizingPrice := highestPrice + slippageDec
-		                                if sizingPrice > 0.99 {
-		                                        sizingPrice = 0.99
-		                                }
-		                                // Execute base USDC based on the expected sizing price
-		                                size := budget / sizingPrice
+						slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent
+						if slippageDec < 0 {
+							slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
+						}
+						sizingPrice := highestPrice + slippageDec
+						if sizingPrice > 0.99 {
+							sizingPrice = 0.99
+						}
+						// Execute base USDC based on the expected sizing price
+						size := budget / sizingPrice
 
-		                                // But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
-		                                limitPrice := tui.GetSettings().TakerCloseMarketSlippage
-		                                if limitPrice <= 0 || limitPrice >= 1.0 {
-		                                        limitPrice = 0.99
-		                                }
+						// But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
+						limitPrice := tui.GetSettings().TakerCloseMarketSlippage
+						if limitPrice <= 0 || limitPrice >= 1.0 {
+							limitPrice = 0.99
+						}
 
-		                                tokenID := ""
-		                                for k, v := range tokenMap {
+						tokenID := ""
+						for k, v := range tokenMap {
 							if v == targetOutcome {
 								tokenID = k
 								break
@@ -1155,7 +1164,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.2f (needs > 0.50)", id, highestPrice)
 						lastTakerCloseLog = time.Now()
 					}
-				}			}
+				}
+			}
 		}
 		// --------------------------------
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
@@ -1413,7 +1423,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Update WS staleness and ping latency in TUI
 		// Use data-message age, not heartbeat/PONG age, so the bot can tell the
 		// difference between an alive socket and an actually fresh market feed.
-		wsTimeSinceMsg := wsMgr.TimeSinceLastMessage()
+		wsTimeSinceMsg := wsMgr.TimeSinceLastDataMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 		sinceLastRest := time.Since(lastRestPoll)
@@ -1421,20 +1431,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Force REST fallback if a book was just cleared or if it is currently crossed
 		forceRestFallback := false
 		for _, outcome := range outcomes {
-		        bid := tokenBids[outcome]
-		        ask := tokenAsks[outcome]
-		        // If a book is empty, crossed, OR price is effectively 1.0/0.99+, it might be stale/resolved
-		        if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
-		                // Only force if we haven't updated in a few seconds to avoid spamming
-		                if staleTime > 15*time.Second {
-		                        forceRestFallback = true
-		                        break
-		                }
-		        }
+			bid := tokenBids[outcome]
+			ask := tokenAsks[outcome]
+			// If a book is empty, crossed, OR price is effectively 1.0/0.99+, it might be stale/resolved
+			if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
+				// Only force if we haven't updated in a few seconds to avoid spamming
+				if staleTime > 15*time.Second {
+					forceRestFallback = true
+					break
+				}
+			}
 		}
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		pollInterval := core.ResolveRestFallbackPollInterval(cfg)
-		
+
 		// For quiet markets, we don't spam REST to avoid 429 rate limits unless it's extremely stale (60s).
 		isExtremelyStale := staleTime > 60*time.Second
 		shouldPollREST := (forceRestFallback || wsUnhealthy || isExtremelyStale) && sinceLastRest > pollInterval
@@ -1695,7 +1705,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					var availableShares float64
 					if kalshiHoldMode {
 						// Kalshi nets positions; bypass min constraint to allow selling to open
-						availableShares = requestedShares 
+						availableShares = requestedShares
 					} else {
 						availableShares = splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 					}
@@ -3234,9 +3244,9 @@ func realbotUpsertMakerQuote(ctx context.Context, marketID string, trader *tradi
 	key := realbotMakerQuoteKey(side, outcome)
 	existing := makerQuotes[key]
 	qty = normalizeMarketSellShares(qty)
-	
+
 	orderValue := qty * price
-	
+
 	// We want to use the config, so we will pass it in or rely on the fact that
 	// the upstream calculation correctly bounded it, so we just enforce $1 minimum for safety.
 	if orderValue < 1.0 || price <= 0 || tokenID == "" {

@@ -226,7 +226,7 @@ type TUISettings struct {
 	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MakerInventoryTargetMult       float64
 	MakerInventoryCapMult          float64
-	MakerMinQuoteValue            float64
+	MakerMinQuoteValue             float64
 	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
 	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
 	MaxTradeSize                   float64 // e.g. 50.00 = max trade size $50
@@ -1000,7 +1000,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 24:
-					m.tui.settings.TakerCloseMarketMinPrice -= 0.005
+					m.tui.settings.TakerCloseMarketMinPrice -= 0.01
 					if m.tui.settings.TakerCloseMarketMinPrice < 0.01 {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.01
 					}
@@ -1158,7 +1158,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 24:
-					m.tui.settings.TakerCloseMarketMinPrice += 0.005
+					m.tui.settings.TakerCloseMarketMinPrice += 0.01
 					if m.tui.settings.TakerCloseMarketMinPrice > 0.99 {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.99
 					}
@@ -1927,11 +1927,26 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 	if m.tui != nil {
 		wsLatency = m.tui.wsLatency
 	}
-	isUnhealthyWS := mkt.DataSource == "WS" && wsLatency > 15*time.Second
-	if age > 60*time.Second || isUnhealthyWS {
+
+	isResolved := false
+	for _, bid := range mkt.Bids {
+		if bid >= 0.99 || bid <= 0.00 {
+			isResolved = true
+			break
+		}
+	}
+	for _, ask := range mkt.Asks {
+		if ask >= 0.99 || ask <= 0.00 {
+			isResolved = true
+			break
+		}
+	}
+
+	isUnhealthyWS := mkt.DataSource == "WS" && wsLatency > 15*time.Second && !isResolved
+	if (age > 60*time.Second && !isResolved) || isUnhealthyWS {
 		ageSt = styleRed
 		ageWarn = " ⚠"
-	} else if age > 10*time.Second {
+	} else if age > 10*time.Second && !isResolved {
 		ageSt = styleYellow
 	}
 
@@ -2082,21 +2097,33 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		*/
 
 		pairFreshForDisplay := age <= recentQuoteDisplayGrace
-		
+
 		effBid1, effAsk1 := bid1, ask1
 		effBid2, effAsk2 := bid2, ask2
 
-		if effBid1 == 0 && effAsk2 > 0 { effBid1 = 1.0 - effAsk2 }
-		if effAsk1 == 0 && effBid2 > 0 { effAsk1 = 1.0 - effBid2 }
-		if effBid2 == 0 && effAsk1 > 0 { effBid2 = 1.0 - effAsk1 }
-		if effAsk2 == 0 && effBid1 > 0 { effAsk2 = 1.0 - effBid1 }
+		if effBid1 == 0 && effAsk2 > 0 {
+			effBid1 = 1.0 - effAsk2
+		}
+		if effAsk1 == 0 && effBid2 > 0 {
+			effAsk1 = 1.0 - effBid2
+		}
+		if effBid2 == 0 && effAsk1 > 0 {
+			effBid2 = 1.0 - effAsk1
+		}
+		if effAsk2 == 0 && effBid1 > 0 {
+			effAsk2 = 1.0 - effBid1
+		}
 
 		// Extreme/Peak pricing inference
 		if effBid1 >= 0.95 || (effAsk2 > 0 && effAsk2 <= 0.05) {
-			if effAsk1 == 0 { effAsk1 = 1.0 }
+			if effAsk1 == 0 {
+				effAsk1 = 1.0
+			}
 		}
 		if effBid2 >= 0.95 || (effAsk1 > 0 && effAsk1 <= 0.05) {
-			if effAsk2 == 0 { effAsk2 = 1.0 }
+			if effAsk2 == 0 {
+				effAsk2 = 1.0
+			}
 		}
 
 		isExtreme := (effBid1 >= 0.95) || (effBid2 >= 0.95)
@@ -2613,7 +2640,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					marker = "⚠"
 					marketWarning = true
 				}
-				
+
 				redeemTag := ""
 				if wt.Redeemable {
 					redeemTag = styleGreen.Render(" [REDEEMABLE]")
