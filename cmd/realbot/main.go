@@ -1086,44 +1086,61 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		// --- TAKER CLOSE MARKET LOGIC ---
 		takerCloseTime := time.Duration(tui.GetSettings().TakerCloseMarketTime) * time.Second
-		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
-			if !takerCloseAttempted {
-				bestOutcome := ""
-				highestPrice := 0.0
-				for _, outcome := range outcomes {
-					ask := tokenAsks[outcome]
-					bid := tokenBids[outcome]
-					price := ask
-					if price <= 0 || price >= 1.0 {
-						price = bid
-					}
-					if price > 0 && price <= 1.0 && price > highestPrice {
-						highestPrice = price
-						bestOutcome = outcome
-					}
-				}
+		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime+60*time.Second {
+		        if !takerCloseAttempted {
+		                bestOutcome := ""
+		                highestPrice := 0.0
+		                for _, outcome := range outcomes {
+		                        ask := tokenAsks[outcome]
+		                        bid := tokenBids[outcome]
+		                        price := ask
+		                        if price <= 0 || price >= 1.0 {
+		                                price = bid
+		                        }
+		                        if price > 0 && price <= 1.0 && price > highestPrice {
+		                                highestPrice = price
+		                                bestOutcome = outcome
+		                        }
+		                }
 
-				minPrice := tui.GetSettings().TakerCloseMarketMinPrice
-				if minPrice <= 0 {
-					minPrice = 0.60
-				}
-				if bestOutcome != "" && highestPrice >= minPrice {
-					takerCloseAttempted = true
-					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", id, bestOutcome, highestPrice)
-					go func(targetOutcome string) {
-						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancelTrade()
+		                minPrice := tui.GetSettings().TakerCloseMarketMinPrice
+		                if minPrice <= 0 {
+		                        minPrice = 0.60
+		                }
 
-						budget := cfg.CalculateTradeSize(engine.GetEquity())
-						limitPrice := tui.GetSettings().TakerCloseMarketSlippage
-						if limitPrice <= 0 || limitPrice >= 1.0 {
-							limitPrice = 0.99
-						}
+		                isTimeTrigger := timeToExpiry <= takerCloseTime
+		                isSpikeTrigger := timeToExpiry <= takerCloseTime+60*time.Second && highestPrice >= minPrice
 
-						size := budget / limitPrice
+		                if bestOutcome != "" && highestPrice >= minPrice && (isTimeTrigger || isSpikeTrigger) {
+		                        takerCloseAttempted = true
+		                        tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", id, bestOutcome, highestPrice)
+		                        go func(targetOutcome string) {
+		                                tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
+		                                defer cancelTrade()
 
-						tokenID := ""
-						for k, v := range tokenMap {
+		                                budget := cfg.CalculateTradeSize(engine.GetEquity())
+
+		                                // Calculate expected execution price (price + absolute slippage allowance)
+		                                // e.g. price 0.70 + (-0.03) = 0.73
+		                                slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent
+		                                if slippageDec < 0 {
+		                                        slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
+		                                }
+		                                sizingPrice := highestPrice + slippageDec
+		                                if sizingPrice > 0.99 {
+		                                        sizingPrice = 0.99
+		                                }
+		                                // Execute base USDC based on the expected sizing price
+		                                size := budget / sizingPrice
+
+		                                // But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
+		                                limitPrice := tui.GetSettings().TakerCloseMarketSlippage
+		                                if limitPrice <= 0 || limitPrice >= 1.0 {
+		                                        limitPrice = 0.99
+		                                }
+
+		                                tokenID := ""
+		                                for k, v := range tokenMap {
 							if v == targetOutcome {
 								tokenID = k
 								break
@@ -1400,7 +1417,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Update WS staleness and ping latency in TUI
 		// Use data-message age, not heartbeat/PONG age, so the bot can tell the
 		// difference between an alive socket and an actually fresh market feed.
-		wsTimeSinceMsg := wsMgr.TimeSinceLastDataMessage()
+		wsTimeSinceMsg := wsMgr.TimeSinceLastMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 		sinceLastRest := time.Since(lastRestPoll)
@@ -1408,16 +1425,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// Force REST fallback if a book was just cleared or if it is currently crossed
 		forceRestFallback := false
 		for _, outcome := range outcomes {
-			bid := tokenBids[outcome]
-			ask := tokenAsks[outcome]
-			// If a book is empty, crossed, OR price is effectively 1.0/0.99+, it might be stale/resolved
-			if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
-				// Only force if we haven't updated in a few seconds to avoid spamming
-				if staleTime > 3*time.Second {
-					forceRestFallback = true
-					break
-				}
-			}
+		        bid := tokenBids[outcome]
+		        ask := tokenAsks[outcome]
+		        // If a book is empty, crossed, OR price is effectively 1.0/0.99+, it might be stale/resolved
+		        if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
+		                // Only force if we haven't updated in a few seconds to avoid spamming
+		                if staleTime > 15*time.Second {
+		                        forceRestFallback = true
+		                        break
+		                }
+		        }
 		}
 		wsUnhealthy := !wsMgr.IsConnected() || wsTimeSinceMsg > 10*time.Second
 		pollInterval := core.ResolveRestFallbackPollInterval(cfg)
@@ -4531,5 +4548,4 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 		tui.LogEvent("[%s] ⏳ Resolution pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
 	}
 
-	tui.LogEvent("[%s] ⚠️ Could not get resolution after %d attempts", id, len(retryDelays))
 }

@@ -239,9 +239,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -1.0, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
@@ -267,6 +267,20 @@ func isMakerSettingsMode(cfg TUISettings) bool {
 func isRowVisible(cfg TUISettings, idx int) bool {
 	maker := isMakerSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
+	closeMarket := cfg.TakerCloseMarket
+
+	if closeMarket {
+		// Only show relevant settings for TakerCloseMarket
+		switch idx {
+		case 0, 1, 2, 3, 6, 11, 19, 20, 21, 22, 23, 24:
+			if kalshi && idx == 2 {
+				return false
+			}
+			return true
+		default:
+			return false
+		}
+	}
 
 	if kalshi {
 		// Hide Timeframe (2), Split settings (7,8,9,10), Maker Merge Buffer (13)
@@ -279,10 +293,10 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	switch idx {
 	case 6, 7, 8, 9, 10: // Taker specific
 		return !maker
-	case 13, 14, 15, 16, 17: // Maker specific
+	case 13, 14, 15, 16, 17, 18: // Maker specific
 		return maker
-	case 22, 23: // Close Market specific
-		return cfg.TakerCloseMarket
+	case 22, 23, 24: // Close Market specific
+		return false
 	default:
 		return true
 	}
@@ -814,7 +828,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for {
 					m.settingsCursor--
 					if m.settingsCursor < 0 {
-						m.settingsCursor = 23
+						m.settingsCursor = 24
 					}
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
@@ -823,7 +837,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "down", "j":
 				for {
-					m.settingsCursor = (m.settingsCursor + 1) % 24
+					m.settingsCursor = (m.settingsCursor + 1) % 25
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
 					}
@@ -1039,9 +1053,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.PaperArbMode = "maker"
 					changed = true
 				case 6:
-					m.tui.settings.BuyExecutionMarginFloorPercent += 0.5
-					if m.tui.settings.BuyExecutionMarginFloorPercent > 10.0 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = 10.0
+					m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
+					if m.tui.settings.BuyExecutionMarginFloorPercent > 0.10 {
+						m.tui.settings.BuyExecutionMarginFloorPercent = 0.10
 					}
 					changed = true
 				case 7:
@@ -2902,8 +2916,8 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, 6),
-			value: fmt.Sprintf("%5.1f%%", cfg.BuyExecutionMarginFloorPercent),
-			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+10.0)/15.0, 20),
+			value: fmt.Sprintf(" %5.2f ", cfg.BuyExecutionMarginFloorPercent),
+			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+0.10)/0.20, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 7),
@@ -3024,6 +3038,11 @@ func (m tuiModel) renderSettings(w int) string {
 			label: settingsRowLabel(cfg, 23),
 			value: fmt.Sprintf(" $%.2f ", cfg.TakerCloseMarketSlippage),
 			bar:   renderBar(cfg.TakerCloseMarketSlippage, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 24),
+			value: fmt.Sprintf(" $%.2f ", cfg.TakerCloseMarketMinPrice),
+			bar:   renderBar(cfg.TakerCloseMarketMinPrice, 20),
 		},
 	}
 

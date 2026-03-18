@@ -1465,46 +1465,64 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// --- TAKER CLOSE MARKET LOGIC ---
 			takerCloseTime := time.Duration(t.TUI.GetSettings().TakerCloseMarketTime) * time.Second
-			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
-				if !takerCloseAttempted {
-					t.mu.Lock()
-					bestOutcome := ""
-					highestPrice := 0.0
-					for _, outcome := range t.Outcomes {
-						ask := t.TokenAsks[outcome]
-						bid := t.TokenBids[outcome]
-						price := ask
-						if price <= 0 || price >= 1.0 {
-							price = bid
-						}
-						if price > 0 && price <= 1.0 && price > highestPrice {
-							highestPrice = price
-							bestOutcome = outcome
-						}
-					}
-					t.mu.Unlock()
+			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime+60*time.Second {
+			        if !takerCloseAttempted {
+			                t.mu.Lock()
+			                bestOutcome := ""
+			                highestPrice := 0.0
+			                for _, outcome := range t.Outcomes {
+			                        ask := t.TokenAsks[outcome]
+			                        bid := t.TokenBids[outcome]
+			                        price := ask
+			                        if price <= 0 || price >= 1.0 {
+			                                price = bid
+			                        }
+			                        if price > 0 && price <= 1.0 && price > highestPrice {
+			                                highestPrice = price
+			                                bestOutcome = outcome
+			                        }
+			                }
+			                t.mu.Unlock()
 
-					minPrice := t.TUI.GetSettings().TakerCloseMarketMinPrice
-					if minPrice <= 0 {
-						minPrice = 0.60
-					}
-					if bestOutcome != "" && highestPrice >= minPrice {
-						takerCloseAttempted = true
-						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
+			                minPrice := t.TUI.GetSettings().TakerCloseMarketMinPrice
+			                if minPrice <= 0 {
+			                        minPrice = 0.60
+			                }
 
-						budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
-						limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
-						if limitPrice <= 0 || limitPrice >= 1.0 {
-							limitPrice = 0.99
-						}
+			                // Trigger if within normal close time, OR if within 1 minute of close time AND price spiked
+			                isTimeTrigger := timeToEnd <= takerCloseTime
+			                isSpikeTrigger := timeToEnd <= takerCloseTime+60*time.Second && highestPrice >= minPrice
 
-						size := budget / limitPrice
-						if size < t.Config.MinOrderSize {
-							size = t.Config.MinOrderSize
-						}
+			                if bestOutcome != "" && highestPrice >= minPrice && (isTimeTrigger || isSpikeTrigger) {
+			                        takerCloseAttempted = true
+			                        t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
-						tokenID := ""
-						for k, v := range t.TokenMap {
+			                        budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
+
+			                        // Calculate expected execution price (price + absolute slippage allowance)
+			                        // e.g. price 0.70 + (-0.03) = 0.73
+			                        slippageDec := t.TUI.GetSettings().BuyExecutionMarginFloorPercent
+			                        if slippageDec < 0 {
+			                                slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
+			                        }
+			                        sizingPrice := highestPrice + slippageDec
+			                        if sizingPrice > 0.99 {
+			                                sizingPrice = 0.99
+			                        }
+			                        // Execute base USDC based on the expected sizing price
+			                        size := budget / sizingPrice
+			                        if size < t.Config.MinOrderSize {
+			                                size = t.Config.MinOrderSize
+			                        }
+
+			                        // But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
+			                        limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
+			                        if limitPrice <= 0 || limitPrice >= 1.0 {
+			                                limitPrice = 0.99
+			                        }
+
+			                        tokenID := ""
+			                        for k, v := range t.TokenMap {
 							if v == bestOutcome {
 								tokenID = k
 								break
@@ -1841,16 +1859,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Check for resolved or crossed outcomes to force fallback
 			hasResolvedOutcome := false
 			for _, outcome := range t.Outcomes {
-				bid := t.TokenBids[outcome]
-				ask := t.TokenAsks[outcome]
-				if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
-					hasResolvedOutcome = true
-					break
-				}
+			        bid := t.TokenBids[outcome]
+			        ask := t.TokenAsks[outcome]
+			        if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
+			                hasResolvedOutcome = true
+			                break
+			        }
 			}
 
-			forceRestFallback := (!localPairFresh && pairQuoteAge > restFallbackQuoteAge) || (hasResolvedOutcome && pairQuoteAge > 3*time.Second)
-
+			forceRestFallback := (!localPairFresh && pairQuoteAge > restFallbackQuoteAge) || (hasResolvedOutcome && pairQuoteAge > 15*time.Second)
 			// Only poll REST automatically if data is extremely stale (60s) or connection is unhealthy.
 			isExtremelyStale := pairQuoteAge > 60*time.Second
 			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
@@ -2618,17 +2635,19 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 
 		// Check if book is empty
 		if len(book.Bids) == 0 && len(book.Asks) == 0 {
-			restEmpty++
-			t.mu.Lock()
-			t.TokenBids[outcome] = 0
-			t.TokenAsks[outcome] = 0
-			t.TokenFullBids[outcome] = nil
-			t.TokenFullAsks[outcome] = nil
-			t.mu.Unlock()
-			restSuccess++
-			continue
+		        restEmpty++
+		        t.mu.Lock()
+		        t.TokenBids[outcome] = 0
+		        t.TokenAsks[outcome] = 0
+		        t.TokenFullBids[outcome] = nil
+		        t.TokenFullAsks[outcome] = nil
+		        now := time.Now()
+		        t.LastUpdate = now
+		        t.LastPairUpdate = now
+		        t.mu.Unlock()
+		        restSuccess++
+		        continue
 		}
-
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
 			p, err := strconv.ParseFloat(b.Price, 64)
