@@ -20,10 +20,6 @@
   "maxAggressionMultiplier": 3,
   "minAskPrice": 0.01,
   "maxAskPrice": 0.9,
-  "takerCloseMarket": false,
-  "takerCloseMarketTime": 5,
-  "takerCloseMarketSlippage": 0.99,
-  "takerCloseMarketMinPrice": 0.605,
   "paperArbMode": "taker",
   "buyExecutionMarginFloorPercent": -0.01,
   "splitStrategyEnabled": false,
@@ -40,5 +36,6 @@
   "splitReplenishCapPct": 0.5,
   "takerCloseMarket": false,
   "takerCloseMarketTime": 0,
-  "takerCloseMarketSlippage": 0
+  "takerCloseMarketSlippage": 0,
+  "takerCloseMarketMinPrice": 0.605
 }

@@ -356,6 +356,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Taker Close Time"
 	case 23:
 		return "Taker Close Slippage"
+	case 24:
+		return "Taker Close Min Price"
 	default:
 		return ""
 	}
