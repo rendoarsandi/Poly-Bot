@@ -330,6 +330,9 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case 11:
 		return "Taker Close Market"
 	case 12:
+		if maker {
+			return "Maker Min Buy Price"
+		}
 		return "Min Ask Price"
 	case 13:
 		if maker {
@@ -1930,13 +1933,25 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 	isResolved := false
 	for _, bid := range mkt.Bids {
-		if bid >= 0.99 || bid <= 0.00 {
+		if bid >= 0.99 {
+			isResolved = true
+			break
+		}
+	}
+	for _, bid := range mkt.RealBids {
+		if bid >= 0.99 {
 			isResolved = true
 			break
 		}
 	}
 	for _, ask := range mkt.Asks {
-		if ask >= 0.99 || ask <= 0.00 {
+		if ask >= 0.99 || ask <= 0.005 {
+			isResolved = true
+			break
+		}
+	}
+	for _, ask := range mkt.RealAsks {
+		if ask >= 0.99 || ask <= 0.005 {
 			isResolved = true
 			break
 		}

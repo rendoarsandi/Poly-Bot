@@ -3428,10 +3428,11 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	if maxMakerBuyPrice <= 0 || maxMakerBuyPrice > 0.99 {
 		maxMakerBuyPrice = 0.99
 	}
-	if !buyOK0 || buyPrice0 > maxMakerBuyPrice {
+	minMakerBuyPrice := liveCfg.MinAskPrice
+	if !buyOK0 || buyPrice0 > maxMakerBuyPrice || buyPrice0 < minMakerBuyPrice {
 		buyOK0 = false
 	}
-	if !buyOK1 || buyPrice1 > maxMakerBuyPrice {
+	if !buyOK1 || buyPrice1 > maxMakerBuyPrice || buyPrice1 < minMakerBuyPrice {
 		buyOK1 = false
 	}
 

@@ -667,10 +667,11 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	if maxMakerBuyPrice <= 0 || maxMakerBuyPrice > 0.99 {
 		maxMakerBuyPrice = 0.99
 	}
-	if !buyOK1 || buyPrice1 > maxMakerBuyPrice {
+	minMakerBuyPrice := liveCfg.MinAskPrice
+	if !buyOK1 || buyPrice1 > maxMakerBuyPrice || buyPrice1 < minMakerBuyPrice {
 		buyOK1 = false
 	}
-	if !buyOK2 || buyPrice2 > maxMakerBuyPrice {
+	if !buyOK2 || buyPrice2 > maxMakerBuyPrice || buyPrice2 < minMakerBuyPrice {
 		buyOK2 = false
 	}
 
