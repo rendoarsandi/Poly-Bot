@@ -1465,40 +1465,35 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// --- TAKER CLOSE MARKET LOGIC ---
 			takerCloseTime := time.Duration(t.TUI.GetSettings().TakerCloseMarketTime) * time.Second
-			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime+60*time.Second {
-			        if !takerCloseAttempted {
-			                t.mu.Lock()
-			                bestOutcome := ""
-			                highestPrice := 0.0
-			                for _, outcome := range t.Outcomes {
-			                        ask := t.TokenAsks[outcome]
-			                        bid := t.TokenBids[outcome]
-			                        price := ask
-			                        if price <= 0 || price >= 1.0 {
-			                                price = bid
-			                        }
-			                        if price > 0 && price <= 1.0 && price > highestPrice {
-			                                highestPrice = price
-			                                bestOutcome = outcome
-			                        }
-			                }
-			                t.mu.Unlock()
+			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
+				if !takerCloseAttempted {
+					t.mu.Lock()
+					bestOutcome := ""
+					highestPrice := 0.0
+					for _, outcome := range t.Outcomes {
+						ask := t.TokenAsks[outcome]
+						bid := t.TokenBids[outcome]
+						price := ask
+						if price <= 0 || price >= 1.0 {
+							price = bid
+						}
+						if price > 0 && price <= 1.0 && price > highestPrice {
+							highestPrice = price
+							bestOutcome = outcome
+						}
+					}
+					t.mu.Unlock()
 
-			                minPrice := t.TUI.GetSettings().TakerCloseMarketMinPrice
-			                if minPrice <= 0 {
-			                        minPrice = 0.60
-			                }
+					minPrice := t.TUI.GetSettings().TakerCloseMarketMinPrice
+					if minPrice <= 0 {
+						minPrice = 0.60
+					}
 
-			                // Trigger if within normal close time, OR if within 1 minute of close time AND price spiked
-			                isTimeTrigger := timeToEnd <= takerCloseTime
-			                isSpikeTrigger := timeToEnd <= takerCloseTime+60*time.Second && highestPrice >= minPrice
+					if bestOutcome != "" && highestPrice >= minPrice {
+						takerCloseAttempted = true
+						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
-			                if bestOutcome != "" && highestPrice >= minPrice && (isTimeTrigger || isSpikeTrigger) {
-			                        takerCloseAttempted = true
-			                        t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
-
-			                        budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
-
+						budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
 			                        // Calculate expected execution price (price + absolute slippage allowance)
 			                        // e.g. price 0.70 + (-0.03) = 0.73
 			                        slippageDec := t.TUI.GetSettings().BuyExecutionMarginFloorPercent

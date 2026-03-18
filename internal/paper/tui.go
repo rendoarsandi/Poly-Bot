@@ -999,6 +999,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.TakerCloseMarketSlippage = 0.50
 					}
 					changed = true
+				case 24:
+					m.tui.settings.TakerCloseMarketMinPrice -= 0.005
+					if m.tui.settings.TakerCloseMarketMinPrice < 0.01 {
+						m.tui.settings.TakerCloseMarketMinPrice = 0.01
+					}
+					changed = true
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
@@ -1149,6 +1155,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.TakerCloseMarketSlippage += 0.01
 					if m.tui.settings.TakerCloseMarketSlippage > 0.99 {
 						m.tui.settings.TakerCloseMarketSlippage = 0.99
+					}
+					changed = true
+				case 24:
+					m.tui.settings.TakerCloseMarketMinPrice += 0.005
+					if m.tui.settings.TakerCloseMarketMinPrice > 0.99 {
+						m.tui.settings.TakerCloseMarketMinPrice = 0.99
 					}
 					changed = true
 				}

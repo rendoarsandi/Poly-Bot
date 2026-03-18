@@ -1086,44 +1086,40 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		// --- TAKER CLOSE MARKET LOGIC ---
 		takerCloseTime := time.Duration(tui.GetSettings().TakerCloseMarketTime) * time.Second
-		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime+60*time.Second {
-		        if !takerCloseAttempted {
-		                bestOutcome := ""
-		                highestPrice := 0.0
-		                for _, outcome := range outcomes {
-		                        ask := tokenAsks[outcome]
-		                        bid := tokenBids[outcome]
-		                        price := ask
-		                        if price <= 0 || price >= 1.0 {
-		                                price = bid
-		                        }
-		                        if price > 0 && price <= 1.0 && price > highestPrice {
-		                                highestPrice = price
-		                                bestOutcome = outcome
-		                        }
-		                }
+		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+			if !takerCloseAttempted {
+				bestOutcome := ""
+				highestPrice := 0.0
+				for _, outcome := range outcomes {
+					ask := tokenAsks[outcome]
+					bid := tokenBids[outcome]
+					price := ask
+					if price <= 0 || price >= 1.0 {
+						price = bid
+					}
+					if price > 0 && price <= 1.0 && price > highestPrice {
+						highestPrice = price
+						bestOutcome = outcome
+					}
+				}
 
-		                minPrice := tui.GetSettings().TakerCloseMarketMinPrice
-		                if minPrice <= 0 {
-		                        minPrice = 0.60
-		                }
+				minPrice := tui.GetSettings().TakerCloseMarketMinPrice
+				if minPrice <= 0 {
+					minPrice = 0.60
+				}
 
-		                isTimeTrigger := timeToExpiry <= takerCloseTime
-		                isSpikeTrigger := timeToExpiry <= takerCloseTime+60*time.Second && highestPrice >= minPrice
+				if bestOutcome != "" && highestPrice >= minPrice {
+					takerCloseAttempted = true
+					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", id, bestOutcome, highestPrice)
+					go func(targetOutcome string) {
+						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancelTrade()
 
-		                if bestOutcome != "" && highestPrice >= minPrice && (isTimeTrigger || isSpikeTrigger) {
-		                        takerCloseAttempted = true
-		                        tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", id, bestOutcome, highestPrice)
-		                        go func(targetOutcome string) {
-		                                tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
-		                                defer cancelTrade()
+						budget := cfg.CalculateTradeSize(engine.GetEquity())
 
-		                                budget := cfg.CalculateTradeSize(engine.GetEquity())
-
-		                                // Calculate expected execution price (price + absolute slippage allowance)
-		                                // e.g. price 0.70 + (-0.03) = 0.73
-		                                slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent
-		                                if slippageDec < 0 {
+						// Calculate expected execution price (price + absolute slippage allowance)
+						// e.g. price 0.70 + (-0.03) = 0.73
+						slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent		                                if slippageDec < 0 {
 		                                        slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
 		                                }
 		                                sizingPrice := highestPrice + slippageDec
