@@ -897,9 +897,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.PaperArbMode = "taker"
 					changed = true
 				case 6:
-					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.5
-					if m.tui.settings.BuyExecutionMarginFloorPercent < -10.0 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = -10.0
+					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.01
+					if m.tui.settings.BuyExecutionMarginFloorPercent < -0.10 {
+						m.tui.settings.BuyExecutionMarginFloorPercent = -0.10
 					}
 					changed = true
 				case 7:
