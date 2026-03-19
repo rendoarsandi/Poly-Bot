@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"Market-bot/internal/paper"
 )
 
 func TestPaperExecutionLatencyDurations(t *testing.T) {
@@ -181,6 +183,23 @@ func TestShouldUseLocalPaperPairRequiresFreshValidBothSides(t *testing.T) {
 	asks["No"] = 0
 	if shouldUseLocalPaperPair(outcomes, bids, asks, now.Add(-100*time.Millisecond), 750*time.Millisecond, now) {
 		t.Fatal("expected missing quote on one side to invalidate local pair")
+	}
+}
+
+func TestSummarizePaperRoundUsesSharedEngineDelta(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	engine.AddBalance(4.65)
+	engine.AddRealizedPnL(4.65)
+
+	roundPnL, totalEquity, roundTrades, stats := summarizePaperRound(engine, 100.0, 0)
+	if abs := roundPnL - 4.65; abs < -0.000001 || abs > 0.000001 {
+		t.Fatalf("expected round PnL 4.65, got %.2f", roundPnL)
+	}
+	if abs := totalEquity - 104.65; abs < -0.000001 || abs > 0.000001 {
+		t.Fatalf("expected total equity 104.65, got %.2f", totalEquity)
+	}
+	if roundTrades != stats.TotalTrades {
+		t.Fatalf("expected round trades to mirror stats delta, got %d vs %d", roundTrades, stats.TotalTrades)
 	}
 }
 

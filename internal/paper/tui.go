@@ -483,9 +483,11 @@ type tuiSnapshot struct {
 	isKilled       bool
 	killReason     string
 	tradeFactor    float64
+	maxTradeSize   float64
 	startTime      time.Time
 	width          int
 	height         int
+	mode           string
 	restLatency    time.Duration
 	restLatencyAvg time.Duration
 	wsLatency      time.Duration
@@ -789,9 +791,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			isKilled:        m.tui.isKilled,
 			killReason:      m.tui.killReason,
 			tradeFactor:     m.tui.tradeFactor,
+			maxTradeSize:    m.tui.settings.MaxTradeSize,
 			startTime:       m.tui.startTime,
 			width:           m.tui.width,
 			height:          m.tui.height,
+			mode:            m.tui.mode,
 			restLatency:     m.tui.restLatency,
 			restLatencyAvg:  m.tui.restLatencyAvg,
 			wsLatency:       m.tui.wsLatency,
@@ -2446,12 +2450,12 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	// Trade size
 	tradeLine := ""
-	if s.tradeFactor > 0 {
-		tradeCost := equity * s.tradeFactor
-		if tradeCost < 1.0 {
-			tradeCost = 1.0
+	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, equity, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
+		if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
+			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
+		} else {
+			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f/trade)  ·  ", s.tradeFactor*100, baseTradeCost)
 		}
-		tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f/trade)  ·  ", s.tradeFactor*100, tradeCost)
 	} else {
 		tradeLine = "  "
 	}
@@ -2487,6 +2491,30 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4
 	return makePanel(inner, clrTeal, content)
+}
+
+func displayedTradeBudgets(mode string, cash, equity, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
+	if tradeFactor <= 0 {
+		return 0, 0
+	}
+
+	sizingCapital := equity
+	if strings.EqualFold(mode, "Real") {
+		sizingCapital = cash
+	}
+	base = sizingCapital * tradeFactor
+	if maxTradeSize > 0 && base > maxTradeSize {
+		base = maxTradeSize
+	}
+	if base < 1.0 {
+		base = 1.0
+	}
+
+	effective = base
+	if strings.EqualFold(mode, "Paper") && multiplier > 1.0 {
+		effective = base * multiplier
+	}
+	return base, effective
 }
 
 // renderPositions: bordered panel for in-flight and split inventory positions.

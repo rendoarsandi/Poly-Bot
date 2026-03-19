@@ -216,6 +216,17 @@ func shouldPaperRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval t
 	return quoteAge > staleAfter && sinceLastRest > pollInterval
 }
 
+func summarizePaperRound(engine *paper.Engine, startingEquity float64, roundStartTrades int) (roundPnL, totalEquity float64, roundTrades int, stats paper.Stats) {
+	stats = engine.GetStats()
+	totalEquity = engine.GetEquity()
+	roundPnL = totalEquity - startingEquity
+	roundTrades = stats.TotalTrades - roundStartTrades
+	if roundTrades < 0 {
+		roundTrades = 0
+	}
+	return roundPnL, totalEquity, roundTrades, stats
+}
+
 func hasValidPaperPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
 	if len(outcomes) != 2 {
 		return false
@@ -1032,6 +1043,7 @@ func run() error {
 
 		// Track starting equity for compounding calculation
 		startingEquity := engine.GetEquity()
+		roundStartTrades := engine.GetStats().TotalTrades
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "ROUND_START", "Round starting with %d markets | Multiplier: %.2fx", len(markets), compoundMultiplier)
 
@@ -1144,8 +1156,6 @@ func run() error {
 
 		// Collect results
 		// Read exact number of expected results to avoid hanging if results channel isn't closed due to stuck trader
-		totalPnL := 0.0
-		totalTrades := 0
 		for i := 0; i < tradersStarted; i++ {
 			select {
 			case result, ok := <-results:
@@ -1154,10 +1164,7 @@ func run() error {
 					i = tradersStarted
 					continue
 				}
-				if result != nil {
-					totalPnL += result.realizedPnL
-					totalTrades += result.trades
-				}
+				_ = result
 			case <-time.After(5 * time.Second):
 				tui.LogEvent("⚠️ Timed out waiting for some traders to return results")
 				// Force break out of the loop
@@ -1165,16 +1172,17 @@ func run() error {
 			}
 		}
 
-		// Log market rotation with detailed stats
-		stats := engine.GetStats()
-		tui.LogEvent("📊 Round PnL: $%.2f | Total Balance: $%.2f | Rotating...", totalPnL, stats.CurrentBalance)
+		// Log market rotation from the shared engine state rather than summing
+		// overlapping per-trader deltas from concurrent goroutines.
+		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
+		tui.LogEvent("📊 Round PnL: $%.2f | Total Equity: $%.2f | Trades: %d | Rotating...", roundPnL, roundEquity, roundTrades)
 
 		// Update compounding multiplier based on round performance
-		engine.UpdateCompoundMultiplier(totalPnL, startingEquity)
+		engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
 		newMultiplier := engine.GetCompoundMultiplier()
-		if totalPnL > 0 {
+		if roundPnL > 0 {
 			tui.LogEvent("📈 PROFIT! Multiplier: %.2fx → %.2fx (compounding)", compoundMultiplier, newMultiplier)
-		} else if totalPnL < 0 {
+		} else if roundPnL < 0 {
 			tui.LogEvent("📉 Loss. Multiplier: %.2fx → %.2fx", compoundMultiplier, newMultiplier)
 		}
 
