@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -449,6 +450,38 @@ func TestSendHeartbeat(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("expected status ok, got %q", resp.Status)
+	}
+}
+
+func TestGetBalanceAllowance_NormalizesBaseUnits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/balance-allowance" {
+			t.Fatalf("expected /balance-allowance, got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"balance":"68284432","allowance":"100000000"}`))
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("NewCLOBClient failed: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	ba, err := client.GetBalanceAllowance(context.Background())
+	if err != nil {
+		t.Fatalf("GetBalanceAllowance failed: %v", err)
+	}
+
+	if math.Abs(ba.Balance-68.284432) > 0.000001 {
+		t.Fatalf("expected normalized balance 68.284432, got %.6f", ba.Balance)
+	}
+	if math.Abs(ba.Allowance-100.0) > 0.000001 {
+		t.Fatalf("expected normalized allowance 100.0, got %.6f", ba.Allowance)
 	}
 }
 

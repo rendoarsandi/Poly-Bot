@@ -726,7 +726,7 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	hasCache := !t.lastBalanceUpdate.IsZero()
 	t.mu.Unlock()
 
-	ba, err := t.client.GetBalanceAllowance(ctx)
+	bal, err := t.fetchLiveBalance(ctx)
 	if err != nil {
 		// Return cached balance on error if available
 		if hasCache {
@@ -734,7 +734,6 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 		}
 		return 0, err
 	}
-	bal := ba.Balance
 
 	t.mu.Lock()
 	t.cachedBalance = bal
@@ -742,6 +741,36 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.mu.Unlock()
 
 	return bal, nil
+}
+
+func (t *RealTrader) fetchLiveBalance(ctx context.Context) (float64, error) {
+	if t.client == nil {
+		return 0, fmt.Errorf("exchange client not initialized")
+	}
+
+	if t.config != nil && strings.EqualFold(t.config.Exchange, "kalshi") {
+		ba, err := t.client.GetBalanceAllowance(ctx)
+		if err != nil {
+			return 0, err
+		}
+		return ba.Balance, nil
+	}
+
+	if t.polygon != nil {
+		onChainBalance, err := t.polygon.GetUSDCBalance(ctx, t.client.Address())
+		if err == nil {
+			if ba, baErr := t.client.GetBalanceAllowance(ctx); baErr == nil && ba.Allowance > 0 && ba.Allowance < onChainBalance {
+				return ba.Allowance, nil
+			}
+			return onChainBalance, nil
+		}
+	}
+
+	ba, err := t.client.GetBalanceAllowance(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return ba.Balance, nil
 }
 
 // ForceRefreshBalance clears the cache and fetches fresh balance

@@ -858,6 +858,8 @@ type BalanceAllowance struct {
 	Allowance float64 `json:"allowance,string"`
 }
 
+const usdcBaseUnitsPerToken = 1e6
+
 // GetBalanceAllowance retrieves USDC balance and allowance from CLOB
 func (c *CLOBClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance, error) {
 	path := "/balance-allowance?asset_type=COLLATERAL"
@@ -888,6 +890,9 @@ func (c *CLOBClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowance
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode balance: %w", err)
 	}
+	// Polymarket reports collateral amounts in 6-decimal base units.
+	result.Balance /= usdcBaseUnitsPerToken
+	result.Allowance /= usdcBaseUnitsPerToken
 
 	return &result, nil
 }

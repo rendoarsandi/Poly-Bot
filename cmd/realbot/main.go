@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -88,6 +87,68 @@ func normalizePaperArbMode(mode string) string {
 		return paperArbModeMaker
 	default:
 		return paperArbModeTaker
+	}
+}
+
+func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
+	return paper.TUISettings{
+		Exchange:                       cfg.Exchange,
+		MarketSlug:                     cfg.MarketSlug,
+		MaxMarkets:                     cfg.MaxMarkets,
+		Timeframe:                      cfg.Timeframe,
+		TradeScaleFactor:               cfg.TradeScaleFactor,
+		MinMarginPercent:               cfg.MinMarginPercent,
+		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
+		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
+		SplitMinMarginSell:             cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:             cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:           cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:        cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:                  cfg.MakerQuoteGap,
+		MakerInventoryTargetMult:       cfg.MakerInventoryTargetMult,
+		MakerInventoryCapMult:          cfg.MakerInventoryCapMult,
+		MakerMinQuoteValue:             cfg.MakerMinQuoteValue,
+		MinAskPrice:                    cfg.MinAskPrice,
+		MaxAskPrice:                    cfg.MaxAskPrice,
+		MaxTradeSize:                   cfg.MaxTradeSize,
+		MaxDailyLoss:                   cfg.MaxDailyLoss,
+		TakerCloseMarket:               cfg.TakerCloseMarket,
+		TakerCloseMarketTime:           cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
+	}
+}
+
+func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
+	cfg.Exchange = s.Exchange
+	cfg.MarketSlug = s.MarketSlug
+	cfg.MaxMarkets = s.MaxMarkets
+	cfg.Timeframe = s.Timeframe
+	cfg.TradeScaleFactor = s.TradeScaleFactor
+	cfg.MinMarginPercent = s.MinMarginPercent
+	cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
+	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
+	cfg.SplitMinMarginSell = s.SplitMinMarginSell
+	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
+	cfg.SplitInitialCapPct = s.SplitInitialCapPct
+	cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
+	cfg.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
+	cfg.MakerQuoteGap = s.MakerQuoteGap
+	cfg.MakerInventoryTargetMult = s.MakerInventoryTargetMult
+	cfg.MakerInventoryCapMult = s.MakerInventoryCapMult
+	cfg.MakerMinQuoteValue = s.MakerMinQuoteValue
+	cfg.MinAskPrice = s.MinAskPrice
+	cfg.MaxAskPrice = s.MaxAskPrice
+	cfg.MaxTradeSize = s.MaxTradeSize
+	cfg.MaxDailyLoss = s.MaxDailyLoss
+	cfg.TakerCloseMarket = s.TakerCloseMarket
+	cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
+	cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
+	cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+	if cfg.Exchange == "kalshi" {
+		cfg.SplitStrategyEnabled = false
+		cfg.MakerMergeBufferSeconds = 0
 	}
 }
 
@@ -344,6 +405,28 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.RequireConfirm || !cfg.StartupWizardSeen {
+		startupSettings, confirmed, err := paper.RunStartupWizard(paper.StartupWizardOptions{
+			Title:          "REALBOT STARTUP",
+			ProfileLabel:   "real wallet, live orders",
+			Settings:       realbotTUISettingsFromConfig(cfg),
+			FirstRun:       !cfg.StartupWizardSeen,
+			RequireConfirm: cfg.RequireConfirm,
+		})
+		if err != nil {
+			return fmt.Errorf("startup wizard failed: %w", err)
+		}
+		if !confirmed {
+			fmt.Println("Startup cancelled.")
+			return nil
+		}
+		applyRealbotTUISettings(cfg, startupSettings)
+		cfg.StartupWizardSeen = true
+		if err := cfg.SaveSettings(); err != nil {
+			return fmt.Errorf("failed to save startup settings: %w", err)
+		}
+	}
+
 	// Create real trader and auto-setup credentials/allowances if missing
 	setupCtx, cancelSetup := context.WithTimeout(ctx, 2*time.Minute)
 	realTrader, err := setup.EnsureRealTradingSetup(setupCtx, cfg)
@@ -422,35 +505,6 @@ func run() error {
 	}
 	fmt.Printf("   • Buy/sell execution margin floor: %.1f%%\n", cfg.BuyExecutionMarginFloorPercent)
 	fmt.Println()
-
-	// Confirmation prompt
-	if cfg.RequireConfirm {
-		fmt.Println("╔═══════════════════════════════════════════════════════╗")
-		fmt.Println("║  Type 'on' to start with Split Strategy ENABLED       ║")
-		fmt.Println("║  Type 'off' to start with Split Strategy DISABLED     ║")
-		fmt.Println("╚═══════════════════════════════════════════════════════╝")
-		fmt.Print("> ")
-
-		reader := bufio.NewReader(os.Stdin)
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read input: %w", err)
-		}
-
-		input = strings.TrimSpace(strings.ToLower(input))
-		if input == "on" {
-			cfg.SplitStrategyEnabled = true
-			_ = cfg.SaveSettings()
-			fmt.Println("✅ Starting real trading bot with Split Strategy ON...")
-		} else if input == "off" {
-			cfg.SplitStrategyEnabled = false
-			_ = cfg.SaveSettings()
-			fmt.Println("✅ Starting real trading bot with Split Strategy OFF...")
-		} else {
-			fmt.Println("❌ Cancelled (must type 'on' or 'off')")
-			return nil
-		}
-	}
 
 	restClient := api.NewRestClient(cfg.Exchange)
 
@@ -614,53 +668,8 @@ func run() error {
 	}
 
 	// Seed settings panel with values from config (.env)
-	tui.InitSettings(paper.TUISettings{
-		Exchange:                       cfg.Exchange,
-		MarketSlug:                     cfg.MarketSlug,
-		MaxMarkets:                     cfg.MaxMarkets,
-		Timeframe:                      cfg.Timeframe,
-		TradeScaleFactor:               cfg.TradeScaleFactor,
-		MinMarginPercent:               cfg.MinMarginPercent,
-		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
-		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
-		SplitMinMarginSell:             cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:             cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:           cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds:        cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:                  cfg.MakerQuoteGap,
-		MinAskPrice:                    cfg.MinAskPrice,
-		MaxAskPrice:                    cfg.MaxAskPrice,
-		MaxTradeSize:                   cfg.MaxTradeSize,
-		MaxDailyLoss:                   cfg.MaxDailyLoss,
-		TakerCloseMarket:               cfg.TakerCloseMarket,
-		TakerCloseMarketTime:           cfg.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
-	}, func(s paper.TUISettings) {
-		cfg.Exchange = s.Exchange
-		cfg.MarketSlug = s.MarketSlug
-		cfg.MaxMarkets = s.MaxMarkets
-		cfg.Timeframe = s.Timeframe
-		cfg.TradeScaleFactor = s.TradeScaleFactor
-		cfg.MinMarginPercent = s.MinMarginPercent
-		cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
-		cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
-		cfg.SplitMinMarginSell = s.SplitMinMarginSell
-		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
-		cfg.SplitInitialCapPct = s.SplitInitialCapPct
-		cfg.SplitReplenishCapPct = s.SplitReplenishCapPct
-		cfg.MakerMergeBufferSeconds = s.MakerMergeBufferSeconds
-		cfg.MakerQuoteGap = s.MakerQuoteGap
-		cfg.MinAskPrice = s.MinAskPrice
-		cfg.MaxAskPrice = s.MaxAskPrice
-		cfg.MaxTradeSize = s.MaxTradeSize
-		cfg.MaxDailyLoss = s.MaxDailyLoss
-		cfg.TakerCloseMarket = s.TakerCloseMarket
-		cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
-		cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
-		cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
-
+	tui.InitSettings(realbotTUISettingsFromConfig(cfg), func(s paper.TUISettings) {
+		applyRealbotTUISettings(cfg, s)
 		// Update the REST client exchange if it changed
 		if restClient.Exchange != s.Exchange {
 			restClient.Exchange = s.Exchange

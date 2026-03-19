@@ -103,13 +103,14 @@ type Config struct {
 	MakerQuoteGap            float64 // Distance from mid for maker quotes (default: 0.008)
 	MakerInventoryTargetMult float64 // Target multiplier for inventory skew (default: 3.0)
 	MakerInventoryCapMult    float64 // Cap multiplier for inventory skew (default: 5.0)
-	MakerMinQuoteValue      float64 // Minimum shares to quote (default: 10.0)
+	MakerMinQuoteValue       float64 // Minimum shares to quote (default: 10.0)
 	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
 	TakerCloseMarket         bool    // Force GTC buy right before market closes
 	TakerCloseMarketTime     int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage float64 // Limit price for taker close (default: 0.99)
 	TakerCloseMarketMinPrice float64 // Min price to trigger close buy (default: 0.60)
+	StartupWizardSeen        bool    // Whether the themed startup wizard has been completed
 
 	settingsProfile string
 	settingsPath    string
@@ -148,13 +149,14 @@ type RuntimeSettings struct {
 	MakerQuoteGap                  float64 `json:"makerQuoteGap"`
 	MakerInventoryTargetMult       float64 `json:"makerInventoryTargetMult"`
 	MakerInventoryCapMult          float64 `json:"makerInventoryCapMult"`
-	MakerMinQuoteValue            float64 `json:"makerMinQuoteValue"`
+	MakerMinQuoteValue             float64 `json:"makerMinQuoteValue"`
 	SplitInitialCapPct             float64 `json:"splitInitialCapPct"`
 	SplitReplenishCapPct           float64 `json:"splitReplenishCapPct"`
 	TakerCloseMarket               bool    `json:"takerCloseMarket"`
 	TakerCloseMarketTime           int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage       float64 `json:"takerCloseMarketSlippage"`
 	TakerCloseMarketMinPrice       float64 `json:"takerCloseMarketMinPrice"`
+	StartupWizardSeen              bool    `json:"startupWizardSeen"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -214,7 +216,7 @@ func LoadConfig() (*Config, error) {
 		MakerQuoteGap:            parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
 		MakerInventoryTargetMult: parseEnvFloat("MAKER_INVENTORY_TARGET_MULT", 3.0),
 		MakerInventoryCapMult:    parseEnvFloat("MAKER_INVENTORY_CAP_MULT", 5.0),
-		MakerMinQuoteValue:      parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
+		MakerMinQuoteValue:       parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
 		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
 	}
@@ -484,13 +486,14 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MakerQuoteGap:                  c.MakerQuoteGap,
 		MakerInventoryTargetMult:       c.MakerInventoryTargetMult,
 		MakerInventoryCapMult:          c.MakerInventoryCapMult,
-		MakerMinQuoteValue:            c.MakerMinQuoteValue,
+		MakerMinQuoteValue:             c.MakerMinQuoteValue,
 		SplitInitialCapPct:             c.SplitInitialCapPct,
 		SplitReplenishCapPct:           c.SplitReplenishCapPct,
 		TakerCloseMarket:               c.TakerCloseMarket,
 		TakerCloseMarketTime:           c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       c.TakerCloseMarketMinPrice,
+		StartupWizardSeen:              c.StartupWizardSeen,
 	}
 }
 
@@ -536,6 +539,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+	c.StartupWizardSeen = s.StartupWizardSeen
 
 	// Force disable split/merge for Kalshi
 	if c.Exchange == "kalshi" {

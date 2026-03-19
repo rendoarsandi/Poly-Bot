@@ -394,6 +394,22 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 	}
 }
 
+func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
+	for _, idx := range []int{0, 1, 3, 4, 5, 6, 11, 12, 13, 19, 20, 22, 23, 24} {
+		if !isRowVisible(cfg, idx) {
+			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
+		}
+	}
+}
+
+func TestIsRowVisibleShowsMaxAskPriceInTakerMode(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "taker"}
+	if !isRowVisible(cfg, 13) {
+		t.Fatalf("expected Max Ask Price row to remain visible in taker mode")
+	}
+}
+
 func TestRenderSettingsShowsMakerSpecificLabels(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()

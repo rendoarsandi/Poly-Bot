@@ -3,6 +3,8 @@ package trading
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -10,8 +12,75 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 )
+
+type stubExchangeClient struct {
+	balanceAllowance *api.BalanceAllowance
+	address          string
+}
+
+func (s *stubExchangeClient) PlaceOrder(ctx context.Context, req *api.OrderRequest) (*api.OrderResponse, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *stubExchangeClient) CancelOrder(ctx context.Context, orderID string) error {
+	return nil
+}
+
+func (s *stubExchangeClient) CancelAllOrders(ctx context.Context) error {
+	return nil
+}
+
+func (s *stubExchangeClient) GetPositions(ctx context.Context) ([]api.Position, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *stubExchangeClient) GetOrder(ctx context.Context, orderID string) (*api.OpenOrder, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *stubExchangeClient) GetOpenOrders(ctx context.Context) ([]api.OpenOrder, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *stubExchangeClient) GetBalanceAllowance(ctx context.Context) (*api.BalanceAllowance, error) {
+	if s.balanceAllowance == nil {
+		return nil, fmt.Errorf("not configured")
+	}
+	return s.balanceAllowance, nil
+}
+
+func (s *stubExchangeClient) UpdateBalanceAllowance(ctx context.Context) error {
+	return nil
+}
+
+func (s *stubExchangeClient) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *stubExchangeClient) SetTestMode(enabled bool) {}
+
+func (s *stubExchangeClient) IsTestMode() bool {
+	return false
+}
+
+func (s *stubExchangeClient) GetSigner() *api.Signer {
+	return nil
+}
+
+func (s *stubExchangeClient) Address() string {
+	return s.address
+}
+
+func (s *stubExchangeClient) EnableRawAPILog(path string) error {
+	return nil
+}
+
+func (s *stubExchangeClient) CloseRawAPILog() error {
+	return nil
+}
 
 // TestPaperTrader_BuySellConsistency verifies paper trader maintains consistent state
 func TestPaperTrader_BuySellConsistency(t *testing.T) {
@@ -468,6 +537,34 @@ func TestRealTrader_GetPositionsRequiresExternalSnapshot(t *testing.T) {
 
 	if _, err := trader.GetPositions(context.Background()); err == nil {
 		t.Fatal("expected GetPositions to require an external snapshot source")
+	}
+}
+
+func TestRealTrader_GetBalancePrefersOnChainUSDC(t *testing.T) {
+	usdcRaw := big.NewInt(68284432)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"0x%064x"}`, usdcRaw)))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client: &stubExchangeClient{
+			balanceAllowance: &api.BalanceAllowance{
+				Balance:   99999999,
+				Allowance: 99999999,
+			},
+			address: "0x1111111111111111111111111111111111111111",
+		},
+		polygon: api.NewPolygonClient(server.URL),
+		config:  &core.Config{Exchange: "polymarket"},
+	}
+
+	balance, err := trader.GetBalance(context.Background())
+	if err != nil {
+		t.Fatalf("GetBalance failed: %v", err)
+	}
+	if balance != 68.284432 {
+		t.Fatalf("expected on-chain USDC balance 68.284432, got %.6f", balance)
 	}
 }
 

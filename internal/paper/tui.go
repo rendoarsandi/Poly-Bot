@@ -296,23 +296,10 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	kalshi := cfg.Exchange == "kalshi"
 	closeMarket := cfg.TakerCloseMarket
 
-	if closeMarket {
-		// Only show relevant settings for TakerCloseMarket
-		switch idx {
-		case 0, 1, 2, 3, 6, 11, 19, 20, 21, 22, 23, 24:
-			if kalshi && idx == 2 {
-				return false
-			}
-			return true
-		default:
-			return false
-		}
-	}
-
 	if kalshi {
-		// Hide Timeframe (2), Split settings (7,8,9,10), Maker Merge Buffer (13)
+		// Kalshi uses its own scheduling and does not support split inventory.
 		switch idx {
-		case 2, 7, 8, 9, 10, 13:
+		case 2, 7, 8, 9, 10:
 			return false
 		}
 	}
@@ -320,10 +307,10 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	switch idx {
 	case 6, 7, 8, 9, 10: // Taker specific
 		return !maker
-	case 13, 14, 15, 16, 17, 18: // Maker specific
+	case 14, 15, 16, 17, 18: // Maker specific
 		return maker
 	case 22, 23, 24: // Close Market specific
-		return false
+		return closeMarket
 	default:
 		return true
 	}
