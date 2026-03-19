@@ -1022,6 +1022,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var lastTakerCloseLog time.Time
 	var takerClosePriceAboveSince time.Time // When price first went above minPrice (for spike protection)
 	takerCloseLastStablePrice := 0.0        // Last confirmed price above minPrice
+	var takerCloseExecutedAt time.Time      // When taker close buy was sent (for merge-buffer cooldown)
 	defer tui.ClearWalletTruthPositions(id)
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
@@ -1098,8 +1099,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		timeToExpiry := time.Until(endTime)
 
 		// --- TAKER CLOSE MARKET LOGIC ---
-		// Spike protection: price must be sustained above minPrice for >=60 seconds
-		// before we execute a taker close buy. This prevents momentary WS spikes
+		// Spike protection: price must be sustained above minPrice for a configurable
+		// duration before we execute a taker close buy. This prevents momentary WS spikes
 		// from triggering execution at bad prices (e.g. spike to 0.61 then drop to 0.55).
 		// Additionally, the limit price is capped so the order never fills below minPrice.
 		takerCloseTime := time.Duration(tui.GetSettings().TakerCloseMarketTime) * time.Second
@@ -1126,7 +1127,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 
 				// ── Spike protection: track how long the price stays above minPrice ──
-				const takerCloseSpikeGuardDuration = 60 * time.Second // Price must be sustained for 60s
+				// Scale spike guard proportionally to TakerCloseMarketTime: 50% of close time, min 5s.
+				// This ensures the guard window is always reachable via pre-window tracking.
+				takerCloseSpikeGuardDuration := takerCloseTime / 2
+				if takerCloseSpikeGuardDuration < 5*time.Second {
+					takerCloseSpikeGuardDuration = 5 * time.Second
+				}
 
 				if bestOutcome != "" && highestPrice >= minPrice {
 					if takerClosePriceAboveSince.IsZero() {
@@ -1173,6 +1179,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							if restConfirmOK {
 								takerCloseAttempted = true
+								takerCloseExecutedAt = time.Now()
 								tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (WS price: $%.3f, sustained for %ds, REST confirmed)",
 									id, bestOutcome, highestPrice, int(sustainedDuration.Seconds()))
 								go func(targetOutcome string, confirmedPrice float64) {
@@ -1218,11 +1225,34 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 									tui.LogEvent("[%s] 📤 Taker close buy: %s %.0f shares limit $%.3f (min floor $%.2f)",
 										id, targetOutcome, size, limitPrice, currentMinPrice)
-									_, err := trader.Buy(tradeCtx, tokenID, targetOutcome, limitPrice, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, tokenFeeRates[targetOutcome])
+									result, err := trader.Buy(tradeCtx, tokenID, targetOutcome, limitPrice, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, tokenFeeRates[targetOutcome])
 									if err != nil {
 										tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, err)
+									} else if result != nil && result.Success {
+										// Record the buy in the engine so PnL/redemption tracking works
+										execPrice := limitPrice
+										execQty := size
+										if result.AcknowledgedQty > 0 {
+											execQty = result.AcknowledgedQty
+										}
+										if result.AcknowledgedNotional > 0 && execQty > 0 {
+											execPrice = result.AcknowledgedNotional / execQty
+										}
+										_, _ = engine.BuyForMarket(id, targetOutcome, execPrice, execQty)
+										orderIDSnip := result.OrderID
+										if len(orderIDSnip) > 12 {
+											orderIDSnip = orderIDSnip[:12]
+										}
+										tui.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.3f (order: %s)", id, execQty, limitPrice, orderIDSnip)
+
+										// Force refresh wallet truth so post-close cleanup sees accurate positions
+										refreshWalletTruth(5 * time.Second)
 									} else {
-										tui.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.3f", id, size, limitPrice)
+										msg := "unknown"
+										if result != nil {
+											msg = result.Message
+										}
+										tui.LogEvent("[%s] ⚠️ Taker close buy rejected: %s", id, msg)
 									}
 								}(bestOutcome, highestPrice)
 							}
@@ -1241,8 +1271,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						takerClosePriceAboveSince = time.Time{}
 						takerCloseLastStablePrice = 0
 					} else if time.Since(lastTakerCloseLog) > 1*time.Second {
+						takerCloseSpikeGuardPreview := takerCloseTime / 2
+						if takerCloseSpikeGuardPreview < 5*time.Second {
+							takerCloseSpikeGuardPreview = 5 * time.Second
+						}
 						tui.LogEvent("[%s] ⏳ Taker close waiting: price $%.3f (needs >= $%.2f for %ds)",
-							id, highestPrice, minPrice, int(takerCloseSpikeGuardDuration.Seconds()))
+							id, highestPrice, minPrice, int(takerCloseSpikeGuardPreview.Seconds()))
 						lastTakerCloseLog = time.Now()
 					}
 				}
@@ -1280,13 +1314,22 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// --------------------------------
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 		if timeToExpiry > 0 && timeToExpiry <= mergeBuffer {
+			// If taker close just fired, suppress sell actions for 15s to prevent racing
+			// against the just-placed GTC buy order. The merge buffer cleanup would
+			// otherwise sell the shares we just bought before the order fully fills.
+			takerCloseCooldownActive := !takerCloseExecutedAt.IsZero() && time.Since(takerCloseExecutedAt) < 15*time.Second
+			allowCleanupSell := !takerCloseCooldownActive
 			if time.Now().After(nextNearCloseCleanup) {
 				if !nearExpiryNoticeSent {
-					tui.LogEvent("[%s] ⏳ Near expiry: settling only", id)
+					if takerCloseCooldownActive {
+						tui.LogEvent("[%s] ⏳ Near expiry: merge-only (taker close cooldown active)", id)
+					} else {
+						tui.LogEvent("[%s] ⏳ Near expiry: settling only", id)
+					}
 					nearExpiryNoticeSent = true
 				}
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, tui.GetSettings().MinAskPrice, "NEAR EXPIRY", mergeCoordinator); err != nil {
+				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, allowCleanupSell, tui.GetSettings().MinAskPrice, "NEAR EXPIRY", mergeCoordinator); err != nil {
 					tui.LogEvent("[%s] ⚠️ Near-expiry cleanup failed: %v", id, err)
 				}
 				cleanupCancel()
