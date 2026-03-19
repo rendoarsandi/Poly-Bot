@@ -100,6 +100,71 @@ func TestMinExecutablePairSum(t *testing.T) {
 	}
 }
 
+func TestNormalizeExecutionToleranceFractionSupportsLegacyPercentAndDecimalForms(t *testing.T) {
+	if got := normalizeExecutionToleranceFraction(-1.0); math.Abs(got-0.01) > 0.000001 {
+		t.Fatalf("expected -1.0 to normalize to 1%%, got %.6f", got)
+	}
+	if got := normalizeExecutionToleranceFraction(-0.01); math.Abs(got-0.01) > 0.000001 {
+		t.Fatalf("expected -0.01 to normalize to 1%%, got %.6f", got)
+	}
+}
+
+func TestBuildRealbotTakerClosePlanRespectsBuyExecSizing(t *testing.T) {
+	plan, err := buildRealbotTakerClosePlan(50, 0.60, paper.TUISettings{
+		BuyExecutionMarginFloorPercent: -1.0,
+		TakerCloseMarketSlippage:       0.99,
+		TakerCloseMarketMinPrice:       0.60,
+	})
+	if err != nil {
+		t.Fatalf("expected plan, got %v", err)
+	}
+	if math.Abs(plan.SizingPrice-0.606) > 0.000001 {
+		t.Fatalf("expected sizing price 0.606, got %.6f", plan.SizingPrice)
+	}
+	if plan.RequestedQty != 82 {
+		t.Fatalf("expected 82 shares, got %.0f", plan.RequestedQty)
+	}
+}
+
+func TestBuildRealbotTakerClosePlanFloorsLimitToMinPrice(t *testing.T) {
+	plan, err := buildRealbotTakerClosePlan(20, 0.60, paper.TUISettings{
+		BuyExecutionMarginFloorPercent: -1.0,
+		TakerCloseMarketSlippage:       0.55,
+		TakerCloseMarketMinPrice:       0.60,
+	})
+	if err != nil {
+		t.Fatalf("expected plan, got %v", err)
+	}
+	if math.Abs(plan.LimitPrice-0.60) > 0.000001 {
+		t.Fatalf("expected limit floor at min price 0.60, got %.3f", plan.LimitPrice)
+	}
+	if math.Abs(plan.SizingPrice-0.60) > 0.000001 {
+		t.Fatalf("expected sizing price capped by limit 0.60, got %.3f", plan.SizingPrice)
+	}
+}
+
+func TestRealbotLooksLikeTerminalBookRecognizesPinnedEndState(t *testing.T) {
+	terminal := realbotLooksLikeTerminalBook(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.99, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.01},
+	)
+	if !terminal {
+		t.Fatal("expected pinned 0.99/0.01 book to count as terminal-looking")
+	}
+}
+
+func TestRealbotLooksLikeTerminalBookRejectsNormalOneSidedBook(t *testing.T) {
+	terminal := realbotLooksLikeTerminalBook(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.64, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.36},
+	)
+	if terminal {
+		t.Fatal("expected ordinary one-sided book to require normal WS freshness checks")
+	}
+}
+
 func TestRealbotPanicBuyCompletionGuardBlocksUnprofitableCompletion(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.62, 10); err != nil {
