@@ -40,9 +40,9 @@ type cacheEntry struct {
 }
 
 const (
-	resolutionMinTTL      = 30 * time.Second  // Initial check interval
-	resolutionMaxTTL      = 5 * time.Minute   // Max check interval for unresolved markets
-	resolutionResolvedTTL = 24 * time.Hour     // Cache resolved status for a long time
+	resolutionMinTTL      = 30 * time.Second // Initial check interval
+	resolutionMaxTTL      = 5 * time.Minute  // Max check interval for unresolved markets
+	resolutionResolvedTTL = 24 * time.Hour   // Cache resolved status for a long time
 )
 
 // NewResolutionCache creates a new cache.
@@ -171,8 +171,15 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 		}
 		if resolved {
 			status.Resolved = true
-			// On-chain says resolved but we don't know the winner yet.
-			// Try to infer from CLOB API one more time or leave winner empty.
+			if status.Winner == "" {
+				if winner, winErr := rc.polygon.GetWinningOutcome(ctx, conditionID, outcomes); winErr != nil {
+					status.Error = winErr
+				} else if winner != "" {
+					status.Winner = winner
+				}
+			}
+			// On-chain says resolved but we still don't know the winner.
+			// Try CLOB once more before returning an empty winner.
 			if status.Winner == "" && rc.clobClient != nil {
 				if info, err := rc.clobClient.GetMarketInfo(ctx, conditionID); err == nil {
 					for _, token := range info.Tokens {

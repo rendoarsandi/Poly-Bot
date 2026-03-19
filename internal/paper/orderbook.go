@@ -23,16 +23,17 @@ const (
 
 // LimitOrder represents a limit order waiting to be filled
 type LimitOrder struct {
-	ID          int
-	CreatedAt   time.Time
-	Outcome     string  // "Up", "Down", "Yes", "No"
-	Side        string  // "buy" or "sell"
-	Price       float64 // Target price (limit)
-	Quantity    float64 // Total quantity
-	FilledQty   float64 // Amount filled
-	FillPrice   float64 // Actual fill price (may be better than limit)
-	Status      OrderStatus
-	LadderLevel int // Which ladder level (0 = best price, 1 = next, etc.)
+	ID            int
+	CreatedAt     time.Time
+	Outcome       string  // "Up", "Down", "Yes", "No"
+	Side          string  // "buy" or "sell"
+	ExecutionMode string  // "maker", "taker", "taker-close"
+	Price         float64 // Target price (limit)
+	Quantity      float64 // Total quantity
+	FilledQty     float64 // Amount filled
+	FillPrice     float64 // Actual fill price (may be better than limit)
+	Status        OrderStatus
+	LadderLevel   int // Which ladder level (0 = best price, 1 = next, etc.)
 }
 
 // RemainingQty returns unfilled quantity
@@ -101,6 +102,11 @@ func (ob *OrderBook) SetFillCallback(cb func(order *LimitOrder, fillQty float64,
 
 // PlaceOrder places a new limit order (includes simulated API delay)
 func (ob *OrderBook) PlaceOrder(outcome, side string, price, quantity float64, ladderLevel int) *LimitOrder {
+	return ob.PlaceOrderWithMode(outcome, side, price, quantity, ladderLevel, "maker")
+}
+
+// PlaceOrderWithMode places a new limit order and tags its execution path for UI/reporting.
+func (ob *OrderBook) PlaceOrderWithMode(outcome, side string, price, quantity float64, ladderLevel int, executionMode string) *LimitOrder {
 	// Simulate API latency before placing order
 	if ob.orderDelay > 0 {
 		time.Sleep(ob.orderDelay)
@@ -110,15 +116,16 @@ func (ob *OrderBook) PlaceOrder(outcome, side string, price, quantity float64, l
 	defer ob.mu.Unlock()
 
 	order := &LimitOrder{
-		ID:          ob.nextOrderID,
-		CreatedAt:   time.Now(),
-		Outcome:     outcome,
-		Side:        side,
-		Price:       price,
-		Quantity:    quantity,
-		FilledQty:   0,
-		Status:      OrderStatusOpen,
-		LadderLevel: ladderLevel,
+		ID:            ob.nextOrderID,
+		CreatedAt:     time.Now(),
+		Outcome:       outcome,
+		Side:          side,
+		ExecutionMode: executionMode,
+		Price:         price,
+		Quantity:      quantity,
+		FilledQty:     0,
+		Status:        OrderStatusOpen,
+		LadderLevel:   ladderLevel,
 	}
 	ob.orders[order.ID] = order
 	ob.nextOrderID++

@@ -1093,11 +1093,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
 			}
 			cleanupCancel()
-			go func(marketID, condID string) {
+			go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
 				redeemCtx, redeemCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer redeemCancel()
-				checkRedemption(redeemCtx, marketID, condID, trader, engine, tui, resolutionCache)
-			}(id, market.ConditionID)
+				checkRedemption(redeemCtx, marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
+			}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
 			return
 		}
 
@@ -3349,14 +3349,14 @@ func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, eng
 					tui.LogEvent("[%s] ⚠️ Maker buy fill sync failed for %s %.4f @ $%.3f: %v", marketID, quote.Outcome, delta, quote.Price, err)
 				} else {
 					tui.LogEvent("[%s] ✅ Maker BUY fill: %s %.2f @ $%.3f", marketID, quote.Outcome, delta, quote.Price)
-					tui.RecordOrder(marketID, quote.Outcome, "BUY", delta, quote.Price, delta*quote.Price, 0.0, 0.0, "FILLED")
+					tui.RecordOrderWithMode(marketID, quote.Outcome, "BUY", delta, quote.Price, delta*quote.Price, 0.0, 0.0, "maker", "FILLED")
 				}
 			} else {
 				if _, err := engine.SellForMarket(marketID, quote.Outcome, quote.Price, delta); err != nil {
 					tui.LogEvent("[%s] ⚠️ Maker sell fill sync failed for %s %.4f @ $%.3f: %v", marketID, quote.Outcome, delta, quote.Price, err)
 				} else {
 					tui.LogEvent("[%s] ✅ Maker SELL fill: %s %.2f @ $%.3f", marketID, quote.Outcome, delta, quote.Price)
-					tui.RecordOrder(marketID, quote.Outcome, "SELL", delta, quote.Price, delta*quote.Price, 0.0, 0.0, "FILLED")
+					tui.RecordOrderWithMode(marketID, quote.Outcome, "SELL", delta, quote.Price, delta*quote.Price, 0.0, 0.0, "maker", "FILLED")
 				}
 			}
 			quote.AccountedFill = confirmed
@@ -4725,7 +4725,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 	return success
 }
 
-func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, resCache *api.ResolutionCache) {
+func checkRedemption(ctx context.Context, id, conditionID string, outcomes []string, marketEndTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, resCache *api.ResolutionCache) {
 	// Check if we have any positions to redeem first
 	// If merge already happened, we have no positions and can skip redemption entirely
 	positions := engine.GetPositions()
@@ -4744,21 +4744,44 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 	// Retry resolution check with exponential backoff
 	// 15-min markets may take a few seconds to resolve
 	retryDelays := []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second}
+	numOutcomes := len(outcomes)
 
 	for attempt, delay := range retryDelays {
-		time.Sleep(delay)
-
-		info, err := trader.GetMarketInfo(ctx, conditionID)
-		if err != nil {
-			tui.LogEvent("[%s] ⚠️ Resolution check %d failed: %v", id, attempt+1, err)
-			continue
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
 		}
 
+		resolved := false
 		winner := ""
-		for _, token := range info.Tokens {
-			if token.Winner {
-				winner = token.Outcome
-				break
+		if resCache != nil {
+			resCache.ForceRefresh(conditionID)
+			status := resCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
+			if status.Error != nil {
+				tui.LogEvent("[%s] ⚠️ Resolution check %d failed: %v", id, attempt+1, status.Error)
+			}
+			resolved = status.Resolved
+			winner = status.Winner
+		}
+
+		if numOutcomes == 0 || winner == "" {
+			info, err := trader.GetMarketInfo(ctx, conditionID)
+			if err != nil {
+				if !resolved {
+					tui.LogEvent("[%s] ⚠️ Resolution check %d failed: %v", id, attempt+1, err)
+					continue
+				}
+			} else {
+				if len(info.Tokens) > numOutcomes {
+					numOutcomes = len(info.Tokens)
+				}
+				for _, token := range info.Tokens {
+					if token.Winner {
+						winner = token.Outcome
+						break
+					}
+				}
 			}
 		}
 
@@ -4797,11 +4820,17 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 					} else {
 						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
 					}
-				}(conditionID, len(info.Tokens))
+				}(conditionID, numOutcomes)
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}
 			return
+		}
+
+		if resolved {
+			tui.UpdateWalletTruthResolution(id, true, "")
+			tui.LogEvent("[%s] ⏳ Market resolved on-chain, winner still pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
+			continue
 		}
 
 		// Update TUI to show positions are still unresolved

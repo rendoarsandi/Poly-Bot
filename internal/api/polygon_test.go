@@ -201,3 +201,71 @@ func TestBumpGasPrice(t *testing.T) {
 		t.Fatalf("expected original gas price to remain unchanged, got %s", base.String())
 	}
 }
+
+func TestGetWinningOutcome(t *testing.T) {
+	conditionID := "0xc68c0fd8b97571c790259a08c847794150eaa0b8aa4865023d0774a1c79a2710"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		params := req.Params[0].(map[string]interface{})
+		data := params["data"].(string)
+		switch {
+		case strings.HasPrefix(data, payoutNumeratorsSelector):
+			idxHex := data[len(data)-64:]
+			if strings.HasSuffix(idxHex, "0") {
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+		default:
+			t.Fatalf("unexpected data payload %s", data)
+		}
+	}))
+	defer server.Close()
+
+	client := NewPolygonClient(server.URL)
+	winner, err := client.GetWinningOutcome(context.Background(), conditionID, []string{"Down", "Up"})
+	if err != nil {
+		t.Fatalf("GetWinningOutcome() error = %v", err)
+	}
+	if winner != "Up" {
+		t.Fatalf("GetWinningOutcome() = %q, want Up", winner)
+	}
+}
+
+func TestResolutionCacheUsesOnChainWinner(t *testing.T) {
+	conditionID := "0xc68c0fd8b97571c790259a08c847794150eaa0b8aa4865023d0774a1c79a2710"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		params := req.Params[0].(map[string]interface{})
+		data := params["data"].(string)
+		switch {
+		case strings.HasPrefix(data, payoutDenominatorSelector):
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+		case strings.HasPrefix(data, payoutNumeratorsSelector):
+			idxHex := data[len(data)-64:]
+			if strings.HasSuffix(idxHex, "0") {
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+		default:
+			t.Fatalf("unexpected data payload %s", data)
+		}
+	}))
+	defer server.Close()
+
+	cache := NewResolutionCache(NewPolygonClient(server.URL), nil, nil)
+	status := cache.GetResolution(context.Background(), conditionID, []string{"Down", "Up"}, time.Now().Add(-time.Minute))
+	if !status.Resolved {
+		t.Fatal("expected status to be resolved")
+	}
+	if status.Winner != "Up" {
+		t.Fatalf("expected on-chain winner Up, got %q", status.Winner)
+	}
+}

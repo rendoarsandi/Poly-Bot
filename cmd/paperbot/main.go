@@ -892,8 +892,12 @@ func run() error {
 	restClient := api.NewRestClient(cfg.Exchange)
 
 	// Resolution cache for on-chain market resolution checking
-	// Paperbot has no polygon/CLOB client, so it uses REST market info only
-	resolutionCache := api.NewResolutionCache(nil, nil, restClient)
+	// Paperbot can use read-only Polygon RPC when available, plus REST fallback.
+	var polygonClient *api.PolygonClient
+	if strings.TrimSpace(cfg.PolygonRPCURL) != "" {
+		polygonClient = api.NewPolygonClient(cfg.PolygonRPCURL)
+	}
+	resolutionCache := api.NewResolutionCache(polygonClient, nil, restClient)
 	// Create shared TUI (persistent across market rotations)
 	tui = paper.NewTUI(engine, nil)
 
@@ -1361,10 +1365,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		if order.Status == paper.OrderStatusFilled {
 			status = "FILLED"
 		}
+		executionMode := strings.ToLower(strings.TrimSpace(order.ExecutionMode))
+		if executionMode == "" {
+			executionMode = "maker"
+		}
 
 		switch order.Side {
 		case "buy":
-			trade, err := t.Engine.MakerBuyForMarket(t.ID, order.Outcome, fillPrice, fillQty)
+			var trade *paper.Trade
+			var err error
+			if executionMode == "taker-close" {
+				trade, err = t.Engine.BuyForMarket(t.ID, order.Outcome, fillPrice, fillQty)
+			} else {
+				trade, err = t.Engine.MakerBuyForMarket(t.ID, order.Outcome, fillPrice, fillQty)
+			}
 			if err != nil {
 				t.TUI.LogEvent("[%s] ❌ BUY fill error: %v", t.ID, err)
 				if t.CSVLogger != nil {
@@ -1377,8 +1391,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				cost = trade.Value
 			}
 			saved := order.Price - fillPrice
-			t.TUI.LogEvent("[%s] ✅ BUY FILL %s %.0f @ $%.3f (saved $%.3f)", t.ID, order.Outcome, fillQty, fillPrice, saved)
-			t.TUI.RecordOrder(t.ID, order.Outcome, "BUY", fillQty, fillPrice, cost, 0.0, 0.0, status)
+			if executionMode == "taker-close" {
+				t.TUI.LogEvent("[%s] ✅ TAKER CLOSE FILL %s %.0f @ $%.3f (saved $%.3f)", t.ID, order.Outcome, fillQty, fillPrice, saved)
+			} else {
+				t.TUI.LogEvent("[%s] ✅ BUY FILL %s %.0f @ $%.3f (saved $%.3f)", t.ID, order.Outcome, fillQty, fillPrice, saved)
+			}
+			t.TUI.RecordOrderWithMode(t.ID, order.Outcome, "BUY", fillQty, fillPrice, cost, 0.0, 0.0, executionMode, status)
 			if t.CSVLogger != nil {
 				t.CSVLogger.Log("TRADE", t.ID, "BUY_FILL", fmt.Sprintf("%s %.0f @ $%.3f", order.Outcome, fillQty, fillPrice), t.Engine.GetEquity())
 			}
@@ -1403,7 +1421,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 			profit := proceeds - (avgCost * fillQty)
 			t.TUI.LogEvent("[%s] ✅ SELL FILL %s %.0f @ $%.3f (pnl $%.2f)", t.ID, order.Outcome, fillQty, fillPrice, profit)
-			t.TUI.RecordOrder(t.ID, order.Outcome, "SELL", fillQty, fillPrice, proceeds, 0.0, profit, status)
+			t.TUI.RecordOrderWithMode(t.ID, order.Outcome, "SELL", fillQty, fillPrice, proceeds, 0.0, profit, executionMode, status)
 			if t.CSVLogger != nil {
 				t.CSVLogger.Log("TRADE", t.ID, "SELL_FILL", fmt.Sprintf("%s %.0f @ $%.3f | pnl=%.2f", order.Outcome, fillQty, fillPrice, profit), t.Engine.GetEquity())
 			}
@@ -1581,12 +1599,12 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 5*time.Second)
 						go func(tCtx context.Context, target string, sz float64, price float64, tid string) {
 							defer cancelTrade()
-							order := t.OrderBook.PlaceOrder(target, "buy", price, sz, 0)
+							order := t.OrderBook.PlaceOrderWithMode(target, "buy", price, sz, 0, "taker-close")
 							t.TUI.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.2f (paper ID: %d)", t.ID, sz, price, order.ID)
 						}(tradeCtx, bestOutcome, size, limitPrice, tokenID)
 					} else {
 						if time.Since(lastTakerCloseLog) > 1*time.Second {
-							t.TUI.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.2f (needs > 0.50)", t.ID, highestPrice)
+							t.TUI.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.2f (needs >= $%.2f)", t.ID, highestPrice, minPrice)
 							lastTakerCloseLog = time.Now()
 						}
 					}

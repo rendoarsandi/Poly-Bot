@@ -30,6 +30,8 @@ const (
 	polygonTimeoutStatusProbeTimeout  = 3 * time.Second
 	polygonGasPriceBumpNumerator      = 12
 	polygonGasPriceBumpDenominator    = 10
+	payoutDenominatorSelector         = "0x1479831c"
+	payoutNumeratorsSelector          = "0x0504c814"
 )
 
 // PolygonClient handles Polygon RPC calls
@@ -53,7 +55,7 @@ func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string
 	if len(id) != 64 {
 		return false, fmt.Errorf("invalid condition ID length: %d", len(id))
 	}
-	data := "0x1479831c" + id
+	data := payoutDenominatorSelector + id
 
 	callParams := map[string]string{
 		"to":   CTFContract,
@@ -81,6 +83,69 @@ func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string
 
 	// If denominator > 0, the market has been resolved and payouts are reported
 	return denominator.Cmp(big.NewInt(0)) > 0, nil
+}
+
+// GetWinningOutcome decodes the winning outcome from on-chain payout numerators.
+// It returns an empty string when the market is resolved but the winner is ambiguous.
+func (c *PolygonClient) GetWinningOutcome(ctx context.Context, conditionID string, outcomes []string) (string, error) {
+	if len(outcomes) == 0 {
+		return "", nil
+	}
+	id := strings.TrimPrefix(conditionID, "0x")
+	if len(id) != 64 {
+		return "", fmt.Errorf("invalid condition ID length: %d", len(id))
+	}
+
+	maxNumerator := big.NewInt(0)
+	maxIndex := -1
+	positiveCount := 0
+
+	for i, outcome := range outcomes {
+		numerator, err := c.getPayoutNumerator(ctx, id, i)
+		if err != nil {
+			return "", err
+		}
+		if numerator.Sign() <= 0 {
+			continue
+		}
+		positiveCount++
+		if numerator.Cmp(maxNumerator) > 0 {
+			maxNumerator = numerator
+			maxIndex = i
+		} else if numerator.Cmp(maxNumerator) == 0 {
+			maxIndex = -1
+		}
+		_ = outcome
+	}
+
+	if positiveCount == 1 && maxIndex >= 0 && maxIndex < len(outcomes) {
+		return outcomes[maxIndex], nil
+	}
+	if maxIndex >= 0 && maxIndex < len(outcomes) {
+		return outcomes[maxIndex], nil
+	}
+	return "", nil
+}
+
+func (c *PolygonClient) getPayoutNumerator(ctx context.Context, conditionIDNoPrefix string, index int) (*big.Int, error) {
+	if index < 0 {
+		return nil, fmt.Errorf("invalid payout numerator index: %d", index)
+	}
+	data := payoutNumeratorsSelector + conditionIDNoPrefix + fmt.Sprintf("%064x", index)
+	callParams := map[string]string{
+		"to":   CTFContract,
+		"data": data,
+	}
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return nil, err
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return nil, err
+	}
+	return parseHexBigInt(hexResult)
 }
 
 // generateIndexSetsHex creates the ABI encoded dynamic array of index sets

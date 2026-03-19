@@ -575,6 +575,34 @@ func TestRenderEventLogShowsVisibleVsRetainedCount(t *testing.T) {
 	}
 }
 
+func TestRenderOrderHistoryShowsExplicitCloseModeInsteadOfMaker(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.RecordOrderWithMode("ETH", "Up", "BUY", 12.85, 0.70, 8.99, 0.0, 0.0, "taker-close", "FILLED")
+
+	model := tuiModel{snap: tuiSnapshot{orderHistory: tui.GetOrderHistory()}}
+	rendered := model.renderOrderHistory(120, 5)
+
+	if !strings.Contains(rendered, "close") {
+		t.Fatalf("expected close-mode tag in order history, got %q", rendered)
+	}
+	if strings.Contains(rendered, "maker") {
+		t.Fatalf("expected taker-close entry not to be labeled maker, got %q", rendered)
+	}
+}
+
+func TestRecordOrderDefaultsToTakerMode(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.RecordOrder("BTC", "Down", "BUY", 10, 0.84, 8.4, 0.0, 0.0, "FILLED")
+
+	history := tui.GetOrderHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 order history entry, got %d", len(history))
+	}
+	if history[0].ExecutionMode != "taker" {
+		t.Fatalf("expected default execution mode taker, got %q", history[0].ExecutionMode)
+	}
+}
+
 func TestViewportLinesClampsOffsetAndPads(t *testing.T) {
 	visible, offset, maxOffset := viewportLines([]string{"a", "b", "c", "d", "e"}, 99, 3)
 	if offset != 2 || maxOffset != 2 {

@@ -221,16 +221,17 @@ type ScopedLimitOrder struct {
 
 // OrderHistoryEntry represents a completed trade.
 type OrderHistoryEntry struct {
-	Timestamp time.Time
-	MarketID  string
-	Outcome   string
-	Side      string
-	Shares    float64
-	Price     float64
-	Cost      float64
-	Margin    float64
-	Profit    float64
-	Status    string // "FILLED", "PARTIAL", "FAILED"
+	Timestamp     time.Time
+	MarketID      string
+	Outcome       string
+	Side          string
+	ExecutionMode string
+	Shares        float64
+	Price         float64
+	Cost          float64
+	Margin        float64
+	Profit        float64
+	Status        string // "FILLED", "PARTIAL", "FAILED"
 }
 
 // TUISettings holds runtime-adjustable trading parameters.
@@ -1721,19 +1722,24 @@ func (t *TUI) SetKillSwitch(reason string) {
 }
 
 func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, margin, profit float64, status string) {
+	t.RecordOrderWithMode(marketID, outcome, side, shares, price, cost, margin, profit, "taker", status)
+}
+
+func (t *TUI) RecordOrderWithMode(marketID, outcome, side string, shares, price, cost, margin, profit float64, executionMode, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	entry := OrderHistoryEntry{
-		Timestamp: time.Now(),
-		MarketID:  marketID,
-		Outcome:   outcome,
-		Side:      side,
-		Shares:    shares,
-		Price:     price,
-		Cost:      cost,
-		Margin:    margin,
-		Profit:    profit,
-		Status:    status,
+		Timestamp:     time.Now(),
+		MarketID:      marketID,
+		Outcome:       outcome,
+		Side:          side,
+		ExecutionMode: strings.ToLower(strings.TrimSpace(executionMode)),
+		Shares:        shares,
+		Price:         price,
+		Cost:          cost,
+		Margin:        margin,
+		Profit:        profit,
+		Status:        status,
 	}
 	t.orderHistory = append(t.orderHistory, entry)
 	if len(t.orderHistory) > t.maxOrderHistory {
@@ -2819,6 +2825,16 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 
 	for i := len(s.orderHistory) - 1; i >= len(s.orderHistory)-displayCount && i >= 0; i-- {
 		o := s.orderHistory[i]
+		mode := strings.ToLower(strings.TrimSpace(o.ExecutionMode))
+		modeLabel := ""
+		switch mode {
+		case "maker":
+			modeLabel = "maker"
+		case "taker-close":
+			modeLabel = "close"
+		case "taker":
+			modeLabel = "taker"
+		}
 
 		statusIcon := "✅"
 		marginSt := styleGreen
@@ -2841,13 +2857,17 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 				marginSt = styleRed
 			}
 			if o.Margin == 0.0 {
-				marginText = fmt.Sprintf("%s$%.2f (maker)", sg, math.Abs(o.Profit))
+				if modeLabel != "" {
+					marginText = fmt.Sprintf("%s$%.2f (%s)", sg, math.Abs(o.Profit), modeLabel)
+				} else {
+					marginText = fmt.Sprintf("%s$%.2f", sg, math.Abs(o.Profit))
+				}
 			} else {
 				marginText = fmt.Sprintf("%s$%.2f (%.1f%%)", sg, math.Abs(o.Profit), o.Margin)
 			}
 		} else {
-			if o.Margin == 0.0 {
-				marginText = "maker"
+			if o.Margin == 0.0 && modeLabel != "" {
+				marginText = modeLabel
 				marginSt = styleDimmed
 			} else {
 				marginText = fmt.Sprintf("%.2f%%", o.Margin)
