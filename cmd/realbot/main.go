@@ -31,6 +31,8 @@ const (
 	UseLiveUI               = true // Set to false for traditional logging
 	paperArbModeTaker       = "taker"
 	paperArbModeMaker       = "maker"
+	terminalBidFloor        = 0.985
+	terminalAskCeil         = 0.015
 	realbotExecQuoteTimeout = 1500 * time.Millisecond
 	realbotOrderWarmTimeout = 1500 * time.Millisecond
 	realbotRestBookMaxAge   = 2 * time.Second
@@ -970,6 +972,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	makerQuotes := make(map[string]*realbotMakerQuote)
 	lastMakerSync := time.Time{}
 	mergeCoordinator := newRealbotMergeCoordinator()
+	restFallbackActive := false
+	restRecoveryLogged := false
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -1597,11 +1601,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		isExtremelyStale := staleTime > 60*time.Second && !terminalBookState
 		shouldPollREST := (forceRestFallback || wsUnhealthy || isExtremelyStale) && sinceLastRest > pollInterval
 		if shouldPollREST {
+			if !restFallbackActive {
+				restFallbackActive = true
+				restRecoveryLogged = false
+			}
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
-			if handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui) {
+			if handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, !restRecoveryLogged) {
 				lastUpdate = time.Now()
+				if staleTime >= 10*time.Second {
+					restRecoveryLogged = true
+				}
 			}
+		} else {
+			restFallbackActive = false
+			restRecoveryLogged = false
 		}
 
 		if !wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
@@ -3793,13 +3807,13 @@ func realbotLooksLikeTerminalBook(outcomes []string, tokenBids, tokenAsks map[st
 		bid := tokenBids[outcome]
 		ask := tokenAsks[outcome]
 
-		if bid > 0 && bid < 0.99 {
+		if bid > 0 && bid < terminalBidFloor {
 			return false
 		}
-		if ask > 0 && ask > 0.01 {
+		if ask > 0 && ask > terminalAskCeil {
 			return false
 		}
-		if bid >= 0.99 || (ask > 0 && ask <= 0.01) {
+		if bid >= terminalBidFloor || (ask > 0 && ask <= terminalAskCeil) {
 			sawExtreme = true
 		}
 	}
@@ -4617,7 +4631,7 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
 	success := false
 	staleSeconds := int(staleTime.Seconds())
 	restErrors := 0
@@ -4696,7 +4710,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
-		if staleSeconds >= 10 {
+		if logRecovery && staleSeconds >= 10 {
 			tui.LogEvent("[%s] ✅ REST recovered after %ds", id, staleSeconds)
 		}
 	} else if restErrors > 0 {

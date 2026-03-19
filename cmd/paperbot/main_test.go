@@ -161,6 +161,28 @@ func TestShouldPaperRestFallback(t *testing.T) {
 	}
 }
 
+func TestPaperLooksLikeTerminalBookRecognizesRoundedPinnedEndState(t *testing.T) {
+	terminal := paperLooksLikeTerminalBook(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.989, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.011},
+	)
+	if !terminal {
+		t.Fatal("expected rounded 0.99/0.01 terminal book to count as terminal-looking")
+	}
+}
+
+func TestPaperLooksLikeTerminalBookRejectsOrdinaryOneSidedBook(t *testing.T) {
+	terminal := paperLooksLikeTerminalBook(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.64, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.36},
+	)
+	if terminal {
+		t.Fatal("expected ordinary one-sided book to require freshness checks")
+	}
+}
+
 func TestPaperPairQuoteAgeTreatsZeroAsStale(t *testing.T) {
 	age := paperPairQuoteAge(time.Time{}, time.Now())
 	if age <= 3*time.Second {

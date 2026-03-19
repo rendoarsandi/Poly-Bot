@@ -30,6 +30,8 @@ const (
 	UseLiveUI         = true  // Set to false for traditional logging
 	paperArbModeTaker = "taker"
 	paperArbModeMaker = "maker"
+	terminalBidFloor  = 0.985
+	terminalAskCeil   = 0.015
 
 	// Split strategy constants
 	MinSplitBuffer   = 50.0  // Minimum initial split buffer ($)
@@ -104,7 +106,10 @@ type MarketTrader struct {
 	// State
 	LaddersPlaced bool
 	MarketEnded   bool
-	mu            sync.Mutex
+	// Guard repeated REST recovery logs until fallback pressure clears.
+	RestFallbackActive bool
+	RestRecoveryLogged bool
+	mu                 sync.Mutex
 }
 
 type marketResult struct {
@@ -214,6 +219,30 @@ func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) floa
 
 func shouldPaperRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
 	return quoteAge > staleAfter && sinceLastRest > pollInterval
+}
+
+func paperLooksLikeTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+
+	sawExtreme := false
+	for _, outcome := range outcomes {
+		bid := bids[outcome]
+		ask := asks[outcome]
+
+		if bid > 0 && bid < terminalBidFloor {
+			return false
+		}
+		if ask > 0 && ask > terminalAskCeil {
+			return false
+		}
+		if bid >= terminalBidFloor || (ask > 0 && ask <= terminalAskCeil) {
+			sawExtreme = true
+		}
+	}
+
+	return sawExtreme
 }
 
 func summarizePaperRound(engine *paper.Engine, startingEquity float64, roundStartTrades int) (roundPnL, totalEquity float64, roundTrades int, stats paper.Stats) {
@@ -1846,7 +1875,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			// Update TUI after processing WS messages
 			if messagesProcessed > 0 {
-				t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "WS", t.LastPairUpdate)
+				t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "WS", t.LastUpdate)
 			}
 			// NOTE: Removed TouchMarket call - WS connection being "alive" doesn't mean
 			// data is fresh. WS often doesn't send liquidity updates, so we should only
@@ -1875,24 +1904,39 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
 			restFallbackPollInterval := core.ResolveRestFallbackPollInterval(t.Config)
 
-			// Check for resolved or crossed outcomes to force fallback
-			hasResolvedOutcome := false
-			for _, outcome := range t.Outcomes {
-				bid := t.TokenBids[outcome]
-				ask := t.TokenAsks[outcome]
-				if bid == 0 || ask == 0 || bid >= ask || bid >= 0.99 || ask >= 0.99 {
-					hasResolvedOutcome = true
-					break
+			terminalBookState := paperLooksLikeTerminalBook(t.Outcomes, t.TokenBids, t.TokenAsks)
+			forceRestFallback := false
+			if !terminalBookState {
+				forceRestFallback = !localPairFresh && pairQuoteAge > restFallbackQuoteAge
+				if !forceRestFallback {
+					for _, outcome := range t.Outcomes {
+						bid := t.TokenBids[outcome]
+						ask := t.TokenAsks[outcome]
+						if bid == 0 || ask == 0 || bid >= ask {
+							if pairQuoteAge > 15*time.Second {
+								forceRestFallback = true
+								break
+							}
+						}
+					}
 				}
 			}
 
-			forceRestFallback := (!localPairFresh && pairQuoteAge > restFallbackQuoteAge) || (hasResolvedOutcome && pairQuoteAge > 15*time.Second)
-			// Only poll REST automatically if data is extremely stale (60s) or connection is unhealthy.
-			isExtremelyStale := pairQuoteAge > 60*time.Second
-			wsUnhealthy := !wsConnected || wsLastMsg > 10*time.Second
+			isExtremelyStale := pairQuoteAge > 60*time.Second && !terminalBookState
+			wsUnhealthy := !wsConnected || (wsLastMsg > 10*time.Second && !terminalBookState)
+			shouldPollREST := (forceRestFallback || wsUnhealthy || isExtremelyStale) && time.Since(t.LastRestPoll) > restFallbackPollInterval
 
-			if (forceRestFallback || wsUnhealthy || isExtremelyStale) && time.Since(t.LastRestPoll) > restFallbackPollInterval {
-				t.handleRestFallback(ctx, tokenPrices, pairQuoteAge)
+			if shouldPollREST {
+				if !t.RestFallbackActive {
+					t.RestFallbackActive = true
+					t.RestRecoveryLogged = false
+				}
+				if t.handleRestFallback(ctx, tokenPrices, pairQuoteAge, !t.RestRecoveryLogged) && pairQuoteAge >= 10*time.Second {
+					t.RestRecoveryLogged = true
+				}
+			} else {
+				t.RestFallbackActive = false
+				t.RestRecoveryLogged = false
 			}
 
 			// Handle WebSocket issues - only reconnect if actually disconnected
@@ -2637,7 +2681,7 @@ func (t *MarketTrader) determineWinner() string {
 // handleRestFallback polls REST API for fresh liquidity data
 // REST is now the PRIMARY source for liquidity (WS only sends price changes)
 // Returns true if any data was successfully retrieved
-func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration) bool {
+func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration, logRecovery bool) bool {
 	t.LastRestPoll = time.Now()
 	staleSeconds := int(staleTime.Seconds())
 
@@ -2736,9 +2780,8 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		now := time.Now()
 		t.LastUpdate = now
 		syncPaperPairUpdate(t, now)
-		t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "REST", t.LastPairUpdate)
-		// Only log recovery if WS was significantly stale (not normal polling)
-		if staleSeconds >= 10 {
+		t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "REST", t.LastUpdate)
+		if logRecovery && staleSeconds >= 10 {
 			t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)
 		}
 		return true

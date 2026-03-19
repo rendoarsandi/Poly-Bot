@@ -66,6 +66,8 @@ const (
 	defaultTwoColEventRows  = 18
 	defaultOneColEventRows  = 14
 	recentQuoteDisplayGrace = 1500 * time.Millisecond
+	terminalBidFloor        = 0.985
+	terminalAskCeil         = 0.015
 )
 
 // ─── Asset style helpers ──────────────────────────────────────────────────────
@@ -106,6 +108,30 @@ func recentDisplayQuote(current, lastGood float64, age time.Duration) float64 {
 		return lastGood
 	}
 	return current
+}
+
+func looksTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+
+	sawExtreme := false
+	for _, outcome := range outcomes {
+		bid := bids[outcome]
+		ask := asks[outcome]
+
+		if bid > 0 && bid < terminalBidFloor {
+			return false
+		}
+		if ask > 0 && ask > terminalAskCeil {
+			return false
+		}
+		if bid >= terminalBidFloor || (ask > 0 && ask <= terminalAskCeil) {
+			sawExtreme = true
+		}
+	}
+
+	return sawExtreme
 }
 
 // ─── Panel utilities ──────────────────────────────────────────────────────────
@@ -1971,31 +1997,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		wsLatency = m.tui.wsLatency
 	}
 
-	isResolved := false
-	for _, bid := range mkt.Bids {
-		if bid >= 0.99 {
-			isResolved = true
-			break
-		}
-	}
-	for _, bid := range mkt.RealBids {
-		if bid >= 0.99 {
-			isResolved = true
-			break
-		}
-	}
-	for _, ask := range mkt.Asks {
-		if ask >= 0.99 || ask <= 0.005 {
-			isResolved = true
-			break
-		}
-	}
-	for _, ask := range mkt.RealAsks {
-		if ask >= 0.99 || ask <= 0.005 {
-			isResolved = true
-			break
-		}
-	}
+	isResolved := looksTerminalBook(mkt.Outcomes, mkt.Bids, mkt.Asks) || looksTerminalBook(mkt.Outcomes, mkt.RealBids, mkt.RealAsks)
 
 	isUnhealthyWS := mkt.DataSource == "WS" && wsLatency > 15*time.Second && !isResolved
 	if (age > 60*time.Second && !isResolved) || isUnhealthyWS {

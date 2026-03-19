@@ -154,6 +154,17 @@ func TestRealbotLooksLikeTerminalBookRecognizesPinnedEndState(t *testing.T) {
 	}
 }
 
+func TestRealbotLooksLikeTerminalBookRecognizesRoundedPinnedEndState(t *testing.T) {
+	terminal := realbotLooksLikeTerminalBook(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.989, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.011},
+	)
+	if !terminal {
+		t.Fatal("expected rounded terminal-looking book to bypass stale WS recovery")
+	}
+}
+
 func TestRealbotLooksLikeTerminalBookRejectsNormalOneSidedBook(t *testing.T) {
 	terminal := realbotLooksLikeTerminalBook(
 		[]string{"Down", "Up"},
@@ -349,7 +360,7 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 		case "up-token":
 			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.61\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.62\",\"size\":\"10\"}]}"))
 		default:
-			http.Error(w, "unexpected token: " + r.URL.String(), http.StatusNotFound)
+			http.Error(w, "unexpected token: "+r.URL.String(), http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
