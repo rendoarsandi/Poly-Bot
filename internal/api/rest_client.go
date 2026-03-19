@@ -44,7 +44,7 @@ var httpClient = &http.Client{
 			Control: func(network, address string, c syscall.RawConn) error {
 				var opErr error
 				err := c.Control(func(fd uintptr) {
-					opErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+					opErr = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
 				})
 				if err != nil {
 					return err
@@ -668,6 +668,28 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 	}
 
 	return &book, nil
+}
+
+// GetBestBidAsk fetches the best bid and ask price for a single token via REST.
+// This is a convenience wrapper around GetOrderBook for quick price confirmation.
+func (c *RestClient) GetBestBidAsk(ctx context.Context, tokenID string) (bestBid, bestAsk float64, err error) {
+	book, err := c.GetOrderBook(ctx, tokenID)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, b := range book.Bids {
+		p, _ := parseFloat(b.Price)
+		if p > bestBid {
+			bestBid = p
+		}
+	}
+	for _, a := range book.Asks {
+		p, _ := parseFloat(a.Price)
+		if p > 0 && (bestAsk == 0 || p < bestAsk) {
+			bestAsk = p
+		}
+	}
+	return bestBid, bestAsk, nil
 }
 
 // FeeRateResponse represents the response from the fee-rate endpoint

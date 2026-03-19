@@ -519,12 +519,14 @@ type tuiModel struct {
 }
 
 type WalletTruthPosition struct {
-	MarketID      string
-	Outcome       string
-	LocalShares   float64
-	OnChainShares float64
-	Drift         float64
-	Redeemable    bool
+	MarketID         string
+	Outcome          string
+	LocalShares      float64
+	OnChainShares    float64
+	Drift            float64
+	Redeemable       bool
+	IsWinner         bool   // This outcome is the winning side (from on-chain/API resolution)
+	ResolutionStatus string // "unresolved", "resolved", "redeemable"
 }
 
 type tickMsg time.Time
@@ -1741,8 +1743,42 @@ func (t *TUI) UpdateWalletTruthRedeemable(marketID string, winningOutcome string
 		return
 	}
 	for i := range positions {
-		if positions[i].Outcome == winningOutcome && positions[i].OnChainShares > 0 {
-			positions[i].Redeemable = true
+		positions[i].ResolutionStatus = "resolved"
+		if positions[i].Outcome == winningOutcome {
+			positions[i].IsWinner = true
+			if positions[i].OnChainShares > 0 {
+				positions[i].Redeemable = true
+			}
+		} else {
+			positions[i].IsWinner = false
+		}
+	}
+	t.walletTruth[marketID] = positions
+}
+
+// UpdateWalletTruthResolution updates resolution status for all positions in a market.
+// winningOutcome is the outcome that won. If empty, just marks as "resolved" without a winner.
+func (t *TUI) UpdateWalletTruthResolution(marketID string, resolved bool, winningOutcome string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	positions, ok := t.walletTruth[marketID]
+	if !ok {
+		return
+	}
+	for i := range positions {
+		if resolved {
+			positions[i].ResolutionStatus = "resolved"
+			if winningOutcome != "" {
+				positions[i].IsWinner = positions[i].Outcome == winningOutcome
+				if positions[i].IsWinner && positions[i].OnChainShares > 0 {
+					positions[i].Redeemable = true
+					positions[i].ResolutionStatus = "redeemable"
+				}
+			}
+		} else {
+			positions[i].ResolutionStatus = "unresolved"
+			positions[i].IsWinner = false
+			positions[i].Redeemable = false
 		}
 	}
 	t.walletTruth[marketID] = positions
@@ -2658,7 +2694,11 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 				redeemTag := ""
 				if wt.Redeemable {
-					redeemTag = styleGreen.Render(" [REDEEMABLE]")
+					redeemTag = styleGreen.Render(" [REDEEMABLE 💰]")
+				} else if wt.IsWinner {
+					redeemTag = styleGreen.Render(" [WINNER ✓]")
+				} else if wt.ResolutionStatus == "resolved" && !wt.IsWinner {
+					redeemTag = styleRed.Render(" [LOSER ✗]")
 				}
 
 				parts = append(parts, fmt.Sprintf("%s %s L:%.4f C:%.4f Δ:%s%s",

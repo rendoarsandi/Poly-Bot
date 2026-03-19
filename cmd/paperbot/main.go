@@ -98,6 +98,9 @@ type MarketTrader struct {
 	MakerQuotes        map[string]*paper.LimitOrder
 	LastMakerSync      time.Time
 
+	// On-chain resolution cache (shared across all traders)
+	ResolutionCache *api.ResolutionCache
+
 	// State
 	LaddersPlaced bool
 	MarketEnded   bool
@@ -848,6 +851,9 @@ func run() error {
 
 	restClient := api.NewRestClient(cfg.Exchange)
 
+	// Resolution cache for on-chain market resolution checking
+	// Paperbot has no polygon/CLOB client, so it uses REST market info only
+	resolutionCache := api.NewResolutionCache(nil, nil, restClient)
 	// Create shared TUI (persistent across market rotations)
 	tui = paper.NewTUI(engine, nil)
 
@@ -1049,7 +1055,7 @@ func run() error {
 			// Reduced logging: Only TUI for startup info
 			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
 
-			trader := createTrader(assetID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg)
+			trader := createTrader(assetID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
@@ -1191,7 +1197,7 @@ func run() error {
 	}
 }
 
-func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config) *MarketTrader {
+func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache) *MarketTrader {
 	tokenMap := make(map[string]string)
 	for _, token := range market.Tokens {
 		tokenMap[token.TokenID] = token.Outcome
@@ -1253,6 +1259,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		SplitInitialized: false,
 		LastSplitSell:    time.Time{},
 		MakerQuotes:      make(map[string]*paper.LimitOrder),
+		ResolutionCache:  resCache,
 	}
 }
 
@@ -2571,12 +2578,27 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 // determineWinner picks the winning outcome based on last known prices
 func (t *MarketTrader) determineWinner() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if len(t.Outcomes) == 0 {
 		return ""
 	}
+
+	// Step 1: Try on-chain/CLOB API resolution (authoritative source)
+	if t.ResolutionCache != nil && t.Market != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		status := t.ResolutionCache.GetResolution(ctx, t.Market.ConditionID, t.Outcomes, t.EndTime)
+		if status.Resolved && status.Winner != "" {
+			t.TUI.LogEvent("[%s] 🔗 On-chain resolution: %s", t.ID, status.Winner)
+			return status.Winner
+		}
+		if status.Error != nil {
+			t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v (falling back to price estimate)", t.ID, status.Error)
+		}
+	}
+
+	// Step 2: Fallback to price-based estimate (same as before)
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	bestOutcome := t.Outcomes[0]
 	highestProb := 0.0
@@ -2586,8 +2608,6 @@ func (t *MarketTrader) determineWinner() string {
 		if prob == 0 {
 			ask := t.TokenAsks[outcome]
 			if ask > 0 {
-				// If there's an ask but no bid, use 1.0 - opposite ask as a rough guess,
-				// or just use the ask minus a small spread.
 				prob = ask - 0.01
 			}
 		}
@@ -2602,8 +2622,7 @@ func (t *MarketTrader) determineWinner() string {
 		}
 	}
 
-	// For a market to be resolved, the highest prob should reasonably be above 0.50.
-	// If it's ambiguous, we just return the highest.
+	t.TUI.LogEvent("[%s] 📊 Price-based winner estimate: %s ($%.3f) [no on-chain data]", t.ID, bestOutcome, highestProb)
 	return bestOutcome
 }
 

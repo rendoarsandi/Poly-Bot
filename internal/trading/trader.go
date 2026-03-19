@@ -344,6 +344,11 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 	}
 }
 
+// Exchange returns the underlying ExchangeClient for direct API access.
+func (t *RealTrader) Exchange() api.ExchangeClient {
+	return t.client
+}
+
 // GetConfirmedFillSize returns the cumulative WS-confirmed fill quantity for an order.
 func (t *RealTrader) GetConfirmedFillSize(orderID string) float64 {
 	if orderID == "" {

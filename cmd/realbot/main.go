@@ -452,6 +452,9 @@ func run() error {
 
 	restClient := api.NewRestClient(cfg.Exchange)
 
+	// Resolution cache for on-chain market resolution checking (shared across all traders)
+	// Realbot has polygon client for on-chain checks and exchange client for CLOB API
+	resolutionCache := api.NewResolutionCache(polygonClient, realTrader.Exchange(), restClient)
 	// emergencyCleanup ensures we don't leave hanging orders or unmerged positions
 	emergencyCleanup := func() {
 		// Give the overall cleanup up to 45 seconds, but each merge gets its own context
@@ -805,7 +808,7 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu)
+				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, resolutionCache)
 			}(assetID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
@@ -889,7 +892,7 @@ shutdown:
 func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
-	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex) {
+	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, resolutionCache *api.ResolutionCache) {
 
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
@@ -1017,6 +1020,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	takerCloseAttempted := false
 	var lastTakerCloseLog time.Time
+	var takerClosePriceAboveSince time.Time // When price first went above minPrice (for spike protection)
+	takerCloseLastStablePrice := 0.0        // Last confirmed price above minPrice
 	defer tui.ClearWalletTruthPositions(id)
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
@@ -1085,7 +1090,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			go func(marketID, condID string) {
 				redeemCtx, redeemCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer redeemCancel()
-				checkRedemption(redeemCtx, marketID, condID, trader, engine, tui)
+				checkRedemption(redeemCtx, marketID, condID, trader, engine, tui, resolutionCache)
 			}(id, market.ConditionID)
 			return
 		}
@@ -1093,6 +1098,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		timeToExpiry := time.Until(endTime)
 
 		// --- TAKER CLOSE MARKET LOGIC ---
+		// Spike protection: price must be sustained above minPrice for >=60 seconds
+		// before we execute a taker close buy. This prevents momentary WS spikes
+		// from triggering execution at bad prices (e.g. spike to 0.61 then drop to 0.55).
+		// Additionally, the limit price is capped so the order never fills below minPrice.
 		takerCloseTime := time.Duration(tui.GetSettings().TakerCloseMarketTime) * time.Second
 		if tui.GetSettings().TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted {
@@ -1116,54 +1125,155 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					minPrice = 0.60
 				}
 
+				// ── Spike protection: track how long the price stays above minPrice ──
+				const takerCloseSpikeGuardDuration = 60 * time.Second // Price must be sustained for 60s
+
 				if bestOutcome != "" && highestPrice >= minPrice {
-					takerCloseAttempted = true
-					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", id, bestOutcome, highestPrice)
-					go func(targetOutcome string) {
-						tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancelTrade()
-
-						budget := cfg.CalculateTradeSize(engine.GetEquity())
-
-						// Calculate expected execution price (price + absolute slippage allowance)
-						// e.g. price 0.70 + (-0.03) = 0.73
-						slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent
-						if slippageDec < 0 {
-							slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
+					if takerClosePriceAboveSince.IsZero() {
+						// First time above minPrice — start the clock
+						takerClosePriceAboveSince = time.Now()
+						takerCloseLastStablePrice = highestPrice
+						if time.Since(lastTakerCloseLog) > 1*time.Second {
+							tui.LogEvent("[%s] 🔍 Taker close: price $%.3f above min $%.2f — spike guard started (need %ds sustained)",
+								id, highestPrice, minPrice, int(takerCloseSpikeGuardDuration.Seconds()))
+							lastTakerCloseLog = time.Now()
 						}
-						sizingPrice := highestPrice + slippageDec
-						if sizingPrice > 0.99 {
-							sizingPrice = 0.99
-						}
-						// Execute base USDC based on the expected sizing price
-						size := budget / sizingPrice
-
-						// But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
-						limitPrice := tui.GetSettings().TakerCloseMarketSlippage
-						if limitPrice <= 0 || limitPrice >= 1.0 {
-							limitPrice = 0.99
-						}
-
-						tokenID := ""
-						for k, v := range tokenMap {
-							if v == targetOutcome {
-								tokenID = k
-								break
+					} else {
+						takerCloseLastStablePrice = highestPrice
+						// Check if sustained long enough
+						sustainedDuration := time.Since(takerClosePriceAboveSince)
+						if sustainedDuration >= takerCloseSpikeGuardDuration {
+							// ── Price confirmed stable — do a fresh REST confirmation ──
+							// Verify the price with a live REST call to avoid stale WS data
+							restConfirmOK := true
+							for _, token := range market.Tokens {
+								outcome := tokenToOutcome[token.TokenID]
+								if outcome != bestOutcome {
+									continue
+								}
+								checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
+								restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
+								cancelCheck()
+								if restErr != nil {
+									tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
+									restConfirmOK = false
+									break
+								}
+								confirmPrice := restAsk
+								if confirmPrice <= 0 || confirmPrice >= 1.0 {
+									confirmPrice = restBid
+								}
+								if confirmPrice < minPrice {
+									tui.LogEvent("[%s] ⚠️ Taker close REST price $%.3f < min $%.2f — WS was stale, resetting spike guard", id, confirmPrice, minPrice)
+									takerClosePriceAboveSince = time.Time{} // Reset
+									restConfirmOK = false
+									break
+								}
 							}
-						}
 
-						_, err := trader.Buy(tradeCtx, tokenID, targetOutcome, limitPrice, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, tokenFeeRates[targetOutcome])
-						if err != nil {
-							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, err)
-						} else {
-							tui.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.2f", id, size, limitPrice)
+							if restConfirmOK {
+								takerCloseAttempted = true
+								tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (WS price: $%.3f, sustained for %ds, REST confirmed)",
+									id, bestOutcome, highestPrice, int(sustainedDuration.Seconds()))
+								go func(targetOutcome string, confirmedPrice float64) {
+									tradeCtx, cancelTrade := context.WithTimeout(context.Background(), 10*time.Second)
+									defer cancelTrade()
+
+									budget := cfg.CalculateTradeSize(engine.GetEquity())
+
+									// Calculate expected execution price (price + absolute slippage allowance)
+									slippageDec := tui.GetSettings().BuyExecutionMarginFloorPercent
+									if slippageDec < 0 {
+										slippageDec = -slippageDec
+									}
+									sizingPrice := confirmedPrice + slippageDec
+									if sizingPrice > 0.99 {
+										sizingPrice = 0.99
+									}
+									size := budget / sizingPrice
+
+									// Limit price: use TakerCloseMarketSlippage but NEVER below minPrice.
+									// This is the critical safety: even if the order walks up the book,
+									// it cannot fill at a price lower than our minimum threshold.
+									limitPrice := tui.GetSettings().TakerCloseMarketSlippage
+									if limitPrice <= 0 || limitPrice >= 1.0 {
+										limitPrice = 0.99
+									}
+									// Floor the limit price to minPrice — never fill below threshold
+									currentMinPrice := tui.GetSettings().TakerCloseMarketMinPrice
+									if currentMinPrice <= 0 {
+										currentMinPrice = 0.60
+									}
+									if limitPrice < currentMinPrice {
+										limitPrice = currentMinPrice
+									}
+
+									tokenID := ""
+									for k, v := range tokenMap {
+										if v == targetOutcome {
+											tokenID = k
+											break
+										}
+									}
+
+									tui.LogEvent("[%s] 📤 Taker close buy: %s %.0f shares limit $%.3f (min floor $%.2f)",
+										id, targetOutcome, size, limitPrice, currentMinPrice)
+									_, err := trader.Buy(tradeCtx, tokenID, targetOutcome, limitPrice, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, tokenFeeRates[targetOutcome])
+									if err != nil {
+										tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, err)
+									} else {
+										tui.LogEvent("[%s] ✅ Taker close GTC buy placed for %.0f shares at $%.3f", id, size, limitPrice)
+									}
+								}(bestOutcome, highestPrice)
+							}
+						} else if time.Since(lastTakerCloseLog) > 2*time.Second {
+							remaining := takerCloseSpikeGuardDuration - sustainedDuration
+							tui.LogEvent("[%s] 🔍 Taker close spike guard: $%.3f above $%.2f for %ds (need %ds more)",
+								id, highestPrice, minPrice, int(sustainedDuration.Seconds()), int(remaining.Seconds()))
+							lastTakerCloseLog = time.Now()
 						}
-					}(bestOutcome)
+					}
 				} else {
-					if time.Since(lastTakerCloseLog) > 1*time.Second {
-						tui.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.2f (needs > 0.50)", id, highestPrice)
+					// Price dropped below minPrice — reset spike guard
+					if !takerClosePriceAboveSince.IsZero() {
+						tui.LogEvent("[%s] 📉 Taker close: price $%.3f dropped below min $%.2f — spike guard reset (was $%.3f)",
+							id, highestPrice, minPrice, takerCloseLastStablePrice)
+						takerClosePriceAboveSince = time.Time{}
+						takerCloseLastStablePrice = 0
+					} else if time.Since(lastTakerCloseLog) > 1*time.Second {
+						tui.LogEvent("[%s] ⏳ Taker close waiting: price $%.3f (needs >= $%.2f for %ds)",
+							id, highestPrice, minPrice, int(takerCloseSpikeGuardDuration.Seconds()))
 						lastTakerCloseLog = time.Now()
 					}
+				}
+			}
+		} else if tui.GetSettings().TakerCloseMarket && timeToExpiry > takerCloseTime {
+			// Pre-window: still track price stability so spike guard can build up before the close window
+			minPrice := tui.GetSettings().TakerCloseMarketMinPrice
+			if minPrice <= 0 {
+				minPrice = 0.60
+			}
+			highestPrice := 0.0
+			for _, outcome := range outcomes {
+				ask := tokenAsks[outcome]
+				bid := tokenBids[outcome]
+				price := ask
+				if price <= 0 || price >= 1.0 {
+					price = bid
+				}
+				if price > 0 && price <= 1.0 && price > highestPrice {
+					highestPrice = price
+				}
+			}
+			if highestPrice >= minPrice {
+				if takerClosePriceAboveSince.IsZero() {
+					takerClosePriceAboveSince = time.Now()
+				}
+				takerCloseLastStablePrice = highestPrice
+			} else {
+				if !takerClosePriceAboveSince.IsZero() {
+					takerClosePriceAboveSince = time.Time{}
+					takerCloseLastStablePrice = 0
 				}
 			}
 		}
@@ -4473,7 +4583,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 	return success
 }
 
-func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
+func checkRedemption(ctx context.Context, id, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, resCache *api.ResolutionCache) {
 	// Check if we have any positions to redeem first
 	// If merge already happened, we have no positions and can skip redemption entirely
 	positions := engine.GetPositions()
@@ -4526,8 +4636,8 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 					trader.RecordLoss(-result.TotalPnL)
 				}
 
-				// Update UI to show [REDEEMABLE] tag while we wait for on-chain resolution
-				tui.UpdateWalletTruthRedeemable(id, winner)
+				// Update UI to show [WINNER ✓] / [LOSER ✗] / [REDEEMABLE 💰] tags
+				tui.UpdateWalletTruthResolution(id, true, winner)
 
 				// AUTOMATIC ON-CHAIN REDEMPTION
 				go func(cid string, numOutcomes int) {
@@ -4552,6 +4662,8 @@ func checkRedemption(ctx context.Context, id, conditionID string, trader *tradin
 			return
 		}
 
+		// Update TUI to show positions are still unresolved
+		tui.UpdateWalletTruthResolution(id, false, "")
 		tui.LogEvent("[%s] ⏳ Resolution pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
 	}
 
