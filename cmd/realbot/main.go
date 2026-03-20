@@ -1560,9 +1560,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
 							// Check for crossed/wide local book (WS state corruption or missing delete delta)
 							if !realbotHasSaneTopOfBook(tokenBids[outcome], tokenAsks[outcome]) {
-								// Force a REST poll immediately by making WS look stale
-								lastUpdate = time.Now().Add(-20 * time.Second)
-
 								// Clear corrupted data
 								tokenBids[outcome] = 0
 								tokenAsks[outcome] = 0
@@ -1635,7 +1632,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenAsks[outcome] = 0
 				tokenFullBids[outcome] = nil
 				tokenFullAsks[outcome] = nil
-				lastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
 			}
 		}
 		if !realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
@@ -1645,7 +1641,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenFullBids[outcome] = nil
 				tokenFullAsks[outcome] = nil
 			}
-			lastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
 		}
 
 		if messagesProcessed > 0 {
