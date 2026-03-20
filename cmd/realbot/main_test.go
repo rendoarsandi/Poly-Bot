@@ -574,6 +574,64 @@ func TestRealbotRestoreExternalCarryPositionsReusesExistingFingerprintBucket(t *
 	}
 }
 
+func TestRealbotRestoreExternalCarryPositionsTrimsStaleCarryWhenMissingExternally(t *testing.T) {
+	engine := paper.NewEngine(80.0)
+	if !engine.SyncExternalPosition("ETH#a71c1a04", "Down", 2.0, 0.50) {
+		t.Fatal("expected seed carry sync")
+	}
+
+	synced := realbotRestoreExternalCarryPositions(nil, engine)
+	if synced != 1 {
+		t.Fatalf("expected one stale carry trim, got %d", synced)
+	}
+
+	positions := engine.GetPositions()
+	if len(positions) != 0 {
+		t.Fatalf("expected stale carry to be removed, got %+v", positions)
+	}
+	exposure, _ := engine.GetExposure()
+	if math.Abs(exposure) > 0.000001 {
+		t.Fatalf("expected zero exposure after stale trim, got %.6f", exposure)
+	}
+}
+
+func TestRealbotRestoreExternalCarryPositionsReconcilesUpdatesAndRemovals(t *testing.T) {
+	engine := paper.NewEngine(120.0)
+	if !engine.SyncExternalPosition("ETH#a71c1a04", "Down", 1.0, 0.50) {
+		t.Fatal("expected seed carry sync")
+	}
+	if !engine.SyncExternalPosition("BTC#12345678", "Up", 3.0, 0.40) {
+		t.Fatal("expected second seed carry sync")
+	}
+
+	synced := realbotRestoreExternalCarryPositions([]trading.PositionInfo{
+		{
+			Outcome:     "Down",
+			Size:        2.5,
+			AvgPrice:    0.60,
+			ConditionID: "0xa71c1a04feedbeef",
+			Slug:        "ethereum-updown-15m-123456",
+		},
+	}, engine)
+
+	// One upsert (ETH size 1.0 -> 2.5) + one trim (stale BTC removed).
+	if synced != 2 {
+		t.Fatalf("expected two sync operations (update + trim), got %d", synced)
+	}
+
+	positions := engine.GetPositions()
+	if len(positions) != 1 {
+		t.Fatalf("expected exactly one reconciled carry position, got %+v", positions)
+	}
+	pos, ok := positions["ETH#a71c1a04:Down"]
+	if !ok {
+		t.Fatalf("expected ETH carry bucket to remain, got %+v", positions)
+	}
+	if math.Abs(pos.Quantity-2.5) > 0.000001 {
+		t.Fatalf("expected ETH carry quantity 2.5, got %.4f", pos.Quantity)
+	}
+}
+
 func TestExecutionDeltaFromPositionsBuy(t *testing.T) {
 	positions := []trading.PositionInfo{{TokenID: "yes-token", Size: 7.5}}
 

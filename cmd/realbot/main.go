@@ -846,7 +846,15 @@ func realbotRestoreExternalCarryPositions(positions []trading.PositionInfo, engi
 
 	const eps = 1e-6
 	existing := engine.GetPositions()
-	restored := 0
+	synced := 0
+
+	type desiredCarry struct {
+		marketID  string
+		outcome   string
+		quantity  float64
+		markPrice float64
+	}
+	desiredByKey := make(map[string]desiredCarry)
 
 	for _, pos := range positions {
 		if pos.Size <= eps || strings.TrimSpace(pos.Outcome) == "" {
@@ -859,21 +867,53 @@ func realbotRestoreExternalCarryPositions(positions []trading.PositionInfo, engi
 			posKey = marketID + ":" + pos.Outcome
 		}
 
-		if current, ok := existing[posKey]; ok && current.Quantity+eps >= pos.Size {
-			continue
-		}
-
 		markPrice := pos.AvgPrice
 		if markPrice <= 0 {
 			markPrice = 0.5
 		}
-		if engine.SyncExternalPosition(marketID, pos.Outcome, pos.Size, markPrice) {
-			restored++
+		desired := desiredByKey[posKey]
+		if desired.marketID == "" {
+			desired.marketID = marketID
+			desired.outcome = pos.Outcome
+			desired.markPrice = markPrice
+		}
+		desired.quantity += pos.Size
+		desiredByKey[posKey] = desired
+	}
+
+	// First: upsert all externally reported positions.
+	for key, desired := range desiredByKey {
+		current, ok := existing[key]
+		if ok && math.Abs(current.Quantity-desired.quantity) <= eps {
+			continue
+		}
+		if engine.SyncExternalPosition(desired.marketID, desired.outcome, desired.quantity, desired.markPrice) {
+			synced++
 			existing = engine.GetPositions()
 		}
 	}
 
-	return restored
+	// Second: trim stale local carry that is absent in authoritative external snapshot.
+	for key, pos := range existing {
+		if pos.Quantity <= eps {
+			continue
+		}
+		if _, ok := desiredByKey[key]; ok {
+			continue
+		}
+		markPrice := pos.AvgPrice
+		if markPrice <= 0 && pos.Quantity > 0 {
+			markPrice = pos.TotalCost / pos.Quantity
+		}
+		if markPrice <= 0 {
+			markPrice = 0.5
+		}
+		if engine.SyncExternalPosition(pos.MarketID, pos.Outcome, 0, markPrice) {
+			synced++
+		}
+	}
+
+	return synced
 }
 
 func realbotRefreshExternalCarry(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine) (int, error) {
@@ -1225,8 +1265,8 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
-	if restored := realbotRestoreExternalCarryPositions(positions, engine); restored > 0 {
-		fmt.Printf("🔄 Imported %d open position(s) into local carry accounting\n", restored)
+	if synced := realbotRestoreExternalCarryPositions(positions, engine); synced > 0 {
+		fmt.Printf("🔄 Synced %d open position(s) with authoritative carry snapshot\n", synced)
 	}
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
@@ -1325,10 +1365,10 @@ func run() error {
 		}
 		{
 			carryCtx, carryCancel := context.WithTimeout(ctx, 10*time.Second)
-			if restored, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
+			if synced, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
 				tui.LogEvent("⚠️ Could not refresh open carry positions: %v", carryErr)
-			} else if restored > 0 {
-				tui.LogEvent("🔄 Restored %d unresolved position(s) into local book equity", restored)
+			} else if synced > 0 {
+				tui.LogEvent("🔄 Synced %d unresolved position(s) to wallet truth", synced)
 			}
 			carryCancel()
 		}
@@ -1473,10 +1513,10 @@ func run() error {
 		}
 		{
 			carryCtx, carryCancel := context.WithTimeout(ctx, 10*time.Second)
-			if restored, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
+			if synced, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
 				tui.LogEvent("⚠️ Could not refresh unresolved carry before round settlement: %v", carryErr)
-			} else if restored > 0 {
-				tui.LogEvent("🔄 Restored %d unresolved position(s) before round settlement", restored)
+			} else if synced > 0 {
+				tui.LogEvent("🔄 Synced %d unresolved position(s) before round settlement", synced)
 			}
 			carryCancel()
 		}
