@@ -916,6 +916,38 @@ func realbotRestoreExternalCarryPositions(positions []trading.PositionInfo, engi
 	return synced
 }
 
+func realbotVerifyExternalCarryPositions(
+	ctx context.Context,
+	positions []trading.PositionInfo,
+	getOnChainBalance func(context.Context, string) (float64, error),
+) []trading.PositionInfo {
+	const eps = 1e-6
+	verified := make([]trading.PositionInfo, 0, len(positions))
+
+	for _, pos := range positions {
+		if pos.Size <= eps || strings.TrimSpace(pos.Outcome) == "" {
+			continue
+		}
+
+		candidate := pos
+		if getOnChainBalance != nil {
+			tokenID := strings.TrimSpace(pos.TokenID)
+			if tokenID != "" {
+				if onChainSize, err := getOnChainBalance(ctx, tokenID); err == nil {
+					candidate.Size = onChainSize
+				}
+			}
+		}
+
+		if candidate.Size <= eps {
+			continue
+		}
+		verified = append(verified, candidate)
+	}
+
+	return verified
+}
+
 func realbotRefreshExternalCarry(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine) (int, error) {
 	if trader == nil || engine == nil {
 		return 0, nil
@@ -924,7 +956,8 @@ func realbotRefreshExternalCarry(ctx context.Context, trader *trading.RealTrader
 	if err != nil {
 		return 0, err
 	}
-	return realbotRestoreExternalCarryPositions(positions, engine), nil
+	verified := realbotVerifyExternalCarryPositions(ctx, positions, trader.GetCTFBalanceFloat)
+	return realbotRestoreExternalCarryPositions(verified, engine), nil
 }
 
 func realbotPairQuoteAge(now time.Time, outcomes []string, quoteState map[string]realbotQuoteState) time.Duration {
@@ -1265,9 +1298,13 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
-	if synced := realbotRestoreExternalCarryPositions(positions, engine); synced > 0 {
+	startupCarryCtx, startupCarryCancel := context.WithTimeout(ctx, 10*time.Second)
+	if synced, carryErr := realbotRefreshExternalCarry(startupCarryCtx, realTrader, engine); carryErr != nil {
+		fmt.Printf("⚠️  Could not sync startup carry snapshot: %v\n", carryErr)
+	} else if synced > 0 {
 		fmt.Printf("🔄 Synced %d open position(s) with authoritative carry snapshot\n", synced)
 	}
+	startupCarryCancel()
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
 	} else {

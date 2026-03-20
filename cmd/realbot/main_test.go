@@ -632,6 +632,49 @@ func TestRealbotRestoreExternalCarryPositionsReconcilesUpdatesAndRemovals(t *tes
 	}
 }
 
+func TestRealbotVerifyExternalCarryPositionsUsesOnChainBalances(t *testing.T) {
+	positions := []trading.PositionInfo{
+		{TokenID: "t1", Outcome: "Up", Size: 5.0},
+		{TokenID: "t2", Outcome: "Down", Size: 3.0},
+	}
+
+	onChain := map[string]float64{
+		"t1": 0.0,  // stale Data API entry should be dropped
+		"t2": 2.25, // authoritative on-chain size should replace reported
+	}
+
+	verified := realbotVerifyExternalCarryPositions(context.Background(), positions, func(ctx context.Context, tokenID string) (float64, error) {
+		return onChain[tokenID], nil
+	})
+
+	if len(verified) != 1 {
+		t.Fatalf("expected one verified carry position, got %+v", verified)
+	}
+	if verified[0].TokenID != "t2" {
+		t.Fatalf("expected token t2 to remain, got %+v", verified[0])
+	}
+	if math.Abs(verified[0].Size-2.25) > 0.000001 {
+		t.Fatalf("expected verified size 2.25, got %.4f", verified[0].Size)
+	}
+}
+
+func TestRealbotVerifyExternalCarryPositionsFallsBackToReportedOnChainErrors(t *testing.T) {
+	positions := []trading.PositionInfo{
+		{TokenID: "t1", Outcome: "Up", Size: 1.5},
+	}
+
+	verified := realbotVerifyExternalCarryPositions(context.Background(), positions, func(ctx context.Context, tokenID string) (float64, error) {
+		return 0, errors.New("rpc unavailable")
+	})
+
+	if len(verified) != 1 {
+		t.Fatalf("expected reported position to remain on on-chain error, got %+v", verified)
+	}
+	if math.Abs(verified[0].Size-1.5) > 0.000001 {
+		t.Fatalf("expected reported size fallback 1.5, got %.4f", verified[0].Size)
+	}
+}
+
 func TestExecutionDeltaFromPositionsBuy(t *testing.T) {
 	positions := []trading.PositionInfo{{TokenID: "yes-token", Size: 7.5}}
 
