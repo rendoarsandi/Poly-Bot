@@ -567,6 +567,15 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 				tui.UpdateWalletTruthResolution(marketID, true, winner)
 			}
 
+			balanceCtx, balanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if newBal, balErr := trader.ForceRefreshBalance(balanceCtx); balErr != nil {
+				tui.LogEvent("[%s] ⚠️ Post-redeem balance refresh failed: %v", marketID, balErr)
+			} else {
+				engine.SetBalance(newBal)
+				engine.RecalculateDrawdown()
+			}
+			balanceCancel()
+
 			if positionsErr == nil && realbotWinningOnChainShares(positions, winner) <= 0.000001 {
 				engine.ClearPendingRedemption(marketID)
 				return

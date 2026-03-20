@@ -957,11 +957,17 @@ func (e *Engine) GetStats() Stats {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	// In realbot mode we keep open inventory at cost basis inside book equity.
+	// That makes bookEquity-startingBalance the authoritative realized PnL view:
+	// open positions stay neutral, pending redemptions count, and cash syncs after
+	// manual/on-chain flows still reconcile correctly even if event-level PnL drifted.
+	realizedPnL := e.getBookEquity() - e.startingBalance
+
 	return Stats{
 		TotalTrades:     e.totalTrades,
 		WinningTrades:   e.winningTrades,
 		LosingTrades:    e.losingTrades,
-		RealizedPnL:     e.realizedPnL,
+		RealizedPnL:     realizedPnL,
 		UnrealizedPnL:   e.getUnrealizedPnL(),
 		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
 		PeakBalance:     e.peakBalance,

@@ -588,3 +588,56 @@ func TestEngine_RedeemWithDetails(t *testing.T) {
 		t.Errorf("Expected total PnL $2, got %f", res.TotalPnL)
 	}
 }
+
+func TestEngine_GetStatsRealizedPnLTracksBookEquityWhileFlat(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	engine.SetBalance(80.0)
+
+	stats := engine.GetStats()
+	if absFloat(stats.RealizedPnL+20.0) > 0.0001 {
+		t.Fatalf("expected realized pnl -20.00 while flat, got %.4f", stats.RealizedPnL)
+	}
+}
+
+func TestEngine_GetStatsRealizedPnLStaysNeutralForOpenInventory(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.60, 10.0); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.RealizedPnL) > 0.0001 {
+		t.Fatalf("expected realized pnl to stay neutral with open inventory, got %.4f", stats.RealizedPnL)
+	}
+}
+
+func TestEngine_GetStatsRealizedPnLIncludesPendingRedemption(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.60, 10.0); err != nil {
+		t.Fatalf("winning buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m1", "Down", 0.40, 5.0); err != nil {
+		t.Fatalf("losing buy failed: %v", err)
+	}
+
+	res := engine.RedeemWithDetails("m1", "Up")
+	if absFloat(res.TotalPnL-2.0) > 0.0001 {
+		t.Fatalf("expected total pnl 2.00, got %.4f", res.TotalPnL)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.RealizedPnL-2.0) > 0.0001 {
+		t.Fatalf("expected realized pnl 2.00 with pending redemption, got %.4f", stats.RealizedPnL)
+	}
+
+	engine.SetBalance(102.0)
+	engine.ClearPendingRedemption("m1")
+
+	stats = engine.GetStats()
+	if absFloat(stats.RealizedPnL-2.0) > 0.0001 {
+		t.Fatalf("expected realized pnl 2.00 after cash settles, got %.4f", stats.RealizedPnL)
+	}
+}
