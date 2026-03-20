@@ -1193,9 +1193,9 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 	}
 
 	deadline := time.Now().Add(timeout)
-	wsTicker := time.NewTicker(25 * time.Millisecond)
+	wsTicker := time.NewTicker(100 * time.Millisecond)
 	defer wsTicker.Stop()
-	fallbackTicker := time.NewTicker(200 * time.Millisecond)
+	fallbackTicker := time.NewTicker(500 * time.Millisecond)
 	defer fallbackTicker.Stop()
 
 	for {

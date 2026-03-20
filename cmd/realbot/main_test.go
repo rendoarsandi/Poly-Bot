@@ -176,6 +176,28 @@ func TestRealbotLooksLikeTerminalBookRejectsNormalOneSidedBook(t *testing.T) {
 	}
 }
 
+func TestRealbotShouldRunNearExpiryCleanupSkipsTakerCloseMode(t *testing.T) {
+	if realbotShouldRunNearExpiryCleanup(paper.TUISettings{TakerCloseMarket: true}, 5*time.Second, 30*time.Second) {
+		t.Fatal("expected taker-close mode to bypass near-expiry cleanup")
+	}
+	if !realbotShouldRunNearExpiryCleanup(paper.TUISettings{}, 5*time.Second, 30*time.Second) {
+		t.Fatal("expected normal mode to allow near-expiry cleanup inside merge buffer")
+	}
+}
+
+func TestRealbotHasEnginePositionsForMarket(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("btc-1", "Up", 0.70, 10); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if !realbotHasEnginePositionsForMarket(engine, "btc-1") {
+		t.Fatal("expected engine positions for btc-1")
+	}
+	if realbotHasEnginePositionsForMarket(engine, "eth-1") {
+		t.Fatal("did not expect engine positions for eth-1")
+	}
+}
+
 func TestRealbotPanicBuyCompletionGuardBlocksUnprofitableCompletion(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.62, 10); err != nil {

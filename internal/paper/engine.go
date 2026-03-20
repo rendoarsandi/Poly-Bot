@@ -1050,6 +1050,11 @@ func (e *Engine) AddRealizedPnL(pnl float64) {
 func (e *Engine) RegisterSplitInventory(inv *SplitInventory) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	for _, existing := range e.splitInventories {
+		if existing == inv {
+			return
+		}
+	}
 	e.splitInventories = append(e.splitInventories, inv)
 }
 

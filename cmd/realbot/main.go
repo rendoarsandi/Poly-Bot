@@ -27,20 +27,23 @@ import (
 )
 
 const (
-	UseLiveUI               = true // Set to false for traditional logging
-	paperArbModeTaker       = "taker"
-	paperArbModeMaker       = "maker"
-	terminalBidFloor        = 0.985
-	terminalAskCeil         = 0.015
-	realbotExecQuoteTimeout = 1500 * time.Millisecond
-	realbotOrderWarmTimeout = 1500 * time.Millisecond
-	realbotRestBookMaxAge   = 2 * time.Second
-	realbotWSWarnInterval   = 10 * time.Second
-	realbotWSForceReconnect = 10 * time.Second
-	realbotMergeTimeout     = 120 * time.Second
-	realbotCleanupVerifyTTL = 20 * time.Second
-	realbotFastVerifyTTL    = 6 * time.Second
-	minOnChainActionShares  = 0.01
+	UseLiveUI                = true // Set to false for traditional logging
+	paperArbModeTaker        = "taker"
+	paperArbModeMaker        = "maker"
+	terminalBidFloor         = 0.985
+	terminalAskCeil          = 0.015
+	realbotExecQuoteTimeout  = 1500 * time.Millisecond
+	realbotOrderWarmTimeout  = 1500 * time.Millisecond
+	realbotRestBookMaxAge    = 2 * time.Second
+	realbotWSWarnInterval    = 10 * time.Second
+	realbotWSForceReconnect  = 10 * time.Second
+	realbotMergeTimeout      = 120 * time.Second
+	realbotCleanupVerifyTTL  = 20 * time.Second
+	realbotFastVerifyTTL     = 6 * time.Second
+	minOnChainActionShares   = 0.01
+	realbotUIRefreshInterval = 750 * time.Millisecond
+	realbotMainLoopInterval  = 50 * time.Millisecond
+	realbotFillPollInterval  = 125 * time.Millisecond
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -79,6 +82,86 @@ func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWar
 
 func shouldRealbotRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
 	return quoteAge > staleAfter && sinceLastRest > pollInterval
+}
+
+func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
+	return cfg.TakerCloseMarket
+}
+
+func realbotHasEnginePositionsForMarket(engine *paper.Engine, marketID string) bool {
+	if engine == nil || marketID == "" {
+		return false
+	}
+	for _, pos := range engine.GetPositions() {
+		if pos.MarketID == marketID && pos.Quantity > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine) ([]paper.WalletTruthPosition, error) {
+	if trader == nil || engine == nil || marketID == "" || conditionID == "" {
+		return nil, nil
+	}
+
+	info, err := trader.GetMarketInfo(ctx, conditionID)
+	if err != nil {
+		return nil, err
+	}
+
+	localByOutcome := make(map[string]float64)
+	for _, pos := range engine.GetPositions() {
+		if pos.MarketID != marketID || pos.Quantity <= 0 {
+			continue
+		}
+		localByOutcome[pos.Outcome] += pos.Quantity
+	}
+
+	positions := make([]paper.WalletTruthPosition, 0, len(info.Tokens))
+	for _, token := range info.Tokens {
+		if token.TokenID == "" || token.Outcome == "" {
+			continue
+		}
+		onChainShares, err := trader.GetCTFBalanceFloat(ctx, token.TokenID)
+		if err != nil {
+			return nil, err
+		}
+		localShares := localByOutcome[token.Outcome]
+		if localShares <= 0 && onChainShares <= 0 {
+			continue
+		}
+		positions = append(positions, paper.WalletTruthPosition{
+			MarketID:      marketID,
+			Outcome:       token.Outcome,
+			LocalShares:   localShares,
+			OnChainShares: onChainShares,
+			Drift:         onChainShares - localShares,
+		})
+	}
+	sort.Slice(positions, func(i, j int) bool {
+		if positions[i].MarketID == positions[j].MarketID {
+			return positions[i].Outcome < positions[j].Outcome
+		}
+		return positions[i].MarketID < positions[j].MarketID
+	})
+	return positions, nil
+}
+
+func refreshWalletTruthForRedemption(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) error {
+	positions, err := realbotWalletTruthPositionsForRedemption(ctx, marketID, conditionID, trader, engine)
+	if err != nil {
+		return err
+	}
+	tui.SetWalletTruthPositions(marketID, positions)
+	return nil
+}
+
+func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, mergeBuffer time.Duration) bool {
+	if realbotTakerCloseHoldMode(cfg) {
+		return false
+	}
+	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
 }
 
 func normalizePaperArbMode(mode string) string {
@@ -681,7 +764,7 @@ func run() error {
 
 	// Start TUI — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
-		tui.StartRenderLoop(250*time.Millisecond, stop)
+		tui.StartRenderLoop(realbotUIRefreshInterval, stop)
 		defer tui.Stop()
 	}
 
@@ -1037,7 +1120,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	takerCloseLastStablePrice := 0.0        // Last confirmed price above minPrice
 	var takerCloseExecutedAt time.Time      // When taker close buy was confirmed (for merge-buffer cooldown)
 	var nextTakerCloseAttempt time.Time
-	defer tui.ClearWalletTruthPositions(id)
+	preserveWalletTruth := false
+	defer func() {
+		if !preserveWalletTruth {
+			tui.ClearWalletTruthPositions(id)
+		}
+	}()
 	replenishCtrl := paper.NewReplenishController() // Debounce replenish goroutines
 	var nextNearCloseCleanup time.Time
 	var nearExpiryNoticeSent bool
@@ -1072,9 +1160,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		case <-ctx.Done():
 			isShutdown := globalCtx.Err() != nil
 			timeToExpiry := time.Until(endTime)
+			liveCfg := tui.GetSettings()
 			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 10*time.Second)
 			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "trader stopping", trader, engine, tui, makerQuotes)
 			cancelMaker()
+
+			if realbotTakerCloseHoldMode(liveCfg) && realbotHasEnginePositionsForMarket(engine, id) {
+				preserveWalletTruth = true
+				tui.LogEvent("[%s] ⏳ Trader stopping: preserving taker-close inventory for post-resolution redemption", id)
+				return
+			}
 
 			// TUI Restart logic: Preserve inventory if active
 			if !isShutdown && timeToExpiry > 30*time.Second {
@@ -1097,6 +1192,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 10*time.Second)
 			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "market closed", trader, engine, tui, makerQuotes)
 			cancelMaker()
+			liveCfg := tui.GetSettings()
+			if realbotTakerCloseHoldMode(liveCfg) {
+				if realbotHasEnginePositionsForMarket(engine, id) {
+					preserveWalletTruth = true
+					refreshWalletTruth(5 * time.Second)
+					tui.LogEvent("[%s] ⏳ Taker-close inventory locked in; waiting for market resolution and redemption", id)
+				}
+				go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
+					redeemCtx, redeemCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					defer redeemCancel()
+					checkRedemption(redeemCtx, marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
+				}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
+				return
+			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
 			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, false, tui.GetSettings().MinAskPrice, "POST CLOSE", mergeCoordinator); err != nil {
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
@@ -1316,7 +1425,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 		// --------------------------------
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
-		if timeToExpiry > 0 && timeToExpiry <= mergeBuffer {
+		if realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
 			// If taker close just fired, suppress sell actions for 15s to prevent racing
 			// against the just-placed GTC buy order. The merge buffer cleanup would
 			// otherwise sell the shares we just bought before the order fully fills.
@@ -2737,7 +2846,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			}
 		}
 
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(realbotMainLoopInterval)
 	}
 }
 
@@ -3172,7 +3281,6 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 		}()
 	}
 
-	pollInterval := 50 * time.Millisecond
 	deadline := time.Now().Add(timeout)
 	for {
 		select {
@@ -3201,7 +3309,7 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 		if hasConfirmedExecutedQty(side, executedQty) || time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(pollInterval)
+		time.Sleep(realbotFillPollInterval)
 	}
 
 	if positions, err := trader.ForceRefreshPositions(ctx); err == nil {
@@ -4735,19 +4843,16 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 }
 
 func checkRedemption(ctx context.Context, id, conditionID string, outcomes []string, marketEndTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, resCache *api.ResolutionCache) {
-	// Check if we have any positions to redeem first
-	// If merge already happened, we have no positions and can skip redemption entirely
-	positions := engine.GetPositions()
-	hasPositions := false
-	for _, pos := range positions {
-		if pos.Quantity > 0 {
-			hasPositions = true
-			break
+	if err := refreshWalletTruthForRedemption(ctx, id, conditionID, trader, engine, tui); err != nil {
+		if !realbotHasEnginePositionsForMarket(engine, id) {
+			return
 		}
-	}
-
-	if !hasPositions {
-		return
+		tui.LogEvent("[%s] ⚠️ Initial redemption wallet-truth refresh failed: %v", id, err)
+	} else {
+		positions, refreshErr := realbotWalletTruthPositionsForRedemption(ctx, id, conditionID, trader, engine)
+		if refreshErr == nil && len(positions) == 0 {
+			return
+		}
 	}
 
 	// Retry resolution check with exponential backoff
@@ -4796,7 +4901,11 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 
 		if winner != "" {
 			result := engine.RedeemWithDetails(id, winner)
-			if result.TotalPnL != 0 {
+			if err := refreshWalletTruthForRedemption(ctx, id, conditionID, trader, engine, tui); err != nil {
+				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh after winner update failed: %v", id, err)
+			}
+			tui.UpdateWalletTruthResolution(id, true, winner)
+			if result.WinningShares > 0 || result.LosingShares > 0 || result.TotalPayout > 0 || result.TotalPnL != 0 {
 				pnlSign := "+"
 				pnlEmoji := "💰"
 				if result.TotalPnL < 0 {
@@ -4809,9 +4918,6 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 				if result.TotalPnL < 0 && trader != nil {
 					trader.RecordLoss(-result.TotalPnL)
 				}
-
-				// Update UI to show [WINNER ✓] / [LOSER ✗] / [REDEEMABLE 💰] tags
-				tui.UpdateWalletTruthResolution(id, true, winner)
 
 				// AUTOMATIC ON-CHAIN REDEMPTION
 				go func(cid string, numOutcomes int) {
@@ -4829,6 +4935,13 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 					} else {
 						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
 					}
+					refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
+					if refreshErr := refreshWalletTruthForRedemption(refreshCtx, id, cid, trader, engine, tui); refreshErr != nil {
+						tui.LogEvent("[%s] ⚠️ Post-redeem wallet-truth refresh failed: %v", id, refreshErr)
+					} else {
+						tui.UpdateWalletTruthResolution(id, true, winner)
+					}
+					refreshCancel()
 				}(conditionID, numOutcomes)
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
@@ -4837,12 +4950,18 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		}
 
 		if resolved {
+			if err := refreshWalletTruthForRedemption(ctx, id, conditionID, trader, engine, tui); err != nil {
+				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh during resolved-pending state failed: %v", id, err)
+			}
 			tui.UpdateWalletTruthResolution(id, true, "")
 			tui.LogEvent("[%s] ⏳ Market resolved on-chain, winner still pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
 			continue
 		}
 
 		// Update TUI to show positions are still unresolved
+		if err := refreshWalletTruthForRedemption(ctx, id, conditionID, trader, engine, tui); err != nil {
+			tui.LogEvent("[%s] ⚠️ Wallet-truth refresh during pending resolution failed: %v", id, err)
+		}
 		tui.UpdateWalletTruthResolution(id, false, "")
 		tui.LogEvent("[%s] ⏳ Resolution pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
 	}

@@ -304,6 +304,15 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 		}
 	}
 
+	if closeMarket && !maker {
+		// Taker-close mode bypasses the normal split/panic-buy paths, so hide
+		// controls that do not affect the dedicated close-market execution flow.
+		switch idx {
+		case 4, 7, 8, 9, 10, 12, 13:
+			return false
+		}
+	}
+
 	switch idx {
 	case 6, 7, 8, 9, 10: // Taker specific
 		return !maker
@@ -332,7 +341,7 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		}
 		return "Buy Min Margin %"
 	case 6:
-		return "Buy/Sell Exec Floor %"
+		return "Max Exec Slip %"
 	case 7:
 		return "Split Min Margin"
 	case 8:
@@ -413,7 +422,27 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 			s.MaxMarkets = selected
 		}
 	}
+	s.BuyExecutionMarginFloorPercent = normalizeExecutionFloorSetting(s.BuyExecutionMarginFloorPercent)
 	return s
+}
+
+func normalizeExecutionFloorSetting(v float64) float64 {
+	// Support both legacy percent form (-1.0 == -1%) and decimal form
+	// (-0.01 == -1%), but keep the runtime/UI value in decimal slippage form.
+	if math.Abs(v) > 0.10 {
+		v = v / 100.0
+	}
+	if v > 0 {
+		v = 0
+	}
+	if v < -0.10 {
+		v = -0.10
+	}
+	return v
+}
+
+func executionFloorDisplayPercent(v float64) float64 {
+	return normalizeExecutionFloorSetting(v) * 100.0
 }
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -467,6 +496,8 @@ type TUI struct {
 
 	program     *tea.Program
 	issueLogger *core.CSVLogger
+
+	snapshotVersion uint64
 }
 
 // GetAndClearRestart returns true if a restart was requested via settings and clears the flag
@@ -481,6 +512,7 @@ func (t *TUI) GetAndClearRestart() bool {
 // ─── Bubbletea internals ──────────────────────────────────────────────────────
 
 type tuiSnapshot struct {
+	version        uint64
 	markets        map[string]*MarketData
 	marketSlug     string
 	outcomes       []string
@@ -519,6 +551,10 @@ type tuiSnapshot struct {
 	rounds          int
 	profitable      int
 	enginePositions map[string]Position
+}
+
+func (t *TUI) markDirtyLocked() {
+	t.snapshotVersion++
 }
 
 type tuiModel struct {
@@ -724,109 +760,111 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.tui.mu.Lock()
 
-		// Deep copy maps to prevent data races with background goroutines
-		snapMarkets := make(map[string]*MarketData)
-		for k, v := range m.tui.markets {
-			md := &MarketData{
-				Slug:       v.Slug,
-				Outcomes:   append([]string(nil), v.Outcomes...),
-				EndTime:    v.EndTime,
-				Bids:       make(map[string]float64),
-				Asks:       make(map[string]float64),
-				RealBids:   make(map[string]float64),
-				RealAsks:   make(map[string]float64),
-				LastUpdate: v.LastUpdate,
-				DataSource: v.DataSource,
+		if m.snap.markets == nil || m.snap.version != m.tui.snapshotVersion {
+			// Rebuild the expensive collections only when the underlying TUI data changed.
+			snapMarkets := make(map[string]*MarketData)
+			for k, v := range m.tui.markets {
+				md := &MarketData{
+					Slug:       v.Slug,
+					Outcomes:   append([]string(nil), v.Outcomes...),
+					EndTime:    v.EndTime,
+					Bids:       make(map[string]float64),
+					Asks:       make(map[string]float64),
+					RealBids:   make(map[string]float64),
+					RealAsks:   make(map[string]float64),
+					LastUpdate: v.LastUpdate,
+					DataSource: v.DataSource,
+				}
+				for outcome, price := range v.Bids {
+					md.Bids[outcome] = price
+				}
+				for outcome, price := range v.Asks {
+					md.Asks[outcome] = price
+				}
+				for outcome, price := range v.RealBids {
+					md.RealBids[outcome] = price
+				}
+				for outcome, price := range v.RealAsks {
+					md.RealAsks[outcome] = price
+				}
+				snapMarkets[k] = md
 			}
-			for outcome, price := range v.Bids {
-				md.Bids[outcome] = price
+
+			snapLastPrices := make(map[string]float64)
+			for k, v := range m.tui.lastPrices {
+				snapLastPrices[k] = v
 			}
-			for outcome, price := range v.Asks {
-				md.Asks[outcome] = price
+			snapLastBids := make(map[string]float64)
+			for k, v := range m.tui.lastBids {
+				snapLastBids[k] = v
 			}
-			for outcome, price := range v.RealBids {
-				md.RealBids[outcome] = price
+			snapLastAsks := make(map[string]float64)
+			for k, v := range m.tui.lastAsks {
+				snapLastAsks[k] = v
 			}
-			for outcome, price := range v.RealAsks {
-				md.RealAsks[outcome] = price
+			snapRealBids := make(map[string]float64)
+			for k, v := range m.tui.realBids {
+				snapRealBids[k] = v
 			}
-			snapMarkets[k] = md
+			snapRealAsks := make(map[string]float64)
+			for k, v := range m.tui.realAsks {
+				snapRealAsks[k] = v
+			}
+
+			snapPendingOrders := make(map[string][]PendingOrder)
+			for k, v := range m.tui.pendingOrders {
+				snapPendingOrders[k] = append([]PendingOrder(nil), v...)
+			}
+
+			snapOrderBookDepth := make(map[string]map[string][]MarketLevel)
+			for mk, mv := range m.tui.orderBookDepth {
+				inner := make(map[string][]MarketLevel)
+				for ok, ov := range mv {
+					inner[ok] = append([]MarketLevel(nil), ov...)
+				}
+				snapOrderBookDepth[mk] = inner
+			}
+
+			m.snap.version = m.tui.snapshotVersion
+			m.snap.markets = snapMarkets
+			m.snap.marketSlug = m.tui.marketSlug
+			m.snap.outcomes = append([]string(nil), m.tui.outcomes...)
+			m.snap.endTime = m.tui.endTime
+			m.snap.lastPrices = snapLastPrices
+			m.snap.lastBids = snapLastBids
+			m.snap.lastAsks = snapLastAsks
+			m.snap.realBids = snapRealBids
+			m.snap.realAsks = snapRealAsks
+			m.snap.pendingOrders = snapPendingOrders
+			m.snap.orderBookDepth = snapOrderBookDepth
+			m.snap.eventLog = append([]string(nil), m.tui.eventLog...)
+			m.snap.orderHistory = append([]OrderHistoryEntry(nil), m.tui.orderHistory...)
 		}
 
-		snapLastPrices := make(map[string]float64)
-		for k, v := range m.tui.lastPrices {
-			snapLastPrices[k] = v
-		}
-		snapLastBids := make(map[string]float64)
-		for k, v := range m.tui.lastBids {
-			snapLastBids[k] = v
-		}
-		snapLastAsks := make(map[string]float64)
-		for k, v := range m.tui.lastAsks {
-			snapLastAsks[k] = v
-		}
-		snapRealBids := make(map[string]float64)
-		for k, v := range m.tui.realBids {
-			snapRealBids[k] = v
-		}
-		snapRealAsks := make(map[string]float64)
-		for k, v := range m.tui.realAsks {
-			snapRealAsks[k] = v
-		}
-
-		snapPendingOrders := make(map[string][]PendingOrder)
-		for k, v := range m.tui.pendingOrders {
-			snapPendingOrders[k] = append([]PendingOrder(nil), v...)
-		}
-
-		snapOrderBookDepth := make(map[string]map[string][]MarketLevel)
-		for mk, mv := range m.tui.orderBookDepth {
-			inner := make(map[string][]MarketLevel)
-			for ok, ov := range mv {
-				inner[ok] = append([]MarketLevel(nil), ov...)
-			}
-			snapOrderBookDepth[mk] = inner
-		}
-
-		m.snap = tuiSnapshot{
-			markets:         snapMarkets,
-			marketSlug:      m.tui.marketSlug,
-			outcomes:        append([]string(nil), m.tui.outcomes...),
-			endTime:         m.tui.endTime,
-			lastPrices:      snapLastPrices,
-			lastBids:        snapLastBids,
-			lastAsks:        snapLastAsks,
-			realBids:        snapRealBids,
-			realAsks:        snapRealAsks,
-			pendingOrders:   snapPendingOrders,
-			orderBookDepth:  snapOrderBookDepth,
-			eventLog:        append([]string(nil), m.tui.eventLog...),
-			orderHistory:    append([]OrderHistoryEntry(nil), m.tui.orderHistory...),
-			isKilled:        m.tui.isKilled,
-			killReason:      m.tui.killReason,
-			tradeFactor:     m.tui.tradeFactor,
-			maxTradeSize:    m.tui.settings.MaxTradeSize,
-			startTime:       m.tui.startTime,
-			width:           m.tui.width,
-			height:          m.tui.height,
-			mode:            m.tui.mode,
-			restLatency:     m.tui.restLatency,
-			restLatencyAvg:  m.tui.restLatencyAvg,
-			wsLatency:       m.tui.wsLatency,
-			wsPingLatency:   m.tui.wsPingLatency,
-			latencySource:   m.tui.latencySource,
-			splitPositions:  splitPositions,
-			walletTruth:     walletTruth,
-			stats:           stats,
-			exposure:        exposure,
-			equity:          equity,
-			positions:       positions,
-			orders:          orders,
-			multiplier:      multiplier,
-			rounds:          rounds,
-			profitable:      profitable,
-			enginePositions: enginePositions,
-		}
+		m.snap.isKilled = m.tui.isKilled
+		m.snap.killReason = m.tui.killReason
+		m.snap.tradeFactor = m.tui.tradeFactor
+		m.snap.maxTradeSize = m.tui.settings.MaxTradeSize
+		m.snap.startTime = m.tui.startTime
+		m.snap.width = m.tui.width
+		m.snap.height = m.tui.height
+		m.snap.mode = m.tui.mode
+		m.snap.restLatency = m.tui.restLatency
+		m.snap.restLatencyAvg = m.tui.restLatencyAvg
+		m.snap.wsLatency = m.tui.wsLatency
+		m.snap.wsPingLatency = m.tui.wsPingLatency
+		m.snap.latencySource = m.tui.latencySource
+		m.snap.splitPositions = splitPositions
+		m.snap.walletTruth = walletTruth
+		m.snap.stats = stats
+		m.snap.exposure = exposure
+		m.snap.equity = equity
+		m.snap.positions = positions
+		m.snap.orders = orders
+		m.snap.multiplier = multiplier
+		m.snap.rounds = rounds
+		m.snap.profitable = profitable
+		m.snap.enginePositions = enginePositions
 		m.tui.mu.Unlock()
 		m.refreshScrollMetrics()
 
@@ -1085,8 +1123,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case 6:
 					m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
-					if m.tui.settings.BuyExecutionMarginFloorPercent > 0.10 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = 0.10
+					if m.tui.settings.BuyExecutionMarginFloorPercent > 0.0 {
+						m.tui.settings.BuyExecutionMarginFloorPercent = 0.0
 					}
 					changed = true
 				case 7:
@@ -1379,12 +1417,14 @@ func (t *TUI) SetTradeFactor(factor float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tradeFactor = factor
+	t.markDirtyLocked()
 }
 
 func (t *TUI) SetMode(mode string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.mode = mode
+	t.markDirtyLocked()
 }
 
 func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.Time) {
@@ -1399,6 +1439,7 @@ func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.
 		RealBids: make(map[string]float64),
 		RealAsks: make(map[string]float64),
 	}
+	t.markDirtyLocked()
 }
 
 func (t *TUI) ClearMarkets() {
@@ -1412,6 +1453,7 @@ func (t *TUI) ClearMarkets() {
 	t.pendingOrders = make(map[string][]PendingOrder)
 	t.orderBooks = make(map[string]*OrderBook)
 	t.splitInventories = nil
+	t.markDirtyLocked()
 }
 
 func (t *TUI) RegisterOrderBook(marketID string, orderBook *OrderBook) {
@@ -1528,6 +1570,7 @@ func (t *TUI) UpdateMarketPricesWithSourceAt(marketID string, bids, asks map[str
 		}
 		m.LastUpdate = updatedAt
 		m.DataSource = source
+		t.markDirtyLocked()
 	}
 }
 
@@ -1536,6 +1579,7 @@ func (t *TUI) TouchMarket(marketID string) {
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
 		m.LastUpdate = time.Now()
+		t.markDirtyLocked()
 	}
 }
 
@@ -1567,6 +1611,7 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 			delete(t.orderBookDepth[marketID], outcome+"_asks")
 		}
 	}
+	t.markDirtyLocked()
 }
 
 func (t *TUI) SetMarket(slug string, outcomes []string, endTime time.Time) {
@@ -1575,6 +1620,7 @@ func (t *TUI) SetMarket(slug string, outcomes []string, endTime time.Time) {
 	t.marketSlug = slug
 	t.outcomes = outcomes
 	t.endTime = endTime
+	t.markDirtyLocked()
 }
 
 func (t *TUI) UpdatePrices(prices map[string]float64, bids, asks map[string]float64) {
@@ -1589,6 +1635,7 @@ func (t *TUI) UpdatePrices(prices map[string]float64, bids, asks map[string]floa
 	for k, v := range asks {
 		t.lastAsks[k] = v
 	}
+	t.markDirtyLocked()
 }
 
 func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
@@ -1600,6 +1647,7 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	for k, v := range asks {
 		t.realAsks[k] = v
 	}
+	t.markDirtyLocked()
 }
 
 func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {
@@ -1620,9 +1668,11 @@ func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder
 	}
 	if len(flattened) == 0 {
 		delete(t.pendingOrders, marketID)
+		t.markDirtyLocked()
 		return
 	}
 	t.pendingOrders[marketID] = flattened
+	t.markDirtyLocked()
 }
 
 func (t *TUI) LogEvent(format string, args ...interface{}) {
@@ -1638,6 +1688,7 @@ func (t *TUI) LogEvent(format string, args ...interface{}) {
 	if len(t.eventLog) > t.maxEvents {
 		t.eventLog = t.eventLog[1:]
 	}
+	t.markDirtyLocked()
 	if shouldPersistIssueEvent(msg) {
 		issueLogger = t.issueLogger
 		if t.engine != nil {
@@ -1706,6 +1757,7 @@ func (t *TUI) SetKillSwitch(reason string) {
 	defer t.mu.Unlock()
 	t.isKilled = true
 	t.killReason = reason
+	t.markDirtyLocked()
 }
 
 func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, margin, profit float64, status string) {
@@ -1732,6 +1784,7 @@ func (t *TUI) RecordOrderWithMode(marketID, outcome, side string, shares, price,
 	if len(t.orderHistory) > t.maxOrderHistory {
 		t.orderHistory = t.orderHistory[len(t.orderHistory)-t.maxOrderHistory:]
 	}
+	t.markDirtyLocked()
 }
 
 func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
@@ -1745,6 +1798,11 @@ func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
 func (t *TUI) RegisterSplitInventory(inv *SplitInventory) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	for _, existing := range t.splitInventories {
+		if existing == inv {
+			return
+		}
+	}
 	t.splitInventories = append(t.splitInventories, inv)
 }
 
@@ -2029,6 +2087,22 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		ask1 = recentDisplayQuote(ask1, mkt.RealAsks[mkt.Outcomes[0]], age)
 		bid2 = recentDisplayQuote(bid2, mkt.RealBids[mkt.Outcomes[1]], age)
 		ask2 = recentDisplayQuote(ask2, mkt.RealAsks[mkt.Outcomes[1]], age)
+		if looksTerminalBook(mkt.Outcomes, mkt.RealBids, mkt.RealAsks) {
+			// Preserve the last terminal-looking quotes even when the live WS feed
+			// goes sparse near expiry, so the panel does not regress to "--.-".
+			if bid1 == 0 {
+				bid1 = mkt.RealBids[mkt.Outcomes[0]]
+			}
+			if ask1 == 0 {
+				ask1 = mkt.RealAsks[mkt.Outcomes[0]]
+			}
+			if bid2 == 0 {
+				bid2 = mkt.RealBids[mkt.Outcomes[1]]
+			}
+			if ask2 == 0 {
+				ask2 = mkt.RealAsks[mkt.Outcomes[1]]
+			}
+		}
 
 		// Supplement from order-book depth logic removed to prevent UI from pulling ghost prices from stale depth maps
 		/*
@@ -2722,6 +2796,8 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					redeemTag = styleGreen.Render(" [WINNER ✓]")
 				} else if wt.ResolutionStatus == "resolved" && !wt.IsWinner {
 					redeemTag = styleRed.Render(" [LOSER ✗]")
+				} else if wt.ResolutionStatus == "unresolved" && (wt.LocalShares > 0 || wt.OnChainShares > 0) {
+					redeemTag = styleYellow.Render(" [RESOLVING ⏳]")
 				}
 
 				parts = append(parts, fmt.Sprintf("%s %s L:%.4f C:%.4f Δ:%s%s",
@@ -3049,8 +3125,8 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, 6),
-			value: fmt.Sprintf(" %5.2f ", cfg.BuyExecutionMarginFloorPercent),
-			bar:   renderBar((cfg.BuyExecutionMarginFloorPercent+0.10)/0.20, 20),
+			value: fmt.Sprintf(" %5.1f%% ", executionFloorDisplayPercent(cfg.BuyExecutionMarginFloorPercent)),
+			bar:   renderBar(math.Abs(normalizeExecutionFloorSetting(cfg.BuyExecutionMarginFloorPercent))/0.10, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, 7),

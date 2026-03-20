@@ -2,6 +2,7 @@ package paper
 
 import (
 	"encoding/csv"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,77 @@ func TestRenderMarketPanelHidesGapWhenCurrentPairQuotesAreStale(t *testing.T) {
 	}
 }
 
+func TestRenderMarketPanelKeepsTerminalLastGoodQuotesVisible(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "btc-market",
+		Outcomes:   []string{"Down", "Up"},
+		EndTime:    time.Now().Add(10 * time.Second),
+		LastUpdate: time.Now().Add(-18 * time.Second),
+		Bids:       map[string]float64{"Down": 0, "Up": 0},
+		Asks:       map[string]float64{"Down": 0, "Up": 0},
+		RealBids:   map[string]float64{"Down": 0.99, "Up": 0},
+		RealAsks:   map[string]float64{"Down": 0, "Up": 0.01},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "awaiting price data") {
+		t.Fatalf("expected terminal last-good quotes to remain visible, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "$0.99") || !strings.Contains(rendered, "$0.01") {
+		t.Fatalf("expected terminal quotes to be rendered, got %q", rendered)
+	}
+}
+
+func TestRenderPositionsShowsWalletTruthResolutionTags(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+	tui.SetWalletTruthPositions("BTC", []WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 10, OnChainShares: 10, Drift: 0, ResolutionStatus: "unresolved"},
+		{MarketID: "BTC", Outcome: "Down", LocalShares: 0, OnChainShares: 10, Drift: 10, ResolutionStatus: "redeemable", Redeemable: true, IsWinner: true},
+	})
+
+	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
+	rendered := model.renderPositions(120, nil)
+	if !strings.Contains(rendered, "RESOLVING") {
+		t.Fatalf("expected unresolved wallet-truth positions to show resolving status, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "REDEEMABLE") {
+		t.Fatalf("expected redeemable wallet-truth positions to show redeemable status, got %q", rendered)
+	}
+}
+
+func TestNormalizeTUISettingsNormalizesExecutionFloorToNonPositiveDecimal(t *testing.T) {
+	cfg := normalizeTUISettings(TUISettings{BuyExecutionMarginFloorPercent: -1.0})
+	if math.Abs(cfg.BuyExecutionMarginFloorPercent-(-0.01)) > 0.000001 {
+		t.Fatalf("expected legacy -1.0 input to normalize to -0.01, got %.6f", cfg.BuyExecutionMarginFloorPercent)
+	}
+
+	cfg = normalizeTUISettings(TUISettings{BuyExecutionMarginFloorPercent: 0.03})
+	if cfg.BuyExecutionMarginFloorPercent != 0 {
+		t.Fatalf("expected positive execution floor to clamp to 0, got %.6f", cfg.BuyExecutionMarginFloorPercent)
+	}
+}
+
+func TestRenderSettingsShowsExecutionFloorAsPercent(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:                   "taker",
+		BuyExecutionMarginFloorPercent: -0.01,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	if !strings.Contains(view, "Max Exec Slip %") {
+		t.Fatalf("expected updated execution floor label, got %q", view)
+	}
+	if !strings.Contains(view, "-1.0%") {
+		t.Fatalf("expected execution floor to render as percent, got %q", view)
+	}
+}
+
 func TestTUI_getSplitPositions(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -396,9 +468,18 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
-	for _, idx := range []int{0, 1, 3, 4, 5, 6, 11, 12, 13, 19, 20, 22, 23, 24} {
+	for _, idx := range []int{0, 1, 2, 3, 5, 6, 11, 19, 20, 21, 22, 23, 24} {
 		if !isRowVisible(cfg, idx) {
 			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
+		}
+	}
+}
+
+func TestIsRowVisibleHidesUnrelatedRowsWhenTakerCloseEnabled(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
+	for _, idx := range []int{4, 7, 8, 9, 10, 12, 13} {
+		if isRowVisible(cfg, idx) {
+			t.Fatalf("expected row %d to be hidden with taker close enabled", idx)
 		}
 	}
 }
@@ -427,6 +508,36 @@ func TestRenderSettingsShowsMakerSpecificLabels(t *testing.T) {
 	for _, want := range []string{"Maker Min Sell Edge %", "Maker Merge Buffer", "Maker Max Buy Price", "Maker Quote Gap", "ignored live"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("renderSettings() missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestRenderSettingsHidesUnrelatedLabelsInTakerCloseMode(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:             "taker",
+		TakerCloseMarket:         true,
+		MinMarginPercent:         2.0,
+		SplitMinMarginSell:       3.0,
+		SplitStrategyEnabled:     true,
+		MinAskPrice:              0.10,
+		MaxAskPrice:              0.90,
+		TakerCloseMarketTime:     10,
+		TakerCloseMarketSlippage: 0.99,
+		TakerCloseMarketMinPrice: 0.60,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	for _, hidden := range []string{"Buy Min Margin %", "Split Min Margin", "Split Strategy", "Min Ask Price", "Max Ask Price"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("renderSettings() unexpectedly showed %q\n%s", hidden, view)
+		}
+	}
+	for _, visible := range []string{"Taker Close Market", "Taker Close Time", "Taker Close Slippage", "Taker Close Min Price"} {
+		if !strings.Contains(view, visible) {
+			t.Fatalf("renderSettings() missing %q\n%s", visible, view)
 		}
 	}
 }
