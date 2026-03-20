@@ -18,6 +18,8 @@ const (
 	// Heartbeat interval - ping every 10 seconds for aggressive keepalive
 	// Prevents connection from going stale on mobile/constrained environments
 	heartbeatInterval = 10 * time.Second
+	// Allow a small grace period for the PONG to arrive before counting a miss.
+	heartbeatGracePeriod = 5 * time.Second
 	// Max reconnection attempts before giving up (effectively infinite)
 	maxReconnectAttempts = 1000000
 	// Delay between reconnection attempts (starts at 1s, doubles each attempt)
@@ -66,7 +68,7 @@ func NewWSManager(exchange, kalshiKey, kalshiPK, customURL string) *WSManager {
 			kalshiSigner, _ = NewKalshiSigner(kalshiKey, kalshiPK)
 		}
 	}
-	
+
 	if customURL != "" {
 		url = customURL
 	}
@@ -161,7 +163,7 @@ func (m *WSManager) heartbeatLoop() {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
-	consecutivePingFailures := 0
+	consecutiveHeartbeatMisses := 0
 
 	for {
 		ctx := m.getContext()
@@ -174,7 +176,7 @@ func (m *WSManager) heartbeatLoop() {
 			return
 		case <-ticker.C:
 			if !m.connected.Load() {
-				consecutivePingFailures = 0
+				consecutiveHeartbeatMisses = 0
 				continue
 			}
 
@@ -183,44 +185,57 @@ func (m *WSManager) heartbeatLoop() {
 			conn := m.conn
 			m.mu.Unlock()
 
-			if conn != nil {
-				// Check for stale connection BEFORE sending the next ping
-				// 3 * heartbeatInterval gives it ~30 seconds to receive any data or a PONG
-				lastMsg := time.Unix(m.lastMessage.Load(), 0)
-				if time.Since(lastMsg) > 3*heartbeatInterval {
-					m.handleConnectionFailure(conn, websocket.StatusGoingAway, "stale connection (no messages or PONG)")
+			if conn == nil {
+				consecutiveHeartbeatMisses = 0
+				if !m.reconnecting.Load() {
 					go m.tryReconnect()
-					continue
 				}
+				continue
+			}
 
-				// Send ping outside of lock to prevent blocking
-				// 5s timeout balances Android throttle concerns vs stale-data detection speed
-				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
-				pingStart := time.Now()
-
-				// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame)
-				err := conn.Write(pingCtx, websocket.MessageText, []byte("PING"))
-				pingCancel()
-				if err != nil {
-					consecutivePingFailures++
+			now := time.Now()
+			if pingSentNs := m.lastPingSentNs.Load(); pingSentNs > 0 {
+				sincePing := now.Sub(time.Unix(0, pingSentNs))
+				sinceInbound := now.Sub(time.Unix(m.lastMessage.Load(), 0))
+				if sincePing > heartbeatInterval+heartbeatGracePeriod && sinceInbound > heartbeatInterval {
+					consecutiveHeartbeatMisses++
 					m.pingLatencyNs.Store(0)
 					m.lastPingSentNs.Store(0)
 
-					// Only reconnect after multiple failures (handles temporary throttling)
-					if consecutivePingFailures >= maxPingFailures {
-						consecutivePingFailures = 0
+					if consecutiveHeartbeatMisses >= maxPingFailures {
+						consecutiveHeartbeatMisses = 0
+						m.handleConnectionFailure(conn, websocket.StatusGoingAway, "missed websocket heartbeat")
 						go m.tryReconnect()
+						continue
 					}
-					continue
+				} else if sinceInbound <= heartbeatInterval {
+					consecutiveHeartbeatMisses = 0
 				}
-				// Ping succeeded - connection is alive, record latency
-				consecutivePingFailures = 0
-				m.lastPingSentNs.Store(pingStart.UnixNano())
-				// NOTE: Do NOT update lastMessage here - only actual data messages
-				// or PONG heartbeats should update lastMessage. This allows the bot to detect when
-				// the connection is alive but no market data is flowing, triggering
-				// the REST fallback for fresh prices.
 			}
+
+			// Send ping outside of lock to prevent blocking.
+			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+			pingStart := now
+
+			// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame)
+			err := conn.Write(pingCtx, websocket.MessageText, []byte("PING"))
+			pingCancel()
+			if err != nil {
+				consecutiveHeartbeatMisses++
+				m.pingLatencyNs.Store(0)
+				m.lastPingSentNs.Store(0)
+
+				if consecutiveHeartbeatMisses >= maxPingFailures {
+					consecutiveHeartbeatMisses = 0
+					m.handleConnectionFailure(conn, websocket.StatusGoingAway, "heartbeat ping failed")
+					go m.tryReconnect()
+				}
+				continue
+			}
+
+			m.lastPingSentNs.Store(pingStart.UnixNano())
+			// NOTE: Do NOT update lastMessage here - only actual inbound traffic
+			// should count as feed/connection freshness.
 		}
 	}
 }
@@ -555,8 +570,8 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				continue
 			}
 
-			// Read with shorter timeout for faster stale detection
-			// 10 seconds is enough - if no data in 10s, we should check REST
+			// Read with a bounded timeout so the loop can notice disconnects quickly
+			// without treating quiet markets as a hard failure.
 			readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			_, p, err := conn.Read(readCtx)
 			cancel()

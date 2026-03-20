@@ -150,15 +150,22 @@ func TestComputePaperMakerSkewedQuoteChangesAggressiveness(t *testing.T) {
 	}
 }
 
-func TestShouldPaperRestFallback(t *testing.T) {
-	if shouldPaperRestFallback(2*time.Second, 2*time.Second, 3*time.Second, time.Second) {
-		t.Fatal("expected no fallback before quote age crosses 3s")
+func TestShouldPaperReconnectWSOnlyForInvalidStaleBooks(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	validBids := map[string]float64{"Down": 0.48, "Up": 0.49}
+	validAsks := map[string]float64{"Down": 0.50, "Up": 0.51}
+
+	if shouldPaperReconnectWS(outcomes, validBids, validAsks, 30*time.Second, false) {
+		t.Fatal("expected quiet but valid WS book to stay connected")
 	}
-	if shouldPaperRestFallback(4*time.Second, 500*time.Millisecond, 3*time.Second, time.Second) {
-		t.Fatal("expected cooldown to block rapid repeated REST fallback")
+
+	invalidAsks := map[string]float64{"Down": 0.50, "Up": 0}
+	if !shouldPaperReconnectWS(outcomes, validBids, invalidAsks, 30*time.Second, false) {
+		t.Fatal("expected missing side on a stale local book to trigger reconnect")
 	}
-	if !shouldPaperRestFallback(4*time.Second, 2*time.Second, 3*time.Second, time.Second) {
-		t.Fatal("expected stale quote age to trigger REST fallback")
+
+	if shouldPaperReconnectWS(outcomes, validBids, invalidAsks, 30*time.Second, true) {
+		t.Fatal("expected terminal-looking book to suppress reconnects")
 	}
 }
 

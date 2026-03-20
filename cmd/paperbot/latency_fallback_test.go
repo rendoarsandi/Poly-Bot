@@ -5,11 +5,17 @@ import (
 	"time"
 )
 
-func TestShouldPaperRestFallbackRespectsPollInterval(t *testing.T) {
-	if shouldPaperRestFallback(3500*time.Millisecond, 900*time.Millisecond, 3*time.Second, time.Second) {
-		t.Fatal("expected REST fallback to stay blocked until poll interval elapses")
+func TestShouldPaperReconnectWSIgnoresQuietValidPair(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	bids := map[string]float64{"Down": 0.44, "Up": 0.53}
+	asks := map[string]float64{"Down": 0.46, "Up": 0.55}
+
+	if shouldPaperReconnectWS(outcomes, bids, asks, 20*time.Second, false) {
+		t.Fatal("expected a valid quiet pair to remain WS-only without reconnect churn")
 	}
-	if !shouldPaperRestFallback(3500*time.Millisecond, 1100*time.Millisecond, 3*time.Second, time.Second) {
-		t.Fatal("expected REST fallback once stale age and poll interval are both exceeded")
+
+	asks["Up"] = 0
+	if !shouldPaperReconnectWS(outcomes, bids, asks, 20*time.Second, false) {
+		t.Fatal("expected reconnect when a stale WS book loses one side")
 	}
 }

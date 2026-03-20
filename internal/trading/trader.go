@@ -1259,8 +1259,6 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 	deadline := time.Now().Add(timeout)
 	wsTicker := time.NewTicker(25 * time.Millisecond)
 	defer wsTicker.Stop()
-	fallbackTicker := time.NewTicker(200 * time.Millisecond)
-	defer fallbackTicker.Stop()
 
 	for {
 		if time.Now().After(deadline) {
@@ -1273,22 +1271,6 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 		case <-wsTicker.C:
 			if t.GetConfirmedFillSize(orderID) > 0 {
 				return true, nil
-			}
-		case <-fallbackTicker.C:
-			order, err := t.client.GetOrder(ctx, orderID)
-			if err != nil {
-				continue
-			}
-
-			switch strings.ToUpper(strings.TrimSpace(order.Status)) {
-			case "FILLED", "CONFIRMED":
-				return true, nil
-			case "NOT_FOUND", "FAILED", "CANCELLED", "EXPIRED", "REJECTED":
-				return false, nil
-			case "OPEN", "LIVE":
-				if order.RemainingSize == 0 && order.OriginalSize > 0 {
-					return true, nil
-				}
 			}
 		}
 	}

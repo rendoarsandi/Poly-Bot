@@ -464,22 +464,22 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 	}
 }
 
-func TestRealbotNextRestFallbackStateKeepsRecoveryLogLatchedWhileFallbackRemainsNeeded(t *testing.T) {
-	active, logged := realbotNextRestFallbackState(false, false, true, true, true, 20*time.Second)
-	if !active || !logged {
-		t.Fatalf("expected initial stale recovery to activate fallback and latch log, got active=%v logged=%v", active, logged)
+func TestRealbotShouldReconnectWSOnlyForInvalidStaleBook(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	validBids := map[string]float64{"Down": 0.46, "Up": 0.51}
+	validAsks := map[string]float64{"Down": 0.48, "Up": 0.53}
+
+	if realbotShouldReconnectWS(outcomes, validBids, validAsks, 25*time.Second, false) {
+		t.Fatal("expected quiet but valid local quotes to remain on WS")
 	}
 
-	active, logged = realbotNextRestFallbackState(active, logged, true, false, false, 200*time.Millisecond)
-	if !active || !logged {
-		t.Fatalf("expected non-poll loop to preserve fallback state, got active=%v logged=%v", active, logged)
+	invalidAsks := map[string]float64{"Down": 0.48, "Up": 0}
+	if !realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, false) {
+		t.Fatal("expected reconnect when the stale local book loses one side")
 	}
-}
 
-func TestRealbotNextRestFallbackStateResetsWhenFallbackNoLongerNeeded(t *testing.T) {
-	active, logged := realbotNextRestFallbackState(true, true, false, false, false, 200*time.Millisecond)
-	if active || logged {
-		t.Fatalf("expected fallback state reset when recovery is complete, got active=%v logged=%v", active, logged)
+	if realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, true) {
+		t.Fatal("expected terminal-looking book to suppress reconnects")
 	}
 }
 
@@ -508,6 +508,69 @@ func TestComputeRealbotMakerSkewedQuoteRespectsConfiguredGap(t *testing.T) {
 	}
 	if tight <= wide {
 		t.Fatalf("expected tighter gap to quote closer to ask: tight=%.3f wide=%.3f", tight, wide)
+	}
+}
+
+func TestRealbotRestoreExternalCarryPositionsRestoresMissingCarry(t *testing.T) {
+	engine := paper.NewEngine(55.14)
+	restored := realbotRestoreExternalCarryPositions([]trading.PositionInfo{
+		{
+			Outcome:     "Down",
+			Size:        3.3738,
+			AvgPrice:    0.99,
+			ConditionID: "0xa71c1a04feedbeef",
+			Slug:        "eth-updown-15m-123456",
+		},
+	}, engine)
+
+	if restored != 1 {
+		t.Fatalf("expected one restored carry position, got %d", restored)
+	}
+
+	positions := engine.GetPositions()
+	pos, ok := positions["ETH#a71c1a04:Down"]
+	if !ok {
+		t.Fatalf("expected restored carry key ETH#a71c1a04:Down, got %+v", positions)
+	}
+	if math.Abs(pos.Quantity-3.3738) > 0.000001 {
+		t.Fatalf("expected restored quantity 3.3738, got %.4f", pos.Quantity)
+	}
+	expectedBookEquity := 55.14 + (3.3738 * 0.99)
+	if math.Abs(engine.GetBookEquity()-expectedBookEquity) > 0.000001 {
+		t.Fatalf("expected restored book equity %.6f, got %.6f", expectedBookEquity, engine.GetBookEquity())
+	}
+}
+
+func TestRealbotRestoreExternalCarryPositionsReusesExistingFingerprintBucket(t *testing.T) {
+	engine := paper.NewEngine(40.0)
+	if !engine.SyncExternalPosition("ETH#a71c1a04", "Down", 1.0, 0.50) {
+		t.Fatal("expected seed carry sync")
+	}
+
+	restored := realbotRestoreExternalCarryPositions([]trading.PositionInfo{
+		{
+			Outcome:     "Down",
+			Size:        2.0,
+			AvgPrice:    0.60,
+			ConditionID: "0xa71c1a04feedbeef",
+			Slug:        "ethereum-updown-15m-123456",
+		},
+	}, engine)
+
+	if restored != 1 {
+		t.Fatalf("expected existing fingerprint bucket to be updated, got %d restores", restored)
+	}
+
+	positions := engine.GetPositions()
+	if _, ok := positions["ETHEREUM#a71c1a04:Down"]; ok {
+		t.Fatalf("expected carry restore to reuse existing ETH bucket, got %+v", positions)
+	}
+	pos, ok := positions["ETH#a71c1a04:Down"]
+	if !ok {
+		t.Fatalf("expected reused ETH#a71c1a04 bucket, got %+v", positions)
+	}
+	if math.Abs(pos.Quantity-2.0) > 0.000001 {
+		t.Fatalf("expected updated quantity 2.0, got %.4f", pos.Quantity)
 	}
 }
 

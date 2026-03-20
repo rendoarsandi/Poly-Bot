@@ -229,8 +229,18 @@ func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) floa
 	return paperMakerBaseOffset
 }
 
-func shouldPaperRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
-	return quoteAge > staleAfter && sinceLastRest > pollInterval
+func shouldPaperReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge time.Duration, terminalBookState bool) bool {
+	if terminalBookState || pairQuoteAge <= 15*time.Second {
+		return false
+	}
+	for _, outcome := range outcomes {
+		bid := bids[outcome]
+		ask := asks[outcome]
+		if bid == 0 || ask == 0 || bid >= ask {
+			return true
+		}
+	}
+	return false
 }
 
 func paperLooksLikeTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
@@ -1953,7 +1963,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					t.TokenAsks[outcome] = 0
 					t.TokenFullBids[outcome] = nil
 					t.TokenFullAsks[outcome] = nil
-					t.LastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
+					t.LastUpdate = time.Now().Add(-20 * time.Second) // Mark stale until WS repairs the local book
 				}
 			}
 			t.mu.Unlock()
@@ -1967,8 +1977,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// update LastUpdate when we actually receive new price/liquidity data.
 			// This ensures the UI accurately shows data staleness.
 
-			// Check WebSocket health and prefer reconnecting the WS stream over
-			// injecting REST quotes when prices go stale.
+			// Track feed age in the UI, but do not treat quiet prices as a broken socket.
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastDataMessage()
 
@@ -1978,42 +1987,20 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 			now := time.Now()
 			pairQuoteAge := paperPairQuoteAge(t.LastPairUpdate, now)
-
-			// Update WS staleness and ping latency in TUI
-			t.TUI.UpdateWSLatency(wsLastMsg)
-			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 			localQuoteMaxAge := core.ResolveExecutionLocalQuoteMaxAge(t.Config)
 			localPairFresh := shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
-			restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
 
 			terminalBookState := paperLooksLikeTerminalBook(t.Outcomes, t.TokenBids, t.TokenAsks)
-			needsWSReconnect := false
-			if !terminalBookState {
-				needsWSReconnect = !localPairFresh && pairQuoteAge > restFallbackQuoteAge
-				if !needsWSReconnect {
-					for _, outcome := range t.Outcomes {
-						bid := t.TokenBids[outcome]
-						ask := t.TokenAsks[outcome]
-						if bid == 0 || ask == 0 || bid >= ask {
-							if pairQuoteAge > 15*time.Second {
-								needsWSReconnect = true
-								break
-							}
-						}
-					}
-				}
-			}
+			needsWSReconnect := shouldPaperReconnectWS(t.Outcomes, t.TokenBids, t.TokenAsks, pairQuoteAge, terminalBookState)
 			t.RestFallbackActive = false
 			t.RestRecoveryLogged = false
 
-			// If the WS is connected but quotes are stale or frozen, force a clean
-			// reconnect instead of falling back to REST snapshots.
-			if wsConnected && !wsChannelClosed && (needsWSReconnect || (!terminalBookState && wsLastMsg > 10*time.Second)) {
+			if wsConnected && !wsChannelClosed && needsWSReconnect {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
 					lastForceReconnect = time.Now()
 					wsMgr.ForceReconnect()
 					if time.Since(lastWsWarnTime) > wsWarnInterval {
-						t.TUI.LogEvent("[%s] 🔄 WS stale/frozen - reconnecting...", t.ID)
+						t.TUI.LogEvent("[%s] 🔄 WS local book invalid - reconnecting...", t.ID)
 						lastWsWarnTime = time.Now()
 					}
 				}

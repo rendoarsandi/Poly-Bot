@@ -85,25 +85,18 @@ func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWar
 	}()
 }
 
-func shouldRealbotRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval time.Duration) bool {
-	return quoteAge > staleAfter && sinceLastRest > pollInterval
-}
-
-func realbotNextRestFallbackState(active, recoveryLogged, fallbackNeeded, polled, recovered bool, staleTime time.Duration) (bool, bool) {
-	if polled {
-		if !active {
-			active = true
-			recoveryLogged = false
-		}
-		if recovered && staleTime >= 10*time.Second {
-			recoveryLogged = true
-		}
-		return active, recoveryLogged
+func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge time.Duration, terminalBookState bool) bool {
+	if terminalBookState || pairQuoteAge <= 15*time.Second {
+		return false
 	}
-	if !fallbackNeeded {
-		return false, false
+	for _, outcome := range outcomes {
+		bid := bids[outcome]
+		ask := asks[outcome]
+		if bid == 0 || ask == 0 || !realbotHasSaneTopOfBook(bid, ask) {
+			return true
+		}
 	}
-	return active, recoveryLogged
+	return false
 }
 
 func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
@@ -795,6 +788,125 @@ func startupPositionsSummary(positions []trading.PositionInfo) string {
 	return fmt.Sprintf("📊 Open positions: %d token(s), %.2f total shares", len(positions), totalShares)
 }
 
+func realbotConditionFingerprint(conditionID, slug string) string {
+	fingerprint := strings.TrimSpace(conditionID)
+	fingerprint = strings.TrimPrefix(strings.TrimPrefix(fingerprint, "0x"), "0X")
+	if fingerprint == "" {
+		fingerprint = strings.TrimSpace(slug)
+	}
+	if len(fingerprint) > 8 {
+		fingerprint = fingerprint[:8]
+	}
+	return strings.ToLower(fingerprint)
+}
+
+func realbotInferAssetIDFromSlug(slug string) string {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	switch {
+	case strings.HasPrefix(slug, "btc-") || strings.Contains(slug, "bitcoin"):
+		return "BTC"
+	case strings.HasPrefix(slug, "eth-") || strings.Contains(slug, "ethereum") || strings.Contains(slug, "ether-"):
+		return "ETH"
+	case strings.HasPrefix(slug, "sol-") || strings.Contains(slug, "solana"):
+		return "SOL"
+	case strings.HasPrefix(slug, "xrp-") || strings.Contains(slug, "ripple"):
+		return "XRP"
+	}
+
+	if head, _, ok := strings.Cut(slug, "-"); ok && head != "" {
+		return strings.ToUpper(head)
+	}
+	if slug == "" {
+		return "MARKET"
+	}
+	return strings.ToUpper(slug)
+}
+
+func realbotMarketIDForExternalPosition(existing map[string]paper.Position, pos trading.PositionInfo) string {
+	fingerprint := realbotConditionFingerprint(pos.ConditionID, pos.Slug)
+	if fingerprint != "" {
+		for _, existingPos := range existing {
+			marketID := strings.TrimSpace(existingPos.MarketID)
+			if marketID != "" && strings.HasSuffix(strings.ToLower(marketID), "#"+fingerprint) {
+				return marketID
+			}
+		}
+	}
+
+	return mkt.ScopedMarketID(realbotInferAssetIDFromSlug(pos.Slug), &api.Market{
+		ConditionID: pos.ConditionID,
+		Slug:        pos.Slug,
+	})
+}
+
+func realbotRestoreExternalCarryPositions(positions []trading.PositionInfo, engine *paper.Engine) int {
+	if engine == nil {
+		return 0
+	}
+
+	const eps = 1e-6
+	existing := engine.GetPositions()
+	restored := 0
+
+	for _, pos := range positions {
+		if pos.Size <= eps || strings.TrimSpace(pos.Outcome) == "" {
+			continue
+		}
+
+		marketID := realbotMarketIDForExternalPosition(existing, pos)
+		posKey := pos.Outcome
+		if marketID != "" {
+			posKey = marketID + ":" + pos.Outcome
+		}
+
+		if current, ok := existing[posKey]; ok && current.Quantity+eps >= pos.Size {
+			continue
+		}
+
+		markPrice := pos.AvgPrice
+		if markPrice <= 0 {
+			markPrice = 0.5
+		}
+		if engine.SyncExternalPosition(marketID, pos.Outcome, pos.Size, markPrice) {
+			restored++
+			existing = engine.GetPositions()
+		}
+	}
+
+	return restored
+}
+
+func realbotRefreshExternalCarry(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine) (int, error) {
+	if trader == nil || engine == nil {
+		return 0, nil
+	}
+	positions, err := trader.GetPositions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return realbotRestoreExternalCarryPositions(positions, engine), nil
+}
+
+func realbotPairQuoteAge(now time.Time, outcomes []string, quoteState map[string]realbotQuoteState) time.Duration {
+	maxAge := time.Duration(0)
+	sawMissing := false
+	for _, outcome := range outcomes {
+		updatedAt := quoteState[outcome].UpdatedAt
+		if updatedAt.IsZero() {
+			sawMissing = true
+			continue
+		}
+		age := now.Sub(updatedAt)
+		if age > maxAge {
+			maxAge = age
+		}
+	}
+	if sawMissing {
+		return 24 * time.Hour
+	}
+	return maxAge
+}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("Error: %v", err)
@@ -918,7 +1030,7 @@ func run() error {
 	// Start real-time User WebSocket for instant fill tracking
 	fmt.Println("🔌 Preparing User WebSocket for real-time fills...")
 	if err := realTrader.StartUserWS(ctx); err != nil {
-		fmt.Printf("⚠️  Failed to connect User WS (falling back to REST polling): %v\n", err)
+		fmt.Printf("⚠️  Failed to connect User WS (fill confirmation will wait on WS timeout only): %v\n", err)
 	} else {
 		fmt.Println("✅ User WebSocket ready")
 	}
@@ -1113,6 +1225,9 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
+	if restored := realbotRestoreExternalCarryPositions(positions, engine); restored > 0 {
+		fmt.Printf("🔄 Imported %d open position(s) into local carry accounting\n", restored)
+	}
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
 	} else {
@@ -1207,6 +1322,15 @@ func run() error {
 				engine.SetBalance(currentBalance)
 				engine.RecalculateDrawdown()
 			}
+		}
+		{
+			carryCtx, carryCancel := context.WithTimeout(ctx, 10*time.Second)
+			if restored, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
+				tui.LogEvent("⚠️ Could not refresh open carry positions: %v", carryErr)
+			} else if restored > 0 {
+				tui.LogEvent("🔄 Restored %d unresolved position(s) into local book equity", restored)
+			}
+			carryCancel()
 		}
 
 		// Track starting equity for this round's PnL calculation
@@ -1347,6 +1471,15 @@ func run() error {
 			}
 			endBalFn()
 		}
+		{
+			carryCtx, carryCancel := context.WithTimeout(ctx, 10*time.Second)
+			if restored, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
+				tui.LogEvent("⚠️ Could not refresh unresolved carry before round settlement: %v", carryErr)
+			} else if restored > 0 {
+				tui.LogEvent("🔄 Restored %d unresolved position(s) before round settlement", restored)
+			}
+			carryCancel()
+		}
 
 		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
 		// until it is actually sold, merged, or redeemed.
@@ -1462,7 +1595,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	publishedBids := make(map[string]float64)
 	publishedAsks := make(map[string]float64)
 	quoteState := make(map[string]realbotQuoteState)
-	lastUpdate := time.Now()
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -1472,8 +1604,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	makerQuotes := make(map[string]*realbotMakerQuote)
 	lastMakerSync := time.Time{}
 	mergeCoordinator := newRealbotMergeCoordinator()
-	restFallbackActive := false
-	restRecoveryLogged := false
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -1557,7 +1687,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 	}()
 
-	lastRestPoll := time.Now()
 	lastReconnectCount := int32(0)
 	lastWsWarnTime := time.Time{}
 	lastForceReconnect := time.Time{}
@@ -1754,7 +1883,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							engine.UpdateMarketData(id, outcome, mid, bid, ask)
 						}
 					}
-					lastUpdate = time.Now()
 				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 					// ── Price-change delta ─────────────────────────────────
 					foundForThisMarket := false
@@ -1834,7 +1962,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						for outcome := range touchedOutcomes {
 							quoteState[outcome] = realbotQuoteState{UpdatedAt: now, Source: "ws"}
 						}
-						lastUpdate = now
 					}
 				} else if bbo, err := api.ParseBestBidAsk(msg); err == nil && strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") && bbo.AssetID != "" {
 					outcome := tokenToOutcome[bbo.AssetID]
@@ -1860,7 +1987,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
 					}
 					quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws-bbo"}
-					lastUpdate = updatedAt
 				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 					// ── Book snapshot (single object) ──────────────────────
 					bid, ask := 0.0, 0.0
@@ -1887,7 +2013,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if realbotShouldSkipStaleQuoteUpdate(quoteState, outcome, updatedAt, tokenBids[outcome], tokenAsks[outcome]) {
 							continue
 						}
-						lastUpdate = updatedAt
 						// Guard: only persist valid (non-zero) prices.
 						if bid > 0 {
 							tokenBids[outcome] = bid
@@ -1943,65 +2068,26 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 		tui.UpdateOrderBookDepth(id, bidDepth, askDepth)
 
-		// ============ REST FALLBACK ============
-		// WS is primary for liquidity data via full depth updates and deltas.
-		// Only poll REST if WS is unhealthy or stale.
-		staleTime := time.Since(lastUpdate)
-
-		// Update WS staleness and ping latency in TUI
-		// Use data-message age, not heartbeat/PONG age, so the bot can tell the
-		// difference between an alive socket and an actually fresh market feed.
+		// Track feed age in the UI, but do not treat quiet books as a transport failure.
 		wsTimeSinceMsg := wsMgr.TimeSinceLastDataMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
-		sinceLastRest := time.Since(lastRestPoll)
-
-		// Force REST fallback if local quotes were cleared or fail sanity.
 		terminalBookState := realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks)
-		forceRestFallback := false
-		if !terminalBookState {
-			for _, outcome := range outcomes {
-				bid := tokenBids[outcome]
-				ask := tokenAsks[outcome]
-				// Force recovery only for clearly invalid local state, not for stable
-				// terminal-looking books like 0.99/0.01 near expiry.
-				if bid == 0 || ask == 0 || !realbotHasSaneTopOfBook(bid, ask) {
-					forceRestFallback = true
-					break
-				}
-			}
-			if !forceRestFallback && !realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
-				forceRestFallback = true
-			}
-		}
-		wsUnhealthy := !wsMgr.IsConnected() || (wsTimeSinceMsg > 10*time.Second && !terminalBookState)
-		pollInterval := core.ResolveRestFallbackPollInterval(cfg)
-
-		// For quiet markets, avoid spamming REST when the book is already pinned at
-		// a valid terminal-looking state and the socket is still connected.
-		isExtremelyStale := staleTime > 60*time.Second && !terminalBookState
-		fallbackNeeded := forceRestFallback || wsUnhealthy || isExtremelyStale
-		shouldPollREST := fallbackNeeded && sinceLastRest > pollInterval
-		if shouldPollREST {
-			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, true, false, staleTime)
-			lastRestPoll = time.Now()
-			// Note: REST fallback updated to also capture full depth
-			recovered := handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, !restRecoveryLogged)
-			if recovered {
-				lastUpdate = time.Now()
-			}
-			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, true, recovered, staleTime)
-		} else {
-			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, false, false, staleTime)
-		}
+		pairQuoteAge := realbotPairQuoteAge(time.Now(), outcomes, quoteState)
+		needsWSReconnect := realbotShouldReconnectWS(outcomes, tokenBids, tokenAsks, pairQuoteAge, terminalBookState)
 
 		if !realbotQuoteMapsEqual(outcomes, displayBids, displayAsks, publishedBids, publishedAsks) {
-			displaySource := "WS"
-			if shouldPollREST && fallbackNeeded {
-				displaySource = "REST"
-			}
-			tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, displaySource)
+			tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, "WS")
 			realbotStorePublishedQuotes(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+		}
+
+		if needsWSReconnect && wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
+			lastForceReconnect = time.Now()
+			wsMgr.ForceReconnect()
+			if time.Since(lastWsWarnTime) > realbotWSWarnInterval {
+				tui.LogEvent("[%s] 🔄 WS local book invalid - reconnecting...", id)
+				lastWsWarnTime = time.Now()
+			}
 		}
 
 		if !wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
@@ -2021,23 +2107,19 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		// --- TAKER CLOSE MARKET LOGIC ---
-		// React only after we have drained the current WS queue and run REST recovery,
-		// otherwise the decision can lag behind the quotes shown in the TUI.
+		// React only after we have drained the current WS queue so the decision
+		// follows the latest local WS book state.
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
 		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted && !time.Now().Before(nextTakerCloseAttempt) {
 				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
-				if (bestOutcome == "" || highestPrice < minPrice) && time.Since(lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
+				if bestOutcome == "" && time.Since(lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
 					lastTakerCloseQuoteRefresh = time.Now()
-					refreshCtx, refreshCancel := context.WithTimeout(ctx, 2*time.Second)
-					if handleRestFallbackWithDepth(refreshCtx, id, 0, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, false) {
-						lastUpdate = time.Now()
-						tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, "REST")
-						realbotStorePublishedQuotes(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+					if wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
+						lastForceReconnect = time.Now()
+						wsMgr.ForceReconnect()
 					}
-					refreshCancel()
-					bestOutcome, highestPrice = realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				}
 				if bestOutcome == "" || highestPrice < minPrice {
 					if highestPrice <= 0 {

@@ -299,7 +299,7 @@ func TestPaperTrader_CancelOperations(t *testing.T) {
 	}
 }
 
-func TestRealTraderWaitForFill_UsesWSBeforeRESTFallback(t *testing.T) {
+func TestRealTraderWaitForFill_UsesWSOnly(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -337,7 +337,44 @@ func TestRealTraderWaitForFill_UsesWSBeforeRESTFallback(t *testing.T) {
 		t.Fatal("expected websocket-confirmed fill to satisfy wait")
 	}
 	if requests.Load() != 0 {
-		t.Fatalf("expected no REST fallback request before websocket fill, got %d", requests.Load())
+		t.Fatalf("expected no order polling while waiting on WS fill, got %d requests", requests.Load())
+	}
+}
+
+func TestRealTraderWaitForFillTimeoutDoesNotPollREST(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_ = json.NewEncoder(w).Encode(api.OpenOrder{
+			OrderID:       "order-2",
+			Status:        "OPEN",
+			OriginalSize:  5,
+			RemainingSize: 5,
+		})
+	}))
+	defer server.Close()
+
+	client, err := api.NewCLOBClient("0000000000000000000000000000000000000000000000000000000000000001", "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("NewCLOBClient failed: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	trader := &RealTrader{
+		client:              client,
+		livePositions:       make(map[string]float64),
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	filled, err := trader.WaitForFill(context.Background(), "order-2", 75*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForFill failed: %v", err)
+	}
+	if filled {
+		t.Fatal("expected timeout without websocket-confirmed fill")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("expected WS-only timeout with no order polling, got %d requests", requests.Load())
 	}
 }
 
