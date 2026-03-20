@@ -491,6 +491,44 @@ func TestEngine_SellForMarket(t *testing.T) {
 	}
 }
 
+func TestEngine_GetPositionsWithPnL_KeepsSameAssetRoundsSeparate(t *testing.T) {
+	engine := NewEngine(1000.0)
+
+	if _, err := engine.BuyForMarket("BTC#old12345", "Up", 0.40, 10); err != nil {
+		t.Fatalf("BuyForMarket old round failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("BTC#new67890", "Up", 0.60, 10); err != nil {
+		t.Fatalf("BuyForMarket new round failed: %v", err)
+	}
+
+	engine.UpdateMarketBidAsk("BTC#old12345", "Up", 0.70, 0.71)
+	engine.UpdateMarketBidAsk("BTC#new67890", "Up", 0.20, 0.21)
+
+	positions := engine.GetPositionsWithPnL()
+
+	oldPos, ok := positions["BTC#old12345:Up"]
+	if !ok {
+		t.Fatalf("missing old-round position: %+v", positions)
+	}
+	newPos, ok := positions["BTC#new67890:Up"]
+	if !ok {
+		t.Fatalf("missing new-round position: %+v", positions)
+	}
+
+	if absFloat(oldPos.CurrentBid-0.70) > 1e-9 {
+		t.Fatalf("expected old round bid 0.70, got %.4f", oldPos.CurrentBid)
+	}
+	if absFloat(newPos.CurrentBid-0.20) > 1e-9 {
+		t.Fatalf("expected new round bid 0.20, got %.4f", newPos.CurrentBid)
+	}
+	if absFloat(oldPos.UnrealizedPnL-3.0) > 1e-9 {
+		t.Fatalf("expected old round pnl +3.0, got %.4f", oldPos.UnrealizedPnL)
+	}
+	if absFloat(newPos.UnrealizedPnL+4.0) > 1e-9 {
+		t.Fatalf("expected new round pnl -4.0, got %.4f", newPos.UnrealizedPnL)
+	}
+}
+
 func TestEngine_RedeemWithDetails(t *testing.T) {
 	engine := NewEngine(100.0)
 

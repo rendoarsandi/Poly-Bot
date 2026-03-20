@@ -73,7 +73,7 @@ const (
 // ─── Asset style helpers ──────────────────────────────────────────────────────
 
 func getAssetStyle(id string) lipgloss.Style {
-	switch id {
+	switch marketAssetID(id) {
 	case "BTC":
 		return styleYellow
 	case "ETH":
@@ -85,6 +85,65 @@ func getAssetStyle(id string) lipgloss.Style {
 	default:
 		return styleWhite
 	}
+}
+
+func marketAssetID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "UNKNOWN"
+	}
+	for _, sep := range []string{"#", ":", "/"} {
+		if idx := strings.Index(id, sep); idx > 0 {
+			return strings.ToUpper(strings.TrimSpace(id[:idx]))
+		}
+	}
+	return strings.ToUpper(id)
+}
+
+func marketSortRank(id string) int {
+	switch marketAssetID(id) {
+	case "BTC":
+		return 0
+	case "ETH":
+		return 1
+	case "SOL":
+		return 2
+	case "XRP":
+		return 3
+	case "UNKNOWN":
+		return 5
+	default:
+		return 4
+	}
+}
+
+func orderedMarketIDs(ids []string) []string {
+	sorted := append([]string(nil), ids...)
+	sort.Slice(sorted, func(i, j int) bool {
+		ri := marketSortRank(sorted[i])
+		rj := marketSortRank(sorted[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return sorted[i] < sorted[j]
+	})
+	return sorted
+}
+
+func marketDisplayLabel(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "UNKNOWN"
+	}
+	return id
+}
+
+func truncateMarketLabel(id string, maxLen int) string {
+	label := marketDisplayLabel(id)
+	if maxLen > 0 && len(label) > maxLen {
+		return label[:maxLen]
+	}
+	return label
 }
 
 func marginStyle(pct float64) lipgloss.Style {
@@ -1935,14 +1994,11 @@ func (m tuiModel) renderMarketInfo(w int) string {
 // ≥2 markets → 2-column rows; 1 market → full-width.
 func (m tuiModel) renderMultiMarketGrid(w int) string {
 	s := m.snap
-	assetOrder := []string{"BTC", "ETH", "SOL", "XRP"}
-
-	var active []string
-	for _, id := range assetOrder {
-		if _, ok := s.markets[id]; ok {
-			active = append(active, id)
-		}
+	active := make([]string, 0, len(s.markets))
+	for id := range s.markets {
+		active = append(active, id)
 	}
+	active = orderedMarketIDs(active)
 	if len(active) == 0 {
 		return ""
 	}
@@ -2003,20 +2059,21 @@ func (m tuiModel) renderMultiMarketGrid(w int) string {
 // renderMarketPanel builds one bordered market card.
 // Returns the rendered string and the best available buy margin.
 func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, depth map[string]map[string][]MarketLevel) (string, float64) {
+	assetID := marketAssetID(id)
 	emojis := map[string]string{"BTC": "₿", "ETH": "Ξ", "SOL": "◎", "XRP": "✕"}
-	emoji := emojis[id]
+	emoji := emojis[assetID]
 	if emoji == "" {
 		emoji = "•"
 	}
 
-	borderColor := assetBorderColors[id]
+	borderColor := assetBorderColors[assetID]
 	if borderColor == "" {
 		borderColor = clrSlate
 	}
 
 	// ── Header line: bold asset symbol
 	header := lipgloss.NewStyle().Bold(true).Foreground(borderColor).
-		Render(fmt.Sprintf("%s  %s", emoji, id))
+		Render(fmt.Sprintf("%s  %s", emoji, marketDisplayLabel(id)))
 
 	// ── Slug (truncate to fit)
 	slug := core.SanitizeString(mkt.Slug)
@@ -2622,18 +2679,21 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		byMarket[mid] = append(byMarket[mid], pos)
 	}
 
-	assetOrder := []string{"BTC", "ETH", "SOL", "XRP", "UNKNOWN"}
 	totalMarketPnL, totalLockedPnL := 0.0, 0.0
 	hasMarketPrices := false
 
-	for _, marketID := range assetOrder {
+	marketIDs := make([]string, 0, len(byMarket))
+	for marketID := range byMarket {
+		marketIDs = append(marketIDs, marketID)
+	}
+	for _, marketID := range orderedMarketIDs(marketIDs) {
 		mps, ok := byMarket[marketID]
 		if !ok || len(mps) == 0 {
 			continue
 		}
 
 		aStyle := getAssetStyle(marketID)
-		sb.WriteString("  " + aStyle.Render("["+marketID+"]") + "  ")
+		sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  ")
 
 		sort.Slice(mps, func(i, j int) bool { return mps[i].Outcome < mps[j].Outcome })
 
@@ -2719,13 +2779,17 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			splitByMarket[sp.MarketID] = append(splitByMarket[sp.MarketID], sp)
 		}
 
-		for _, marketID := range assetOrder {
+		splitMarketIDs := make([]string, 0, len(splitByMarket))
+		for marketID := range splitByMarket {
+			splitMarketIDs = append(splitMarketIDs, marketID)
+		}
+		for _, marketID := range orderedMarketIDs(splitMarketIDs) {
 			sps, ok := splitByMarket[marketID]
 			if !ok || len(sps) == 0 {
 				continue
 			}
 			aStyle := getAssetStyle(marketID)
-			sb.WriteString("  " + aStyle.Render("["+marketID+"]") + "  ")
+			sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  ")
 
 			sort.Slice(sps, func(i, j int) bool { return sps[i].Outcome < sps[j].Outcome })
 			strs := make([]string, 0, len(sps))
@@ -2758,18 +2822,10 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 
 		orderedMarkets := make([]string, 0, len(marketSet))
-		for _, marketID := range assetOrder {
-			if _, ok := marketSet[marketID]; ok {
-				orderedMarkets = append(orderedMarkets, marketID)
-				delete(marketSet, marketID)
-			}
-		}
-		extraMarkets := make([]string, 0, len(marketSet))
 		for marketID := range marketSet {
-			extraMarkets = append(extraMarkets, marketID)
+			orderedMarkets = append(orderedMarkets, marketID)
 		}
-		sort.Strings(extraMarkets)
-		orderedMarkets = append(orderedMarkets, extraMarkets...)
+		orderedMarkets = orderedMarketIDs(orderedMarkets)
 
 		for _, marketID := range orderedMarkets {
 			positions := truthByMarket[marketID]
@@ -2809,9 +2865,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					redeemTag,
 				))
 			}
-			prefix := "  " + aStyle.Render("["+marketID+"]") + "  "
+			prefix := "  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  "
 			if marketWarning {
-				prefix = "  " + styleYellow.Render("⚠") + " " + aStyle.Render("["+marketID+"]") + "  "
+				prefix = "  " + styleYellow.Render("⚠") + " " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  "
 			}
 			sb.WriteString(prefix + strings.Join(parts, "  │  ") + "\n")
 		}
@@ -2877,7 +2933,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 	sb.WriteString(sectionHeader("📋", fmt.Sprintf("ORDER HISTORY  (last %d)", len(s.orderHistory)), clrSlate) + "\n")
 
 	// Table header
-	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-5s  %-6s  %-5s  %-9s  %-8s  %-8s  %s",
+	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-10s  %-6s  %-5s  %-9s  %-8s  %-8s  %s",
 		"TIME", "MKT", "OUTC", "SIDE", "SHARES", "PRICE", "VALUE", "PROFIT/MARGIN")) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 75))) + "\n")
 
@@ -2940,7 +2996,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		aStyle := getAssetStyle(o.MarketID)
 		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.2f  $%-7.4f  $%-7.2f  %s  %s\n",
 			styleDimmed.Render(o.Timestamp.Format("15:04:05")),
-			aStyle.Render(fmt.Sprintf("%-3s", o.MarketID)),
+			aStyle.Render(fmt.Sprintf("%-10s", truncateMarketLabel(o.MarketID, 10))),
 			core.SanitizeString(o.Outcome),
 			o.Side,
 			o.Shares,

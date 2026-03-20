@@ -720,7 +720,7 @@ func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
 		TakerCloseMarketMinPrice: 0.60,
 	}
 
-	plan, err := buildRealbotTakerClosePlan(5.0, 0.57, liveCfg)
+	plan, err := buildRealbotTakerClosePlan(5.0, 0.67, liveCfg)
 	if err != nil {
 		t.Fatalf("buildRealbotTakerClosePlan returned error: %v", err)
 	}
@@ -740,7 +740,7 @@ func TestBuildRealbotTakerClosePlan_RejectsBudgetBelowMinimumMarketableCap(t *te
 		TakerCloseMarketMinPrice: 0.60,
 	}
 
-	if _, err := buildRealbotTakerClosePlan(1.0, 0.57, liveCfg); err == nil {
+	if _, err := buildRealbotTakerClosePlan(1.0, 0.67, liveCfg); err == nil {
 		t.Fatal("expected close plan to reject a $1 budget at a $0.99 cap")
 	}
 }
@@ -757,5 +757,16 @@ func TestBuildRealbotTakerClosePlan_AllowsSmallSlackForMinimumMarketableCap(t *t
 	}
 	if plan.RequestedQty != 2 {
 		t.Fatalf("expected 2 shares, got %.0f", plan.RequestedQty)
+	}
+}
+
+func TestBuildRealbotTakerClosePlan_RejectsConfirmedPriceBelowMinPrice(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketSlippage: 0.99,
+		TakerCloseMarketMinPrice: 0.80,
+	}
+
+	if _, err := buildRealbotTakerClosePlan(5.0, 0.54, liveCfg); err == nil {
+		t.Fatal("expected close plan to reject confirmed price below configured min price")
 	}
 }

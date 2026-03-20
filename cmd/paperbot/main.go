@@ -1090,17 +1090,18 @@ func run() error {
 
 		tradersStarted := 0
 		for assetID, market := range markets {
+			marketID := mkt.ScopedMarketID(assetID, market)
 			// Parse end time and outcomes
 			endTime, err := paper.ParseEndTimeFromSlug(market.Slug)
 			if err != nil {
 				endTime = time.Now().Add(15 * time.Minute)
 			}
 			outcomes := mkt.GetOutcomes(market)
-			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
+			tui.AddMarket(marketID, market.Slug, outcomes, endTime)
 			// Reduced logging: Only TUI for startup info
-			tui.LogEvent("🚀 Trading %s: %s", assetID, market.Slug)
+			tui.LogEvent("🚀 Trading %s: %s", marketID, market.Slug)
 
-			trader := createTrader(assetID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache)
+			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
@@ -1125,7 +1126,7 @@ func run() error {
 					return
 				}
 				results <- result
-			}(assetID, trader)
+			}(marketID, trader)
 		}
 
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "TRADERS_RUNNING", "Started %d concurrent market traders", tradersStarted)

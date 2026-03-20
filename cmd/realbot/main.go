@@ -184,6 +184,14 @@ func realbotTakerCloseBudget(cash float64, liveCfg paper.TUISettings) float64 {
 	return budget
 }
 
+func normalizedRealbotTakerCloseMinPrice(liveCfg paper.TUISettings) float64 {
+	minPrice := liveCfg.TakerCloseMarketMinPrice
+	if minPrice <= 0 || minPrice >= 1.0 {
+		return 0.60
+	}
+	return minPrice
+}
+
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case paperArbModeMaker:
@@ -882,6 +890,7 @@ func run() error {
 		// Trade each market in parallel
 		var wg sync.WaitGroup
 		for assetID, market := range markets {
+			marketID := mkt.ScopedMarketID(assetID, market)
 			endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
 			if mInfo, err := realTrader.GetMarketInfo(ctx, market.ConditionID); err == nil && mInfo.EndDateISO != "" {
 				if parsed, err := time.Parse(time.RFC3339, mInfo.EndDateISO); err == nil {
@@ -892,8 +901,8 @@ func run() error {
 				}
 			}
 			outcomes := mkt.GetOutcomes(market)
-			tui.AddMarket(assetID, market.Slug, outcomes, endTime)
-			tui.LogEvent("🚀 %s → %s", assetID, endTime.Format("15:04"))
+			tui.AddMarket(marketID, market.Slug, outcomes, endTime)
+			tui.LogEvent("🚀 %s → %s", marketID, endTime.Format("15:04"))
 
 			// Create per-market Risk Manager
 			riskConfig := paper.RiskConfig{
@@ -923,7 +932,7 @@ func run() error {
 					}
 				}()
 				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, resolutionCache)
-			}(assetID, market, endTime, marketRiskMgr, currentBalance)
+			}(marketID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
 		// Goroutine to monitor for TUI restart requests
@@ -1137,6 +1146,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	takerCloseAttempted := false
 	var takerCloseExecutedAt time.Time // When taker close buy was confirmed (for merge-buffer cooldown)
 	var nextTakerCloseAttempt time.Time
+	var lastTakerCloseLog time.Time
 	preserveWalletTruth := false
 	defer func() {
 		if !preserveWalletTruth {
@@ -1262,6 +1272,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						bestOutcome = outcome
 					}
 				}
+				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
+				if bestOutcome == "" || highestPrice < minPrice {
+					if time.Since(lastTakerCloseLog) > 1*time.Second {
+						tui.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.3f (needs >= $%.3f)", id, highestPrice, minPrice)
+						lastTakerCloseLog = time.Now()
+					}
+					continue
+				}
 				if bestOutcome != "" {
 					// Confirm the best live price once via REST right before submitting.
 					confirmPrice := highestPrice
@@ -1289,6 +1307,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						break
 					}
 					if !restConfirmOK {
+						continue
+					}
+					if confirmPrice < minPrice {
+						if time.Since(lastTakerCloseLog) > 1*time.Second {
+							tui.LogEvent("[%s] ⏳ Taker close waiting: REST confirm $%.3f is below min $%.3f (WS $%.3f)", id, confirmPrice, minPrice, highestPrice)
+							lastTakerCloseLog = time.Now()
+						}
 						continue
 					}
 
@@ -3807,9 +3832,9 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 		return realbotTakerClosePlan{}, fmt.Errorf("confirmed price %.3f is invalid", confirmedPrice)
 	}
 
-	minPrice := liveCfg.TakerCloseMarketMinPrice
-	if minPrice <= 0 || minPrice >= 1.0 {
-		minPrice = 0.60
+	minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
+	if confirmedPrice+1e-9 < minPrice {
+		return realbotTakerClosePlan{}, fmt.Errorf("confirmed price %.3f is below taker-close min %.3f", confirmedPrice, minPrice)
 	}
 	limitPrice := liveCfg.TakerCloseMarketSlippage
 	if limitPrice <= 0 || limitPrice >= 1.0 {
