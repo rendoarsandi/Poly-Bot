@@ -100,6 +100,24 @@ func TestMinExecutablePairSum(t *testing.T) {
 	}
 }
 
+func TestRealbotTakerCloseBudgetUsesStartingBalanceFloor(t *testing.T) {
+	budget := realbotTakerCloseBudget(59.20, 65.80, paper.TUISettings{
+		TradeScaleFactor: 0.05,
+	})
+	if math.Abs(budget-3.29) > 0.000001 {
+		t.Fatalf("expected taker-close budget 3.29, got %.2f", budget)
+	}
+}
+
+func TestRealbotTakerCloseBudgetCompoundsUpWithCashGrowth(t *testing.T) {
+	budget := realbotTakerCloseBudget(72.00, 65.80, paper.TUISettings{
+		TradeScaleFactor: 0.05,
+	})
+	if math.Abs(budget-3.60) > 0.000001 {
+		t.Fatalf("expected taker-close budget 3.60, got %.2f", budget)
+	}
+}
+
 func TestNormalizeExecutionToleranceFractionSupportsLegacyPercentAndDecimalForms(t *testing.T) {
 	if got := normalizeExecutionToleranceFraction(-1.0); math.Abs(got-0.01) > 0.000001 {
 		t.Fatalf("expected -1.0 to normalize to 1%%, got %.6f", got)

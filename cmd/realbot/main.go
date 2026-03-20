@@ -216,7 +216,7 @@ func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, merg
 	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
 }
 
-func realbotTakerCloseBudget(cash float64, liveCfg paper.TUISettings) float64 {
+func realbotTakerCloseBudget(cash, startingBalance float64, liveCfg paper.TUISettings) float64 {
 	if cash <= 0 {
 		return 0
 	}
@@ -224,7 +224,7 @@ func realbotTakerCloseBudget(cash float64, liveCfg paper.TUISettings) float64 {
 	if tradeFactor <= 0 {
 		tradeFactor = 0.01
 	}
-	budget := cash * tradeFactor
+	budget := realbotSizingBalance(startingBalance, cash) * tradeFactor
 	if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
 		budget = liveCfg.MaxTradeSize
 	}
@@ -568,6 +568,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			}
 
 			if positionsErr == nil && realbotWinningOnChainShares(positions, winner) <= 0.000001 {
+				engine.ClearPendingRedemption(marketID)
 				return
 			}
 
@@ -2093,7 +2094,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					budget := realbotTakerCloseBudget(engine.GetBalance(), liveCfg)
+					budget := realbotTakerCloseBudget(engine.GetBalance(), engine.GetStartingBalance(), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
@@ -5436,13 +5437,17 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		}
 
 		if winner != "" {
+			walletTruthWinningShares := 0.0
+			missingCostBasis := []string(nil)
 			if positions, positionsErr := realbotWalletTruthPositionsForRedemption(ctx, id, conditionID, trader, engine); positionsErr != nil {
 				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh before resolution settlement failed: %v", id, positionsErr)
 			} else {
+				walletTruthWinningShares = realbotWinningOnChainShares(positions, winner)
 				tui.SetWalletTruthPositions(id, positions)
-				if adjusted, missingCostBasis := realbotSyncEngineToWalletTruthForResolution(engine, id, positions); adjusted > 0 {
+				if adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, id, positions); adjusted > 0 {
 					tui.LogEvent("[%s] 🔄 Synced local resolution inventory to on-chain balances (%d outcomes adjusted)", id, adjusted)
-				} else if len(missingCostBasis) > 0 {
+				} else if len(missing) > 0 {
+					missingCostBasis = append(missingCostBasis, missing...)
 					tui.LogEvent("[%s] ⚠️ Resolution inventory drift detected with no local cost basis for: %s", id, strings.Join(missingCostBasis, ", "))
 				}
 			}
@@ -5451,14 +5456,18 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh after winner update failed: %v", id, err)
 			}
 			tui.UpdateWalletTruthResolution(id, true, winner)
-			if result.WinningShares > 0 || result.LosingShares > 0 || result.TotalPayout > 0 || result.TotalPnL != 0 {
+			if result.WinningShares > 0 || result.LosingShares > 0 || result.TotalPayout > 0 || result.TotalPnL != 0 || walletTruthWinningShares > 0.000001 {
 				pnlSign := "+"
 				pnlEmoji := "💰"
 				if result.TotalPnL < 0 {
 					pnlSign = ""
 					pnlEmoji = "💸"
 				}
-				tui.LogEvent("[%s] %s RESOLVED: %s won | PnL: %s$%.2f", id, pnlEmoji, winner, pnlSign, result.TotalPnL)
+				if result.WinningShares > 0 || result.LosingShares > 0 || result.TotalPayout > 0 || result.TotalPnL != 0 {
+					tui.LogEvent("[%s] %s RESOLVED: %s won | PnL: %s$%.2f", id, pnlEmoji, winner, pnlSign, result.TotalPnL)
+				} else {
+					tui.LogEvent("[%s] ⏳ RESOLVED: %s won | wallet-truth redeemable %s shares (cost basis unavailable: %s)", id, winner, formatShareQty(walletTruthWinningShares), strings.Join(missingCostBasis, ", "))
+				}
 
 				// Record loss for safety limits
 				if result.TotalPnL < 0 && trader != nil {

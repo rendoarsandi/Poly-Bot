@@ -61,6 +61,10 @@ type Engine struct {
 	// Split tokens are worth $1.00 per YES+NO pair
 	splitInventories []*SplitInventory
 
+	// Pending on-chain redemption payouts that are already economically locked in
+	// but have not yet returned to wallet cash.
+	pendingRedemptions map[string]float64
+
 	// Trade history (capped to prevent memory growth)
 	trades    []Trade
 	maxTrades int
@@ -95,6 +99,7 @@ func NewEngine(startingBalance float64) *Engine {
 		compoundMultiplier: 1.0,  // Start at 1x
 		maxTrades:          1000, // Cap trade history to prevent memory growth
 		positions:          make(map[string]*Position),
+		pendingRedemptions: make(map[string]float64),
 		trades:             make([]Trade, 0),
 		currentPrices:      make(map[string]float64),
 		currentBids:        make(map[string]float64),
@@ -593,11 +598,11 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 
 		// Correctly match the outcome
 		if pos.Outcome == winningOutcome {
-			// Winning shares pay $1 each (no fees!)
+			// Winning shares are economically locked in at $1 each, but on-chain cash
+			// may not arrive until the redeem transaction confirms.
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
 			e.realizedPnL += pnl
-			e.currentBalance += proceeds
 
 			result.WinningShares += pos.Quantity
 			result.WinningPayout += proceeds
@@ -634,6 +639,10 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 			result.WinningPayout += payout
 			result.WinningPnL += pnl
 		}
+	}
+
+	if marketID != "" && result.WinningPayout > 0 {
+		e.pendingRedemptions[marketID] = result.WinningPayout
 	}
 
 	result.TotalPnL = result.WinningPnL - result.LosingCost
@@ -831,7 +840,7 @@ func (e *Engine) addTrade(trade Trade) {
 
 // recalculateDrawdown updates max drawdown based on current equity
 func (e *Engine) recalculateDrawdown() {
-	totalEquity := e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue()
+	totalEquity := e.getBookEquity()
 	if totalEquity > e.peakBalance {
 		e.peakBalance = totalEquity
 	}
@@ -855,7 +864,7 @@ func (e *Engine) GetEquity() float64 {
 func (e *Engine) GetBookEquity() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.currentBalance + e.getPositionCostBasisValue() + e.getSplitInventoryValue()
+	return e.getBookEquity()
 }
 
 // GetPeakEquity returns the highest equity seen so far
@@ -885,6 +894,18 @@ func (e *Engine) getPositionCostBasisValue() float64 {
 		value += pos.TotalCost
 	}
 	return value
+}
+
+func (e *Engine) getPendingRedemptionValue() float64 {
+	value := 0.0
+	for _, payout := range e.pendingRedemptions {
+		value += payout
+	}
+	return value
+}
+
+func (e *Engine) getBookEquity() float64 {
+	return e.currentBalance + e.getPositionCostBasisValue() + e.getSplitInventoryValue() + e.getPendingRedemptionValue()
 }
 
 func (e *Engine) getUnrealizedValue() float64 {
@@ -1037,6 +1058,24 @@ func (e *Engine) GetStartingBalance() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.startingBalance
+}
+
+func (e *Engine) SetPendingRedemption(marketID string, payout float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if marketID == "" {
+		return
+	}
+	if payout <= 0 {
+		delete(e.pendingRedemptions, marketID)
+	} else {
+		e.pendingRedemptions[marketID] = payout
+	}
+	e.recalculateDrawdown()
+}
+
+func (e *Engine) ClearPendingRedemption(marketID string) {
+	e.SetPendingRedemption(marketID, 0)
 }
 
 // DeductBalance removes amount from balance (for split operations)
