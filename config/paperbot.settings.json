@@ -34,8 +34,9 @@
   "makerMinQuoteValue": 5,
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5,
-  "takerCloseMarket": false,
+  "takerCloseMarket": true,
   "takerCloseMarketTime": 0,
   "takerCloseMarketSlippage": 0,
-  "takerCloseMarketMinPrice": 0.605
+  "takerCloseMarketMinPrice": 0.605,
+  "startupWizardSeen": false
 }
