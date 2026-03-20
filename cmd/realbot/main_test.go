@@ -744,3 +744,18 @@ func TestBuildRealbotTakerClosePlan_RejectsBudgetBelowMinimumMarketableCap(t *te
 		t.Fatal("expected close plan to reject a $1 budget at a $0.99 cap")
 	}
 }
+
+func TestBuildRealbotTakerClosePlan_AllowsSmallSlackForMinimumMarketableCap(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketSlippage: 0.99,
+		TakerCloseMarketMinPrice: 0.60,
+	}
+
+	plan, err := buildRealbotTakerClosePlan(1.94, 0.92, liveCfg)
+	if err != nil {
+		t.Fatalf("expected small shortfall to be tolerated, got %v", err)
+	}
+	if plan.RequestedQty != 2 {
+		t.Fatalf("expected 2 shares, got %.0f", plan.RequestedQty)
+	}
+}

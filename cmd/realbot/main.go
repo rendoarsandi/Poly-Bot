@@ -27,24 +27,25 @@ import (
 )
 
 const (
-	UseLiveUI                = true // Set to false for traditional logging
-	paperArbModeTaker        = "taker"
-	paperArbModeMaker        = "maker"
-	terminalBidFloor         = 0.985
-	terminalAskCeil          = 0.015
-	realbotExecQuoteTimeout  = 1500 * time.Millisecond
-	realbotOrderWarmTimeout  = 1500 * time.Millisecond
-	realbotRestBookMaxAge    = 2 * time.Second
-	realbotWSWarnInterval    = 10 * time.Second
-	realbotWSForceReconnect  = 10 * time.Second
-	realbotMergeTimeout      = 120 * time.Second
-	realbotCleanupVerifyTTL  = 20 * time.Second
-	realbotFastVerifyTTL     = 6 * time.Second
-	minOnChainActionShares   = 0.01
-	realbotUIRefreshInterval = 750 * time.Millisecond
-	realbotMainLoopInterval  = 10 * time.Millisecond
-	realbotFillPollInterval  = 50 * time.Millisecond
-	realbotMinMarketBuyValue = 1.0
+	UseLiveUI                      = true // Set to false for traditional logging
+	paperArbModeTaker              = "taker"
+	paperArbModeMaker              = "maker"
+	terminalBidFloor               = 0.985
+	terminalAskCeil                = 0.015
+	realbotExecQuoteTimeout        = 1500 * time.Millisecond
+	realbotOrderWarmTimeout        = 1500 * time.Millisecond
+	realbotRestBookMaxAge          = 2 * time.Second
+	realbotWSWarnInterval          = 10 * time.Second
+	realbotWSForceReconnect        = 10 * time.Second
+	realbotMergeTimeout            = 120 * time.Second
+	realbotCleanupVerifyTTL        = 20 * time.Second
+	realbotFastVerifyTTL           = 6 * time.Second
+	minOnChainActionShares         = 0.01
+	realbotUIRefreshInterval       = 750 * time.Millisecond
+	realbotMainLoopInterval        = 10 * time.Millisecond
+	realbotFillPollInterval        = 50 * time.Millisecond
+	realbotMinMarketBuyValue       = 1.0
+	realbotTakerCloseMinOrderSlack = 0.05
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -1307,8 +1308,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					budget := realbotTakerCloseBudget(engine.GetBalance(), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
-						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
 						tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
+						takerCloseAttempted = true
 						continue
 					}
 
@@ -3830,7 +3831,11 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 	minQtyForNotional := math.Ceil((realbotMinMarketBuyValue / limitPrice) - 1e-9)
 	if requestedQty < minQtyForNotional {
 		requiredBudget := minQtyForNotional * limitPrice
-		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f too small for minimum marketable close order at cap $%.3f (needs up to $%.2f)", budget, limitPrice, requiredBudget)
+		if requiredBudget-budget <= realbotTakerCloseMinOrderSlack+1e-9 {
+			requestedQty = minQtyForNotional
+		} else {
+			return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f too small for minimum marketable close order at cap $%.3f (needs up to $%.2f)", budget, limitPrice, requiredBudget)
+		}
 	}
 	if requestedQty < 1 {
 		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f is too small at sizing price $%.3f", budget, sizingPrice)
