@@ -634,8 +634,8 @@ func TestRealbotRestoreExternalCarryPositionsReconcilesUpdatesAndRemovals(t *tes
 
 func TestRealbotVerifyExternalCarryPositionsUsesOnChainBalances(t *testing.T) {
 	positions := []trading.PositionInfo{
-		{TokenID: "t1", Outcome: "Up", Size: 5.0},
-		{TokenID: "t2", Outcome: "Down", Size: 3.0},
+		{TokenID: "t1", Outcome: "Up", Size: 5.0, Slug: "btc-updown-15m-1772891100"},
+		{TokenID: "t2", Outcome: "Down", Size: 3.0, Slug: "btc-updown-15m-1772891100"},
 	}
 
 	onChain := map[string]float64{
@@ -643,9 +643,12 @@ func TestRealbotVerifyExternalCarryPositionsUsesOnChainBalances(t *testing.T) {
 		"t2": 2.25, // authoritative on-chain size should replace reported
 	}
 
-	verified := realbotVerifyExternalCarryPositions(context.Background(), positions, func(ctx context.Context, tokenID string) (float64, error) {
+	verified, err := realbotVerifyExternalCarryPositions(context.Background(), positions, func(ctx context.Context, tokenID string) (float64, error) {
 		return onChain[tokenID], nil
 	})
+	if err != nil {
+		t.Fatalf("expected on-chain verification to succeed, got %v", err)
+	}
 
 	if len(verified) != 1 {
 		t.Fatalf("expected one verified carry position, got %+v", verified)
@@ -658,20 +661,20 @@ func TestRealbotVerifyExternalCarryPositionsUsesOnChainBalances(t *testing.T) {
 	}
 }
 
-func TestRealbotVerifyExternalCarryPositionsFallsBackToReportedOnChainErrors(t *testing.T) {
+func TestRealbotVerifyExternalCarryPositionsRejectsUnverifiedOnChainErrors(t *testing.T) {
 	positions := []trading.PositionInfo{
-		{TokenID: "t1", Outcome: "Up", Size: 1.5},
+		{TokenID: "t1", Outcome: "Up", Size: 1.5, Slug: "btc-updown-15m-1772891100"},
 	}
 
-	verified := realbotVerifyExternalCarryPositions(context.Background(), positions, func(ctx context.Context, tokenID string) (float64, error) {
+	verified, err := realbotVerifyExternalCarryPositions(context.Background(), positions, func(ctx context.Context, tokenID string) (float64, error) {
 		return 0, errors.New("rpc unavailable")
 	})
-
-	if len(verified) != 1 {
-		t.Fatalf("expected reported position to remain on on-chain error, got %+v", verified)
+	if err == nil {
+		t.Fatal("expected verification error when on-chain lookup fails")
 	}
-	if math.Abs(verified[0].Size-1.5) > 0.000001 {
-		t.Fatalf("expected reported size fallback 1.5, got %.4f", verified[0].Size)
+
+	if len(verified) != 0 {
+		t.Fatalf("expected no verified positions on on-chain error, got %+v", verified)
 	}
 }
 
