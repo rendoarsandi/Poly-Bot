@@ -165,6 +165,24 @@ func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, merg
 	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
 }
 
+func realbotTakerCloseBudget(cash float64, liveCfg paper.TUISettings) float64 {
+	if cash <= 0 {
+		return 0
+	}
+	tradeFactor := liveCfg.TradeScaleFactor
+	if tradeFactor <= 0 {
+		tradeFactor = 0.01
+	}
+	budget := cash * tradeFactor
+	if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
+		budget = liveCfg.MaxTradeSize
+	}
+	if budget < 1.0 {
+		budget = 1.0
+	}
+	return budget
+}
+
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case paperArbModeMaker:
@@ -1163,9 +1181,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "trader stopping", trader, engine, tui, makerQuotes)
 			cancelMaker()
 
-			if realbotTakerCloseHoldMode(liveCfg) && realbotHasEnginePositionsForMarket(engine, id) {
-				preserveWalletTruth = true
-				tui.LogEvent("[%s] ⏳ Trader stopping: preserving taker-close inventory for post-resolution redemption", id)
+			if realbotTakerCloseHoldMode(liveCfg) {
+				if realbotHasEnginePositionsForMarket(engine, id) {
+					preserveWalletTruth = true
+					tui.LogEvent("[%s] ⏳ Trader stopping: preserving taker-close inventory for post-resolution redemption", id)
+				}
 				return
 			}
 
@@ -1221,7 +1241,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		// --- TAKER CLOSE MARKET LOGIC ---
 		// Once we enter the close window, taker close should react immediately to the
-		// best live price. UI/log spam from the old sustain/spike-guard path is removed.
+		// best live price. This path is intentionally single-shot: no arb recovery,
+		// no cleanup re-entry, and no repeated buy retries after a submit attempt.
 		liveCfg := tui.GetSettings()
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
 		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
@@ -1270,9 +1291,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: buying %s immediately (WS $%.3f, REST $%.3f)",
-						id, bestOutcome, highestPrice, confirmPrice)
-
 					tokenID := ""
 					for k, v := range tokenMap {
 						if v == bestOutcome {
@@ -1286,7 +1304,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					budget := cfg.CalculateTradeSize(engine.GetEquity())
+					budget := realbotTakerCloseBudget(engine.GetBalance(), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
 						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
@@ -1295,16 +1313,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					initialPosition := trader.GetLivePositionSize(tokenID)
-					tui.LogEvent("[%s] 📤 Taker close buy: %s %s shares limit $%.3f (sizing $%.3f)",
-						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, plan.SizingPrice)
+					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, REST $%.3f, budget $%.2f)",
+						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmPrice, budget)
 
+					takerCloseAttempted = true
 					tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
 					exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
 					cancelTrade()
-					logDirectExecutionAudit(tui, id, "Taker close buy", plan.RequestedQty, plan.LimitPrice, exec)
 
 					if !exec.Success {
-						nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
 						if exec.Err != nil {
 							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, exec.Err)
 						} else if exec.Result != nil && exec.Result.Message != "" {
@@ -1317,7 +1334,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					execQty := attributedBuyFill(exec, plan.RequestedQty, 0, false)
 					if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
-						nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
 						tui.LogEvent("[%s] ⚠️ Taker close execution below confirmation threshold: %s shares", id, formatShareQty(execQty))
 						continue
 					}
@@ -1329,7 +1345,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
 						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
 					}
-					takerCloseAttempted = true
 					takerCloseExecutedAt = time.Now()
 					tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
 						id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
@@ -1681,7 +1696,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		liveCfg = tui.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 
-		if len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
+		if !liveCfg.TakerCloseMarket && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
 			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
 			cancelRecoveryCheck()
@@ -3803,16 +3818,10 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 		limitPrice = minPrice
 	}
 
-	sizingPrice := confirmedPrice
-	if tolerance := normalizeExecutionToleranceFraction(liveCfg.BuyExecutionMarginFloorPercent); tolerance > 0 {
-		sizingPrice = confirmedPrice * (1.0 + tolerance)
-	}
-	if sizingPrice < confirmedPrice {
-		sizingPrice = confirmedPrice
-	}
-	if sizingPrice > limitPrice {
-		sizingPrice = limitPrice
-	}
+	// Size against the cap we are actually willing to pay so the submitted order
+	// cannot exceed the configured trade budget when the live price is lower than
+	// the close-market limit.
+	sizingPrice := limitPrice
 	if sizingPrice <= 0 || sizingPrice >= 1.0 {
 		return realbotTakerClosePlan{}, fmt.Errorf("sizing price %.3f is invalid", sizingPrice)
 	}
@@ -3820,7 +3829,8 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 	requestedQty := math.Floor((budget / sizingPrice) + 1e-9)
 	minQtyForNotional := math.Ceil((realbotMinMarketBuyValue / limitPrice) - 1e-9)
 	if requestedQty < minQtyForNotional {
-		requestedQty = minQtyForNotional
+		requiredBudget := minQtyForNotional * limitPrice
+		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f too small for minimum marketable close order at cap $%.3f (needs up to $%.2f)", budget, limitPrice, requiredBudget)
 	}
 	if requestedQty < 1 {
 		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f is too small at sizing price $%.3f", budget, sizingPrice)
@@ -4413,10 +4423,17 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		if err != nil {
 			return err
 		}
-		localShares := localByOutcome[outcome]
+		localBoughtShares := localByOutcome[outcome]
+		splitShares := 0.0
 		if splitInventory != nil {
-			localShares += splitInventory.GetSplitShares(marketID, outcome)
+			splitShares = splitInventory.GetSplitShares(marketID, outcome)
 		}
+		desiredBoughtShares := math.Max(0, onChainShares-splitShares)
+		if desiredBoughtShares > localBoughtShares+1e-6 {
+			engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, walletTruthSyncMarkPrice(engine, marketID, outcome))
+			localBoughtShares = desiredBoughtShares
+		}
+		localShares := localBoughtShares + splitShares
 		positions = append(positions, paper.WalletTruthPosition{
 			MarketID:      marketID,
 			Outcome:       outcome,
@@ -4482,6 +4499,17 @@ func localInventorySyncPrice(engine *paper.Engine, marketID, outcome string) flo
 	return 0.01
 }
 
+func walletTruthSyncMarkPrice(engine *paper.Engine, marketID, outcome string) float64 {
+	bid, ask := engine.GetMarketBidAsk(marketID, outcome)
+	if bid >= 0.01 {
+		return bid
+	}
+	if ask >= 0.01 {
+		return ask
+	}
+	return 0.50
+}
+
 func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, token0, token1 string, outcomes []string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) (bool, error) {
 	if len(outcomes) != 2 {
 		return false, nil
@@ -4498,24 +4526,36 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	}
 	desired0 := math.Max(0, onChain0-split0)
 	desired1 := math.Max(0, onChain1-split1)
-	trimmed := false
+	changed := false
 	if local0 > desired0+1e-6 {
 		trimQty := local0 - desired0
 		if _, sellErr := engine.SellForMarket(marketID, outcomes[0], localInventorySyncPrice(engine, marketID, outcomes[0]), trimQty); sellErr != nil {
-			return trimmed, sellErr
+			return changed, sellErr
 		}
 		tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
-		trimmed = true
+		changed = true
+	} else if desired0 > local0+1e-6 {
+		addQty := desired0 - local0
+		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
+			tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(addQty), local0, onChain0, split0)
+			changed = true
+		}
 	}
 	if local1 > desired1+1e-6 {
 		trimQty := local1 - desired1
 		if _, sellErr := engine.SellForMarket(marketID, outcomes[1], localInventorySyncPrice(engine, marketID, outcomes[1]), trimQty); sellErr != nil {
-			return trimmed, sellErr
+			return changed, sellErr
 		}
 		tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
-		trimmed = true
+		changed = true
+	} else if desired1 > local1+1e-6 {
+		addQty := desired1 - local1
+		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {
+			tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(addQty), local1, onChain1, split1)
+			changed = true
+		}
 	}
-	return trimmed, nil
+	return changed, nil
 }
 
 func mergeBalancedPositionWSFirst(ctx context.Context, trader *trading.RealTrader, conditionID, token0, token1 string, requestedQty float64, numOutcomes int) (mergeQty, settled0, settled1 float64, txHash string, err error) {

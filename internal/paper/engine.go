@@ -1065,6 +1065,79 @@ func (e *Engine) SetBalance(balance float64) {
 	e.currentBalance = balance
 }
 
+// SyncExternalPosition aligns the shadow position inventory to authoritative
+// external holdings without changing cash balance or trade statistics.
+func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPrice float64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+
+	const eps = 1e-6
+
+	if quantity <= eps {
+		if _, exists := e.positions[posKey]; exists {
+			delete(e.positions, posKey)
+			e.recalculateDrawdown()
+			return true
+		}
+		return false
+	}
+
+	if markPrice <= 0 {
+		markPrice = 0.5
+	}
+
+	pos, exists := e.positions[posKey]
+	if !exists {
+		e.positions[posKey] = &Position{
+			Outcome:   outcome,
+			MarketID:  marketID,
+			Quantity:  quantity,
+			AvgPrice:  markPrice,
+			TotalCost: quantity * markPrice,
+		}
+		e.recalculateDrawdown()
+		return true
+	}
+
+	changed := false
+	switch {
+	case quantity > pos.Quantity+eps:
+		addQty := quantity - pos.Quantity
+		pos.TotalCost += addQty * markPrice
+		pos.Quantity = quantity
+		changed = true
+	case quantity < pos.Quantity-eps:
+		if pos.Quantity > eps {
+			pos.TotalCost *= quantity / pos.Quantity
+		} else {
+			pos.TotalCost = quantity * markPrice
+		}
+		pos.Quantity = quantity
+		changed = true
+	}
+
+	if pos.Quantity > eps {
+		newAvgPrice := pos.TotalCost / pos.Quantity
+		if math.Abs(pos.AvgPrice-newAvgPrice) > eps {
+			pos.AvgPrice = newAvgPrice
+			changed = true
+		}
+	} else {
+		delete(e.positions, posKey)
+		changed = true
+	}
+
+	if changed {
+		e.recalculateDrawdown()
+	}
+	return changed
+}
+
 // RecalculateDrawdown manually triggers a drawdown recalculation.
 // Use this after performing a multi-step operation (like a split) to ensure
 // drawdown is checked only when the state is consistent.

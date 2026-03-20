@@ -118,11 +118,11 @@ func TestBuildRealbotTakerClosePlanRespectsBuyExecSizing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected plan, got %v", err)
 	}
-	if math.Abs(plan.SizingPrice-0.606) > 0.000001 {
-		t.Fatalf("expected sizing price 0.606, got %.6f", plan.SizingPrice)
+	if math.Abs(plan.SizingPrice-0.99) > 0.000001 {
+		t.Fatalf("expected sizing price 0.99, got %.6f", plan.SizingPrice)
 	}
-	if plan.RequestedQty != 82 {
-		t.Fatalf("expected 82 shares, got %.0f", plan.RequestedQty)
+	if plan.RequestedQty != 50 {
+		t.Fatalf("expected 50 shares, got %.0f", plan.RequestedQty)
 	}
 }
 
@@ -711,5 +711,36 @@ func TestPrimeRealbotOrderPathStartsAsyncWarmup(t *testing.T) {
 	case <-warmer.calls:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected realbot order-path primer to issue async warmup call")
+	}
+}
+
+func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketSlippage: 0.99,
+		TakerCloseMarketMinPrice: 0.60,
+	}
+
+	plan, err := buildRealbotTakerClosePlan(5.0, 0.57, liveCfg)
+	if err != nil {
+		t.Fatalf("buildRealbotTakerClosePlan returned error: %v", err)
+	}
+
+	if plan.RequestedQty != 5 {
+		t.Fatalf("expected 5 shares at $0.99 cap for a $5 budget, got %.0f", plan.RequestedQty)
+	}
+
+	if got := plan.RequestedQty * plan.LimitPrice; got > 5.0+1e-9 {
+		t.Fatalf("expected cap-sized notional to stay within budget, got $%.4f", got)
+	}
+}
+
+func TestBuildRealbotTakerClosePlan_RejectsBudgetBelowMinimumMarketableCap(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketSlippage: 0.99,
+		TakerCloseMarketMinPrice: 0.60,
+	}
+
+	if _, err := buildRealbotTakerClosePlan(1.0, 0.57, liveCfg); err == nil {
+		t.Fatal("expected close plan to reject a $1 budget at a $0.99 cap")
 	}
 }

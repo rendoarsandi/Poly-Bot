@@ -259,6 +259,59 @@ func TestEngine_RegisterSplitInventory(t *testing.T) {
 	}
 }
 
+func TestEngine_SyncExternalPosition(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	changed := engine.SyncExternalPosition("BTC", "Down", 2.0, 0.65)
+	if !changed {
+		t.Fatal("expected initial sync to report a change")
+	}
+
+	positions := engine.GetPositions()
+	pos, ok := positions["BTC:Down"]
+	if !ok {
+		t.Fatal("expected BTC:Down position to exist after sync")
+	}
+	if absFloat(pos.Quantity-2.0) > 0.0001 {
+		t.Fatalf("expected quantity 2.0, got %.4f", pos.Quantity)
+	}
+	if absFloat(pos.AvgPrice-0.65) > 0.0001 {
+		t.Fatalf("expected avg price 0.65, got %.4f", pos.AvgPrice)
+	}
+	if absFloat(engine.GetBalance()-100.0) > 0.0001 {
+		t.Fatalf("expected balance to stay unchanged, got %.4f", engine.GetBalance())
+	}
+
+	changed = engine.SyncExternalPosition("BTC", "Down", 3.0, 0.80)
+	if !changed {
+		t.Fatal("expected quantity increase sync to report a change")
+	}
+
+	positions = engine.GetPositions()
+	pos = positions["BTC:Down"]
+	if absFloat(pos.Quantity-3.0) > 0.0001 {
+		t.Fatalf("expected quantity 3.0 after increase, got %.4f", pos.Quantity)
+	}
+	expectedCost := (2.0 * 0.65) + (1.0 * 0.80)
+	if absFloat(pos.TotalCost-expectedCost) > 0.0001 {
+		t.Fatalf("expected total cost %.4f, got %.4f", expectedCost, pos.TotalCost)
+	}
+
+	changed = engine.SyncExternalPosition("BTC", "Down", 1.5, 0.80)
+	if !changed {
+		t.Fatal("expected quantity decrease sync to report a change")
+	}
+
+	positions = engine.GetPositions()
+	pos = positions["BTC:Down"]
+	if absFloat(pos.Quantity-1.5) > 0.0001 {
+		t.Fatalf("expected quantity 1.5 after trim, got %.4f", pos.Quantity)
+	}
+	if absFloat(engine.GetBalance()-100.0) > 0.0001 {
+		t.Fatalf("expected balance to remain unchanged after trim, got %.4f", engine.GetBalance())
+	}
+}
+
 // TestEngine_DeductBalance verifies balance deduction
 func TestEngine_DeductBalance(t *testing.T) {
 	engine := NewEngine(1000.0)
