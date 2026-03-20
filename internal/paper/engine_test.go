@@ -1,6 +1,7 @@
 package paper
 
 import (
+	"math"
 	"testing"
 )
 
@@ -407,6 +408,21 @@ func TestEngine_GetEquity_WithSplitInventory(t *testing.T) {
 	expectedEquity := 1000.0 + proceeds + 75.0 // Balance + proceeds + remaining split value
 	if equity != expectedEquity {
 		t.Errorf("Expected equity $%.2f after adding proceeds, got $%.2f", expectedEquity, equity)
+	}
+}
+
+func TestEngine_GetBookEquityKeepsOpenPositionsAtCostBasis(t *testing.T) {
+	engine := NewEngine(100.0)
+	if _, err := engine.BuyForMarket("ETH", "Up", 0.99, 3); err != nil {
+		t.Fatalf("BuyForMarket failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk("ETH", "Up", 0.08, 0.09)
+
+	if got := engine.GetEquity(); math.Abs(got-97.27) > 0.000001 {
+		t.Fatalf("expected marked equity 97.27 after bid drop, got %.2f", got)
+	}
+	if got := engine.GetBookEquity(); math.Abs(got-100.0) > 0.000001 {
+		t.Fatalf("expected book equity to stay neutral at cost basis, got %.2f", got)
 	}
 }
 

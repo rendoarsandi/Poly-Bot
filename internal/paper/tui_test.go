@@ -122,7 +122,7 @@ func TestTUI_SetWalletTruthPositionsClonesInput(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
-	base, effective := displayedTradeBudgets("Paper", 75, 100, 0.10, 0, 1.12)
+	base, effective := displayedTradeBudgets("Paper", 75, 100, 100, 0.10, 0, 1.12)
 	if base != 10 {
 		t.Fatalf("expected paper base trade budget 10.00, got %.2f", base)
 	}
@@ -131,13 +131,23 @@ func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
 	}
 }
 
-func TestDisplayedTradeBudgetsUsesCashInRealMode(t *testing.T) {
-	base, effective := displayedTradeBudgets("Real", 50, 100, 0.10, 0, 1.50)
-	if base != 5 {
-		t.Fatalf("expected real trade budget to size off cash, got %.2f", base)
+func TestDisplayedTradeBudgetsUsesStartingBalanceFloorInRealMode(t *testing.T) {
+	base, effective := displayedTradeBudgets("Real", 50, 100, 100, 0.10, 0, 1.50)
+	if base != 10 {
+		t.Fatalf("expected real trade budget to keep session-start floor, got %.2f", base)
 	}
-	if effective != 5 {
+	if effective != 10 {
 		t.Fatalf("expected real effective budget to ignore paper compounding, got %.2f", effective)
+	}
+}
+
+func TestDisplayedTradeBudgetsCompoundsUpInRealModeWhenCashGrows(t *testing.T) {
+	base, effective := displayedTradeBudgets("Real", 125, 100, 100, 0.10, 0, 1.50)
+	if base != 12.5 {
+		t.Fatalf("expected real trade budget to grow with cash, got %.2f", base)
+	}
+	if effective != 12.5 {
+		t.Fatalf("expected real effective budget to match base in real mode, got %.2f", effective)
 	}
 }
 

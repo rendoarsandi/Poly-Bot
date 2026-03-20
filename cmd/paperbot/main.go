@@ -967,6 +967,7 @@ func run() error {
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
+	tui.SetMode("Paper")
 
 	// Initialize CSV Logger if enabled in config
 	if cfg.EnableCSVLogger {

@@ -287,6 +287,21 @@ func normalizedRealbotTakerCloseMinPrice(liveCfg paper.TUISettings) float64 {
 	return minPrice
 }
 
+func normalizedRealbotExecutionPriceCap(liveCfg paper.TUISettings) float64 {
+	limitPrice := liveCfg.TakerCloseMarketSlippage
+	if limitPrice <= 0 || limitPrice >= 1.0 {
+		return 0.99
+	}
+	return limitPrice
+}
+
+func realbotSizingBalance(sessionStartBalance, currentBalance float64) float64 {
+	if currentBalance > sessionStartBalance {
+		return currentBalance
+	}
+	return sessionStartBalance
+}
+
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case paperArbModeMaker:
@@ -506,7 +521,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 		for {
 			attempt++
 			redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			txHash, err := trader.RedeemOnChain(redeemCtx, conditionID, numOutcomes)
+			txHash, err := trader.RedeemOnChainForce(redeemCtx, conditionID, numOutcomes)
 			cancel()
 
 			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -1103,6 +1118,7 @@ func run() error {
 		_ = cfg.SaveSettings()
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
+	tui.SetMode("Real")
 
 	// Start TUI — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
@@ -1163,7 +1179,7 @@ func run() error {
 		}
 
 		// Track starting equity for this round's PnL calculation
-		startingEquity := engine.GetEquity()
+		startingEquity := engine.GetBookEquity()
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		tui.LogEvent("📊 Balance $%.2f | %.2fx", currentBalance, compoundMultiplier)
 
@@ -1301,8 +1317,10 @@ func run() error {
 			endBalFn()
 		}
 
-		// Calculate round PnL
-		roundPnL := engine.GetEquity() - startingEquity
+		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
+		// until it is actually sold, merged, or redeemed.
+		roundPnL := engine.GetBookEquity() - startingEquity
+		engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
 		if roundPnL > 0 {
 			tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)
 		} else if roundPnL < 0 {
@@ -2240,7 +2258,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			splitMu.Unlock()
 
 			if shouldSplit && replenishCtrl.MarkInProgress() {
-				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
+				baseTradeSize := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentBalance))
 
 				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
 				initialBuffer := baseTradeSize * 2.0
@@ -2312,7 +2330,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				sellMargin := (bidSum - 1.0) * 100 // Profit margin from selling
 
 				// BACKGROUND REPLENISHMENT
-				baseTradeSize := cfg.CalculateTradeSize(currentBalance)
+				baseTradeSize := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentBalance))
 				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
@@ -2684,7 +2702,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				sum := ask1 + ask2
 				observedMargin := pairMarginPercent(sum)
 				executionMarginFloor := clampExecutionMarginFloor(realbotCfg.MinMarginPercent, realbotCfg.BuyExecutionMarginFloorPercent)
-				maxExecutionSum := maxExecutablePairSum(executionMarginFloor, rMaxAsk)
+				executionPriceCap := normalizedRealbotExecutionPriceCap(realbotCfg)
+				maxExecutionSum := maxExecutablePairSum(executionMarginFloor, executionPriceCap)
 
 				if observedMargin >= realbotCfg.MinMarginPercent-1e-4 {
 					// Evaluate risk
@@ -2699,7 +2718,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					// For real bot, size off cash balance so unresolved mark-to-market
 					// drawdown does not shrink the configured trade factor.
-					tradeSize := cfg.CalculateTradeSize(currentBalance)
+					tradeSize := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentBalance))
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -2863,7 +2882,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					if true { // Always execute if we got here
-						limitPrice1, limitPrice2, capErr := core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, rMaxAsk, executionMarginFloor)
+						limitPrice1, limitPrice2, capErr := core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, executionPriceCap, executionMarginFloor)
 						if capErr != nil {
 							tui.LogEvent("[%s] ⚠️ Skipping trade: %v", id, capErr)
 							continue
@@ -4066,7 +4085,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseTradeValue := cfg.CalculateTradeSize(currentCash)
+	baseTradeValue := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentCash))
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
@@ -5418,7 +5437,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 					trader.RecordLoss(-result.TotalPnL)
 				}
 
-				tui.LogEvent("[%s] ⏳ Starting on-chain redemption retry loop (every 1m)...", id)
+				tui.LogEvent("[%s] ⏳ Starting forced on-chain redemption retry loop (every 1m)...", id)
 				launchRealbotRedeemRetryLoop(id, conditionID, winner, numOutcomes, trader, engine, tui)
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)

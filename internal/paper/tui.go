@@ -622,6 +622,7 @@ type tuiSnapshot struct {
 	stats           Stats
 	exposure        float64
 	equity          float64
+	bookEquity      float64
 	positions       map[string]PositionPnL
 	orders          []ScopedLimitOrder
 	multiplier      float64
@@ -755,7 +756,7 @@ func (m tuiModel) renderMainContent(w int) string {
 
 		var leftRows []string
 		leftRows = append(leftRows, m.renderMarketInfo(leftW))
-		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
+		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.bookEquity, s.multiplier, s.rounds, s.profitable, s.enginePositions))
 		leftRows = append(leftRows, m.renderPositions(leftW, s.positions))
 		if ord := m.renderOrders(leftW, s.orders); ord != "" {
 			leftRows = append(leftRows, ord)
@@ -772,7 +773,7 @@ func (m tuiModel) renderMainContent(w int) string {
 		rows = append(rows, content)
 	} else {
 		rows = append(rows, m.renderMarketInfo(w))
-		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity,
+		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity, s.bookEquity,
 			s.multiplier, s.rounds, s.profitable, s.enginePositions))
 		rows = append(rows, "")
 		rows = append(rows, m.renderPositions(w, s.positions))
@@ -828,6 +829,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		stats := m.tui.engine.GetStats()
 		exposure, _ := m.tui.engine.GetExposure()
 		equity := m.tui.engine.GetEquity()
+		bookEquity := m.tui.engine.GetBookEquity()
 		positions := m.tui.engine.GetPositionsWithPnL()
 		orders := m.tui.getOpenOrdersSnapshot()
 		multiplier, rounds, profitable := m.tui.engine.GetCompoundStats()
@@ -944,6 +946,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.stats = stats
 		m.snap.exposure = exposure
 		m.snap.equity = equity
+		m.snap.bookEquity = bookEquity
 		m.snap.positions = positions
 		m.snap.orders = orders
 		m.snap.multiplier = multiplier
@@ -2547,11 +2550,16 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 //	│  Trade 2.5% ($25/trade)  ·  Realized +$2.30  ·  Arb +$0.45      │
 //	│  Compound 1.02×  ·  5 rounds (3 profitable)  ·  ⏱ 1h23m         │
 //	╰──────────────────────────────────────────────────────────────────╯
-func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity, multiplier float64, rounds, profitable int, positions map[string]Position) string {
+func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity, bookEquity, multiplier float64, rounds, profitable int, positions map[string]Position) string {
 	s := m.snap
 	inner := w - 4
 
-	netChange := equity - stats.StartingBalance
+	displayEquity := equity
+	if strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live") {
+		displayEquity = bookEquity
+	}
+
+	netChange := displayEquity - stats.StartingBalance
 	changeSt := styleGreen
 	changeSign := "+"
 	if netChange < 0 {
@@ -2595,8 +2603,8 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	// Deployment bar
 	deployedPct := 0.0
-	if equity > 0 {
-		deployedPct = totalExposure / equity
+	if displayEquity > 0 {
+		deployedPct = totalExposure / displayEquity
 	}
 	barW := inner - 25 // leave room for label
 	if barW < 8 {
@@ -2610,7 +2618,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	// Trade size
 	tradeLine := ""
-	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, equity, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
+	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, displayEquity, stats.StartingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
 		if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
 		} else {
@@ -2638,7 +2646,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	row1 := fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
 		styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
-		styleBold.Render(fmt.Sprintf("$%.2f", equity)),
+		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, netChange)),
 		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
 	)
@@ -2653,14 +2661,14 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	return makePanel(inner, clrTeal, content)
 }
 
-func displayedTradeBudgets(mode string, cash, equity, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
+func displayedTradeBudgets(mode string, cash, equity, startingBalance, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
 	if tradeFactor <= 0 {
 		return 0, 0
 	}
 
 	sizingCapital := equity
 	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
-		sizingCapital = cash
+		sizingCapital = math.Max(cash, startingBalance)
 	}
 	base = sizingCapital * tradeFactor
 	if maxTradeSize > 0 && base > maxTradeSize {

@@ -850,6 +850,14 @@ func (e *Engine) GetEquity() float64 {
 	return e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue()
 }
 
+// GetBookEquity returns cash plus cost basis for open positions and split inventory.
+// This keeps unresolved inventory neutral until it is actually sold, merged, or redeemed.
+func (e *Engine) GetBookEquity() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.currentBalance + e.getPositionCostBasisValue() + e.getSplitInventoryValue()
+}
+
 // GetPeakEquity returns the highest equity seen so far
 func (e *Engine) GetPeakEquity() float64 {
 	e.mu.RLock()
@@ -867,6 +875,14 @@ func (e *Engine) getSplitInventoryValue() float64 {
 		// But a YES+NO pair is worth $1.00, so we need to count pairs
 		// The unrealizedValue already accounts for this correctly
 		value += unrealizedValue
+	}
+	return value
+}
+
+func (e *Engine) getPositionCostBasisValue() float64 {
+	value := 0.0
+	for _, pos := range e.positions {
+		value += pos.TotalCost
 	}
 	return value
 }
@@ -1014,6 +1030,13 @@ func (e *Engine) GetBalance() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.currentBalance
+}
+
+// GetStartingBalance returns the session-start balance the engine was initialized with.
+func (e *Engine) GetStartingBalance() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.startingBalance
 }
 
 // DeductBalance removes amount from balance (for split operations)

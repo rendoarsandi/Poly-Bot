@@ -865,6 +865,16 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numO
 	return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
 }
 
+// RedeemOnChainForce submits the redeem transaction without waiting for the
+// on-chain resolved flag to propagate. Use only when an authoritative winner is
+// already known and you want to mirror mergeredeem's force path.
+func (t *RealTrader) RedeemOnChainForce(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("redeem not supported/needed on kalshi")
+	}
+	return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+}
+
 // retryOnChainTx executes an on-chain transaction with retry logic and confirmation waiting.
 // txName is used for error messages (e.g., "merge", "split").
 // txFunc is the function that sends the transaction and returns (txHash, error).
