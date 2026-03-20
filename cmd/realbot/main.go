@@ -27,28 +27,28 @@ import (
 )
 
 const (
-	UseLiveUI                      = true // Set to false for traditional logging
-	paperArbModeTaker              = "taker"
-	paperArbModeMaker              = "maker"
-	terminalBidFloor               = 0.985
-	terminalAskCeil                = 0.015
-	realbotExecQuoteTimeout        = 1500 * time.Millisecond
-	realbotOrderWarmTimeout        = 1500 * time.Millisecond
-	realbotRestBookMaxAge          = 2 * time.Second
-	realbotWSWarnInterval          = 10 * time.Second
-	realbotWSForceReconnect        = 10 * time.Second
-	realbotMergeTimeout            = 120 * time.Second
-	realbotCleanupVerifyTTL        = 20 * time.Second
-	realbotFastVerifyTTL           = 6 * time.Second
-	minOnChainActionShares         = 0.01
-	realbotUIRefreshInterval       = 750 * time.Millisecond
-	realbotMainLoopInterval        = 10 * time.Millisecond
-	realbotFillPollInterval        = 50 * time.Millisecond
-	realbotMinMarketBuyValue       = 1.0
-	realbotTakerCloseMinOrderSlack = 0.05
-	realbotMaxSaneOutcomeSpread    = 0.10
-	realbotMaxSaneAskPairSum       = 1.10
-	realbotMinSaneBidPairSum       = 0.90
+	UseLiveUI                     = true // Set to false for traditional logging
+	paperArbModeTaker             = "taker"
+	paperArbModeMaker             = "maker"
+	terminalBidFloor              = 0.985
+	terminalAskCeil               = 0.015
+	realbotExecQuoteTimeout       = 1500 * time.Millisecond
+	realbotOrderWarmTimeout       = 1500 * time.Millisecond
+	realbotRestBookMaxAge         = 2 * time.Second
+	realbotWSWarnInterval         = 10 * time.Second
+	realbotWSForceReconnect       = 10 * time.Second
+	realbotMergeTimeout           = 120 * time.Second
+	realbotCleanupVerifyTTL       = 20 * time.Second
+	realbotFastVerifyTTL          = 6 * time.Second
+	minOnChainActionShares        = 0.01
+	realbotUIRefreshInterval      = 100 * time.Millisecond
+	realbotMainLoopInterval       = 10 * time.Millisecond
+	realbotFillPollInterval       = 50 * time.Millisecond
+	realbotTakerCloseQuoteRefresh = 500 * time.Millisecond
+	realbotTakerCloseLogInterval  = 5 * time.Second
+	realbotMaxSaneOutcomeSpread   = 0.10
+	realbotMaxSaneAskPairSum      = 1.10
+	realbotMinSaneBidPairSum      = 0.90
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -204,6 +204,22 @@ func realbotTakerCloseBudget(cash float64, liveCfg paper.TUISettings) float64 {
 	return budget
 }
 
+func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]float64) (string, float64) {
+	bestOutcome := ""
+	highestPrice := 0.0
+	for _, outcome := range outcomes {
+		price := asks[outcome]
+		if price <= 0 || price >= 1.0 {
+			price = bids[outcome]
+		}
+		if price > 0 && price <= 1.0 && price > highestPrice {
+			highestPrice = price
+			bestOutcome = outcome
+		}
+	}
+	return bestOutcome, highestPrice
+}
+
 func normalizedRealbotTakerCloseMinPrice(liveCfg paper.TUISettings) float64 {
 	minPrice := liveCfg.TakerCloseMarketMinPrice
 	if minPrice <= 0 || minPrice >= 1.0 {
@@ -299,6 +315,98 @@ func clampFloat64(v, lo, hi float64) float64 {
 		return hi
 	}
 	return v
+}
+
+func realbotRoundedLimitBuyCost(price, qty float64) float64 {
+	if price <= 0 || price >= 1.0 || qty <= 0 {
+		return 0
+	}
+
+	sizeMicro := int64(qty*1e6 + 0.5)
+	sizeMicro = (sizeMicro / 100) * 100
+	if sizeMicro <= 0 {
+		return 0
+	}
+
+	priceMicro := int64(price*1e6 + 0.5)
+	usdcMicro := (priceMicro * sizeMicro) / 1e6
+	if usdcMicro%10000 != 0 {
+		usdcMicro = ((usdcMicro / 10000) + 1) * 10000
+	}
+
+	return float64(usdcMicro) / 1e6
+}
+
+func realbotClampBuySharesToBudget(requestedShares, budget float64, prices ...float64) float64 {
+	qty := math.Floor(requestedShares + 1e-9)
+	for qty >= 1 {
+		totalCost := 0.0
+		valid := true
+		for _, price := range prices {
+			cost := realbotRoundedLimitBuyCost(price, qty)
+			if cost <= 0 {
+				valid = false
+				break
+			}
+			totalCost += cost
+		}
+		if valid && totalCost <= budget+1e-9 {
+			return qty
+		}
+		qty--
+	}
+	return 0
+}
+
+func realbotQuoteTimestampOrNow(raw string) time.Time {
+	ts, err := api.ParseOrderBookTimestamp(raw)
+	if err != nil || ts.IsZero() {
+		return time.Now()
+	}
+	return ts
+}
+
+func realbotShouldSkipStaleQuoteUpdate(quoteState map[string]realbotQuoteState, outcome string, updatedAt time.Time, currentBid, currentAsk float64) bool {
+	if updatedAt.IsZero() {
+		return false
+	}
+	state, ok := quoteState[outcome]
+	if !ok || state.UpdatedAt.IsZero() {
+		return false
+	}
+	if !updatedAt.Before(state.UpdatedAt) {
+		return false
+	}
+	return realbotHasSaneTopOfBook(currentBid, currentAsk)
+}
+
+func realbotShouldLogTakerCloseState(lastAt *time.Time, lastKey *string, nextKey string, interval time.Duration) bool {
+	now := time.Now()
+	if interval <= 0 {
+		interval = realbotTakerCloseLogInterval
+	}
+	if lastKey == nil || lastAt == nil {
+		return true
+	}
+	if *lastKey != nextKey {
+		*lastKey = nextKey
+		*lastAt = now
+		return true
+	}
+	if now.Sub(*lastAt) >= interval {
+		*lastAt = now
+		return true
+	}
+	return false
+}
+
+func realbotMarkTakerCloseStateLogged(lastAt *time.Time, lastKey *string, key string) {
+	if lastKey != nil {
+		*lastKey = key
+	}
+	if lastAt != nil {
+		*lastAt = time.Now()
+	}
 }
 
 func resolveRealbotMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) float64 {
@@ -1167,6 +1275,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var takerCloseExecutedAt time.Time // When taker close buy was confirmed (for merge-buffer cooldown)
 	var nextTakerCloseAttempt time.Time
 	var lastTakerCloseLog time.Time
+	var lastTakerCloseLogKey string
+	var lastTakerCloseQuoteRefresh time.Time
 	preserveWalletTruth := false
 	defer func() {
 		if !preserveWalletTruth {
@@ -1278,25 +1388,24 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
 		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted && !time.Now().Before(nextTakerCloseAttempt) {
-				bestOutcome := ""
-				highestPrice := 0.0
-				for _, outcome := range outcomes {
-					ask := tokenAsks[outcome]
-					bid := tokenBids[outcome]
-					price := ask
-					if price <= 0 || price >= 1.0 {
-						price = bid
-					}
-					if price > 0 && price <= 1.0 && price > highestPrice {
-						highestPrice = price
-						bestOutcome = outcome
-					}
-				}
+				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
+				if (bestOutcome == "" || highestPrice < minPrice) && time.Since(lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
+					lastTakerCloseQuoteRefresh = time.Now()
+					refreshCtx, refreshCancel := context.WithTimeout(ctx, 2*time.Second)
+					if handleRestFallbackWithDepth(refreshCtx, id, 0, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, false) {
+						lastUpdate = time.Now()
+					}
+					refreshCancel()
+					bestOutcome, highestPrice = realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
+				}
 				if bestOutcome == "" || highestPrice < minPrice {
-					if time.Since(lastTakerCloseLog) > 1*time.Second {
+					if highestPrice <= 0 {
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, fmt.Sprintf("awaiting-quote:%.3f", minPrice), realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⏳ Taker close awaiting valid quote (needs >= $%.3f)", id, minPrice)
+						}
+					} else if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, fmt.Sprintf("waiting-price:%.3f:%.3f", highestPrice, minPrice), realbotTakerCloseLogInterval) {
 						tui.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.3f (needs >= $%.3f)", id, highestPrice, minPrice)
-						lastTakerCloseLog = time.Now()
 					}
 					continue
 				}
@@ -1313,7 +1422,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
 						cancelCheck()
 						if restErr != nil {
-							tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
+							logKey := fmt.Sprintf("rest-confirm-failed:%s:%s", outcome, strings.TrimSpace(restErr.Error()))
+							if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, logKey, realbotTakerCloseLogInterval) {
+								tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
+							}
 							restConfirmOK = false
 							break
 						}
@@ -1330,9 +1442,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 					if confirmPrice < minPrice {
-						if time.Since(lastTakerCloseLog) > 1*time.Second {
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, fmt.Sprintf("rest-below-min:%.3f:%.3f:%.3f", confirmPrice, minPrice, highestPrice), realbotTakerCloseLogInterval) {
 							tui.LogEvent("[%s] ⏳ Taker close waiting: REST confirm $%.3f is below min $%.3f (WS $%.3f)", id, confirmPrice, minPrice, highestPrice)
-							lastTakerCloseLog = time.Now()
 						}
 						continue
 					}
@@ -1346,14 +1457,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 					if tokenID == "" {
 						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
-						tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "missing-token-id:"+bestOutcome, realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
+						}
 						continue
 					}
 
 					budget := realbotTakerCloseBudget(engine.GetBalance(), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
-						tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
+						}
 						takerCloseAttempted = true
 						continue
 					}
@@ -1361,6 +1476,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					initialPosition := trader.GetLivePositionSize(tokenID)
 					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, REST $%.3f, budget $%.2f)",
 						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmPrice, budget)
+					realbotMarkTakerCloseStateLogged(&lastTakerCloseLog, &lastTakerCloseLogKey, "submitted")
 
 					takerCloseAttempted = true
 					tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
@@ -1482,6 +1598,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if outcome == "" {
 							continue
 						}
+						updatedAt := realbotQuoteTimestampOrNow(b.Timestamp)
+						if realbotShouldSkipStaleQuoteUpdate(quoteState, outcome, updatedAt, tokenBids[outcome], tokenAsks[outcome]) {
+							continue
+						}
 
 						bid, ask := 0.0, 0.0
 						for _, order := range b.Bids {
@@ -1519,7 +1639,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Always update full depth from snapshots
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks, false)
-						quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "ws"}
+						quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
 
 						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
@@ -1602,7 +1722,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					outcome := tokenToOutcome[book.AssetID]
 					if outcome != "" {
-						lastUpdate = time.Now()
+						updatedAt := realbotQuoteTimestampOrNow(book.Timestamp)
+						if realbotShouldSkipStaleQuoteUpdate(quoteState, outcome, updatedAt, tokenBids[outcome], tokenAsks[outcome]) {
+							continue
+						}
+						lastUpdate = updatedAt
 						// Guard: only persist valid (non-zero) prices.
 						if bid > 0 {
 							tokenBids[outcome] = bid
@@ -1616,7 +1740,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
-						quoteState[outcome] = realbotQuoteState{UpdatedAt: lastUpdate, Source: "ws"}
+						quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
 					}
 				}
 			default:
@@ -2463,6 +2587,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] ⚠️ Skipping trade: %v", id, capErr)
 							continue
 						}
+						budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
+						if budgetCappedShares < shares {
+							tui.LogEvent("[%s] 📉 Downscaling from %.0f to %.0f shares to stay within $%.2f trade budget at live caps", id, shares, budgetCappedShares, tradeSize)
+							shares = budgetCappedShares
+						}
+						if shares < 1 {
+							tui.LogEvent("[%s] ⚠️ Actionable size fell below 1 share after cap-based budget clamp", id)
+							continue
+						}
 						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
@@ -2476,15 +2609,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// Ensure total locked balance does not exceed current available balance
-						totalMaxCost := shares * (limitPrice1 + limitPrice2)
-						if totalMaxCost > currentBalance {
-							// Downscale shares so we don't hit an insufficient balance error
-							safeShares := math.Floor(currentBalance / (limitPrice1 + limitPrice2))
-							if safeShares < shares {
-								tui.LogEvent("[%s] 📉 Downscaling from %.0f to %.0f shares to fit $%.2f balance limit (locked cost: $%.2f)", id, shares, safeShares, currentBalance, safeShares*(limitPrice1+limitPrice2))
-								shares = safeShares
-							}
+						// Ensure the actual market-like buy payload still fits the latest cash snapshot.
+						safeShares := realbotClampBuySharesToBudget(shares, currentBalance, limitPrice1, limitPrice2)
+						if safeShares < shares {
+							tui.LogEvent("[%s] 📉 Downscaling from %.0f to %.0f shares to fit $%.2f balance limit", id, shares, safeShares, currentBalance)
+							shares = safeShares
+						}
+						if shares < 1 {
+							tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", id)
+							continue
 						}
 
 						// Sync CLOB allowance with on-chain state right before trading.
@@ -3873,15 +4006,7 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 	}
 
 	requestedQty := math.Floor((budget / sizingPrice) + 1e-9)
-	minQtyForNotional := math.Ceil((realbotMinMarketBuyValue / limitPrice) - 1e-9)
-	if requestedQty < minQtyForNotional {
-		requiredBudget := minQtyForNotional * limitPrice
-		if requiredBudget-budget <= realbotTakerCloseMinOrderSlack+1e-9 {
-			requestedQty = minQtyForNotional
-		} else {
-			return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f too small for minimum marketable close order at cap $%.3f (needs up to $%.2f)", budget, limitPrice, requiredBudget)
-		}
-	}
+	requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, limitPrice)
 	if requestedQty < 1 {
 		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f is too small at sizing price $%.3f", budget, sizingPrice)
 	}
@@ -4839,13 +4964,18 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		}
 
 		// REST is authoritative state. If both sides are empty, clear stale local quotes.
+		updatedAt := realbotQuoteTimestampOrNow(book.Timestamp)
+		if realbotShouldSkipStaleQuoteUpdate(quoteState, outcome, updatedAt, bids[outcome], asks[outcome]) {
+			success = true
+			continue
+		}
 		if len(book.Bids) == 0 && len(book.Asks) == 0 {
 			restEmpty++
 			bids[outcome] = 0
 			asks[outcome] = 0
 			fullBids[outcome] = nil
 			fullAsks[outcome] = nil
-			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
+			quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 			success = true
 			continue
 		}
@@ -4871,7 +5001,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			asks[outcome] = 0
 			fullBids[outcome] = nil
 			fullAsks[outcome] = nil
-			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
+			quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 			success = true // Important: ensure UI updates to 0 (--.-)
 			continue
 		}
@@ -4889,7 +5019,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		// for recovering from stale or dropped WS states.
 		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
-		quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
+		quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 	}
 	if success && !realbotHasSanePairQuotes(outcomes, bids, asks) {
 		for _, outcome := range tokenMap {

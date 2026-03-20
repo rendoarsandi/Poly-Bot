@@ -338,6 +338,27 @@ func TestRenderPositionsShowsWalletTruthResolutionTags(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+	tui.SetWalletTruthPositions("SOL", []WalletTruthPosition{
+		{MarketID: "SOL", Outcome: "Up", OnChainShares: 3.5, ResolutionStatus: "unresolved"},
+		{MarketID: "SOL", Outcome: "Down", OnChainShares: 1.25, ResolutionStatus: "redeemable", Redeemable: true, IsWinner: true},
+	})
+
+	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
+	rendered := model.renderPositions(120, nil)
+	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
+		t.Fatalf("expected on-chain inventory section, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Up: 3.5000") || !strings.Contains(rendered, "OPEN") {
+		t.Fatalf("expected unresolved on-chain inventory row, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Down: 1.2500") || !strings.Contains(rendered, "REDEEMABLE") {
+		t.Fatalf("expected redeemable on-chain inventory row, got %q", rendered)
+	}
+}
+
 func TestNormalizeTUISettingsNormalizesExecutionFloorToNonPositiveDecimal(t *testing.T) {
 	cfg := normalizeTUISettings(TUISettings{BuyExecutionMarginFloorPercent: -1.0})
 	if math.Abs(cfg.BuyExecutionMarginFloorPercent-(-0.01)) > 0.000001 {

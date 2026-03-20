@@ -169,6 +169,19 @@ func recentDisplayQuote(current, lastGood float64, age time.Duration) float64 {
 	return current
 }
 
+func walletTruthInventoryStatus(wt WalletTruthPosition) string {
+	switch {
+	case wt.Redeemable:
+		return styleGreen.Render("[REDEEMABLE]")
+	case wt.IsWinner:
+		return styleGreen.Render("[WINNER]")
+	case wt.ResolutionStatus == "resolved":
+		return styleRed.Render("[LOSER]")
+	default:
+		return styleYellow.Render("[OPEN]")
+	}
+}
+
 func looksTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
 	if len(outcomes) == 0 {
 		return false
@@ -2809,6 +2822,40 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				sb.WriteString("  →  " + styleGreen.Render(fmt.Sprintf("%.2f pairs sellable", minSh)))
 			}
 			sb.WriteString("\n")
+		}
+	}
+
+	onChainInventoryByMarket := make(map[string][]WalletTruthPosition)
+	onChainInventoryCount := 0
+	for _, wt := range walletTruthPositions {
+		if wt.OnChainShares <= 0 {
+			continue
+		}
+		onChainInventoryByMarket[wt.MarketID] = append(onChainInventoryByMarket[wt.MarketID], wt)
+		onChainInventoryCount++
+	}
+	if onChainInventoryCount > 0 {
+		sb.WriteString("\n" + sectionHeader("🏦", "ON-CHAIN INVENTORY", clrTeal) + "\n")
+		onChainMarketIDs := make([]string, 0, len(onChainInventoryByMarket))
+		for marketID := range onChainInventoryByMarket {
+			onChainMarketIDs = append(onChainMarketIDs, marketID)
+		}
+		for _, marketID := range orderedMarketIDs(onChainMarketIDs) {
+			positions := onChainInventoryByMarket[marketID]
+			if len(positions) == 0 {
+				continue
+			}
+			aStyle := getAssetStyle(marketID)
+			sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
+			parts := make([]string, 0, len(positions))
+			for _, wt := range positions {
+				parts = append(parts, fmt.Sprintf("%s: %.4f %s",
+					core.SanitizeString(wt.Outcome),
+					wt.OnChainShares,
+					walletTruthInventoryStatus(wt),
+				))
+			}
+			sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  " + strings.Join(parts, "  │  ") + "\n")
 		}
 	}
 

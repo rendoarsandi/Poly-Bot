@@ -143,6 +143,60 @@ func TestBuildRealbotTakerClosePlanFloorsLimitToMinPrice(t *testing.T) {
 	}
 }
 
+func TestRealbotRoundedLimitBuyCostMatchesVenueCentRounding(t *testing.T) {
+	cost := realbotRoundedLimitBuyCost(0.501, 1)
+	if math.Abs(cost-0.51) > 0.000001 {
+		t.Fatalf("expected rounded venue cost 0.51, got %.4f", cost)
+	}
+}
+
+func TestRealbotClampBuySharesToBudgetUsesCapPriceNotObservedQuote(t *testing.T) {
+	shares := realbotClampBuySharesToBudget(2, 2.0, 0.50, 0.51)
+	if shares != 1 {
+		t.Fatalf("expected clamp to 1 share, got %.0f", shares)
+	}
+}
+
+func TestRealbotShouldSkipStaleQuoteUpdateOnlyWhenCurrentQuoteIsAlreadySane(t *testing.T) {
+	now := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	quoteState := map[string]realbotQuoteState{
+		"Up": {UpdatedAt: now, Source: "ws"},
+	}
+
+	if !realbotShouldSkipStaleQuoteUpdate(quoteState, "Up", now.Add(-250*time.Millisecond), 0.45, 0.46) {
+		t.Fatal("expected stale update to be ignored when current quote is already sane")
+	}
+	if realbotShouldSkipStaleQuoteUpdate(quoteState, "Up", now.Add(-250*time.Millisecond), 0, 0) {
+		t.Fatal("expected stale update to be allowed when current quote is unusable")
+	}
+}
+
+func TestRealbotShouldLogTakerCloseStateLogsOnChangeAndThenThrottles(t *testing.T) {
+	lastAt := time.Now()
+	lastKey := "awaiting-quote:0.795"
+
+	if !realbotShouldLogTakerCloseState(&lastAt, &lastKey, "waiting-price:0.780:0.795", time.Hour) {
+		t.Fatal("expected changed taker-close state to log immediately")
+	}
+
+	prevAt := lastAt
+	if realbotShouldLogTakerCloseState(&lastAt, &lastKey, "waiting-price:0.780:0.795", time.Hour) {
+		t.Fatal("expected repeated taker-close state to be throttled")
+	}
+	if !lastAt.Equal(prevAt) {
+		t.Fatal("expected throttled state to preserve last log timestamp")
+	}
+}
+
+func TestRealbotShouldLogTakerCloseStateLogsAgainAfterInterval(t *testing.T) {
+	lastAt := time.Now().Add(-10 * time.Second)
+	lastKey := "awaiting-quote:0.795"
+
+	if !realbotShouldLogTakerCloseState(&lastAt, &lastKey, "awaiting-quote:0.795", 5*time.Second) {
+		t.Fatal("expected repeated taker-close state to log again after interval")
+	}
+}
+
 func TestRealbotLooksLikeTerminalBookRecognizesPinnedEndState(t *testing.T) {
 	terminal := realbotLooksLikeTerminalBook(
 		[]string{"Down", "Up"},
@@ -438,6 +492,48 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 	}
 	if quoteState["Down"].Source != "rest-exec" || quoteState["Up"].Source != "rest-exec" {
 		t.Fatalf("expected refreshed quote source, got Down=%q Up=%q", quoteState["Down"].Source, quoteState["Up"].Source)
+	}
+}
+
+func TestHandleRestFallbackWithDepthSkipsOlderBooksWhenCurrentQuoteIsFresh(t *testing.T) {
+	staleTS := time.Now().Add(-2 * time.Second).UTC().Format(time.RFC3339Nano)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("token_id") {
+		case "down-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"down-token\",\"timestamp\":\"" + staleTS + "\",\"bids\":[{\"price\":\"0.34\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.35\",\"size\":\"9\"}]}"))
+		case "up-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + staleTS + "\",\"bids\":[{\"price\":\"0.61\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.62\",\"size\":\"10\"}]}"))
+		default:
+			http.Error(w, "unexpected token", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.AddMarket("SOL", "sol", []string{"Down", "Up"}, time.Now().Add(time.Minute))
+
+	bids := map[string]float64{"Down": 0.40, "Up": 0.58}
+	asks := map[string]float64{"Down": 0.41, "Up": 0.59}
+	fullBids := map[string][]paper.MarketLevel{}
+	fullAsks := map[string][]paper.MarketLevel{}
+	quoteState := map[string]realbotQuoteState{
+		"Down": {UpdatedAt: time.Now(), Source: "ws"},
+		"Up":   {UpdatedAt: time.Now(), Source: "ws"},
+	}
+
+	ok := handleRestFallbackWithDepth(context.Background(), "SOL", 12*time.Second, map[string]string{
+		"down-token": "Down",
+		"up-token":   "Up",
+	}, bids, asks, fullBids, fullAsks, quoteState, engine, client, tui, false)
+	if !ok {
+		t.Fatal("expected fallback call to complete")
+	}
+	if math.Abs(bids["Down"]-0.40) > 0.000001 || math.Abs(asks["Up"]-0.59) > 0.000001 {
+		t.Fatalf("expected stale REST data to be ignored, got bids=%v asks=%v", bids, asks)
 	}
 }
 
@@ -777,29 +873,33 @@ func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
 	}
 }
 
-func TestBuildRealbotTakerClosePlan_RejectsBudgetBelowMinimumMarketableCap(t *testing.T) {
+func TestBuildRealbotTakerClosePlan_AllowsSingleShareBudgetNearDollarCap(t *testing.T) {
 	liveCfg := paper.TUISettings{
 		TakerCloseMarketSlippage: 0.99,
 		TakerCloseMarketMinPrice: 0.60,
 	}
 
-	if _, err := buildRealbotTakerClosePlan(1.0, 0.67, liveCfg); err == nil {
-		t.Fatal("expected close plan to reject a $1 budget at a $0.99 cap")
+	plan, err := buildRealbotTakerClosePlan(1.0, 0.67, liveCfg)
+	if err != nil {
+		t.Fatalf("expected close plan to allow a $1 budget at a $0.99 cap, got %v", err)
+	}
+	if plan.RequestedQty != 1 {
+		t.Fatalf("expected 1 share, got %.0f", plan.RequestedQty)
 	}
 }
 
-func TestBuildRealbotTakerClosePlan_AllowsSmallSlackForMinimumMarketableCap(t *testing.T) {
+func TestBuildRealbotTakerClosePlan_UsesBudgetFloorWithoutArtificialTwoShareMinimum(t *testing.T) {
 	liveCfg := paper.TUISettings{
 		TakerCloseMarketSlippage: 0.99,
 		TakerCloseMarketMinPrice: 0.60,
 	}
 
-	plan, err := buildRealbotTakerClosePlan(1.94, 0.92, liveCfg)
+	plan, err := buildRealbotTakerClosePlan(1.89, 0.92, liveCfg)
 	if err != nil {
-		t.Fatalf("expected small shortfall to be tolerated, got %v", err)
+		t.Fatalf("expected one-share budget floor to pass, got %v", err)
 	}
-	if plan.RequestedQty != 2 {
-		t.Fatalf("expected 2 shares, got %.0f", plan.RequestedQty)
+	if plan.RequestedQty != 1 {
+		t.Fatalf("expected 1 share, got %.0f", plan.RequestedQty)
 	}
 }
 
