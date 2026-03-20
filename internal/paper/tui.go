@@ -2692,11 +2692,14 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 	splitPositions := s.splitPositions
 	walletTruthPositions := s.walletTruth
-	hasPositions := len(positionsWithPnL) > 0
+	showInFlightPositions := len(positionsWithPnL) > 0
+	if m.tui != nil && m.tui.settings.TakerCloseMarket && !isMakerSettingsMode(m.tui.settings) {
+		showInFlightPositions = false
+	}
 	hasSplitInventory := len(splitPositions) > 0
 	hasWalletTruth := len(walletTruthPositions) > 0
 
-	if !hasPositions && !hasSplitInventory && !hasWalletTruth {
+	if !showInFlightPositions && !hasSplitInventory && !hasWalletTruth {
 		return makePanel(inner, clrSlate,
 			sectionHeader("📦", "POSITIONS", clrSlate)+"\n"+
 				styleDimmed.Render("  (none)"))
@@ -2705,7 +2708,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	var sb strings.Builder
 
 	// ── In-flight positions ──
-	if hasPositions {
+	if showInFlightPositions {
 		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%d) %s",
 			len(positionsWithPnL), styleYellow.Render("⏳ awaiting merge")), clrTeal) + "\n")
 	} else {
@@ -2713,12 +2716,14 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	}
 
 	byMarket := make(map[string][]PositionPnL)
-	for _, pos := range positionsWithPnL {
-		mid := pos.MarketID
-		if mid == "" {
-			mid = "UNKNOWN"
+	if showInFlightPositions {
+		for _, pos := range positionsWithPnL {
+			mid := pos.MarketID
+			if mid == "" {
+				mid = "UNKNOWN"
+			}
+			byMarket[mid] = append(byMarket[mid], pos)
 		}
-		byMarket[mid] = append(byMarket[mid], pos)
 	}
 
 	totalMarketPnL, totalLockedPnL := 0.0, 0.0

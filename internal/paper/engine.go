@@ -47,6 +47,7 @@ type Engine struct {
 
 	// Configuration
 	startingBalance float64
+	pnlBaseline     float64
 	currentBalance  float64
 
 	// Compounding multiplier - increases with profitable rounds
@@ -94,6 +95,7 @@ type Engine struct {
 func NewEngine(startingBalance float64) *Engine {
 	return &Engine{
 		startingBalance:    startingBalance,
+		pnlBaseline:        startingBalance,
 		currentBalance:     startingBalance,
 		peakBalance:        startingBalance,
 		compoundMultiplier: 1.0,  // Start at 1x
@@ -966,7 +968,7 @@ func (e *Engine) GetStats() Stats {
 		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
 		PeakBalance:     e.peakBalance,
 		CurrentBalance:  e.currentBalance,
-		StartingBalance: e.startingBalance,
+		StartingBalance: e.pnlBaseline,
 	}
 }
 
@@ -1053,11 +1055,11 @@ func (e *Engine) GetBalance() float64 {
 	return e.currentBalance
 }
 
-// GetStartingBalance returns the session-start balance the engine was initialized with.
+// GetStartingBalance returns the PnL baseline used for account-level display and sizing.
 func (e *Engine) GetStartingBalance() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.startingBalance
+	return e.pnlBaseline
 }
 
 func (e *Engine) SetPendingRedemption(marketID string, payout float64) {
@@ -1155,13 +1157,17 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 
 	pos, exists := e.positions[posKey]
 	if !exists {
+		totalCost := quantity * markPrice
 		e.positions[posKey] = &Position{
 			Outcome:   outcome,
 			MarketID:  marketID,
 			Quantity:  quantity,
 			AvgPrice:  markPrice,
-			TotalCost: quantity * markPrice,
+			TotalCost: totalCost,
 		}
+		// External carry should start neutral in the session PnL view until it is
+		// actually sold, merged, or redeemed on-chain.
+		e.pnlBaseline += totalCost
 		e.recalculateDrawdown()
 		return true
 	}
@@ -1171,6 +1177,7 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 	case quantity > pos.Quantity+eps:
 		addQty := quantity - pos.Quantity
 		pos.TotalCost += addQty * markPrice
+		e.pnlBaseline += addQty * markPrice
 		pos.Quantity = quantity
 		changed = true
 	case quantity < pos.Quantity-eps:

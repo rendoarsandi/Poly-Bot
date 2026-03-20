@@ -5052,17 +5052,6 @@ func pendingPairRecoveryBalances(ctx context.Context, marketID, token0, token1 s
 	return math.Max(0, onChain0-split0), math.Max(0, onChain1-split1), "on-chain truth", nil
 }
 
-func localInventorySyncPrice(engine *paper.Engine, marketID, outcome string) float64 {
-	bid, ask := engine.GetMarketBidAsk(marketID, outcome)
-	if bid >= 0.01 {
-		return bid
-	}
-	if ask >= 0.01 {
-		return ask
-	}
-	return 0.01
-}
-
 func walletTruthSyncMarkPrice(engine *paper.Engine, marketID, outcome string) float64 {
 	bid, ask := engine.GetMarketBidAsk(marketID, outcome)
 	if bid >= 0.01 {
@@ -5093,11 +5082,10 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	changed := false
 	if local0 > desired0+1e-6 {
 		trimQty := local0 - desired0
-		if _, sellErr := engine.SellForMarket(marketID, outcomes[0], localInventorySyncPrice(engine, marketID, outcomes[0]), trimQty); sellErr != nil {
-			return changed, sellErr
+		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
+			tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
+			changed = true
 		}
-		tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
-		changed = true
 	} else if desired0 > local0+1e-6 {
 		addQty := desired0 - local0
 		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
@@ -5107,11 +5095,10 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	}
 	if local1 > desired1+1e-6 {
 		trimQty := local1 - desired1
-		if _, sellErr := engine.SellForMarket(marketID, outcomes[1], localInventorySyncPrice(engine, marketID, outcomes[1]), trimQty); sellErr != nil {
-			return changed, sellErr
+		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {
+			tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
+			changed = true
 		}
-		tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
-		changed = true
 	} else if desired1 > local1+1e-6 {
 		addQty := desired1 - local1
 		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {

@@ -399,6 +399,41 @@ func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsHidesInFlightSectionWhenTakerCloseEnabled(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), nil)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:         "taker",
+		TakerCloseMarket:     true,
+		TakerCloseMarketTime: 10,
+	}, nil)
+
+	positions := map[string]PositionPnL{
+		"ETH#0c319cc1:Down": {
+			Position: Position{
+				MarketID:  "ETH#0c319cc1",
+				Outcome:   "Down",
+				Quantity:  3,
+				AvgPrice:  0.99,
+				TotalCost: 2.97,
+			},
+			CurrentBid: 0.56,
+		},
+	}
+
+	model := tuiModel{tui: tui}
+	rendered := model.renderPositions(120, positions)
+
+	if strings.Contains(rendered, "IN-FLIGHT") || strings.Contains(rendered, "awaiting merge") {
+		t.Fatalf("expected in-flight merge section to be hidden in taker-close mode, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Down: 3@$0.99") {
+		t.Fatalf("expected in-flight position rows to be hidden in taker-close mode, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(none)") {
+		t.Fatalf("expected positions panel to collapse when only in-flight rows were suppressed, got %q", rendered)
+	}
+}
+
 func TestNormalizeTUISettingsNormalizesExecutionFloorToNonPositiveDecimal(t *testing.T) {
 	cfg := normalizeTUISettings(TUISettings{BuyExecutionMarginFloorPercent: -1.0})
 	if math.Abs(cfg.BuyExecutionMarginFloorPercent-(-0.01)) > 0.000001 {

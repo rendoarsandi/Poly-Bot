@@ -313,6 +313,38 @@ func TestEngine_SyncExternalPosition(t *testing.T) {
 	}
 }
 
+func TestEngine_SyncExternalPositionKeepsImportedCarryNeutralInBookPnL(t *testing.T) {
+	engine := NewEngine(65.47)
+
+	if !engine.SyncExternalPosition("BTC", "Up", 3.3029, 0.99) {
+		t.Fatal("expected external sync to import carry position")
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.StartingBalance-68.739871) > 0.000001 {
+		t.Fatalf("expected pnl baseline 68.739871 after import, got %.6f", stats.StartingBalance)
+	}
+	if absFloat(engine.GetBookEquity()-stats.StartingBalance) > 0.000001 {
+		t.Fatalf("expected imported carry to remain neutral, book equity %.6f baseline %.6f", engine.GetBookEquity(), stats.StartingBalance)
+	}
+}
+
+func TestEngine_SyncExternalPositionTrimsWithoutChangingRealizedPnL(t *testing.T) {
+	engine := NewEngine(100.0)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.99, 3.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	if !engine.SyncExternalPosition("BTC", "Up", 1.5, 0.50) {
+		t.Fatal("expected sync trim to report a change")
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.RealizedPnL) > 0.000001 {
+		t.Fatalf("expected sync trim to avoid local realized pnl, got %.6f", stats.RealizedPnL)
+	}
+}
+
 // TestEngine_DeductBalance verifies balance deduction
 func TestEngine_DeductBalance(t *testing.T) {
 	engine := NewEngine(1000.0)
