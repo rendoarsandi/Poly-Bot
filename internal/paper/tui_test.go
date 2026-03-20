@@ -122,7 +122,7 @@ func TestTUI_SetWalletTruthPositionsClonesInput(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
-	base, effective := displayedTradeBudgets("Paper", 75, 100, 100, 0.10, 0, 1.12)
+	base, effective := displayedTradeBudgets("Paper", 75, 100, 100, 100, 0.10, 0, 1.12)
 	if base != 10 {
 		t.Fatalf("expected paper base trade budget 10.00, got %.2f", base)
 	}
@@ -132,7 +132,7 @@ func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsUsesStartingBalanceFloorInRealMode(t *testing.T) {
-	base, effective := displayedTradeBudgets("Real", 50, 100, 100, 0.10, 0, 1.50)
+	base, effective := displayedTradeBudgets("Real", 50, 100, 100, 100, 0.10, 0, 1.50)
 	if base != 10 {
 		t.Fatalf("expected real trade budget to keep session-start floor, got %.2f", base)
 	}
@@ -142,12 +142,22 @@ func TestDisplayedTradeBudgetsUsesStartingBalanceFloorInRealMode(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsCompoundsUpInRealModeWhenCashGrows(t *testing.T) {
-	base, effective := displayedTradeBudgets("Real", 125, 100, 100, 0.10, 0, 1.50)
+	base, effective := displayedTradeBudgets("Real", 125, 100, 100, 125, 0.10, 0, 1.50)
 	if base != 12.5 {
 		t.Fatalf("expected real trade budget to grow with cash, got %.2f", base)
 	}
 	if effective != 12.5 {
 		t.Fatalf("expected real effective budget to match base in real mode, got %.2f", effective)
+	}
+}
+
+func TestDisplayedTradeBudgetsKeepsHighWaterSizingInRealModeAfterDrawdown(t *testing.T) {
+	base, effective := displayedTradeBudgets("Real", 100, 100, 100, 120, 0.10, 0, 1.0)
+	if base != 12 {
+		t.Fatalf("expected real trade budget to keep high-water sizing base, got %.2f", base)
+	}
+	if effective != 12 {
+		t.Fatalf("expected real effective budget to match high-water base, got %.2f", effective)
 	}
 }
 
@@ -843,7 +853,7 @@ func TestRenderAccountStatusFormatsRealizedFromRealizedPnL(t *testing.T) {
 		CurrentBalance:  100,
 		StartingBalance: 100,
 		RealizedPnL:     -3,
-	}, 0, 120, 120, 1.0, 0, 0, nil)
+	}, 0, 120, 120, 1.0, 100, 0, 0, 0, nil)
 
 	if strings.Contains(rendered, "+$-3.00") {
 		t.Fatalf("expected realized pnl to format from its own sign, got %q", rendered)
@@ -864,7 +874,7 @@ func TestRenderAccountStatusUsesBookEquityForPaperTradeBudget(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  94,
 		StartingBalance: 100,
-	}, 6, 97, 100, 1.0, 0, 0, map[string]Position{
+	}, 6, 97, 100, 1.0, 100, 0, 0, 0, map[string]Position{
 		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 10, AvgPrice: 0.60, TotalCost: 6},
 	})
 
@@ -885,7 +895,7 @@ func TestRenderAccountStatusFallsBackToNetChangeWhenFlat(t *testing.T) {
 		CurrentBalance:  120,
 		StartingBalance: 100,
 		RealizedPnL:     0,
-	}, 0, 120, 120, 1.0, 0, 0, nil)
+	}, 0, 120, 120, 1.0, 100, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Realized +$20.00") {
 		t.Fatalf("expected flat realized line to fall back to settled net change, got %q", rendered)
@@ -905,13 +915,40 @@ func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   7,
 		LosingTrades:    3,
-	}, 0, 100, 100, 1.0, 5, 3, nil)
+	}, 0, 100, 100, 1.0, 100, 5, 3, 0, nil)
 
 	if !strings.Contains(rendered, "Win 70%") {
 		t.Fatalf("expected win rate in account status, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "W/L 7/3") {
 		t.Fatalf("expected win/loss counts in account status, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+	}, 0, 100, 100, 1.2, 120, 8, 3, 2, nil)
+
+	if !strings.Contains(rendered, "Win 60%") {
+		t.Fatalf("expected round win rate fallback in account status, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "W/L 3/2") {
+		t.Fatalf("expected round win/loss fallback in account status, got %q", rendered)
+	}
+	if strings.Contains(rendered, "profitable") {
+		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "$6.00/trade") {
+		t.Fatalf("expected real trade budget to use sizing high-water, got %q", rendered)
 	}
 }
 

@@ -52,8 +52,10 @@ type Engine struct {
 
 	// Compounding multiplier - increases with profitable rounds
 	compoundMultiplier float64
+	sizingBalance      float64
 	roundsCompleted    int
 	profitableRounds   int
+	losingRounds       int
 
 	// Positions: "marketID:outcome" -> position
 	positions map[string]*Position
@@ -98,7 +100,8 @@ func NewEngine(startingBalance float64) *Engine {
 		pnlBaseline:        startingBalance,
 		currentBalance:     startingBalance,
 		peakBalance:        startingBalance,
-		compoundMultiplier: 1.0,  // Start at 1x
+		compoundMultiplier: 1.0, // Start at 1x
+		sizingBalance:      startingBalance,
 		maxTrades:          1000, // Cap trade history to prevent memory growth
 		positions:          make(map[string]*Position),
 		pendingRedemptions: make(map[string]float64),
@@ -1165,6 +1168,31 @@ func (e *Engine) SetBalance(balance float64) {
 	e.currentBalance = balance
 }
 
+func (e *Engine) refreshCompoundStateLocked(candidateSizingBalance float64) {
+	if candidateSizingBalance > e.sizingBalance {
+		e.sizingBalance = candidateSizingBalance
+	}
+	if e.pnlBaseline > e.sizingBalance {
+		e.sizingBalance = e.pnlBaseline
+	}
+
+	base := e.pnlBaseline
+	if base <= 0 {
+		e.compoundMultiplier = 1.0
+		return
+	}
+
+	multiplier := e.sizingBalance / base
+	if multiplier < 1.0 {
+		multiplier = 1.0
+	}
+	if multiplier > 3.0 {
+		multiplier = 3.0
+		e.sizingBalance = base * multiplier
+	}
+	e.compoundMultiplier = multiplier
+}
+
 // SyncExternalPosition aligns the shadow position inventory to authoritative
 // external holdings without changing cash balance or trade statistics.
 func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPrice float64) bool {
@@ -1204,6 +1232,7 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 		// External carry should start neutral in the session PnL view until it is
 		// actually sold, merged, or redeemed on-chain.
 		e.pnlBaseline += totalCost
+		e.refreshCompoundStateLocked(e.pnlBaseline)
 		e.recalculateDrawdown()
 		return true
 	}
@@ -1214,6 +1243,7 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 		addQty := quantity - pos.Quantity
 		pos.TotalCost += addQty * markPrice
 		e.pnlBaseline += addQty * markPrice
+		e.refreshCompoundStateLocked(e.pnlBaseline)
 		pos.Quantity = quantity
 		changed = true
 	case quantity < pos.Quantity-eps:
@@ -1279,46 +1309,41 @@ func (e *Engine) GetCompoundMultiplier() float64 {
 	return e.compoundMultiplier
 }
 
+// GetSizingBalance returns the ratcheting balance used for trade sizing.
+// It starts at the session baseline and only moves up when profitable rounds
+// lock in a new high-water mark.
+func (e *Engine) GetSizingBalance() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sizingBalance
+}
+
 // UpdateCompoundMultiplier updates the multiplier based on round profit/loss
-// If profitable, multiplier increases proportionally (e.g., 5% profit = 1.05x)
-// If loss, multiplier resets to 1.0
+// Profitable rounds ratchet the sizing base upward to the new high-water mark.
+// Losses do not shrink sizing; they only affect round win/loss reporting.
 func (e *Engine) UpdateCompoundMultiplier(roundPnL float64, startingEquity float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.roundsCompleted++
 
-	if roundPnL > 0 && startingEquity > 0 {
-		// Calculate profit percentage
-		profitPercent := roundPnL / startingEquity
-
-		// Increase multiplier by profit percentage (compounding)
-		e.compoundMultiplier *= (1.0 + profitPercent)
-
-		// Cap at 3x to prevent excessive risk
-		if e.compoundMultiplier > 3.0 {
-			e.compoundMultiplier = 3.0
-		}
-
+	if roundPnL > 0 {
 		e.profitableRounds++
+		endingEquity := startingEquity + roundPnL
+		if endingEquity > 0 {
+			e.refreshCompoundStateLocked(endingEquity)
+			return
+		}
 	} else if roundPnL < 0 {
-		// On loss, reduce multiplier but don't go below 1.0
-		// Lose 50% of the bonus (multiplier - 1.0)
-		bonus := e.compoundMultiplier - 1.0
-		if bonus > 0 {
-			e.compoundMultiplier = 1.0 + (bonus * 0.5)
-		}
-		// If still losing, reset to 1.0
-		if e.compoundMultiplier < 1.0 {
-			e.compoundMultiplier = 1.0
-		}
+		e.losingRounds++
 	}
-	// If breakeven (roundPnL == 0), keep multiplier unchanged
+
+	e.refreshCompoundStateLocked(0)
 }
 
 // GetCompoundStats returns compounding statistics
-func (e *Engine) GetCompoundStats() (multiplier float64, rounds int, profitable int) {
+func (e *Engine) GetCompoundStats() (multiplier float64, rounds int, profitable int, losing int, sizingBalance float64) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds
+	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds, e.losingRounds, e.sizingBalance
 }

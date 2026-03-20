@@ -755,3 +755,40 @@ func TestEngine_ImportedCarryOnlyRealizesAtResolution(t *testing.T) {
 		}
 	})
 }
+
+func TestEngine_UpdateCompoundMultiplierKeepsSizingHighWaterAfterLosses(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	engine.UpdateCompoundMultiplier(20.0, 100.0)
+
+	if got := engine.GetSizingBalance(); absFloat(got-120.0) > 0.0001 {
+		t.Fatalf("expected sizing balance 120.00 after winning round, got %.4f", got)
+	}
+	if got := engine.GetCompoundMultiplier(); absFloat(got-1.2) > 0.0001 {
+		t.Fatalf("expected multiplier 1.20 after winning round, got %.4f", got)
+	}
+
+	engine.UpdateCompoundMultiplier(-20.0, 120.0)
+
+	if got := engine.GetSizingBalance(); absFloat(got-120.0) > 0.0001 {
+		t.Fatalf("expected sizing balance to stay at 120.00 after drawdown, got %.4f", got)
+	}
+	if got := engine.GetCompoundMultiplier(); absFloat(got-1.2) > 0.0001 {
+		t.Fatalf("expected multiplier to stay at 1.20 after drawdown, got %.4f", got)
+	}
+
+	engine.UpdateCompoundMultiplier(10.0, 100.0)
+
+	if got := engine.GetSizingBalance(); absFloat(got-120.0) > 0.0001 {
+		t.Fatalf("expected smaller recovery not to exceed prior high-water, got %.4f", got)
+	}
+
+	engine.UpdateCompoundMultiplier(15.0, 120.0)
+
+	if got := engine.GetSizingBalance(); absFloat(got-135.0) > 0.0001 {
+		t.Fatalf("expected new high-water sizing balance 135.00, got %.4f", got)
+	}
+	if got := engine.GetCompoundMultiplier(); absFloat(got-1.35) > 0.0001 {
+		t.Fatalf("expected multiplier 1.35 at new high-water, got %.4f", got)
+	}
+}

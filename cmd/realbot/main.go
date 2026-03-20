@@ -216,7 +216,7 @@ func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, merg
 	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
 }
 
-func realbotTakerCloseBudget(cash, startingBalance float64, liveCfg paper.TUISettings) float64 {
+func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISettings) float64 {
 	if cash <= 0 {
 		return 0
 	}
@@ -224,7 +224,13 @@ func realbotTakerCloseBudget(cash, startingBalance float64, liveCfg paper.TUISet
 	if tradeFactor <= 0 {
 		tradeFactor = 0.01
 	}
-	budget := realbotSizingBalance(startingBalance, cash) * tradeFactor
+	if sizingBalance <= 0 {
+		sizingBalance = cash
+	}
+	budget := sizingBalance * tradeFactor
+	if budget > cash {
+		budget = cash
+	}
 	if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
 		budget = liveCfg.MaxTradeSize
 	}
@@ -293,13 +299,6 @@ func normalizedRealbotExecutionPriceCap(liveCfg paper.TUISettings) float64 {
 		return 0.99
 	}
 	return limitPrice
-}
-
-func realbotSizingBalance(sessionStartBalance, currentBalance float64) float64 {
-	if currentBalance > sessionStartBalance {
-		return currentBalance
-	}
-	return sessionStartBalance
 }
 
 func normalizePaperArbMode(mode string) string {
@@ -2103,7 +2102,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					budget := realbotTakerCloseBudget(engine.GetBalance(), engine.GetStartingBalance(), liveCfg)
+					budget := realbotTakerCloseBudget(engine.GetBalance(), engine.GetSizingBalance(), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
@@ -2290,7 +2289,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			splitMu.Unlock()
 
 			if shouldSplit && replenishCtrl.MarkInProgress() {
-				baseTradeSize := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentBalance))
+				baseTradeSize := cfg.CalculateTradeSize(engine.GetSizingBalance())
 
 				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
 				initialBuffer := baseTradeSize * 2.0
@@ -2362,7 +2361,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				sellMargin := (bidSum - 1.0) * 100 // Profit margin from selling
 
 				// BACKGROUND REPLENISHMENT
-				baseTradeSize := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentBalance))
+				baseTradeSize := cfg.CalculateTradeSize(engine.GetSizingBalance())
 				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
@@ -2745,12 +2744,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					// Dynamic trade size uses the last known cached balance.
-					// Do not block the panic-buy hot path on a fresh balance RPC here.
-
-					// For real bot, size off cash balance so unresolved mark-to-market
-					// drawdown does not shrink the configured trade factor.
-					tradeSize := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentBalance))
+					// Dynamic trade size uses the ratcheting session sizing balance.
+					// It only moves up when a profitable round locks in a new high-water mark,
+					// so drawdowns do not shrink the configured trade factor mid-session.
+					tradeSize := cfg.CalculateTradeSize(engine.GetSizingBalance())
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -4123,7 +4120,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseTradeValue := cfg.CalculateTradeSize(realbotSizingBalance(engine.GetStartingBalance(), currentCash))
+	baseTradeValue := cfg.CalculateTradeSize(engine.GetSizingBalance())
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.

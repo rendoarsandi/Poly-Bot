@@ -110,11 +110,20 @@ func TestRealbotTakerCloseBudgetUsesStartingBalanceFloor(t *testing.T) {
 }
 
 func TestRealbotTakerCloseBudgetCompoundsUpWithCashGrowth(t *testing.T) {
-	budget := realbotTakerCloseBudget(72.00, 65.80, paper.TUISettings{
+	budget := realbotTakerCloseBudget(72.00, 72.00, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
 	if math.Abs(budget-3.60) > 0.000001 {
 		t.Fatalf("expected taker-close budget 3.60, got %.2f", budget)
+	}
+}
+
+func TestRealbotTakerCloseBudgetKeepsHighWaterAfterDrawdown(t *testing.T) {
+	budget := realbotTakerCloseBudget(59.20, 72.00, paper.TUISettings{
+		TradeScaleFactor: 0.05,
+	})
+	if math.Abs(budget-3.60) > 0.000001 {
+		t.Fatalf("expected taker-close budget to stay at high-water 3.60, got %.2f", budget)
 	}
 }
 
