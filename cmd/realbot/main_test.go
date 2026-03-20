@@ -267,6 +267,25 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 	}
 }
 
+func TestRealbotNextRestFallbackStateKeepsRecoveryLogLatchedWhileFallbackRemainsNeeded(t *testing.T) {
+	active, logged := realbotNextRestFallbackState(false, false, true, true, true, 20*time.Second)
+	if !active || !logged {
+		t.Fatalf("expected initial stale recovery to activate fallback and latch log, got active=%v logged=%v", active, logged)
+	}
+
+	active, logged = realbotNextRestFallbackState(active, logged, true, false, false, 200*time.Millisecond)
+	if !active || !logged {
+		t.Fatalf("expected non-poll loop to preserve fallback state, got active=%v logged=%v", active, logged)
+	}
+}
+
+func TestRealbotNextRestFallbackStateResetsWhenFallbackNoLongerNeeded(t *testing.T) {
+	active, logged := realbotNextRestFallbackState(true, true, false, false, false, 200*time.Millisecond)
+	if active || logged {
+		t.Fatalf("expected fallback state reset when recovery is complete, got active=%v logged=%v", active, logged)
+	}
+}
+
 func TestComputeRealbotMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
 	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000, time.Hour, realbotMakerStrategyParams)
 	if !ok {

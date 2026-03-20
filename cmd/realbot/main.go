@@ -89,6 +89,23 @@ func shouldRealbotRestFallback(quoteAge, sinceLastRest, staleAfter, pollInterval
 	return quoteAge > staleAfter && sinceLastRest > pollInterval
 }
 
+func realbotNextRestFallbackState(active, recoveryLogged, fallbackNeeded, polled, recovered bool, staleTime time.Duration) (bool, bool) {
+	if polled {
+		if !active {
+			active = true
+			recoveryLogged = false
+		}
+		if recovered && staleTime >= 10*time.Second {
+			recoveryLogged = true
+		}
+		return active, recoveryLogged
+	}
+	if !fallbackNeeded {
+		return false, false
+	}
+	return active, recoveryLogged
+}
+
 func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
 	return cfg.TakerCloseMarket
 }
@@ -1686,23 +1703,19 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// For quiet markets, avoid spamming REST when the book is already pinned at
 		// a valid terminal-looking state and the socket is still connected.
 		isExtremelyStale := staleTime > 60*time.Second && !terminalBookState
-		shouldPollREST := (forceRestFallback || wsUnhealthy || isExtremelyStale) && sinceLastRest > pollInterval
+		fallbackNeeded := forceRestFallback || wsUnhealthy || isExtremelyStale
+		shouldPollREST := fallbackNeeded && sinceLastRest > pollInterval
 		if shouldPollREST {
-			if !restFallbackActive {
-				restFallbackActive = true
-				restRecoveryLogged = false
-			}
+			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, true, false, staleTime)
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
-			if handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, !restRecoveryLogged) {
+			recovered := handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, !restRecoveryLogged)
+			if recovered {
 				lastUpdate = time.Now()
-				if staleTime >= 10*time.Second {
-					restRecoveryLogged = true
-				}
 			}
+			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, true, recovered, staleTime)
 		} else {
-			restFallbackActive = false
-			restRecoveryLogged = false
+			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, false, false, staleTime)
 		}
 
 		if !wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
