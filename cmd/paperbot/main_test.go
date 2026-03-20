@@ -242,6 +242,24 @@ func TestSummarizePaperRoundKeepsOpenInventoryNeutralAtRotation(t *testing.T) {
 	}
 }
 
+func TestSummarizePaperRoundCountsLockedPairProfitAtRotation(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	if _, err := engine.BuyForMarket("m1", "Up", 0.48, 3.1); err != nil {
+		t.Fatalf("buy up failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m1", "Down", 0.49, 3.1); err != nil {
+		t.Fatalf("buy down failed: %v", err)
+	}
+
+	roundPnL, totalEquity, _, _ := summarizePaperRound(engine, 100.0, 0)
+	if abs := roundPnL - 0.093; abs < -0.000001 || abs > 0.000001 {
+		t.Fatalf("expected locked round pnl 0.093, got %.6f", roundPnL)
+	}
+	if abs := totalEquity - 100.093; abs < -0.000001 || abs > 0.000001 {
+		t.Fatalf("expected total equity 100.093, got %.6f", totalEquity)
+	}
+}
+
 func TestPaperTradeSizeTracksResolutionOutcomeAfterCarrySettles(t *testing.T) {
 	cfg := &core.Config{TradeScaleFactor: 0.05}
 
@@ -253,6 +271,20 @@ func TestPaperTradeSizeTracksResolutionOutcomeAfterCarrySettles(t *testing.T) {
 
 		if got := cfg.CalculateTradeSize(engine.GetBookEquity()); got != 5.0 {
 			t.Fatalf("expected 5%% trade size to stay $5.00 while unresolved, got %.2f", got)
+		}
+	})
+
+	t.Run("matched unresolved pair uses locked profit immediately", func(t *testing.T) {
+		engine := paper.NewEngine(100.0)
+		if _, err := engine.BuyForMarket("m1", "Up", 0.48, 3.1); err != nil {
+			t.Fatalf("buy up failed: %v", err)
+		}
+		if _, err := engine.BuyForMarket("m1", "Down", 0.49, 3.1); err != nil {
+			t.Fatalf("buy down failed: %v", err)
+		}
+
+		if got := cfg.CalculateTradeSize(engine.GetBookEquity()); got < 5.004 || got > 5.005 {
+			t.Fatalf("expected 5%% trade size to include locked pair profit, got %.6f", got)
 		}
 	})
 
