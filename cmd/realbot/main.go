@@ -42,8 +42,9 @@ const (
 	realbotFastVerifyTTL     = 6 * time.Second
 	minOnChainActionShares   = 0.01
 	realbotUIRefreshInterval = 750 * time.Millisecond
-	realbotMainLoopInterval  = 50 * time.Millisecond
-	realbotFillPollInterval  = 125 * time.Millisecond
+	realbotMainLoopInterval  = 10 * time.Millisecond
+	realbotFillPollInterval  = 50 * time.Millisecond
+	realbotMinMarketBuyValue = 1.0
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -1115,10 +1116,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	takerCloseAttempted := false
-	var lastTakerCloseLog time.Time
-	var takerClosePriceAboveSince time.Time // When price first went above minPrice (for spike protection)
-	takerCloseLastStablePrice := 0.0        // Last confirmed price above minPrice
-	var takerCloseExecutedAt time.Time      // When taker close buy was confirmed (for merge-buffer cooldown)
+	var takerCloseExecutedAt time.Time // When taker close buy was confirmed (for merge-buffer cooldown)
 	var nextTakerCloseAttempt time.Time
 	preserveWalletTruth := false
 	defer func() {
@@ -1222,10 +1220,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		timeToExpiry := time.Until(endTime)
 
 		// --- TAKER CLOSE MARKET LOGIC ---
-		// Spike protection: price must be sustained above minPrice for a configurable
-		// duration before we execute a taker close buy. This prevents momentary WS spikes
-		// from triggering execution at bad prices (e.g. spike to 0.61 then drop to 0.55).
-		// Additionally, the limit price is capped so the order never fills below minPrice.
+		// Once we enter the close window, taker close should react immediately to the
+		// best live price. UI/log spam from the old sustain/spike-guard path is removed.
 		liveCfg := tui.GetSettings()
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
 		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
@@ -1244,182 +1240,102 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						bestOutcome = outcome
 					}
 				}
-
-				minPrice := liveCfg.TakerCloseMarketMinPrice
-				if minPrice <= 0 {
-					minPrice = 0.60
-				}
-
-				// ── Spike protection: track how long the price stays above minPrice ──
-				// Scale spike guard proportionally to TakerCloseMarketTime: 50% of close time, min 5s.
-				// This ensures the guard window is always reachable via pre-window tracking.
-				takerCloseSpikeGuardDuration := takerCloseTime / 2
-				if takerCloseSpikeGuardDuration < 5*time.Second {
-					takerCloseSpikeGuardDuration = 5 * time.Second
-				}
-
-				if bestOutcome != "" && highestPrice >= minPrice {
-					if takerClosePriceAboveSince.IsZero() {
-						// First time above minPrice — start the clock
-						takerClosePriceAboveSince = time.Now()
-						takerCloseLastStablePrice = highestPrice
-						if time.Since(lastTakerCloseLog) > 1*time.Second {
-							tui.LogEvent("[%s] 🔍 Taker close: price $%.3f above min $%.2f — spike guard started (need %ds sustained)",
-								id, highestPrice, minPrice, int(takerCloseSpikeGuardDuration.Seconds()))
-							lastTakerCloseLog = time.Now()
+				if bestOutcome != "" {
+					// Confirm the best live price once via REST right before submitting.
+					confirmPrice := highestPrice
+					restConfirmOK := true
+					for _, token := range market.Tokens {
+						outcome := tokenToOutcome[token.TokenID]
+						if outcome != bestOutcome {
+							continue
 						}
-					} else {
-						takerCloseLastStablePrice = highestPrice
-						// Check if sustained long enough
-						sustainedDuration := time.Since(takerClosePriceAboveSince)
-						if sustainedDuration >= takerCloseSpikeGuardDuration {
-							// ── Price confirmed stable — do a fresh REST confirmation ──
-							// Verify the price with a live REST call to avoid stale WS data
-							restConfirmOK := true
-							for _, token := range market.Tokens {
-								outcome := tokenToOutcome[token.TokenID]
-								if outcome != bestOutcome {
-									continue
-								}
-								checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
-								restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
-								cancelCheck()
-								if restErr != nil {
-									tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
-									restConfirmOK = false
-									break
-								}
-								confirmPrice := restAsk
-								if confirmPrice <= 0 || confirmPrice >= 1.0 {
-									confirmPrice = restBid
-								}
-								if confirmPrice < minPrice {
-									tui.LogEvent("[%s] ⚠️ Taker close REST price $%.3f < min $%.2f — WS was stale, resetting spike guard", id, confirmPrice, minPrice)
-									takerClosePriceAboveSince = time.Time{} // Reset
-									restConfirmOK = false
-									break
-								}
-							}
+						checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
+						restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
+						cancelCheck()
+						if restErr != nil {
+							tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
+							restConfirmOK = false
+							break
+						}
+						confirmPrice = restAsk
+						if confirmPrice <= 0 || confirmPrice >= 1.0 {
+							confirmPrice = restBid
+						}
+						if confirmPrice <= 0 || confirmPrice >= 1.0 {
+							restConfirmOK = false
+						}
+						break
+					}
+					if !restConfirmOK {
+						continue
+					}
 
-							if restConfirmOK {
-								tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (WS price: $%.3f, sustained for %ds, REST confirmed)",
-									id, bestOutcome, highestPrice, int(sustainedDuration.Seconds()))
-								tokenID := ""
-								for k, v := range tokenMap {
-									if v == bestOutcome {
-										tokenID = k
-										break
-									}
-								}
-								if tokenID == "" {
-									nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
-									tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
-									continue
-								}
+					tui.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: buying %s immediately (WS $%.3f, REST $%.3f)",
+						id, bestOutcome, highestPrice, confirmPrice)
 
-								budget := cfg.CalculateTradeSize(engine.GetEquity())
-								plan, planErr := buildRealbotTakerClosePlan(budget, highestPrice, liveCfg)
-								if planErr != nil {
-									nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
-									tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
-									continue
-								}
-
-								initialPosition := trader.GetLivePositionSize(tokenID)
-								tui.LogEvent("[%s] 📤 Taker close buy: %s %s shares limit $%.3f (min floor $%.2f, sizing $%.3f)",
-									id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, plan.MinPrice, plan.SizingPrice)
-
-								tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
-								exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
-								cancelTrade()
-								logDirectExecutionAudit(tui, id, "Taker close buy", plan.RequestedQty, plan.LimitPrice, exec)
-
-								if !exec.Success {
-									nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
-									if exec.Err != nil {
-										tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, exec.Err)
-									} else if exec.Result != nil && exec.Result.Message != "" {
-										tui.LogEvent("[%s] ⚠️ Taker close buy not filled: %s", id, exec.Result.Message)
-									} else {
-										tui.LogEvent("[%s] ⚠️ Taker close buy not filled before timeout at cap $%.3f", id, plan.LimitPrice)
-									}
-									continue
-								}
-
-								execQty := attributedBuyFill(exec, plan.RequestedQty, 0, false)
-								if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
-									nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
-									tui.LogEvent("[%s] ⚠️ Taker close execution below confirmation threshold: %s shares", id, formatShareQty(execQty))
-									continue
-								}
-
-								execPrice := venueExecutionEffectivePrice(exec)
-								if execPrice <= 0 {
-									execPrice = plan.LimitPrice
-								}
-								if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
-									tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
-								}
-								takerCloseAttempted = true
-								takerCloseExecutedAt = time.Now()
-								tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
-									id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
-
-								// Force refresh wallet truth so cleanup sees authoritative positions.
-								refreshWalletTruth(5 * time.Second)
-							}
-						} else if time.Since(lastTakerCloseLog) > 2*time.Second {
-							remaining := takerCloseSpikeGuardDuration - sustainedDuration
-							tui.LogEvent("[%s] 🔍 Taker close spike guard: $%.3f above $%.2f for %ds (need %ds more)",
-								id, highestPrice, minPrice, int(sustainedDuration.Seconds()), int(remaining.Seconds()))
-							lastTakerCloseLog = time.Now()
+					tokenID := ""
+					for k, v := range tokenMap {
+						if v == bestOutcome {
+							tokenID = k
+							break
 						}
 					}
-				} else {
-					// Price dropped below minPrice — reset spike guard
-					if !takerClosePriceAboveSince.IsZero() {
-						tui.LogEvent("[%s] 📉 Taker close: price $%.3f dropped below min $%.2f — spike guard reset (was $%.3f)",
-							id, highestPrice, minPrice, takerCloseLastStablePrice)
-						takerClosePriceAboveSince = time.Time{}
-						takerCloseLastStablePrice = 0
-					} else if time.Since(lastTakerCloseLog) > 1*time.Second {
-						takerCloseSpikeGuardPreview := takerCloseTime / 2
-						if takerCloseSpikeGuardPreview < 5*time.Second {
-							takerCloseSpikeGuardPreview = 5 * time.Second
-						}
-						tui.LogEvent("[%s] ⏳ Taker close waiting: price $%.3f (needs >= $%.2f for %ds)",
-							id, highestPrice, minPrice, int(takerCloseSpikeGuardPreview.Seconds()))
-						lastTakerCloseLog = time.Now()
+					if tokenID == "" {
+						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
+						tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
+						continue
 					}
-				}
-			}
-		} else if liveCfg.TakerCloseMarket && timeToExpiry > takerCloseTime {
-			// Pre-window: still track price stability so spike guard can build up before the close window
-			minPrice := liveCfg.TakerCloseMarketMinPrice
-			if minPrice <= 0 {
-				minPrice = 0.60
-			}
-			highestPrice := 0.0
-			for _, outcome := range outcomes {
-				ask := tokenAsks[outcome]
-				bid := tokenBids[outcome]
-				price := ask
-				if price <= 0 || price >= 1.0 {
-					price = bid
-				}
-				if price > 0 && price <= 1.0 && price > highestPrice {
-					highestPrice = price
-				}
-			}
-			if highestPrice >= minPrice {
-				if takerClosePriceAboveSince.IsZero() {
-					takerClosePriceAboveSince = time.Now()
-				}
-				takerCloseLastStablePrice = highestPrice
-			} else {
-				if !takerClosePriceAboveSince.IsZero() {
-					takerClosePriceAboveSince = time.Time{}
-					takerCloseLastStablePrice = 0
+
+					budget := cfg.CalculateTradeSize(engine.GetEquity())
+					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
+					if planErr != nil {
+						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
+						tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
+						continue
+					}
+
+					initialPosition := trader.GetLivePositionSize(tokenID)
+					tui.LogEvent("[%s] 📤 Taker close buy: %s %s shares limit $%.3f (sizing $%.3f)",
+						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, plan.SizingPrice)
+
+					tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
+					exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
+					cancelTrade()
+					logDirectExecutionAudit(tui, id, "Taker close buy", plan.RequestedQty, plan.LimitPrice, exec)
+
+					if !exec.Success {
+						nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
+						if exec.Err != nil {
+							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, exec.Err)
+						} else if exec.Result != nil && exec.Result.Message != "" {
+							tui.LogEvent("[%s] ⚠️ Taker close buy not filled: %s", id, exec.Result.Message)
+						} else {
+							tui.LogEvent("[%s] ⚠️ Taker close buy not filled before timeout at cap $%.3f", id, plan.LimitPrice)
+						}
+						continue
+					}
+
+					execQty := attributedBuyFill(exec, plan.RequestedQty, 0, false)
+					if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
+						nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
+						tui.LogEvent("[%s] ⚠️ Taker close execution below confirmation threshold: %s shares", id, formatShareQty(execQty))
+						continue
+					}
+
+					execPrice := venueExecutionEffectivePrice(exec)
+					if execPrice <= 0 {
+						execPrice = plan.LimitPrice
+					}
+					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
+						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
+					}
+					takerCloseAttempted = true
+					takerCloseExecutedAt = time.Now()
+					tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
+						id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
+
+					// Force refresh wallet truth so cleanup sees authoritative positions.
+					refreshWalletTruth(5 * time.Second)
 				}
 			}
 		}
@@ -3902,6 +3818,10 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 	}
 
 	requestedQty := math.Floor((budget / sizingPrice) + 1e-9)
+	minQtyForNotional := math.Ceil((realbotMinMarketBuyValue / limitPrice) - 1e-9)
+	if requestedQty < minQtyForNotional {
+		requestedQty = minQtyForNotional
+	}
 	if requestedQty < 1 {
 		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f is too small at sizing price $%.3f", budget, sizingPrice)
 	}
