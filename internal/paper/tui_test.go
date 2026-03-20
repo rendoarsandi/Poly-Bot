@@ -399,6 +399,24 @@ func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsHidesResolvedLosersFromOnChainInventory(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+	tui.SetWalletTruthPositions("ETH#93fc5536", []WalletTruthPosition{
+		{MarketID: "ETH#93fc5536", Outcome: "Up", OnChainShares: 4.0025, ResolutionStatus: "resolved"},
+	})
+
+	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
+	rendered := model.renderPositions(120, nil)
+
+	if strings.Contains(rendered, "ON-CHAIN INVENTORY") {
+		t.Fatalf("expected loser-only on-chain inventory to be hidden, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "WALLET TRUTH") || !strings.Contains(rendered, "LOSER") {
+		t.Fatalf("expected loser to remain visible only in wallet truth, got %q", rendered)
+	}
+}
+
 func TestRenderPositionsHidesInFlightSectionWhenTakerCloseEnabled(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), nil)
 	tui.InitSettings(TUISettings{
@@ -852,6 +870,48 @@ func TestRenderAccountStatusUsesBookEquityForPaperTradeBudget(t *testing.T) {
 
 	if !strings.Contains(rendered, "$5.00/trade") {
 		t.Fatalf("expected paper trade budget to use neutral book equity, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusFallsBackToNetChangeWhenFlat(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  120,
+		StartingBalance: 100,
+		RealizedPnL:     0,
+	}, 0, 120, 120, 1.0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Realized +$20.00") {
+		t.Fatalf("expected flat realized line to fall back to settled net change, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+		WinningTrades:   7,
+		LosingTrades:    3,
+	}, 0, 100, 100, 1.0, 5, 3, nil)
+
+	if !strings.Contains(rendered, "Win 70%") {
+		t.Fatalf("expected win rate in account status, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "W/L 7/3") {
+		t.Fatalf("expected win/loss counts in account status, got %q", rendered)
 	}
 }
 

@@ -2575,8 +2575,13 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		changeSt = styleRed
 	}
 
+	displayRealized := stats.RealizedPnL
+	if math.Abs(displayRealized) < 0.0001 && totalExposure <= 0.0001 && len(positions) == 0 && math.Abs(netChange) >= 0.005 {
+		displayRealized = netChange
+	}
+
 	realizedSt := styleGreen
-	if stats.RealizedPnL < 0 {
+	if displayRealized < 0 {
 		realizedSt = styleRed
 	}
 
@@ -2639,11 +2644,16 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		tradeLine = "  "
 	}
 	tradeLine += fmt.Sprintf("Realized %s  ·  Arb %s",
-		realizedSt.Render(signedDollar(stats.RealizedPnL)),
+		realizedSt.Render(signedDollar(displayRealized)),
 		arbSt.Render(signedDollar(guaranteedProfit)),
 	)
 
 	uptime := time.Since(s.startTime).Round(time.Second)
+	totalDecisions := stats.WinningTrades + stats.LosingTrades
+	winRate := 0.0
+	if totalDecisions > 0 {
+		winRate = (float64(stats.WinningTrades) / float64(totalDecisions)) * 100
+	}
 
 	drawdownSt := styleWhite
 	if stats.MaxDrawdown > 5.0 {
@@ -2662,9 +2672,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
 	)
 	row3 := tradeLine
-	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds (%d profitable)  ·  ⏱ %s",
+	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds (%d profitable)  ·  Win %.0f%%  ·  W/L %d/%d  ·  ⏱ %s",
 		multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
 		rounds, profitable,
+		winRate,
+		stats.WinningTrades, stats.LosingTrades,
 		styleDimmed.Render(uptime.String()),
 	)
 
@@ -2874,6 +2886,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	onChainInventoryCount := 0
 	for _, wt := range walletTruthPositions {
 		if wt.OnChainShares <= 0 {
+			continue
+		}
+		if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
 			continue
 		}
 		onChainInventoryByMarket[wt.MarketID] = append(onChainInventoryByMarket[wt.MarketID], wt)
