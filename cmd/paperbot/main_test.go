@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 )
 
@@ -239,6 +240,55 @@ func TestSummarizePaperRoundKeepsOpenInventoryNeutralAtRotation(t *testing.T) {
 	if totalEquity != 100.0 {
 		t.Fatalf("expected round equity to use book equity 100.00, got %.2f", totalEquity)
 	}
+}
+
+func TestPaperTradeSizeTracksResolutionOutcomeAfterCarrySettles(t *testing.T) {
+	cfg := &core.Config{TradeScaleFactor: 0.05}
+
+	t.Run("unresolved carry stays neutral", func(t *testing.T) {
+		engine := paper.NewEngine(95.0)
+		if !engine.SyncExternalPosition("m1", "Up", 10.0, 0.50) {
+			t.Fatal("expected imported carry")
+		}
+
+		if got := cfg.CalculateTradeSize(engine.GetBookEquity()); got != 5.0 {
+			t.Fatalf("expected 5%% trade size to stay $5.00 while unresolved, got %.2f", got)
+		}
+	})
+
+	t.Run("winning resolution increases next trade size", func(t *testing.T) {
+		engine := paper.NewEngine(95.0)
+		if !engine.SyncExternalPosition("m1", "Up", 10.0, 0.50) {
+			t.Fatal("expected imported carry")
+		}
+
+		res := engine.RedeemWithDetails("m1", "Up")
+		if res.TotalPnL != 5.0 {
+			t.Fatalf("expected total pnl 5.00, got %.2f", res.TotalPnL)
+		}
+		engine.SetBalance(105.0)
+		engine.ClearPendingRedemption("m1")
+
+		if got := cfg.CalculateTradeSize(engine.GetBookEquity()); got != 5.25 {
+			t.Fatalf("expected 5%% trade size to become $5.25 after winning resolution, got %.2f", got)
+		}
+	})
+
+	t.Run("losing resolution reduces next trade size", func(t *testing.T) {
+		engine := paper.NewEngine(95.0)
+		if !engine.SyncExternalPosition("m2", "Up", 10.0, 0.50) {
+			t.Fatal("expected imported carry")
+		}
+
+		res := engine.RedeemWithDetails("m2", "Down")
+		if res.TotalPnL != -5.0 {
+			t.Fatalf("expected total pnl -5.00, got %.2f", res.TotalPnL)
+		}
+
+		if got := cfg.CalculateTradeSize(engine.GetBookEquity()); got != 4.75 {
+			t.Fatalf("expected 5%% trade size to become $4.75 after losing resolution, got %.2f", got)
+		}
+	})
 }
 
 func TestComputePaperMakerQuoteSizesRespectSkewAndCaps(t *testing.T) {

@@ -673,3 +673,70 @@ func TestEngine_GetStatsRealizedPnLIncludesPendingRedemption(t *testing.T) {
 		t.Fatalf("expected realized pnl 2.00 after cash settles, got %.4f", stats.RealizedPnL)
 	}
 }
+
+func TestEngine_ImportedCarryOnlyRealizesAtResolution(t *testing.T) {
+	t.Run("profit", func(t *testing.T) {
+		engine := NewEngine(95.0)
+
+		if !engine.SyncExternalPosition("m1", "Up", 10.0, 0.50) {
+			t.Fatal("expected external carry import")
+		}
+		engine.UpdateMarketBidAsk("m1", "Up", 0.20, 0.21)
+
+		stats := engine.GetStats()
+		if absFloat(stats.RealizedPnL) > 0.0001 {
+			t.Fatalf("expected unresolved imported carry to stay unrealized, got %.4f", stats.RealizedPnL)
+		}
+		if absFloat(engine.GetBookEquity()-100.0) > 0.0001 {
+			t.Fatalf("expected unresolved book equity 100.00, got %.4f", engine.GetBookEquity())
+		}
+
+		res := engine.RedeemWithDetails("m1", "Up")
+		if absFloat(res.TotalPnL-5.0) > 0.0001 {
+			t.Fatalf("expected winning resolution pnl 5.00, got %.4f", res.TotalPnL)
+		}
+
+		stats = engine.GetStats()
+		if absFloat(stats.RealizedPnL-5.0) > 0.0001 {
+			t.Fatalf("expected realized pnl 5.00 after resolution, got %.4f", stats.RealizedPnL)
+		}
+		if absFloat(engine.GetBookEquity()-105.0) > 0.0001 {
+			t.Fatalf("expected pending redemption to lift book equity to 105.00, got %.4f", engine.GetBookEquity())
+		}
+
+		engine.SetBalance(105.0)
+		engine.ClearPendingRedemption("m1")
+
+		stats = engine.GetStats()
+		if absFloat(stats.RealizedPnL-5.0) > 0.0001 {
+			t.Fatalf("expected realized pnl to remain 5.00 after settlement, got %.4f", stats.RealizedPnL)
+		}
+	})
+
+	t.Run("loss", func(t *testing.T) {
+		engine := NewEngine(95.0)
+
+		if !engine.SyncExternalPosition("m2", "Up", 10.0, 0.50) {
+			t.Fatal("expected external carry import")
+		}
+		engine.UpdateMarketBidAsk("m2", "Up", 0.20, 0.21)
+
+		stats := engine.GetStats()
+		if absFloat(stats.RealizedPnL) > 0.0001 {
+			t.Fatalf("expected unresolved imported carry to stay unrealized, got %.4f", stats.RealizedPnL)
+		}
+
+		res := engine.RedeemWithDetails("m2", "Down")
+		if absFloat(res.TotalPnL+5.0) > 0.0001 {
+			t.Fatalf("expected losing resolution pnl -5.00, got %.4f", res.TotalPnL)
+		}
+
+		stats = engine.GetStats()
+		if absFloat(stats.RealizedPnL+5.0) > 0.0001 {
+			t.Fatalf("expected realized pnl -5.00 after losing resolution, got %.4f", stats.RealizedPnL)
+		}
+		if absFloat(engine.GetBookEquity()-95.0) > 0.0001 {
+			t.Fatalf("expected book equity 95.00 after losing resolution, got %.4f", engine.GetBookEquity())
+		}
+	})
+}
