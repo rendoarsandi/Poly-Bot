@@ -259,7 +259,7 @@ func paperLooksLikeTerminalBook(outcomes []string, bids, asks map[string]float64
 
 func summarizePaperRound(engine *paper.Engine, startingEquity float64, roundStartTrades int) (roundPnL, totalEquity float64, roundTrades int, stats paper.Stats) {
 	stats = engine.GetStats()
-	totalEquity = engine.GetEquity()
+	totalEquity = engine.GetBookEquity()
 	roundPnL = totalEquity - startingEquity
 	roundTrades = stats.TotalTrades - roundStartTrades
 	if roundTrades < 0 {
@@ -521,17 +521,17 @@ func updatePaperPendingOrders(t *MarketTrader) {
 	t.TUI.SetPendingOrders(t.ID, pending)
 }
 
-func ensurePaperMakerSplitInventory(t *MarketTrader, currentEquity, currentCash, sellMargin float64) {
+func ensurePaperMakerSplitInventory(t *MarketTrader, currentBookEquity, currentCash, sellMargin float64) {
 	if len(t.Outcomes) != 2 {
 		return
 	}
 	if !t.SplitInitialized {
-		baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+		baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
 		initialBuffer := baseTradeSize * 2.0
 		if initialBuffer < MinSplitBuffer {
 			initialBuffer = MinSplitBuffer
 		}
-		maxInitial := currentEquity * t.Config.SplitInitialCapPct
+		maxInitial := currentBookEquity * t.Config.SplitInitialCapPct
 		splitAmount := math.Min(initialBuffer, maxInitial)
 		if splitAmount > currentCash {
 			splitAmount = currentCash
@@ -547,7 +547,7 @@ func ensurePaperMakerSplitInventory(t *MarketTrader, currentEquity, currentCash,
 		}
 	}
 
-	baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+	baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
 	targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
 	currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 	replenishAmount := baseTradeSize * 2.0
@@ -601,7 +601,7 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	}
 
 	liveCfg := t.TUI.GetSettings()
-	currentEquity := t.Engine.GetEquity()
+	currentBookEquity := t.Engine.GetBookEquity()
 	currentCash := t.Engine.GetBalance()
 	positions := t.Engine.GetPositions()
 	pos1, hasPos1 := getPaperMarketPosition(positions, t.ID, t.Outcomes[0])
@@ -691,7 +691,7 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		capMult = paperMakerInventoryCapMult
 	}
 
-	baseTradeValue := t.Config.CalculateTradeSize(currentEquity)
+	baseTradeValue := t.Config.CalculateTradeSize(currentBookEquity)
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
@@ -1088,7 +1088,7 @@ func run() error {
 		}
 
 		// Track starting equity for compounding calculation
-		startingEquity := engine.GetEquity()
+		startingEquity := engine.GetBookEquity()
 		roundStartTrades := engine.GetStats().TotalTrades
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "ROUND_START", "Round starting with %d markets | Multiplier: %.2fx", len(markets), compoundMultiplier)
@@ -1579,7 +1579,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						takerCloseAttempted = true
 						t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
-						budget := t.Config.CalculateTradeSize(t.Engine.GetEquity())
+						budget := t.Config.CalculateTradeSize(t.Engine.GetBookEquity())
 						// Calculate expected execution price (price + absolute slippage allowance)
 						// e.g. price 0.70 + (-0.03) = 0.73
 						slippageDec := t.TUI.GetSettings().BuyExecutionMarginFloorPercent
@@ -1967,7 +1967,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// update LastUpdate when we actually receive new price/liquidity data.
 			// This ensures the UI accurately shows data staleness.
 
-			// Check WebSocket connection health for REST fallback decision
+			// Check WebSocket health and prefer reconnecting the WS stream over
+			// injecting REST quotes when prices go stale.
 			wsConnected := wsMgr.IsConnected()
 			wsLastMsg := wsMgr.TimeSinceLastDataMessage()
 
@@ -1975,9 +1976,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.TUI.UpdateWSLatency(wsLastMsg)
 			t.TUI.UpdateWSPingLatency(wsMgr.PingLatency())
 
-			// ============ REST FALLBACK ============
-			// WS is primary for liquidity data via full depth updates and deltas.
-			// Only poll REST if WS is unhealthy or stale.
 			now := time.Now()
 			pairQuoteAge := paperPairQuoteAge(t.LastPairUpdate, now)
 
@@ -1987,41 +1985,38 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			localQuoteMaxAge := core.ResolveExecutionLocalQuoteMaxAge(t.Config)
 			localPairFresh := shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
 			restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
-			restFallbackPollInterval := core.ResolveRestFallbackPollInterval(t.Config)
 
 			terminalBookState := paperLooksLikeTerminalBook(t.Outcomes, t.TokenBids, t.TokenAsks)
-			forceRestFallback := false
+			needsWSReconnect := false
 			if !terminalBookState {
-				forceRestFallback = !localPairFresh && pairQuoteAge > restFallbackQuoteAge
-				if !forceRestFallback {
+				needsWSReconnect = !localPairFresh && pairQuoteAge > restFallbackQuoteAge
+				if !needsWSReconnect {
 					for _, outcome := range t.Outcomes {
 						bid := t.TokenBids[outcome]
 						ask := t.TokenAsks[outcome]
 						if bid == 0 || ask == 0 || bid >= ask {
 							if pairQuoteAge > 15*time.Second {
-								forceRestFallback = true
+								needsWSReconnect = true
 								break
 							}
 						}
 					}
 				}
 			}
+			t.RestFallbackActive = false
+			t.RestRecoveryLogged = false
 
-			isExtremelyStale := pairQuoteAge > 60*time.Second && !terminalBookState
-			wsUnhealthy := !wsConnected || (wsLastMsg > 10*time.Second && !terminalBookState)
-			shouldPollREST := (forceRestFallback || wsUnhealthy || isExtremelyStale) && time.Since(t.LastRestPoll) > restFallbackPollInterval
-
-			if shouldPollREST {
-				if !t.RestFallbackActive {
-					t.RestFallbackActive = true
-					t.RestRecoveryLogged = false
+			// If the WS is connected but quotes are stale or frozen, force a clean
+			// reconnect instead of falling back to REST snapshots.
+			if wsConnected && !wsChannelClosed && (needsWSReconnect || (!terminalBookState && wsLastMsg > 10*time.Second)) {
+				if time.Since(lastForceReconnect) > wsForceReconnect {
+					lastForceReconnect = time.Now()
+					wsMgr.ForceReconnect()
+					if time.Since(lastWsWarnTime) > wsWarnInterval {
+						t.TUI.LogEvent("[%s] 🔄 WS stale/frozen - reconnecting...", t.ID)
+						lastWsWarnTime = time.Now()
+					}
 				}
-				if t.handleRestFallback(ctx, tokenPrices, pairQuoteAge, !t.RestRecoveryLogged) && pairQuoteAge >= 10*time.Second {
-					t.RestRecoveryLogged = true
-				}
-			} else {
-				t.RestFallbackActive = false
-				t.RestRecoveryLogged = false
 			}
 
 			// Handle WebSocket issues - only reconnect if actually disconnected
@@ -2134,9 +2129,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Calculate dynamic trade size based on EQUITY (not just cash)
 					// This ensures consistent sizing regardless of how much is in positions
 					// $100 equity * 5% = $5 trade size (even if only $10 is cash)
-					currentEquity := t.Engine.GetEquity()
+					currentBookEquity := t.Engine.GetBookEquity()
 					currentCash := t.Engine.GetBalance()
-					tradeSize := t.Config.CalculateTradeSize(currentEquity)
+					tradeSize := t.Config.CalculateTradeSize(currentBookEquity)
 					baseSharesPerTrade := tradeSize / sum // Shares = $ / price per share pair
 
 					// Evaluate portfolio risk before trading
@@ -2464,17 +2459,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled && localPairFresh {
 				bid1 := t.TokenBids[t.Outcomes[0]]
 				bid2 := t.TokenBids[t.Outcomes[1]]
-				currentEquity := t.Engine.GetEquity()
+				currentBookEquity := t.Engine.GetBookEquity()
 
 				// Initial split: create simulated inventory
 				// Split is always safe - can merge back to USDC anytime at 1:1
 				if !t.SplitInitialized {
-					baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+					baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
 					initialBuffer := baseTradeSize * 2.0
 					if initialBuffer < MinSplitBuffer {
 						initialBuffer = MinSplitBuffer
 					}
-					maxInitial := currentEquity * t.Config.SplitInitialCapPct
+					maxInitial := currentBookEquity * t.Config.SplitInitialCapPct
 					splitAmount := initialBuffer
 					if splitAmount > maxInitial {
 						splitAmount = maxInitial
@@ -2495,7 +2490,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					sellMargin := (bidSum - 1.0) * 100
 
 					// Background replenishment check
-					baseTradeSize := t.Config.CalculateTradeSize(currentEquity)
+					baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
 					targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
 					currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 					replenishAmount := baseTradeSize * 2.0
@@ -2506,7 +2501,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						InitialShares:      t.InitialSplitAmount, // Replenish back to initial amount immediately
 						SellMargin:         sellMargin,
 						MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
-						CurrentBalance:     currentEquity,
+						CurrentBalance:     currentBookEquity,
 						ReplenishAmount:    replenishAmount,
 						MaxBalancePercent:  t.Config.SplitReplenishCapPct,
 					})

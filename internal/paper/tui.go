@@ -172,6 +172,15 @@ func recentDisplayQuote(current, lastGood float64, age time.Duration, cleared bo
 	return current
 }
 
+func signedDollar(amount float64) string {
+	sign := "+"
+	if amount < 0 {
+		sign = "-"
+		amount = math.Abs(amount)
+	}
+	return fmt.Sprintf("%s$%.2f", sign, amount)
+}
+
 func walletTruthInventoryStatus(wt WalletTruthPosition) string {
 	switch {
 	case wt.Redeemable:
@@ -2558,13 +2567,17 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	if strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live") {
 		displayEquity = bookEquity
 	}
+	sizingEquity := bookEquity
 
 	netChange := displayEquity - stats.StartingBalance
 	changeSt := styleGreen
-	changeSign := "+"
 	if netChange < 0 {
 		changeSt = styleRed
-		changeSign = ""
+	}
+
+	realizedSt := styleGreen
+	if stats.RealizedPnL < 0 {
+		realizedSt = styleRed
 	}
 
 	multSt := styleWhite
@@ -2595,10 +2608,8 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		}
 	}
 	arbSt := styleGreen
-	arbSign := "+"
 	if guaranteedProfit < 0 {
 		arbSt = styleRed
-		arbSign = ""
 	}
 
 	// Deployment bar
@@ -2618,7 +2629,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	// Trade size
 	tradeLine := ""
-	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, displayEquity, stats.StartingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
+	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, sizingEquity, stats.StartingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
 		if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
 		} else {
@@ -2628,8 +2639,8 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		tradeLine = "  "
 	}
 	tradeLine += fmt.Sprintf("Realized %s  ·  Arb %s",
-		changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, stats.RealizedPnL)),
-		arbSt.Render(fmt.Sprintf("%s$%.2f", arbSign, guaranteedProfit)),
+		realizedSt.Render(signedDollar(stats.RealizedPnL)),
+		arbSt.Render(signedDollar(guaranteedProfit)),
 	)
 
 	uptime := time.Since(s.startTime).Round(time.Second)
@@ -2647,7 +2658,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
-		changeSt.Render(fmt.Sprintf("%s$%.2f", changeSign, netChange)),
+		changeSt.Render(signedDollar(netChange)),
 		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
 	)
 	row3 := tradeLine

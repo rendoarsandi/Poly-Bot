@@ -813,6 +813,48 @@ func TestRenderOrderHistoryShowsExplicitCloseModeInsteadOfMaker(t *testing.T) {
 	}
 }
 
+func TestRenderAccountStatusFormatsRealizedFromRealizedPnL(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+		RealizedPnL:     -3,
+	}, 0, 120, 120, 1.0, 0, 0, nil)
+
+	if strings.Contains(rendered, "+$-3.00") {
+		t.Fatalf("expected realized pnl to format from its own sign, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "-$3.00") {
+		t.Fatalf("expected realized pnl to render as -$3.00, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusUsesBookEquityForPaperTradeBudget(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  94,
+		StartingBalance: 100,
+	}, 6, 97, 100, 1.0, 0, 0, map[string]Position{
+		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 10, AvgPrice: 0.60, TotalCost: 6},
+	})
+
+	if !strings.Contains(rendered, "$5.00/trade") {
+		t.Fatalf("expected paper trade budget to use neutral book equity, got %q", rendered)
+	}
+}
+
 func TestRecordOrderDefaultsToTakerMode(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.RecordOrder("BTC", "Down", "BUY", 10, 0.84, 8.4, 0.0, 0.0, "FILLED")

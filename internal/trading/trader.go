@@ -782,6 +782,24 @@ func (t *RealTrader) ForceRefreshBalance(ctx context.Context) (float64, error) {
 	return t.GetBalance(ctx)
 }
 
+// InvalidateCTFBalanceCache clears cached on-chain CTF balances so the next
+// read is forced to hit chain state.
+func (t *RealTrader) InvalidateCTFBalanceCache(tokenIDs ...string) {
+	t.ctfMu.Lock()
+	defer t.ctfMu.Unlock()
+
+	if len(tokenIDs) == 0 {
+		t.ctfBalanceCache = make(map[string]float64)
+		t.lastCTFBalanceUpdate = make(map[string]time.Time)
+		return
+	}
+
+	for _, tokenID := range tokenIDs {
+		delete(t.ctfBalanceCache, tokenID)
+		delete(t.lastCTFBalanceUpdate, tokenID)
+	}
+}
+
 // UpdateBalanceAllowance syncs the CLOB's cached allowance with on-chain state.
 // Call this before trading to ensure the CLOB knows about unlimited on-chain allowance.
 func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
@@ -845,6 +863,27 @@ func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
 	return res.Allowance, nil
 }
 
+func (t *RealTrader) refreshStateAfterRedeem(ctx context.Context) {
+	t.InvalidateCTFBalanceCache()
+
+	const maxAttempts = 3
+	const refreshDelay = 250 * time.Millisecond
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if _, err := t.ForceRefreshBalance(ctx); err == nil {
+			return
+		}
+		if attempt == maxAttempts {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(refreshDelay):
+		}
+	}
+}
+
 // RedeemOnChain performs the on-chain redemption of winning tokens
 func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
 	if t.config.Exchange == "kalshi" {
@@ -861,8 +900,15 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numO
 		return "", fmt.Errorf("market not yet resolved on-chain (payouts not reported)")
 	}
 
-	// Get signer from clob (we need to export it or add a helper)
-	return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+	txHash, err := t.retryOnChainTx(ctx, "redeem", func() (string, error) {
+		return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+	})
+	if err != nil {
+		return txHash, err
+	}
+
+	t.refreshStateAfterRedeem(ctx)
+	return txHash, nil
 }
 
 // RedeemOnChainForce submits the redeem transaction without waiting for the
@@ -872,7 +918,15 @@ func (t *RealTrader) RedeemOnChainForce(ctx context.Context, conditionID string,
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("redeem not supported/needed on kalshi")
 	}
-	return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+	txHash, err := t.retryOnChainTx(ctx, "redeem", func() (string, error) {
+		return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+	})
+	if err != nil {
+		return txHash, err
+	}
+
+	t.refreshStateAfterRedeem(ctx)
+	return txHash, nil
 }
 
 // retryOnChainTx executes an on-chain transaction with retry logic and confirmation waiting.

@@ -225,6 +225,22 @@ func TestSummarizePaperRoundUsesSharedEngineDelta(t *testing.T) {
 	}
 }
 
+func TestSummarizePaperRoundKeepsOpenInventoryNeutralAtRotation(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	if _, err := engine.BuyForMarket("m1", "Up", 0.60, 10.0); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk("m1", "Up", 0.30, 0.31)
+
+	roundPnL, totalEquity, _, _ := summarizePaperRound(engine, 100.0, 0)
+	if roundPnL != 0 {
+		t.Fatalf("expected unresolved inventory to stay neutral at rotation, got %.2f", roundPnL)
+	}
+	if totalEquity != 100.0 {
+		t.Fatalf("expected round equity to use book equity 100.00, got %.2f", totalEquity)
+	}
+}
+
 func TestComputePaperMakerQuoteSizesRespectSkewAndCaps(t *testing.T) {
 	buyHeavy := computePaperMakerBuyQty(10, 18, 1.0, 20, 100, 0.49, paperMakerStrategyParams)
 	buyLight := computePaperMakerBuyQty(10, 2, -1.0, 20, 100, 0.49, paperMakerStrategyParams)

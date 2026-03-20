@@ -568,6 +568,42 @@ func TestRealTrader_GetBalancePrefersOnChainUSDC(t *testing.T) {
 	}
 }
 
+func TestRealTrader_RefreshStateAfterRedeemClearsCTFCacheAndRefreshesBalance(t *testing.T) {
+	trader := &RealTrader{
+		client: &stubExchangeClient{
+			balanceAllowance: &api.BalanceAllowance{
+				Balance:   42.5,
+				Allowance: 42.5,
+			},
+			address: "0x1111111111111111111111111111111111111111",
+		},
+		config:            &core.Config{Exchange: "polymarket"},
+		cachedBalance:     10.0,
+		lastBalanceUpdate: time.Now(),
+		ctfBalanceCache: map[string]float64{
+			"token-a": 3.0,
+		},
+		lastCTFBalanceUpdate: map[string]time.Time{
+			"token-a": time.Now(),
+		},
+	}
+
+	trader.refreshStateAfterRedeem(context.Background())
+
+	if got := len(trader.ctfBalanceCache); got != 0 {
+		t.Fatalf("expected CTF balance cache to be cleared, got %d entries", got)
+	}
+	if got := len(trader.lastCTFBalanceUpdate); got != 0 {
+		t.Fatalf("expected CTF balance timestamps to be cleared, got %d entries", got)
+	}
+	if trader.lastBalanceUpdate.IsZero() {
+		t.Fatal("expected balance refresh to repopulate lastBalanceUpdate")
+	}
+	if trader.cachedBalance != 42.5 {
+		t.Fatalf("expected refreshed cached balance 42.5, got %.2f", trader.cachedBalance)
+	}
+}
+
 func TestRealTrader_ResetConfirmedFill(t *testing.T) {
 	trader := &RealTrader{
 		livePositions:       make(map[string]float64),
