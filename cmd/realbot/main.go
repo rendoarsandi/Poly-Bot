@@ -412,8 +412,30 @@ func realbotRoundedLimitBuyCost(price, qty float64) float64 {
 }
 
 func realbotClampBuySharesToBudget(requestedShares, budget float64, prices ...float64) float64 {
-	qty := math.Floor(requestedShares + 1e-9)
-	for qty >= 1 {
+	qty := normalizeMarketBuyShares(requestedShares)
+	if qty <= 0 || budget <= 0 {
+		return 0
+	}
+
+	totalPrice := 0.0
+	for _, price := range prices {
+		if price <= 0 {
+			return 0
+		}
+		totalPrice += price
+	}
+	if totalPrice <= 0 {
+		return 0
+	}
+
+	// Start from the cheaper of requested size and the raw pair-sum affordability.
+	// Venue cent-rounding may still push the true cost slightly above budget, so we
+	// walk down from there at market-like 4 decimal precision.
+	if affordable := normalizeMarketBuyShares(budget / totalPrice); affordable < qty {
+		qty = affordable
+	}
+
+	for qty >= 0.0001 {
 		totalCost := 0.0
 		valid := true
 		for _, price := range prices {
@@ -427,7 +449,7 @@ func realbotClampBuySharesToBudget(requestedShares, budget float64, prices ...fl
 		if valid && totalCost <= budget+1e-9 {
 			return qty
 		}
-		qty--
+		qty = normalizeMarketBuyShares(qty - 0.0001)
 	}
 	return 0
 }
@@ -2730,8 +2752,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					// Scale shares based on margin (User requested NO fee buffer deduction)
-					shares := tradeSize / sum
-					shares = math.Floor(shares) // Round down to integer shares for cleaner execution matching utilbot
+					shares := normalizeMarketBuyShares(tradeSize / sum)
 					requestedShares := shares
 
 					// Fee estimation and balance check logging removed per user request.
@@ -2765,7 +2786,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					// Recalculate shares based on the fresh, confirmed sum to prevent over-execution from transient WS glitches
-					shares = math.Floor(tradeSize / sum)
+					shares = normalizeMarketBuyShares(tradeSize / sum)
 					requestedShares = shares
 
 					if block, reason := realbotPanicBuyCompletionGuard(engine, id, outcomes[0], outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
@@ -2851,7 +2872,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// requested trade size before we attempt entry. This avoids late REST requotes
 					// and prevents entering on incomplete BBO-only depth.
 					if requestedShares > minLiquidity+1e-6 {
-						tui.LogEvent("[%s] ⚠️ WS executable ask depth inside %.1f%% window covers %.2f/%.0f shares — skipping", id, executionMarginFloor, minLiquidity, requestedShares)
+						tui.LogEvent("[%s] ⚠️ WS executable ask depth inside %.1f%% window covers %s/%s shares — skipping", id, executionMarginFloor, formatShareQty(minLiquidity), formatShareQty(requestedShares))
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}
@@ -2889,7 +2910,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 						budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
 						if budgetCappedShares < shares {
-							tui.LogEvent("[%s] 📉 Downscaling from %.0f to %.0f shares to stay within $%.2f trade budget at live caps", id, shares, budgetCappedShares, tradeSize)
+							tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to stay within $%.2f trade budget at live caps", id, formatShareQty(shares), formatShareQty(budgetCappedShares), tradeSize)
 							shares = budgetCappedShares
 						}
 						if shares < 1 {
@@ -2912,7 +2933,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Ensure the actual market-like buy payload still fits the latest cash snapshot.
 						safeShares := realbotClampBuySharesToBudget(shares, currentBalance, limitPrice1, limitPrice2)
 						if safeShares < shares {
-							tui.LogEvent("[%s] 📉 Downscaling from %.0f to %.0f shares to fit $%.2f balance limit", id, shares, safeShares, currentBalance)
+							tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", id, formatShareQty(shares), formatShareQty(safeShares), currentBalance)
 							shares = safeShares
 						}
 						if shares < 1 {
@@ -3311,6 +3332,13 @@ func normalizeMarketSellShares(qty float64) float64 {
 		return 0
 	}
 	return math.Floor((qty*100)+1e-9) / 100
+}
+
+func normalizeMarketBuyShares(qty float64) float64 {
+	if qty <= 0 {
+		return 0
+	}
+	return math.Floor((qty*10000)+1e-9) / 10000
 }
 
 func combineCleanupVerificationBalances(live0, live1, pos0, pos1, onChain0, onChain1 float64, posErr, onChainErr error) (bal0, bal1 float64, source string, err error) {
@@ -4304,7 +4332,7 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 		return realbotTakerClosePlan{}, fmt.Errorf("sizing price %.3f is invalid", sizingPrice)
 	}
 
-	requestedQty := math.Floor((budget / sizingPrice) + 1e-9)
+	requestedQty := normalizeMarketBuyShares(budget / sizingPrice)
 	requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, limitPrice)
 	if requestedQty < 1 {
 		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f is too small at sizing price $%.3f", budget, sizingPrice)

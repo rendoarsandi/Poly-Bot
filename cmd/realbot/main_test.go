@@ -121,8 +121,8 @@ func TestBuildRealbotTakerClosePlanRespectsBuyExecSizing(t *testing.T) {
 	if math.Abs(plan.SizingPrice-0.99) > 0.000001 {
 		t.Fatalf("expected sizing price 0.99, got %.6f", plan.SizingPrice)
 	}
-	if plan.RequestedQty != 50 {
-		t.Fatalf("expected 50 shares, got %.0f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-50.5050) > 0.000001 {
+		t.Fatalf("expected 50.5050 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
@@ -152,8 +152,24 @@ func TestRealbotRoundedLimitBuyCostMatchesVenueCentRounding(t *testing.T) {
 
 func TestRealbotClampBuySharesToBudgetUsesCapPriceNotObservedQuote(t *testing.T) {
 	shares := realbotClampBuySharesToBudget(2, 2.0, 0.50, 0.51)
-	if shares != 1 {
-		t.Fatalf("expected clamp to 1 share, got %.0f", shares)
+	if math.Abs(shares-1.98) > 0.000001 {
+		t.Fatalf("expected clamp to 1.9800 shares, got %.4f", shares)
+	}
+}
+
+func TestRealbotClampBuySharesToBudgetKeepsMarketLikeFractionalShares(t *testing.T) {
+	shares := realbotClampBuySharesToBudget(3.3131, 3.28, 0.50, 0.49)
+	if math.Abs(shares-3.3061) > 0.000001 {
+		t.Fatalf("expected clamp to 3.3061 shares, got %.4f", shares)
+	}
+}
+
+func TestNormalizeMarketBuySharesUsesFourDecimals(t *testing.T) {
+	if got := normalizeMarketBuyShares(3.31319); got != 3.3131 {
+		t.Fatalf("expected 3.3131, got %.4f", got)
+	}
+	if got := normalizeMarketBuyShares(0.00009); got != 0 {
+		t.Fatalf("expected dust to round down to 0, got %.5f", got)
 	}
 }
 
@@ -1043,8 +1059,8 @@ func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
 		t.Fatalf("buildRealbotTakerClosePlan returned error: %v", err)
 	}
 
-	if plan.RequestedQty != 5 {
-		t.Fatalf("expected 5 shares at $0.99 cap for a $5 budget, got %.0f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-5.0505) > 0.000001 {
+		t.Fatalf("expected 5.0505 shares at $0.99 cap for a $5 budget, got %.4f", plan.RequestedQty)
 	}
 
 	if got := plan.RequestedQty * plan.LimitPrice; got > 5.0+1e-9 {
@@ -1062,8 +1078,8 @@ func TestBuildRealbotTakerClosePlan_AllowsSingleShareBudgetNearDollarCap(t *test
 	if err != nil {
 		t.Fatalf("expected close plan to allow a $1 budget at a $0.99 cap, got %v", err)
 	}
-	if plan.RequestedQty != 1 {
-		t.Fatalf("expected 1 share, got %.0f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-1.0101) > 0.000001 {
+		t.Fatalf("expected 1.0101 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
@@ -1077,8 +1093,8 @@ func TestBuildRealbotTakerClosePlan_UsesBudgetFloorWithoutArtificialTwoShareMini
 	if err != nil {
 		t.Fatalf("expected one-share budget floor to pass, got %v", err)
 	}
-	if plan.RequestedQty != 1 {
-		t.Fatalf("expected 1 share, got %.0f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-1.9090) > 0.000001 {
+		t.Fatalf("expected 1.9090 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
