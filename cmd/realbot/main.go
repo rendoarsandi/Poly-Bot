@@ -46,6 +46,9 @@ const (
 	realbotFillPollInterval        = 50 * time.Millisecond
 	realbotMinMarketBuyValue       = 1.0
 	realbotTakerCloseMinOrderSlack = 0.05
+	realbotMaxSaneOutcomeSpread    = 0.10
+	realbotMaxSaneAskPairSum       = 1.10
+	realbotMinSaneBidPairSum       = 0.90
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -1484,8 +1487,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						// WS Snapshot is absolute state.
-						if bid > 0 && ask > 0 && bid >= ask {
-							// Reject crossed snapshot and clear state
+						if bid > 0 && ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
+							// Reject crossed/wide snapshot and clear state.
 							tokenBids[outcome] = 0
 							tokenAsks[outcome] = 0
 							tokenFullBids[outcome] = nil
@@ -1538,8 +1541,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					for _, outcome := range outcomes {
 
 						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
-							// Check for crossed book (WS state corruption or missing delete delta)
-							if tokenBids[outcome] >= tokenAsks[outcome] {
+							// Check for crossed/wide local book (WS state corruption or missing delete delta)
+							if !realbotHasSaneTopOfBook(tokenBids[outcome], tokenAsks[outcome]) {
 								// Force a REST poll immediately by making WS look stale
 								lastUpdate = time.Now().Add(-20 * time.Second)
 
@@ -1579,7 +1582,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 					}
 
-					if bid > 0 && ask > 0 && bid >= ask {
+					if bid > 0 && ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
 						continue // Reject crossed snapshot
 					}
 
@@ -1608,15 +1611,24 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 	doneWS:
 
-		// Final safety check: scrub any crossed books that survived the WS processing loop
+		// Final safety check: scrub any crossed/wide books that survived the WS loop.
 		for _, outcome := range outcomes {
-			if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 && tokenBids[outcome] >= tokenAsks[outcome] {
+			if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 && !realbotHasSaneTopOfBook(tokenBids[outcome], tokenAsks[outcome]) {
 				tokenBids[outcome] = 0
 				tokenAsks[outcome] = 0
 				tokenFullBids[outcome] = nil
 				tokenFullAsks[outcome] = nil
 				lastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
 			}
+		}
+		if !realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
+			for _, outcome := range outcomes {
+				tokenBids[outcome] = 0
+				tokenAsks[outcome] = 0
+				tokenFullBids[outcome] = nil
+				tokenFullAsks[outcome] = nil
+			}
+			lastUpdate = time.Now().Add(-20 * time.Second) // Force REST poll
 		}
 
 		if messagesProcessed > 0 {
@@ -1650,7 +1662,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 		sinceLastRest := time.Since(lastRestPoll)
 
-		// Force REST fallback if a book was just cleared or if it is currently crossed
+		// Force REST fallback if local quotes were cleared or fail sanity.
 		terminalBookState := realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks)
 		forceRestFallback := false
 		if !terminalBookState {
@@ -1659,13 +1671,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				ask := tokenAsks[outcome]
 				// Force recovery only for clearly invalid local state, not for stable
 				// terminal-looking books like 0.99/0.01 near expiry.
-				if bid == 0 || ask == 0 || bid >= ask {
-					// Only force if we haven't updated in a few seconds to avoid spamming
-					if staleTime > 15*time.Second {
-						forceRestFallback = true
-						break
-					}
+				if bid == 0 || ask == 0 || !realbotHasSaneTopOfBook(bid, ask) {
+					forceRestFallback = true
+					break
 				}
+			}
+			if !forceRestFallback && !realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
+				forceRestFallback = true
 			}
 		}
 		wsUnhealthy := !wsMgr.IsConnected() || (wsTimeSinceMsg > 10*time.Second && !terminalBookState)
@@ -3898,6 +3910,49 @@ func realbotLooksLikeTerminalBook(outcomes []string, tokenBids, tokenAsks map[st
 	return sawExtreme
 }
 
+func realbotHasSaneTopOfBook(bid, ask float64) bool {
+	if bid <= 0 || ask <= 0 || bid >= ask {
+		return false
+	}
+	if bid >= terminalBidFloor || ask <= terminalAskCeil {
+		return true
+	}
+	return (ask - bid) <= realbotMaxSaneOutcomeSpread
+}
+
+func realbotLocalQuoteSanityReason(outcomes []string, tokenBids, tokenAsks map[string]float64) string {
+	for _, out := range outcomes {
+		bid := tokenBids[out]
+		ask := tokenAsks[out]
+		if !realbotHasSaneTopOfBook(bid, ask) {
+			if bid <= 0 || ask <= 0 {
+				return fmt.Sprintf("missing two-sided quote for %s", out)
+			}
+			if bid >= ask {
+				return fmt.Sprintf("crossed local quote for %s (bid %.3f >= ask %.3f)", out, bid, ask)
+			}
+			return fmt.Sprintf("wide local spread for %s (bid %.3f ask %.3f spread %.3f > %.3f)", out, bid, ask, ask-bid, realbotMaxSaneOutcomeSpread)
+		}
+	}
+
+	if len(outcomes) == 2 && !realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks) {
+		askSum := tokenAsks[outcomes[0]] + tokenAsks[outcomes[1]]
+		if askSum > realbotMaxSaneAskPairSum {
+			return fmt.Sprintf("ask pair sum %.3f > %.3f", askSum, realbotMaxSaneAskPairSum)
+		}
+		bidSum := tokenBids[outcomes[0]] + tokenBids[outcomes[1]]
+		if bidSum < realbotMinSaneBidPairSum {
+			return fmt.Sprintf("bid pair sum %.3f < %.3f", bidSum, realbotMinSaneBidPairSum)
+		}
+	}
+
+	return ""
+}
+
+func realbotHasSanePairQuotes(outcomes []string, tokenBids, tokenAsks map[string]float64) bool {
+	return realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks) == ""
+}
+
 func realbotBestAskFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	bestAsk := 1.0
 	found := false
@@ -3928,7 +3983,7 @@ func realbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	return bestBid, true
 }
 
-func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
+func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
 	maxObservedAge := time.Duration(0)
 	for _, out := range outcomes {
 		if tokenAsks[out] <= 0 {
@@ -3949,10 +4004,13 @@ func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenAsks map[
 			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
 		}
 	}
+	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
+		return false, maxObservedAge, reason
+	}
 	return true, maxObservedAge, ""
 }
 
-func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
+func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
 	maxObservedAge := time.Duration(0)
 	for _, out := range outcomes {
 		if tokenBids[out] <= 0 {
@@ -3972,6 +4030,9 @@ func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids map
 		if age > maxAge {
 			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
 		}
+	}
+	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
+		return false, maxObservedAge, reason
 	}
 	return true, maxObservedAge, ""
 }
@@ -4036,19 +4097,22 @@ func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClien
 		tokenFullAsks[res.outcome] = res.asks
 		bestBid, hasBid := realbotBestBidFromLevels(res.bids)
 		bestAsk, hasAsk := realbotBestAskFromLevels(res.asks)
-		if !hasBid || !hasAsk || bestBid <= 0 || bestAsk <= 0 || bestBid >= bestAsk {
+		if !hasBid || !hasAsk || !realbotHasSaneTopOfBook(bestBid, bestAsk) {
 			return maxLatency, fmt.Errorf("invalid refreshed book for %s", res.outcome)
 		}
 		tokenBids[res.outcome] = bestBid
 		tokenAsks[res.outcome] = bestAsk
 		quoteState[res.outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest-exec"}
 	}
+	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
+		return maxLatency, fmt.Errorf("invalid refreshed pair quote: %s", reason)
+	}
 	return maxLatency, nil
 }
 
 func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, localQuoteMaxAge time.Duration) (source string, metric time.Duration, detail string, err error) {
 	now := time.Now()
-	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenAsks, tokenFullAsks, quoteState, localQuoteMaxAge)
+	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenBids, tokenAsks, tokenFullAsks, quoteState, localQuoteMaxAge)
 	if fresh {
 		return "local", age, "", nil
 	}
@@ -4061,7 +4125,7 @@ func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.Re
 
 func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, localQuoteMaxAge time.Duration) (source string, metric time.Duration, detail string, err error) {
 	now := time.Now()
-	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenFullBids, quoteState, localQuoteMaxAge)
+	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenAsks, tokenFullBids, quoteState, localQuoteMaxAge)
 	if fresh {
 		return "local", age, "", nil
 	}
@@ -4744,6 +4808,10 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 	restErrors := 0
 	restEmpty := 0
 	var lastErr error
+	outcomes := make([]string, 0, len(tokenMap))
+	for _, outcome := range tokenMap {
+		outcomes = append(outcomes, outcome)
+	}
 	for tokenID, outcome := range tokenMap {
 		start := time.Now()
 		// Use a short 2s timeout for fallback to prevent freezing the main loop when internet is down
@@ -4788,9 +4856,9 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			}
 		}
 
-		// Reject crossed books from REST
-		if bid > 0 && ask > 0 && bid >= ask {
-			// Clear crossed book state
+		// Reject crossed/wide books from REST.
+		if bid > 0 && ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
+			// Clear invalid book state.
 			bids[outcome] = 0
 			asks[outcome] = 0
 			fullBids[outcome] = nil
@@ -4814,6 +4882,15 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
+	}
+	if success && !realbotHasSanePairQuotes(outcomes, bids, asks) {
+		for _, outcome := range tokenMap {
+			bids[outcome] = 0
+			asks[outcome] = 0
+			fullBids[outcome] = nil
+			fullAsks[outcome] = nil
+			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
+		}
 	}
 	if success {
 		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")

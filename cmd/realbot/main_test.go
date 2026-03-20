@@ -346,6 +346,7 @@ func TestRealbotMatchedAskLiquidityHonorsExecutionSum(t *testing.T) {
 func TestRealbotCanUseLocalBuyQuote(t *testing.T) {
 	now := time.Date(2026, 3, 8, 0, 0, 0, 0, time.UTC)
 	outcomes := []string{"Down", "Up"}
+	bids := map[string]float64{"Down": 0.35, "Up": 0.63}
 	asks := map[string]float64{"Down": 0.36, "Up": 0.64}
 	depth := map[string][]paper.MarketLevel{
 		"Down": {{Price: 0.36, Size: 10}},
@@ -356,13 +357,13 @@ func TestRealbotCanUseLocalBuyQuote(t *testing.T) {
 		"Up":   {UpdatedAt: now.Add(-70 * time.Millisecond), Source: "rest"},
 	}
 
-	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, asks, depth, state, 250*time.Millisecond)
+	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
 	if !fresh || reason != "" {
 		t.Fatalf("expected fresh local quote, got fresh=%v age=%v reason=%q", fresh, age, reason)
 	}
 
 	state["Up"] = realbotQuoteState{UpdatedAt: now.Add(-400 * time.Millisecond), Source: "ws"}
-	fresh, _, reason = realbotCanUseLocalBuyQuote(now, outcomes, asks, depth, state, 250*time.Millisecond)
+	fresh, _, reason = realbotCanUseLocalBuyQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
 	if fresh || reason == "" {
 		t.Fatalf("expected stale quote rejection, got fresh=%v reason=%q", fresh, reason)
 	}
@@ -425,6 +426,7 @@ func TestRealbotCanUseLocalSellQuote(t *testing.T) {
 	now := time.Date(2026, 3, 8, 0, 0, 0, 0, time.UTC)
 	outcomes := []string{"Down", "Up"}
 	bids := map[string]float64{"Down": 0.54, "Up": 0.49}
+	asks := map[string]float64{"Down": 0.55, "Up": 0.50}
 	depth := map[string][]paper.MarketLevel{
 		"Down": {{Price: 0.54, Size: 8}},
 		"Up":   {{Price: 0.49, Size: 10}},
@@ -434,15 +436,37 @@ func TestRealbotCanUseLocalSellQuote(t *testing.T) {
 		"Up":   {UpdatedAt: now.Add(-70 * time.Millisecond), Source: "rest"},
 	}
 
-	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, bids, depth, state, 250*time.Millisecond)
+	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
 	if !fresh || reason != "" || age != 70*time.Millisecond {
 		t.Fatalf("expected fresh local sell quote, got fresh=%v age=%v reason=%q", fresh, age, reason)
 	}
 
 	state["Up"] = realbotQuoteState{UpdatedAt: now.Add(-400 * time.Millisecond), Source: "ws"}
-	fresh, _, reason = realbotCanUseLocalSellQuote(now, outcomes, bids, depth, state, 250*time.Millisecond)
+	fresh, _, reason = realbotCanUseLocalSellQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
 	if fresh || reason == "" {
 		t.Fatalf("expected stale sell quote rejection, got fresh=%v reason=%q", fresh, reason)
+	}
+}
+
+func TestRealbotLocalQuoteSanityReasonRejectsWideOutcomeSpread(t *testing.T) {
+	reason := realbotLocalQuoteSanityReason(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.40, "Up": 0.56},
+		map[string]float64{"Down": 0.57, "Up": 0.60},
+	)
+	if reason == "" || !strings.Contains(reason, "wide local spread") {
+		t.Fatalf("expected wide-spread rejection, got %q", reason)
+	}
+}
+
+func TestRealbotLocalQuoteSanityReasonRejectsImpossiblePairSum(t *testing.T) {
+	reason := realbotLocalQuoteSanityReason(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.46, "Up": 0.47},
+		map[string]float64{"Down": 0.55, "Up": 0.56},
+	)
+	if reason == "" || !strings.Contains(reason, "ask pair sum") {
+		t.Fatalf("expected pair-sum rejection, got %q", reason)
 	}
 }
 
