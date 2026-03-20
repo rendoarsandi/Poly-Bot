@@ -2616,6 +2616,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	if guaranteedProfit < 0 {
 		arbSt = styleRed
 	}
+	bestResolvePnL, worstResolvePnL := resolutionPnLRangeFromPositions(positions)
 
 	// Deployment bar
 	deployedPct := 0.0
@@ -2634,7 +2635,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	// Trade size
 	tradeLine := ""
-	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, sizingEquity, stats.StartingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
+	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, sizingEquity, stats.StartingBalance, worstResolvePnL, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
 		if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
 		} else {
@@ -2647,6 +2648,20 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		realizedSt.Render(signedDollar(displayRealized)),
 		arbSt.Render(signedDollar(guaranteedProfit)),
 	)
+	if len(positions) > 0 && (math.Abs(bestResolvePnL) >= 0.005 || math.Abs(worstResolvePnL) >= 0.005) {
+		resolveBestSt := styleGreen
+		if bestResolvePnL < 0 {
+			resolveBestSt = styleRed
+		}
+		resolveWorstSt := styleGreen
+		if worstResolvePnL < 0 {
+			resolveWorstSt = styleRed
+		}
+		tradeLine += fmt.Sprintf("  ·  Resolve %s/%s",
+			resolveBestSt.Render(signedDollar(bestResolvePnL)),
+			resolveWorstSt.Render(signedDollar(worstResolvePnL)),
+		)
+	}
 
 	uptime := time.Since(s.startTime).Round(time.Second)
 	totalDecisions := stats.WinningTrades + stats.LosingTrades
@@ -2684,14 +2699,79 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	return makePanel(inner, clrTeal, content)
 }
 
-func displayedTradeBudgets(mode string, cash, equity, startingBalance, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
+func resolutionPnLRangeFromPositions(positions map[string]Position) (best float64, worst float64) {
+	type marketResolution struct {
+		totalCost      float64
+		outcomePayouts map[string]float64
+	}
+
+	byMarket := make(map[string]*marketResolution)
+	for posKey, pos := range positions {
+		marketID := strings.TrimSpace(pos.MarketID)
+		if marketID == "" {
+			marketID = posKey
+		}
+		entry := byMarket[marketID]
+		if entry == nil {
+			entry = &marketResolution{
+				outcomePayouts: make(map[string]float64),
+			}
+			byMarket[marketID] = entry
+		}
+		entry.totalCost += pos.TotalCost
+		entry.outcomePayouts[pos.Outcome] += pos.Quantity
+	}
+
+	for _, market := range byMarket {
+		if len(market.outcomePayouts) == 0 {
+			continue
+		}
+
+		marketBest := 0.0
+		marketWorst := 0.0
+		first := true
+		for _, payout := range market.outcomePayouts {
+			pnl := payout - market.totalCost
+			if first {
+				marketBest = pnl
+				marketWorst = pnl
+				first = false
+				continue
+			}
+			if pnl > marketBest {
+				marketBest = pnl
+			}
+			if pnl < marketWorst {
+				marketWorst = pnl
+			}
+		}
+
+		// Only one held side implies opposite-outcome full-loss scenario.
+		if len(market.outcomePayouts) == 1 {
+			fullLoss := -market.totalCost
+			if fullLoss < marketWorst {
+				marketWorst = fullLoss
+			}
+			if fullLoss > marketBest {
+				marketBest = fullLoss
+			}
+		}
+
+		best += marketBest
+		worst += marketWorst
+	}
+
+	return best, worst
+}
+
+func displayedTradeBudgets(mode string, cash, equity, startingBalance, worstResolvePnL, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
 	if tradeFactor <= 0 {
 		return 0, 0
 	}
 
 	sizingCapital := equity
 	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
-		sizingCapital = math.Max(cash, startingBalance)
+		sizingCapital = math.Max(cash, math.Max(0, startingBalance+worstResolvePnL))
 	}
 	base = sizingCapital * tradeFactor
 	if maxTradeSize > 0 && base > maxTradeSize {

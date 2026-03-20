@@ -122,7 +122,7 @@ func TestTUI_SetWalletTruthPositionsClonesInput(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
-	base, effective := displayedTradeBudgets("Paper", 75, 100, 100, 0.10, 0, 1.12)
+	base, effective := displayedTradeBudgets("Paper", 75, 100, 100, 0, 0.10, 0, 1.12)
 	if base != 10 {
 		t.Fatalf("expected paper base trade budget 10.00, got %.2f", base)
 	}
@@ -132,7 +132,7 @@ func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsUsesStartingBalanceFloorInRealMode(t *testing.T) {
-	base, effective := displayedTradeBudgets("Real", 50, 100, 100, 0.10, 0, 1.50)
+	base, effective := displayedTradeBudgets("Real", 50, 100, 100, 0, 0.10, 0, 1.50)
 	if base != 10 {
 		t.Fatalf("expected real trade budget to keep session-start floor, got %.2f", base)
 	}
@@ -142,11 +142,21 @@ func TestDisplayedTradeBudgetsUsesStartingBalanceFloorInRealMode(t *testing.T) {
 }
 
 func TestDisplayedTradeBudgetsCompoundsUpInRealModeWhenCashGrows(t *testing.T) {
-	base, effective := displayedTradeBudgets("Real", 125, 100, 100, 0.10, 0, 1.50)
+	base, effective := displayedTradeBudgets("Real", 125, 100, 100, 0, 0.10, 0, 1.50)
 	if base != 12.5 {
 		t.Fatalf("expected real trade budget to grow with cash, got %.2f", base)
 	}
 	if effective != 12.5 {
+		t.Fatalf("expected real effective budget to match base in real mode, got %.2f", effective)
+	}
+}
+
+func TestDisplayedTradeBudgetsUsesWorstResolutionCaseInRealMode(t *testing.T) {
+	base, effective := displayedTradeBudgets("Real", 90, 100, 100, -10, 0.10, 0, 1.50)
+	if base != 9 {
+		t.Fatalf("expected real trade budget to discount worst-case unresolved risk, got %.2f", base)
+	}
+	if effective != 9 {
 		t.Fatalf("expected real effective budget to match base in real mode, got %.2f", effective)
 	}
 }
@@ -912,6 +922,27 @@ func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "W/L 7/3") {
 		t.Fatalf("expected win/loss counts in account status, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsResolutionEstimateForUnresolvedInventory(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  96.9,
+		StartingBalance: 100,
+		RealizedPnL:     0,
+	}, 3.1, 100, 100, 1.0, 0, 0, map[string]Position{
+		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 3.5, AvgPrice: 3.1 / 3.5, TotalCost: 3.1},
+	})
+
+	if !strings.Contains(rendered, "Resolve +$0.40/-$3.10") {
+		t.Fatalf("expected account status to show resolution estimate, got %q", rendered)
 	}
 }
 

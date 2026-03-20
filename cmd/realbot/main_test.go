@@ -110,11 +110,20 @@ func TestRealbotTakerCloseBudgetUsesStartingBalanceFloor(t *testing.T) {
 }
 
 func TestRealbotTakerCloseBudgetCompoundsUpWithCashGrowth(t *testing.T) {
-	budget := realbotTakerCloseBudget(72.00, 65.80, paper.TUISettings{
+	budget := realbotTakerCloseBudget(72.00, 72.00, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
 	if math.Abs(budget-3.60) > 0.000001 {
 		t.Fatalf("expected taker-close budget 3.60, got %.2f", budget)
+	}
+}
+
+func TestRealbotTakerCloseBudgetKeepsHighWaterAfterDrawdown(t *testing.T) {
+	budget := realbotTakerCloseBudget(59.20, 72.00, paper.TUISettings{
+		TradeScaleFactor: 0.05,
+	})
+	if math.Abs(budget-3.60) > 0.000001 {
+		t.Fatalf("expected taker-close budget to stay at high-water 3.60, got %.2f", budget)
 	}
 }
 
@@ -455,22 +464,22 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 	}
 }
 
-func TestRealbotNextRestFallbackStateKeepsRecoveryLogLatchedWhileFallbackRemainsNeeded(t *testing.T) {
-	active, logged := realbotNextRestFallbackState(false, false, true, true, true, 20*time.Second)
-	if !active || !logged {
-		t.Fatalf("expected initial stale recovery to activate fallback and latch log, got active=%v logged=%v", active, logged)
+func TestRealbotShouldReconnectWSOnlyForInvalidStaleBook(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	validBids := map[string]float64{"Down": 0.46, "Up": 0.51}
+	validAsks := map[string]float64{"Down": 0.48, "Up": 0.53}
+
+	if realbotShouldReconnectWS(outcomes, validBids, validAsks, 25*time.Second, false) {
+		t.Fatal("expected quiet but valid local quotes to remain on WS")
 	}
 
-	active, logged = realbotNextRestFallbackState(active, logged, true, false, false, 200*time.Millisecond)
-	if !active || !logged {
-		t.Fatalf("expected non-poll loop to preserve fallback state, got active=%v logged=%v", active, logged)
+	invalidAsks := map[string]float64{"Down": 0.48, "Up": 0}
+	if !realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, false) {
+		t.Fatal("expected reconnect when the stale local book loses one side")
 	}
-}
 
-func TestRealbotNextRestFallbackStateResetsWhenFallbackNoLongerNeeded(t *testing.T) {
-	active, logged := realbotNextRestFallbackState(true, true, false, false, false, 200*time.Millisecond)
-	if active || logged {
-		t.Fatalf("expected fallback state reset when recovery is complete, got active=%v logged=%v", active, logged)
+	if realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, true) {
+		t.Fatal("expected terminal-looking book to suppress reconnects")
 	}
 }
 

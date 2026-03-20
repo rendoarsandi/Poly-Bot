@@ -645,6 +645,61 @@ func TestEngine_GetStatsRealizedPnLStaysNeutralForOpenInventory(t *testing.T) {
 	}
 }
 
+func TestEngine_GetResolutionPnLRangeSingleSidedPosition(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 3.1/3.5, 3.5); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	best, worst := engine.GetResolutionPnLRange()
+	if absFloat(best-0.4) > 0.0001 {
+		t.Fatalf("expected best resolution pnl +0.40, got %.4f", best)
+	}
+	if absFloat(worst+3.1) > 0.0001 {
+		t.Fatalf("expected worst resolution pnl -3.10, got %.4f", worst)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.RealizedPnL) > 0.0001 {
+		t.Fatalf("expected unresolved single-sided position to remain unrealized, got %.4f", stats.RealizedPnL)
+	}
+}
+
+func TestEngine_GetSizingBalanceDiscountsWorstCaseUnresolvedRisk(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.50, 20.0); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	got := engine.GetSizingBalance()
+	if absFloat(got-90.0) > 0.0001 {
+		t.Fatalf("expected sizing balance 90.00 after worst-case unresolved discount, got %.4f", got)
+	}
+}
+
+func TestEngine_GetSizingBalanceIncludesLockedPairUpside(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.40, 10.0); err != nil {
+		t.Fatalf("up buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m1", "Down", 0.55, 10.0); err != nil {
+		t.Fatalf("down buy failed: %v", err)
+	}
+
+	best, worst := engine.GetResolutionPnLRange()
+	if absFloat(best-0.5) > 0.0001 || absFloat(worst-0.5) > 0.0001 {
+		t.Fatalf("expected locked pair resolution pnl +0.50/+0.50, got best=%.4f worst=%.4f", best, worst)
+	}
+
+	got := engine.GetSizingBalance()
+	if absFloat(got-100.5) > 0.0001 {
+		t.Fatalf("expected sizing balance 100.50 for locked pair, got %.4f", got)
+	}
+}
+
 func TestEngine_GetStatsRealizedPnLIncludesPendingRedemption(t *testing.T) {
 	engine := NewEngine(100.0)
 
