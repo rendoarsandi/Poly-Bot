@@ -223,6 +223,9 @@ func TestTUIUpdateMarketPricesWithSourceRetainsLastNonZeroQuotes(t *testing.T) {
 	if got := mkt.Bids["Yes"]; got != 0 {
 		t.Fatalf("expected live bid to clear to 0, got %.2f", got)
 	}
+	if !mkt.ClearedBids["Yes"] || !mkt.ClearedAsks["No"] {
+		t.Fatalf("expected explicit clear flags to be set, got bids=%v asks=%v", mkt.ClearedBids, mkt.ClearedAsks)
+	}
 	if got := mkt.RealBids["Yes"]; got != 0.41 {
 		t.Fatalf("expected last good bid to remain 0.41, got %.2f", got)
 	}
@@ -234,15 +237,17 @@ func TestTUIUpdateMarketPricesWithSourceRetainsLastNonZeroQuotes(t *testing.T) {
 func TestRenderMarketPanelUsesRecentLastGoodQuotesDuringBriefGap(t *testing.T) {
 	model := tuiModel{}
 	mkt := &MarketData{
-		Slug:       "btc-market",
-		Outcomes:   []string{"Yes", "No"},
-		EndTime:    time.Now().Add(10 * time.Minute),
-		LastUpdate: time.Now(),
-		Bids:       map[string]float64{"Yes": 0, "No": 0},
-		Asks:       map[string]float64{"Yes": 0, "No": 0},
-		RealBids:   map[string]float64{"Yes": 0.41, "No": 0.57},
-		RealAsks:   map[string]float64{"Yes": 0.43, "No": 0.59},
-		DataSource: "WS",
+		Slug:        "btc-market",
+		Outcomes:    []string{"Yes", "No"},
+		EndTime:     time.Now().Add(10 * time.Minute),
+		LastUpdate:  time.Now(),
+		Bids:        map[string]float64{"Yes": 0, "No": 0},
+		Asks:        map[string]float64{"Yes": 0, "No": 0},
+		ClearedBids: map[string]bool{"Yes": false, "No": false},
+		ClearedAsks: map[string]bool{"Yes": false, "No": false},
+		RealBids:    map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:    map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource:  "WS",
 	}
 
 	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
@@ -251,6 +256,31 @@ func TestRenderMarketPanelUsesRecentLastGoodQuotesDuringBriefGap(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "$0.43") || !strings.Contains(rendered, "$0.59") {
 		t.Fatalf("expected last-good asks to be rendered, got %q", rendered)
+	}
+}
+
+func TestRenderMarketPanelDoesNotReuseExplicitlyClearedQuotes(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:        "btc-market",
+		Outcomes:    []string{"Yes", "No"},
+		EndTime:     time.Now().Add(10 * time.Minute),
+		LastUpdate:  time.Now(),
+		Bids:        map[string]float64{"Yes": 0, "No": 0},
+		Asks:        map[string]float64{"Yes": 0, "No": 0},
+		ClearedBids: map[string]bool{"Yes": true, "No": true},
+		ClearedAsks: map[string]bool{"Yes": true, "No": true},
+		RealBids:    map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:    map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource:  "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "$0.43") || strings.Contains(rendered, "$0.59") {
+		t.Fatalf("expected explicitly cleared quotes to stay hidden, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Waiting for liquidity") {
+		t.Fatalf("expected explicitly cleared quotes to show no-liquidity state, got %q", rendered)
 	}
 }
 

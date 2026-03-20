@@ -170,6 +170,36 @@ func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, con
 	return positions, nil
 }
 
+func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID string, positions []paper.WalletTruthPosition) (adjusted int, missingCostBasis []string) {
+	if engine == nil || marketID == "" {
+		return 0, nil
+	}
+	enginePositions := engine.GetPositions()
+	for _, wt := range positions {
+		if wt.MarketID != marketID || wt.OnChainShares <= 0 {
+			continue
+		}
+		key := marketID + ":" + wt.Outcome
+		pos, exists := enginePositions[key]
+		if !exists || pos.Quantity <= 0 {
+			missingCostBasis = append(missingCostBasis, wt.Outcome)
+			continue
+		}
+		markPrice := pos.AvgPrice
+		if markPrice <= 0 && pos.Quantity > 0 {
+			markPrice = pos.TotalCost / pos.Quantity
+		}
+		if markPrice <= 0 {
+			markPrice = 0.5
+		}
+		if engine.SyncExternalPosition(marketID, wt.Outcome, wt.OnChainShares, markPrice) {
+			adjusted++
+		}
+	}
+	sort.Strings(missingCostBasis)
+	return adjusted, missingCostBasis
+}
+
 func refreshWalletTruthForRedemption(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) error {
 	positions, err := realbotWalletTruthPositionsForRedemption(ctx, marketID, conditionID, trader, engine)
 	if err != nil {
@@ -218,6 +248,35 @@ func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]
 		}
 	}
 	return bestOutcome, highestPrice
+}
+
+func realbotCanonicalizeMarketTokens(market *api.Market, info *api.MarketInfo) (changed bool, matched int) {
+	if market == nil || info == nil {
+		return false, 0
+	}
+	canonicalOutcomes := make(map[string]string, len(info.Tokens))
+	for _, token := range info.Tokens {
+		outcome := core.SanitizeString(token.Outcome)
+		if token.TokenID == "" || outcome == "" {
+			continue
+		}
+		canonicalOutcomes[token.TokenID] = outcome
+	}
+	if len(canonicalOutcomes) == 0 {
+		return false, 0
+	}
+	for i := range market.Tokens {
+		outcome, ok := canonicalOutcomes[market.Tokens[i].TokenID]
+		if !ok {
+			continue
+		}
+		matched++
+		if market.Tokens[i].Outcome != outcome {
+			market.Tokens[i].Outcome = outcome
+			changed = true
+		}
+	}
+	return changed, matched
 }
 
 func normalizedRealbotTakerCloseMinPrice(liveCfg paper.TUISettings) float64 {
@@ -381,20 +440,12 @@ func realbotShouldSkipStaleQuoteUpdate(quoteState map[string]realbotQuoteState, 
 }
 
 func realbotShouldLogTakerCloseState(lastAt *time.Time, lastKey *string, nextKey string, interval time.Duration) bool {
-	now := time.Now()
-	if interval <= 0 {
-		interval = realbotTakerCloseLogInterval
-	}
 	if lastKey == nil || lastAt == nil {
 		return true
 	}
 	if *lastKey != nextKey {
 		*lastKey = nextKey
-		*lastAt = now
-		return true
-	}
-	if now.Sub(*lastAt) >= interval {
-		*lastAt = now
+		*lastAt = time.Now()
 		return true
 	}
 	return false
@@ -406,6 +457,92 @@ func realbotMarkTakerCloseStateLogged(lastAt *time.Time, lastKey *string, key st
 	}
 	if lastAt != nil {
 		*lastAt = time.Now()
+	}
+}
+
+func realbotWinningOnChainShares(positions []paper.WalletTruthPosition, winner string) float64 {
+	if winner == "" {
+		return 0
+	}
+	total := 0.0
+	for _, pos := range positions {
+		if strings.EqualFold(pos.Outcome, winner) && pos.OnChainShares > 0 {
+			total += pos.OnChainShares
+		}
+	}
+	return total
+}
+
+func realbotRecoverLateBuyFill(trader *trading.RealTrader, tokenID string, initialPosition, requestedQty float64) (float64, error) {
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	positions, err := trader.ForceRefreshPositions(refreshCtx)
+	if err != nil {
+		return 0, err
+	}
+	qty := executionDeltaFromPositions(positions, tokenID, initialPosition, api.SideBuy)
+	qty = clampRequestedExecutionQty(qty, requestedQty)
+	if !hasConfirmedExecutedQty(api.SideBuy, qty) {
+		return 0, nil
+	}
+	return qty, nil
+}
+
+func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
+	go func() {
+		attempt := 0
+		for {
+			attempt++
+			redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			txHash, err := trader.RedeemOnChain(redeemCtx, conditionID, numOutcomes)
+			cancel()
+
+			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			refreshErr := refreshWalletTruthForRedemption(refreshCtx, marketID, conditionID, trader, engine, tui)
+			positions, positionsErr := realbotWalletTruthPositionsForRedemption(refreshCtx, marketID, conditionID, trader, engine)
+			refreshCancel()
+
+			if err == nil {
+				if len(txHash) >= 10 {
+					tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", marketID, txHash[:10]+"...")
+				} else {
+					tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", marketID, txHash)
+				}
+			} else {
+				tui.LogEvent("[%s] ⚠️ Redeem attempt %d pending: %v", marketID, attempt, err)
+			}
+
+			if refreshErr != nil {
+				tui.LogEvent("[%s] ⚠️ Post-redeem wallet-truth refresh failed: %v", marketID, refreshErr)
+			} else {
+				tui.UpdateWalletTruthResolution(marketID, true, winner)
+			}
+
+			if positionsErr == nil && realbotWinningOnChainShares(positions, winner) <= 0.000001 {
+				return
+			}
+
+			time.Sleep(1 * time.Minute)
+		}
+	}()
+}
+
+func realbotQuoteMapsEqual(outcomes []string, bidsA, asksA, bidsB, asksB map[string]float64) bool {
+	for _, outcome := range outcomes {
+		if math.Abs(bidsA[outcome]-bidsB[outcome]) > 1e-9 {
+			return false
+		}
+		if math.Abs(asksA[outcome]-asksB[outcome]) > 1e-9 {
+			return false
+		}
+	}
+	return true
+}
+
+func realbotStorePublishedQuotes(outcomes []string, srcBids, srcAsks, dstBids, dstAsks map[string]float64) {
+	for _, outcome := range outcomes {
+		dstBids[outcome] = srcBids[outcome]
+		dstAsks[outcome] = srcAsks[outcome]
 	}
 }
 
@@ -1145,6 +1282,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
 	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, resolutionCache *api.ResolutionCache) {
 
+	if market != nil && market.ConditionID != "" {
+		infoCtx, infoCancel := context.WithTimeout(ctx, 3*time.Second)
+		info, err := trader.GetMarketInfo(infoCtx, market.ConditionID)
+		infoCancel()
+		if err == nil {
+			if changed, matched := realbotCanonicalizeMarketTokens(market, info); changed {
+				tui.LogEvent("[%s] ℹ️ Canonicalized token mapping from CLOB market info (%d/%d tokens matched)", id, matched, len(market.Tokens))
+			}
+		}
+	}
+
 	tokenMap := make(map[string]string)
 	tokenToOutcome := make(map[string]string)
 	for _, token := range market.Tokens {
@@ -1210,6 +1358,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	tokenAsks := make(map[string]float64)
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
+	displayBids := make(map[string]float64)
+	displayAsks := make(map[string]float64)
+	publishedBids := make(map[string]float64)
+	publishedAsks := make(map[string]float64)
 	quoteState := make(map[string]realbotQuoteState)
 	lastUpdate := time.Now()
 	lastTrade := time.Time{}
@@ -1380,143 +1532,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		timeToExpiry := time.Until(endTime)
 
-		// --- TAKER CLOSE MARKET LOGIC ---
-		// Once we enter the close window, taker close should react immediately to the
-		// best live price. This path is intentionally single-shot: no arb recovery,
-		// no cleanup re-entry, and no repeated buy retries after a submit attempt.
 		liveCfg := tui.GetSettings()
-		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
-			if !takerCloseAttempted && !time.Now().Before(nextTakerCloseAttempt) {
-				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
-				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
-				if (bestOutcome == "" || highestPrice < minPrice) && time.Since(lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
-					lastTakerCloseQuoteRefresh = time.Now()
-					refreshCtx, refreshCancel := context.WithTimeout(ctx, 2*time.Second)
-					if handleRestFallbackWithDepth(refreshCtx, id, 0, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, false) {
-						lastUpdate = time.Now()
-					}
-					refreshCancel()
-					bestOutcome, highestPrice = realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
-				}
-				if bestOutcome == "" || highestPrice < minPrice {
-					if highestPrice <= 0 {
-						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, fmt.Sprintf("awaiting-quote:%.3f", minPrice), realbotTakerCloseLogInterval) {
-							tui.LogEvent("[%s] ⏳ Taker close awaiting valid quote (needs >= $%.3f)", id, minPrice)
-						}
-					} else if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, fmt.Sprintf("waiting-price:%.3f:%.3f", highestPrice, minPrice), realbotTakerCloseLogInterval) {
-						tui.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.3f (needs >= $%.3f)", id, highestPrice, minPrice)
-					}
-					continue
-				}
-				if bestOutcome != "" {
-					// Confirm the best live price once via REST right before submitting.
-					confirmPrice := highestPrice
-					restConfirmOK := true
-					for _, token := range market.Tokens {
-						outcome := tokenToOutcome[token.TokenID]
-						if outcome != bestOutcome {
-							continue
-						}
-						checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
-						restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
-						cancelCheck()
-						if restErr != nil {
-							logKey := fmt.Sprintf("rest-confirm-failed:%s:%s", outcome, strings.TrimSpace(restErr.Error()))
-							if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, logKey, realbotTakerCloseLogInterval) {
-								tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
-							}
-							restConfirmOK = false
-							break
-						}
-						confirmPrice = restAsk
-						if confirmPrice <= 0 || confirmPrice >= 1.0 {
-							confirmPrice = restBid
-						}
-						if confirmPrice <= 0 || confirmPrice >= 1.0 {
-							restConfirmOK = false
-						}
-						break
-					}
-					if !restConfirmOK {
-						continue
-					}
-					if confirmPrice < minPrice {
-						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, fmt.Sprintf("rest-below-min:%.3f:%.3f:%.3f", confirmPrice, minPrice, highestPrice), realbotTakerCloseLogInterval) {
-							tui.LogEvent("[%s] ⏳ Taker close waiting: REST confirm $%.3f is below min $%.3f (WS $%.3f)", id, confirmPrice, minPrice, highestPrice)
-						}
-						continue
-					}
-
-					tokenID := ""
-					for k, v := range tokenMap {
-						if v == bestOutcome {
-							tokenID = k
-							break
-						}
-					}
-					if tokenID == "" {
-						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
-						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "missing-token-id:"+bestOutcome, realbotTakerCloseLogInterval) {
-							tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
-						}
-						continue
-					}
-
-					budget := realbotTakerCloseBudget(engine.GetBalance(), liveCfg)
-					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
-					if planErr != nil {
-						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
-							tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
-						}
-						takerCloseAttempted = true
-						continue
-					}
-
-					initialPosition := trader.GetLivePositionSize(tokenID)
-					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, REST $%.3f, budget $%.2f)",
-						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmPrice, budget)
-					realbotMarkTakerCloseStateLogged(&lastTakerCloseLog, &lastTakerCloseLogKey, "submitted")
-
-					takerCloseAttempted = true
-					tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
-					exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
-					cancelTrade()
-
-					if !exec.Success {
-						if exec.Err != nil {
-							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, exec.Err)
-						} else if exec.Result != nil && exec.Result.Message != "" {
-							tui.LogEvent("[%s] ⚠️ Taker close buy not filled: %s", id, exec.Result.Message)
-						} else {
-							tui.LogEvent("[%s] ⚠️ Taker close buy not filled before timeout at cap $%.3f", id, plan.LimitPrice)
-						}
-						continue
-					}
-
-					execQty := attributedBuyFill(exec, plan.RequestedQty, 0, false)
-					if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
-						tui.LogEvent("[%s] ⚠️ Taker close execution below confirmation threshold: %s shares", id, formatShareQty(execQty))
-						continue
-					}
-
-					execPrice := venueExecutionEffectivePrice(exec)
-					if execPrice <= 0 {
-						execPrice = plan.LimitPrice
-					}
-					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
-						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
-					}
-					takerCloseExecutedAt = time.Now()
-					tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
-						id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
-
-					// Force refresh wallet truth so cleanup sees authoritative positions.
-					refreshWalletTruth(5 * time.Second)
-				}
-			}
-		}
-		// --------------------------------
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 		if realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
 			// If taker close just fired, suppress sell actions for 15s to prevent racing
@@ -1758,6 +1774,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenFullAsks[outcome] = nil
 			}
 		}
+		realbotStorePublishedQuotes(outcomes, tokenBids, tokenAsks, displayBids, displayAsks)
+
 		if !realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
 			for _, outcome := range outcomes {
 				tokenBids[outcome] = 0
@@ -1765,10 +1783,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenFullBids[outcome] = nil
 				tokenFullAsks[outcome] = nil
 			}
-		}
-
-		if messagesProcessed > 0 {
-			tui.UpdateMarketPricesWithSource(id, tokenBids, tokenAsks, "WS")
 		}
 
 		// Also update order book depth for live display
@@ -1828,13 +1842,22 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, true, false, staleTime)
 			lastRestPoll = time.Now()
 			// Note: REST fallback updated to also capture full depth
-			recovered := handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, !restRecoveryLogged)
+			recovered := handleRestFallbackWithDepth(ctx, id, staleTime, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, !restRecoveryLogged)
 			if recovered {
 				lastUpdate = time.Now()
 			}
 			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, true, recovered, staleTime)
 		} else {
 			restFallbackActive, restRecoveryLogged = realbotNextRestFallbackState(restFallbackActive, restRecoveryLogged, fallbackNeeded, false, false, staleTime)
+		}
+
+		if !realbotQuoteMapsEqual(outcomes, displayBids, displayAsks, publishedBids, publishedAsks) {
+			displaySource := "WS"
+			if shouldPollREST && fallbackNeeded {
+				displaySource = "REST"
+			}
+			tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, displaySource)
+			realbotStorePublishedQuotes(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
 		}
 
 		if !wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {
@@ -1852,6 +1875,157 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			lastForceReconnect = time.Now()
 			wsMgr.ForceReconnect()
 		}
+
+		// --- TAKER CLOSE MARKET LOGIC ---
+		// React only after we have drained the current WS queue and run REST recovery,
+		// otherwise the decision can lag behind the quotes shown in the TUI.
+		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
+		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+			if !takerCloseAttempted && !time.Now().Before(nextTakerCloseAttempt) {
+				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
+				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
+				if (bestOutcome == "" || highestPrice < minPrice) && time.Since(lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
+					lastTakerCloseQuoteRefresh = time.Now()
+					refreshCtx, refreshCancel := context.WithTimeout(ctx, 2*time.Second)
+					if handleRestFallbackWithDepth(refreshCtx, id, 0, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, false) {
+						lastUpdate = time.Now()
+						tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, "REST")
+						realbotStorePublishedQuotes(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+					}
+					refreshCancel()
+					bestOutcome, highestPrice = realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
+				}
+				if bestOutcome == "" || highestPrice < minPrice {
+					if highestPrice <= 0 {
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⏳ Taker close awaiting valid quote (needs >= $%.3f)", id, minPrice)
+						}
+					} else if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
+						tui.LogEvent("[%s] ⏳ Taker close waiting: highest price is $%.3f (needs >= $%.3f)", id, highestPrice, minPrice)
+					}
+					continue
+				}
+				if bestOutcome != "" {
+					confirmPrice := highestPrice
+					restConfirmOK := true
+					for _, token := range market.Tokens {
+						outcome := tokenToOutcome[token.TokenID]
+						if outcome != bestOutcome {
+							continue
+						}
+						checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
+						restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
+						cancelCheck()
+						if restErr != nil {
+							logKey := "rest-confirm-failed:" + outcome
+							if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, logKey, realbotTakerCloseLogInterval) {
+								tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
+							}
+							restConfirmOK = false
+							break
+						}
+						confirmPrice = restAsk
+						if confirmPrice <= 0 || confirmPrice >= 1.0 {
+							confirmPrice = restBid
+						}
+						if confirmPrice <= 0 || confirmPrice >= 1.0 {
+							restConfirmOK = false
+						}
+						break
+					}
+					if !restConfirmOK {
+						continue
+					}
+					if confirmPrice < minPrice {
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⏳ Taker close waiting: REST confirm $%.3f is below min $%.3f (WS $%.3f)", id, confirmPrice, minPrice, highestPrice)
+						}
+						continue
+					}
+
+					tokenID := ""
+					for k, v := range tokenMap {
+						if v == bestOutcome {
+							tokenID = k
+							break
+						}
+					}
+					if tokenID == "" {
+						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "missing-token-id:"+bestOutcome, realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
+						}
+						continue
+					}
+
+					budget := realbotTakerCloseBudget(engine.GetBalance(), liveCfg)
+					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
+					if planErr != nil {
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⚠️ Taker close plan rejected: %v", id, planErr)
+						}
+						takerCloseAttempted = true
+						continue
+					}
+
+					initialPosition := trader.GetLivePositionSize(tokenID)
+					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, REST $%.3f, budget $%.2f)",
+						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmPrice, budget)
+					realbotMarkTakerCloseStateLogged(&lastTakerCloseLog, &lastTakerCloseLogKey, "submitted")
+
+					takerCloseAttempted = true
+					tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
+					exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
+					cancelTrade()
+
+					recoveredLateFill := false
+					if !exec.Success {
+						if recoveredQty, recoverErr := realbotRecoverLateBuyFill(trader, tokenID, initialPosition, plan.RequestedQty); recoverErr == nil && hasConfirmedExecutedQty(api.SideBuy, recoveredQty) {
+							exec.ExecutedQty = recoveredQty
+							exec.Success = true
+							exec.VerifyErr = nil
+							recoveredLateFill = true
+						} else if recoverErr != nil {
+							tui.LogEvent("[%s] ⚠️ Taker close late-fill check failed: %v", id, recoverErr)
+						}
+					}
+
+					if !exec.Success {
+						if exec.Err != nil {
+							tui.LogEvent("[%s] ❌ Taker close buy failed: %v", id, exec.Err)
+						} else if exec.Result != nil && exec.Result.Message != "" {
+							tui.LogEvent("[%s] ⚠️ Taker close buy not filled: %s", id, exec.Result.Message)
+						} else {
+							tui.LogEvent("[%s] ⚠️ Taker close buy not filled before timeout at cap $%.3f", id, plan.LimitPrice)
+						}
+						continue
+					}
+
+					execQty := attributedBuyFill(exec, plan.RequestedQty, 0, false)
+					if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
+						tui.LogEvent("[%s] ⚠️ Taker close execution below confirmation threshold: %s shares", id, formatShareQty(execQty))
+						continue
+					}
+
+					execPrice := venueExecutionEffectivePrice(exec)
+					if execPrice <= 0 {
+						execPrice = plan.LimitPrice
+					}
+					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
+						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
+					}
+					takerCloseExecutedAt = time.Now()
+					if recoveredLateFill {
+						tui.LogEvent("[%s] 🔄 Taker close recovered delayed fill: bought %s %s after post-timeout refresh", id, formatShareQty(execQty), bestOutcome)
+					}
+					tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
+						id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
+
+					refreshWalletTruth(5 * time.Second)
+				}
+			}
+		}
+		// --------------------------------
 
 		// ============ TRADING LOGIC ============
 		// Skip new trades if kill switch active, but keep monitoring (don't exit)
@@ -4935,7 +5109,7 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
 	success := false
 	staleSeconds := int(staleTime.Seconds())
 	restErrors := 0
@@ -5021,6 +5195,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 	}
+	realbotStorePublishedQuotes(outcomes, bids, asks, displayBids, displayAsks)
 	if success && !realbotHasSanePairQuotes(outcomes, bids, asks) {
 		for _, outcome := range tokenMap {
 			bids[outcome] = 0
@@ -5031,7 +5206,6 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		}
 	}
 	if success {
-		tui.UpdateMarketPricesWithSource(id, bids, asks, "REST")
 		if logRecovery && staleSeconds >= 10 {
 			tui.LogEvent("[%s] ✅ REST recovered after %ds", id, staleSeconds)
 		}
@@ -5105,6 +5279,16 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		}
 
 		if winner != "" {
+			if positions, positionsErr := realbotWalletTruthPositionsForRedemption(ctx, id, conditionID, trader, engine); positionsErr != nil {
+				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh before resolution settlement failed: %v", id, positionsErr)
+			} else {
+				tui.SetWalletTruthPositions(id, positions)
+				if adjusted, missingCostBasis := realbotSyncEngineToWalletTruthForResolution(engine, id, positions); adjusted > 0 {
+					tui.LogEvent("[%s] 🔄 Synced local resolution inventory to on-chain balances (%d outcomes adjusted)", id, adjusted)
+				} else if len(missingCostBasis) > 0 {
+					tui.LogEvent("[%s] ⚠️ Resolution inventory drift detected with no local cost basis for: %s", id, strings.Join(missingCostBasis, ", "))
+				}
+			}
 			result := engine.RedeemWithDetails(id, winner)
 			if err := refreshWalletTruthForRedemption(ctx, id, conditionID, trader, engine, tui); err != nil {
 				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh after winner update failed: %v", id, err)
@@ -5124,30 +5308,8 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 					trader.RecordLoss(-result.TotalPnL)
 				}
 
-				// AUTOMATIC ON-CHAIN REDEMPTION
-				go func(cid string, numOutcomes int) {
-					tui.LogEvent("[%s] ⏳ Starting on-chain redemption...", id)
-					// Wait a bit for on-chain state to sync
-					time.Sleep(30 * time.Second)
-					// Use fresh context since parent ctx may be cancelled during shutdown
-					redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-					defer cancel()
-					txHash, err := trader.RedeemOnChain(redeemCtx, cid, numOutcomes)
-					if err != nil {
-						tui.LogEvent("[%s] ⚠️ On-chain redeem pending: %v", id, err)
-					} else if len(txHash) >= 10 {
-						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash[:10]+"...")
-					} else {
-						tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", id, txHash)
-					}
-					refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
-					if refreshErr := refreshWalletTruthForRedemption(refreshCtx, id, cid, trader, engine, tui); refreshErr != nil {
-						tui.LogEvent("[%s] ⚠️ Post-redeem wallet-truth refresh failed: %v", id, refreshErr)
-					} else {
-						tui.UpdateWalletTruthResolution(id, true, winner)
-					}
-					refreshCancel()
-				}(conditionID, numOutcomes)
+				tui.LogEvent("[%s] ⏳ Starting on-chain redemption retry loop (every 1m)...", id)
+				launchRealbotRedeemRetryLoop(id, conditionID, winner, numOutcomes, trader, engine, tui)
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}

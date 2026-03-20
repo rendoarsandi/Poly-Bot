@@ -159,8 +159,11 @@ func marginStyle(pct float64) lipgloss.Style {
 	}
 }
 
-func recentDisplayQuote(current, lastGood float64, age time.Duration) float64 {
+func recentDisplayQuote(current, lastGood float64, age time.Duration, cleared bool) float64 {
 	if current > 0 {
+		return current
+	}
+	if cleared {
 		return current
 	}
 	if lastGood > 0 && age <= recentQuoteDisplayGrace {
@@ -266,15 +269,17 @@ func latencyDot(d time.Duration, warnMs, critMs int64) (string, lipgloss.Style) 
 
 // MarketData holds live data for a single market.
 type MarketData struct {
-	Slug       string
-	Outcomes   []string
-	EndTime    time.Time
-	Bids       map[string]float64
-	Asks       map[string]float64
-	RealBids   map[string]float64
-	RealAsks   map[string]float64
-	LastUpdate time.Time
-	DataSource string // "WS" or "REST"
+	Slug        string
+	Outcomes    []string
+	EndTime     time.Time
+	Bids        map[string]float64
+	Asks        map[string]float64
+	ClearedBids map[string]bool
+	ClearedAsks map[string]bool
+	RealBids    map[string]float64
+	RealAsks    map[string]float64
+	LastUpdate  time.Time
+	DataSource  string // "WS" or "REST"
 }
 
 // PendingOrder represents an order the bot intends to place.
@@ -837,21 +842,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			snapMarkets := make(map[string]*MarketData)
 			for k, v := range m.tui.markets {
 				md := &MarketData{
-					Slug:       v.Slug,
-					Outcomes:   append([]string(nil), v.Outcomes...),
-					EndTime:    v.EndTime,
-					Bids:       make(map[string]float64),
-					Asks:       make(map[string]float64),
-					RealBids:   make(map[string]float64),
-					RealAsks:   make(map[string]float64),
-					LastUpdate: v.LastUpdate,
-					DataSource: v.DataSource,
+					Slug:        v.Slug,
+					Outcomes:    append([]string(nil), v.Outcomes...),
+					EndTime:     v.EndTime,
+					Bids:        make(map[string]float64),
+					Asks:        make(map[string]float64),
+					ClearedBids: make(map[string]bool),
+					ClearedAsks: make(map[string]bool),
+					RealBids:    make(map[string]float64),
+					RealAsks:    make(map[string]float64),
+					LastUpdate:  v.LastUpdate,
+					DataSource:  v.DataSource,
 				}
 				for outcome, price := range v.Bids {
 					md.Bids[outcome] = price
 				}
 				for outcome, price := range v.Asks {
 					md.Asks[outcome] = price
+				}
+				for outcome, cleared := range v.ClearedBids {
+					md.ClearedBids[outcome] = cleared
+				}
+				for outcome, cleared := range v.ClearedAsks {
+					md.ClearedAsks[outcome] = cleared
 				}
 				for outcome, price := range v.RealBids {
 					md.RealBids[outcome] = price
@@ -1503,13 +1516,15 @@ func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.markets[id] = &MarketData{
-		Slug:     slug,
-		Outcomes: outcomes,
-		EndTime:  endTime,
-		Bids:     make(map[string]float64),
-		Asks:     make(map[string]float64),
-		RealBids: make(map[string]float64),
-		RealAsks: make(map[string]float64),
+		Slug:        slug,
+		Outcomes:    outcomes,
+		EndTime:     endTime,
+		Bids:        make(map[string]float64),
+		Asks:        make(map[string]float64),
+		ClearedBids: make(map[string]bool),
+		ClearedAsks: make(map[string]bool),
+		RealBids:    make(map[string]float64),
+		RealAsks:    make(map[string]float64),
 	}
 	t.markDirtyLocked()
 }
@@ -1629,12 +1644,18 @@ func (t *TUI) UpdateMarketPricesWithSourceAt(marketID string, bids, asks map[str
 			m.Bids[k] = v
 			if v > 0 {
 				m.RealBids[k] = v
+				m.ClearedBids[k] = false
+			} else {
+				m.ClearedBids[k] = true
 			}
 		}
 		for k, v := range asks {
 			m.Asks[k] = v
 			if v > 0 {
 				m.RealAsks[k] = v
+				m.ClearedAsks[k] = false
+			} else {
+				m.ClearedAsks[k] = true
 			}
 		}
 		if updatedAt.IsZero() {
@@ -2153,10 +2174,10 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		bid2 := mkt.Bids[mkt.Outcomes[1]]
 		ask2 := mkt.Asks[mkt.Outcomes[1]]
 
-		bid1 = recentDisplayQuote(bid1, mkt.RealBids[mkt.Outcomes[0]], age)
-		ask1 = recentDisplayQuote(ask1, mkt.RealAsks[mkt.Outcomes[0]], age)
-		bid2 = recentDisplayQuote(bid2, mkt.RealBids[mkt.Outcomes[1]], age)
-		ask2 = recentDisplayQuote(ask2, mkt.RealAsks[mkt.Outcomes[1]], age)
+		bid1 = recentDisplayQuote(bid1, mkt.RealBids[mkt.Outcomes[0]], age, mkt.ClearedBids[mkt.Outcomes[0]])
+		ask1 = recentDisplayQuote(ask1, mkt.RealAsks[mkt.Outcomes[0]], age, mkt.ClearedAsks[mkt.Outcomes[0]])
+		bid2 = recentDisplayQuote(bid2, mkt.RealBids[mkt.Outcomes[1]], age, mkt.ClearedBids[mkt.Outcomes[1]])
+		ask2 = recentDisplayQuote(ask2, mkt.RealAsks[mkt.Outcomes[1]], age, mkt.ClearedAsks[mkt.Outcomes[1]])
 		if looksTerminalBook(mkt.Outcomes, mkt.RealBids, mkt.RealAsks) {
 			// Preserve the last terminal-looking quotes even when the live WS feed
 			// goes sparse near expiry, so the panel does not regress to "--.-".

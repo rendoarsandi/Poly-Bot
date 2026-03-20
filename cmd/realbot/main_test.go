@@ -173,14 +173,14 @@ func TestRealbotShouldSkipStaleQuoteUpdateOnlyWhenCurrentQuoteIsAlreadySane(t *t
 
 func TestRealbotShouldLogTakerCloseStateLogsOnChangeAndThenThrottles(t *testing.T) {
 	lastAt := time.Now()
-	lastKey := "awaiting-quote:0.795"
+	lastKey := "waiting"
 
-	if !realbotShouldLogTakerCloseState(&lastAt, &lastKey, "waiting-price:0.780:0.795", time.Hour) {
+	if !realbotShouldLogTakerCloseState(&lastAt, &lastKey, "submitted", time.Hour) {
 		t.Fatal("expected changed taker-close state to log immediately")
 	}
 
 	prevAt := lastAt
-	if realbotShouldLogTakerCloseState(&lastAt, &lastKey, "waiting-price:0.780:0.795", time.Hour) {
+	if realbotShouldLogTakerCloseState(&lastAt, &lastKey, "submitted", time.Hour) {
 		t.Fatal("expected repeated taker-close state to be throttled")
 	}
 	if !lastAt.Equal(prevAt) {
@@ -188,12 +188,54 @@ func TestRealbotShouldLogTakerCloseStateLogsOnChangeAndThenThrottles(t *testing.
 	}
 }
 
-func TestRealbotShouldLogTakerCloseStateLogsAgainAfterInterval(t *testing.T) {
+func TestRealbotShouldLogTakerCloseStateStaysSilentForSameStateAfterInterval(t *testing.T) {
 	lastAt := time.Now().Add(-10 * time.Second)
-	lastKey := "awaiting-quote:0.795"
+	lastKey := "waiting"
 
-	if !realbotShouldLogTakerCloseState(&lastAt, &lastKey, "awaiting-quote:0.795", 5*time.Second) {
-		t.Fatal("expected repeated taker-close state to log again after interval")
+	if realbotShouldLogTakerCloseState(&lastAt, &lastKey, "waiting", 5*time.Second) {
+		t.Fatal("expected repeated taker-close state to remain silent even after interval")
+	}
+}
+
+func TestRealbotWinningOnChainSharesOnlyCountsWinner(t *testing.T) {
+	positions := []paper.WalletTruthPosition{
+		{Outcome: "Up", OnChainShares: 3.1},
+		{Outcome: "Down", OnChainShares: 2.0},
+		{Outcome: "Up", OnChainShares: 0.4},
+	}
+	if got := realbotWinningOnChainShares(positions, "Up"); math.Abs(got-3.5) > 0.000001 {
+		t.Fatalf("expected winning on-chain shares 3.5, got %.4f", got)
+	}
+	if got := realbotWinningOnChainShares(positions, "Down"); math.Abs(got-2.0) > 0.000001 {
+		t.Fatalf("expected winning on-chain shares 2.0, got %.4f", got)
+	}
+	if got := realbotWinningOnChainShares(positions, ""); got != 0 {
+		t.Fatalf("expected empty winner to count as zero, got %.4f", got)
+	}
+}
+
+func TestRealbotSyncEngineToWalletTruthForResolutionScalesLocalCostBasisToOnChainQty(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 3.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", []paper.WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 3.0, OnChainShares: 3.1},
+	})
+	if adjusted != 1 {
+		t.Fatalf("expected one adjusted outcome, got %d", adjusted)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing-cost-basis outcomes, got %v", missing)
+	}
+
+	res := engine.RedeemWithDetails("BTC", "Up")
+	if math.Abs(res.WinningShares-3.1) > 0.000001 {
+		t.Fatalf("expected winning shares 3.1 after wallet-truth sync, got %.4f", res.WinningShares)
+	}
+	if math.Abs(res.WinningCost-1.86) > 0.000001 {
+		t.Fatalf("expected winning cost 1.86 after proportional sync, got %.4f", res.WinningCost)
 	}
 }
 
@@ -406,6 +448,39 @@ func TestRealbotBestBidFromLevels(t *testing.T) {
 	}
 }
 
+func TestRealbotCanonicalizeMarketTokensPrefersCLOBMetadataByTokenID(t *testing.T) {
+	market := &api.Market{
+		ConditionID: "cond-1",
+		Tokens: []api.Token{
+			{TokenID: "up-token", Outcome: "Down"},
+			{TokenID: "down-token", Outcome: "Up"},
+		},
+	}
+	info := &api.MarketInfo{
+		ConditionID: "cond-1",
+		Tokens: []struct {
+			TokenID string      `json:"token_id"`
+			Outcome string      `json:"outcome"`
+			Winner  bool        `json:"winner"`
+			Price   interface{} `json:"price"`
+		}{
+			{TokenID: "up-token", Outcome: "Up"},
+			{TokenID: "down-token", Outcome: "Down"},
+		},
+	}
+
+	changed, matched := realbotCanonicalizeMarketTokens(market, info)
+	if !changed {
+		t.Fatal("expected canonicalization to fix flipped token labels")
+	}
+	if matched != 2 {
+		t.Fatalf("expected 2 matched tokens, got %d", matched)
+	}
+	if market.Tokens[0].Outcome != "Up" || market.Tokens[1].Outcome != "Down" {
+		t.Fatalf("unexpected canonicalized outcomes: %+v", market.Tokens)
+	}
+}
+
 func TestRealbotMatchedAskLiquidityHonorsExecutionSum(t *testing.T) {
 	asks0 := []paper.MarketLevel{{Price: 0.36, Size: 3}, {Price: 0.38, Size: 2}}
 	asks1 := []paper.MarketLevel{{Price: 0.62, Size: 2}, {Price: 0.66, Size: 4}}
@@ -528,12 +603,58 @@ func TestHandleRestFallbackWithDepthSkipsOlderBooksWhenCurrentQuoteIsFresh(t *te
 	ok := handleRestFallbackWithDepth(context.Background(), "SOL", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
-	}, bids, asks, fullBids, fullAsks, quoteState, engine, client, tui, false)
+	}, bids, asks, map[string]float64{}, map[string]float64{}, fullBids, fullAsks, quoteState, engine, client, tui, false)
 	if !ok {
 		t.Fatal("expected fallback call to complete")
 	}
 	if math.Abs(bids["Down"]-0.40) > 0.000001 || math.Abs(asks["Up"]-0.59) > 0.000001 {
 		t.Fatalf("expected stale REST data to be ignored, got bids=%v asks=%v", bids, asks)
+	}
+}
+
+func TestHandleRestFallbackWithDepthPreservesDisplayForOneSidedBooks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("token_id") {
+		case "down-token":
+			_, _ = w.Write([]byte(`{"asset_id":"down-token","timestamp":"2026-03-20T00:00:00Z","bids":[{"price":"0.99","size":"12"}],"asks":[]}`))
+		case "up-token":
+			_, _ = w.Write([]byte(`{"asset_id":"up-token","timestamp":"2026-03-20T00:00:00Z","bids":[],"asks":[{"price":"0.02","size":"8"}]}`))
+		default:
+			http.Error(w, "unexpected token", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.AddMarket("BTC", "btc", []string{"Down", "Up"}, time.Now().Add(time.Minute))
+
+	bids := map[string]float64{}
+	asks := map[string]float64{}
+	displayBids := map[string]float64{}
+	displayAsks := map[string]float64{}
+	fullBids := map[string][]paper.MarketLevel{}
+	fullAsks := map[string][]paper.MarketLevel{}
+	quoteState := map[string]realbotQuoteState{}
+
+	ok := handleRestFallbackWithDepth(context.Background(), "BTC", 12*time.Second, map[string]string{
+		"down-token": "Down",
+		"up-token":   "Up",
+	}, bids, asks, displayBids, displayAsks, fullBids, fullAsks, quoteState, engine, client, tui, false)
+	if !ok {
+		t.Fatal("expected fallback call to complete")
+	}
+	if bids["Down"] != 0 || asks["Up"] != 0 {
+		t.Fatalf("expected execution quotes to be cleared after pair sanity failure, got bids=%v asks=%v", bids, asks)
+	}
+	if math.Abs(displayBids["Down"]-0.99) > 0.000001 {
+		t.Fatalf("expected display bid to preserve one-sided quote, got %.3f", displayBids["Down"])
+	}
+	if math.Abs(displayAsks["Up"]-0.02) > 0.000001 {
+		t.Fatalf("expected display ask to preserve one-sided quote, got %.3f", displayAsks["Up"])
 	}
 }
 
