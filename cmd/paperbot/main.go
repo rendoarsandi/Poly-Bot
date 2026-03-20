@@ -1536,8 +1536,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				if winner != "" {
 					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
 					t.Engine.RedeemWithDetails(t.ID, winner)
+					if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
+						t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
+					}
 				}
-
 				finalStats := t.Engine.GetStats()
 				return &marketResult{
 					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
@@ -1648,6 +1650,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 				// Use detailed redemption
 				result := t.Engine.RedeemWithDetails(t.ID, winner)
+				if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
+					t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
+				}
+
 				if result.WinningShares > 0 || result.LosingShares > 0 {
 					t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
 						t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)

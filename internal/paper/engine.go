@@ -638,7 +638,6 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 	for _, inv := range e.splitInventories {
 		payout, pnl := inv.Redeem(marketID, winningOutcome)
 		if payout > 0 || pnl != 0 {
-			e.currentBalance += payout
 			e.realizedPnL += pnl
 			result.TotalPayout += payout
 			result.WinningPayout += payout
@@ -1117,6 +1116,28 @@ func (e *Engine) SetPendingRedemption(marketID string, payout float64) {
 
 func (e *Engine) ClearPendingRedemption(marketID string) {
 	e.SetPendingRedemption(marketID, 0)
+}
+
+// SettlePendingRedemption moves a pending redemption payout into cash balance and
+// clears the pending marker for that market. Returns the settled payout amount.
+func (e *Engine) SettlePendingRedemption(marketID string) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if marketID == "" {
+		return 0
+	}
+
+	payout := e.pendingRedemptions[marketID]
+	if payout <= 0 {
+		delete(e.pendingRedemptions, marketID)
+		return 0
+	}
+
+	e.currentBalance += payout
+	delete(e.pendingRedemptions, marketID)
+	e.recalculateDrawdown()
+	return payout
 }
 
 // DeductBalance removes amount from balance (for split operations)

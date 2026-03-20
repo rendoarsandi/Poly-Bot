@@ -689,6 +689,73 @@ func TestEngine_GetStatsRealizedPnLIncludesPendingRedemption(t *testing.T) {
 	}
 }
 
+func TestEngine_SettlePendingRedemptionSettlesExactPayout(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.60, 10.0); err != nil {
+		t.Fatalf("winning buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m1", "Down", 0.40, 5.0); err != nil {
+		t.Fatalf("losing buy failed: %v", err)
+	}
+
+	res := engine.RedeemWithDetails("m1", "Up")
+	if absFloat(res.WinningPayout-10.0) > 0.0001 {
+		t.Fatalf("expected winning payout 10.00, got %.4f", res.WinningPayout)
+	}
+	if absFloat(engine.GetBalance()-92.0) > 0.0001 {
+		t.Fatalf("expected unresolved cash balance 92.00, got %.4f", engine.GetBalance())
+	}
+	if absFloat(engine.GetBookEquity()-102.0) > 0.0001 {
+		t.Fatalf("expected pending redemption book equity 102.00, got %.4f", engine.GetBookEquity())
+	}
+
+	settled := engine.SettlePendingRedemption("m1")
+	if absFloat(settled-10.0) > 0.0001 {
+		t.Fatalf("expected settled payout 10.00, got %.4f", settled)
+	}
+	if absFloat(engine.GetBalance()-102.0) > 0.0001 {
+		t.Fatalf("expected settled cash balance 102.00, got %.4f", engine.GetBalance())
+	}
+	if absFloat(engine.GetBookEquity()-102.0) > 0.0001 {
+		t.Fatalf("expected settled book equity 102.00, got %.4f", engine.GetBookEquity())
+	}
+}
+
+func TestEngine_RedeemWithDetailsSplitPayoutRemainsPendingUntilSettled(t *testing.T) {
+	engine := NewEngine(100.0)
+	inv := NewSplitInventory()
+	engine.RegisterSplitInventory(inv)
+
+	inv.RecordSplit("m1", "Up", "Down", 10.0)
+	engine.DeductBalance(10.0)
+
+	res := engine.RedeemWithDetails("m1", "Up")
+	if absFloat(res.WinningPayout-10.0) > 0.0001 {
+		t.Fatalf("expected split winning payout 10.00, got %.4f", res.WinningPayout)
+	}
+	if absFloat(res.TotalPnL-0.0) > 0.0001 {
+		t.Fatalf("expected split redemption pnl 0.00, got %.4f", res.TotalPnL)
+	}
+	if absFloat(engine.GetBalance()-90.0) > 0.0001 {
+		t.Fatalf("expected split payout to remain pending before settlement, got cash %.4f", engine.GetBalance())
+	}
+	if absFloat(engine.GetBookEquity()-100.0) > 0.0001 {
+		t.Fatalf("expected pending split payout to keep equity at 100.00, got %.4f", engine.GetBookEquity())
+	}
+
+	settled := engine.SettlePendingRedemption("m1")
+	if absFloat(settled-10.0) > 0.0001 {
+		t.Fatalf("expected settled split payout 10.00, got %.4f", settled)
+	}
+	if absFloat(engine.GetBalance()-100.0) > 0.0001 {
+		t.Fatalf("expected settled split cash 100.00, got %.4f", engine.GetBalance())
+	}
+	if absFloat(engine.GetBookEquity()-100.0) > 0.0001 {
+		t.Fatalf("expected settled split equity 100.00, got %.4f", engine.GetBookEquity())
+	}
+}
+
 func TestEngine_ImportedCarryOnlyRealizesAtResolution(t *testing.T) {
 	t.Run("profit", func(t *testing.T) {
 		engine := NewEngine(95.0)
