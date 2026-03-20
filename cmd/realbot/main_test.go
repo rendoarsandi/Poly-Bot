@@ -171,6 +171,64 @@ func TestRealbotShouldSkipStaleQuoteUpdateOnlyWhenCurrentQuoteIsAlreadySane(t *t
 	}
 }
 
+func TestRealbotShouldClearLocalPairQuotesKeepsTerminalOneSidedBook(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	bids := map[string]float64{"Down": 0.99, "Up": 0}
+	asks := map[string]float64{"Down": 0, "Up": 0.01}
+
+	if realbotShouldClearLocalPairQuotes(outcomes, bids, asks) {
+		t.Fatal("expected terminal-looking one-sided book to remain available locally")
+	}
+}
+
+func TestRealbotSyncDisplayQuotesIgnoresTransientNonTerminalWSGap(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	displayBids := map[string]float64{"Down": 0.44, "Up": 0.54}
+	displayAsks := map[string]float64{"Down": 0.45, "Up": 0.55}
+	liveBids := map[string]float64{"Down": 0, "Up": 0.54}
+	liveAsks := map[string]float64{"Down": 0.45, "Up": 0}
+
+	if realbotSyncDisplayQuotes(outcomes, liveBids, liveAsks, displayBids, displayAsks, false) {
+		t.Fatal("expected transient WS gap to keep the existing display quotes")
+	}
+	if displayBids["Down"] != 0.44 || displayAsks["Up"] != 0.55 {
+		t.Fatalf("expected prior display quotes to remain untouched, got bids=%v asks=%v", displayBids, displayAsks)
+	}
+}
+
+func TestRealbotSyncDisplayQuotesPreservesTerminalDisplaySides(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	displayBids := map[string]float64{"Down": 0.97, "Up": 0.02}
+	displayAsks := map[string]float64{"Down": 0.98, "Up": 0.03}
+	liveBids := map[string]float64{"Down": 0.99, "Up": 0}
+	liveAsks := map[string]float64{"Down": 0, "Up": 0.01}
+
+	if !realbotSyncDisplayQuotes(outcomes, liveBids, liveAsks, displayBids, displayAsks, false) {
+		t.Fatal("expected terminal-looking update to refresh the display")
+	}
+	if displayBids["Down"] != 0.99 || displayAsks["Up"] != 0.01 {
+		t.Fatalf("expected live terminal sides to be published, got bids=%v asks=%v", displayBids, displayAsks)
+	}
+	if displayAsks["Down"] != 0.98 || displayBids["Up"] != 0.02 {
+		t.Fatalf("expected missing terminal sides to keep prior display quotes, got bids=%v asks=%v", displayBids, displayAsks)
+	}
+}
+
+func TestRealbotSyncDisplayQuotesLetsRESTClearBrokenPair(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	displayBids := map[string]float64{"Down": 0.44, "Up": 0.54}
+	displayAsks := map[string]float64{"Down": 0.45, "Up": 0.55}
+	liveBids := map[string]float64{"Down": 0, "Up": 0}
+	liveAsks := map[string]float64{"Down": 0, "Up": 0}
+
+	if !realbotSyncDisplayQuotes(outcomes, liveBids, liveAsks, displayBids, displayAsks, true) {
+		t.Fatal("expected authoritative REST update to clear the display")
+	}
+	if displayBids["Down"] != 0 || displayAsks["Up"] != 0 {
+		t.Fatalf("expected display quotes to clear after REST confirmation, got bids=%v asks=%v", displayBids, displayAsks)
+	}
+}
+
 func TestRealbotShouldLogTakerCloseStateLogsOnChangeAndThenThrottles(t *testing.T) {
 	lastAt := time.Now()
 	lastKey := "waiting"

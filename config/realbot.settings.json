@@ -1,8 +1,8 @@
 {
   "exchange": "polymarket",
-  "marketSlug": "ALL",
+  "marketSlug": "BTC",
   "timeframe": "5m",
-  "maxMarkets": 4,
+  "maxMarkets": 1,
   "baseBalance": 1000,
   "baseTradeSize": 10,
   "minMarginPercent": 1,

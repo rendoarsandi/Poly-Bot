@@ -425,6 +425,18 @@ func realbotQuoteTimestampOrNow(raw string) time.Time {
 	return ts
 }
 
+func parseWSQuotedPrice(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 || v > 1.0 {
+		return 0, false
+	}
+	return v, true
+}
+
 func realbotShouldSkipStaleQuoteUpdate(quoteState map[string]realbotQuoteState, outcome string, updatedAt time.Time, currentBid, currentAsk float64) bool {
 	if updatedAt.IsZero() {
 		return false
@@ -539,11 +551,48 @@ func realbotQuoteMapsEqual(outcomes []string, bidsA, asksA, bidsB, asksB map[str
 	return true
 }
 
+func realbotShouldClearLocalPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
+	return !realbotHasSanePairQuotes(outcomes, bids, asks) && !realbotLooksLikeTerminalBook(outcomes, bids, asks)
+}
+
 func realbotStorePublishedQuotes(outcomes []string, srcBids, srcAsks, dstBids, dstAsks map[string]float64) {
 	for _, outcome := range outcomes {
 		dstBids[outcome] = srcBids[outcome]
 		dstAsks[outcome] = srcAsks[outcome]
 	}
+}
+
+func realbotSyncDisplayQuotes(outcomes []string, liveBids, liveAsks, displayBids, displayAsks map[string]float64, authoritative bool) bool {
+	nextBids := make(map[string]float64, len(outcomes))
+	nextAsks := make(map[string]float64, len(outcomes))
+	for _, outcome := range outcomes {
+		nextBids[outcome] = displayBids[outcome]
+		nextAsks[outcome] = displayAsks[outcome]
+	}
+
+	switch {
+	case realbotHasSanePairQuotes(outcomes, liveBids, liveAsks):
+		realbotStorePublishedQuotes(outcomes, liveBids, liveAsks, nextBids, nextAsks)
+	case realbotLooksLikeTerminalBook(outcomes, liveBids, liveAsks):
+		for _, outcome := range outcomes {
+			if liveBids[outcome] > 0 {
+				nextBids[outcome] = liveBids[outcome]
+			}
+			if liveAsks[outcome] > 0 {
+				nextAsks[outcome] = liveAsks[outcome]
+			}
+		}
+	case authoritative:
+		realbotStorePublishedQuotes(outcomes, liveBids, liveAsks, nextBids, nextAsks)
+	default:
+		return false
+	}
+
+	if realbotQuoteMapsEqual(outcomes, nextBids, nextAsks, displayBids, displayAsks) {
+		return false
+	}
+	realbotStorePublishedQuotes(outcomes, nextBids, nextAsks, displayBids, displayAsks)
+	return true
 }
 
 func resolveRealbotMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) float64 {
@@ -1316,8 +1365,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		assetIDs = append(assetIDs, token.TokenID)
 	}
 	sub := map[string]interface{}{
-		"type":       "market",
-		"assets_ids": assetIDs,
+		"type":                   "market",
+		"assets_ids":             assetIDs,
+		"custom_feature_enabled": true,
 	}
 	if err := wsMgr.Subscribe(ctx, sub); err != nil {
 		tui.LogEvent("[%s] ❌ Subscribe failed: %v", id, err)
@@ -1591,19 +1641,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 				// Parse and process WebSocket message immediately.
 				//
-				// Polymarket CLOB WS sends two message shapes:
-				//   1. Book snapshot  – array of objects with "bids"/"asks" fields
-				//      (event_type:"book").  Sent on subscribe and after reconnect.
-				//   2. Price-change delta – single object with "price_changes" array
-				//      (event_type:"price_change").  Contains only changed levels
-				//      but NO size information, so we cannot update the full book
-				//      from them.  We apply the best-bid/ask update from the delta
-				//      and rely on the 4 ms REST poll for full-depth accuracy.
+				// Polymarket CLOB WS sends:
+				//   1. Book snapshots ("book") on subscribe/reconnect.
+				//   2. Price-change deltas ("price_change") with changed levels and
+				//      explicit best_bid / best_ask values.
+				//   3. Best-bid-ask updates ("best_bid_ask") when subscribed with
+				//      custom_feature_enabled.
 				//
-				// IMPORTANT: only write to tokenBids/tokenAsks when the parsed
-				// value is strictly positive — a zero value means "no orders on
-				// that side in this message" and must NOT overwrite a previously
-				// valid price from REST or an earlier WS snapshot.
+				// IMPORTANT: changed levels still update the local depth cache, but
+				// explicit best_bid / best_ask fields now take priority for BBO so
+				// one-sided book removals do not leave stale top-of-book behind.
 				if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 {
 					for _, b := range books {
 						outcome := tokenToOutcome[b.AssetID]
@@ -1663,6 +1710,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// ── Price-change delta ─────────────────────────────────
 					foundForThisMarket := false
 					touchedOutcomes := make(map[string]bool)
+					type explicitTopOfBook struct {
+						bid    float64
+						ask    float64
+						hasBid bool
+						hasAsk bool
+					}
+					explicitTopByOutcome := make(map[string]explicitTopOfBook)
 
 					for _, pc := range update.PriceChanges {
 						outcome := tokenToOutcome[pc.AssetID]
@@ -1683,11 +1737,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						case "SELL":
 							tokenFullAsks[outcome] = mkt.ApplyDelta(tokenFullAsks[outcome], p, s, false)
 						}
+
+						top := explicitTopByOutcome[outcome]
+						if bestBid, ok := parseWSQuotedPrice(pc.BestBid); ok {
+							top.bid = bestBid
+							top.hasBid = true
+						}
+						if bestAsk, ok := parseWSQuotedPrice(pc.BestAsk); ok {
+							top.ask = bestAsk
+							top.hasAsk = true
+						}
+						if top.hasBid || top.hasAsk {
+							explicitTopByOutcome[outcome] = top
+						}
 					}
 
 					// Update best bids/asks based on the new full depth
 					mkt.RefreshTopOfBookFromDepth(outcomes, tokenFullBids, tokenFullAsks, tokenBids, tokenAsks)
 					for _, outcome := range outcomes {
+						if top, ok := explicitTopByOutcome[outcome]; ok {
+							if top.hasBid {
+								tokenBids[outcome] = top.bid
+							}
+							if top.hasAsk {
+								tokenAsks[outcome] = top.ask
+							}
+						}
 
 						if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
 							// Check for crossed/wide local book (WS state corruption or missing delete delta)
@@ -1712,6 +1787,31 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 						lastUpdate = now
 					}
+				} else if bbo, err := api.ParseBestBidAsk(msg); err == nil && strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") && bbo.AssetID != "" {
+					outcome := tokenToOutcome[bbo.AssetID]
+					if outcome == "" {
+						continue
+					}
+					updatedAt := realbotQuoteTimestampOrNow(bbo.Timestamp)
+					if realbotShouldSkipStaleQuoteUpdate(quoteState, outcome, updatedAt, tokenBids[outcome], tokenAsks[outcome]) {
+						continue
+					}
+					if bestBid, ok := parseWSQuotedPrice(bbo.BestBid); ok {
+						tokenBids[outcome] = bestBid
+					}
+					if bestAsk, ok := parseWSQuotedPrice(bbo.BestAsk); ok {
+						tokenAsks[outcome] = bestAsk
+					}
+					if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 && !realbotHasSaneTopOfBook(tokenBids[outcome], tokenAsks[outcome]) {
+						tokenBids[outcome] = 0
+						tokenAsks[outcome] = 0
+					}
+					if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
+						mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
+						engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
+					}
+					quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws-bbo"}
+					lastUpdate = updatedAt
 				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 					// ── Book snapshot (single object) ──────────────────────
 					bid, ask := 0.0, 0.0
@@ -1770,9 +1870,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenFullAsks[outcome] = nil
 			}
 		}
-		realbotStorePublishedQuotes(outcomes, tokenBids, tokenAsks, displayBids, displayAsks)
-
-		if !realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
+		if realbotShouldClearLocalPairQuotes(outcomes, tokenBids, tokenAsks) {
 			for _, outcome := range outcomes {
 				tokenBids[outcome] = 0
 				tokenAsks[outcome] = 0
@@ -1780,6 +1878,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenFullAsks[outcome] = nil
 			}
 		}
+		realbotSyncDisplayQuotes(outcomes, tokenBids, tokenAsks, displayBids, displayAsks, false)
 
 		// Also update order book depth for live display
 		bidDepth := make(map[string][]paper.MarketLevel)
@@ -1973,6 +2072,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					tradeCtx, cancelTrade := context.WithTimeout(ctx, 4*time.Second)
 					exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
 					cancelTrade()
+					logDirectExecutionAudit(tui, id, "Taker Close BUY", plan.RequestedQty, plan.LimitPrice, exec)
 
 					recoveredLateFill := false
 					if !exec.Success {
@@ -2007,15 +2107,27 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					if execPrice <= 0 {
 						execPrice = plan.LimitPrice
 					}
+					preLocalQty, _ := localBoughtPositionAvg(engine, id, bestOutcome)
+					execCost := execQty * execPrice
+					if exec.AcknowledgedNotional > 0 {
+						execCost = exec.AcknowledgedNotional
+					}
 					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
 						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
 					}
+					postLocalQty, _ := localBoughtPositionAvg(engine, id, bestOutcome)
+					tui.RecordOrder(id, bestOutcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "FILLED")
 					takerCloseExecutedAt = time.Now()
 					if recoveredLateFill {
 						tui.LogEvent("[%s] 🔄 Taker close recovered delayed fill: bought %s %s after post-timeout refresh", id, formatShareQty(execQty), bestOutcome)
 					}
+					if execPrice+1e-9 < plan.MinPrice {
+						tui.LogEvent("[%s] ℹ️ Taker close filled below the trigger price ($%.3f < $%.3f); the min-price gate only decides when to enter, and the venue matched at a better price", id, execPrice, plan.MinPrice)
+					}
 					tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
 						id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
+					tui.LogEvent("[%s] 🧾 Taker close position delta: %s %s | local position %.4f → %.4f | spend $%.4f",
+						id, formatShareQty(execQty), bestOutcome, preLocalQty, postLocalQty, execCost)
 
 					refreshWalletTruth(5 * time.Second)
 				}
@@ -5189,8 +5301,8 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 	}
-	realbotStorePublishedQuotes(outcomes, bids, asks, displayBids, displayAsks)
-	if success && !realbotHasSanePairQuotes(outcomes, bids, asks) {
+	realbotSyncDisplayQuotes(outcomes, bids, asks, displayBids, displayAsks, true)
+	if success && realbotShouldClearLocalPairQuotes(outcomes, bids, asks) {
 		for _, outcome := range tokenMap {
 			bids[outcome] = 0
 			asks[outcome] = 0

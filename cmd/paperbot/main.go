@@ -207,6 +207,18 @@ func clampFloat64(v, lo, hi float64) float64 {
 	return v
 }
 
+func parseWSQuotedPrice(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 || v > 1.0 {
+		return 0, false
+	}
+	return v, true
+}
+
 func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) float64 {
 	if liveCfg.MakerQuoteGap > 0 {
 		return liveCfg.MakerQuoteGap
@@ -1349,8 +1361,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	}
 
 	sub := map[string]interface{}{
-		"type":       "market",
-		"assets_ids": assetIDs,
+		"type":                   "market",
+		"assets_ids":             assetIDs,
+		"custom_feature_enabled": true,
 	}
 	if err := wsMgr.Subscribe(ctx, sub); err != nil {
 		return nil, fmt.Errorf("subscribe failed: %w", err)
@@ -1695,19 +1708,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					// Parse and process WebSocket message immediately.
 					//
-					// Polymarket CLOB WS sends two message shapes:
-					//   1. Book snapshot  – array of objects with "bids"/"asks" fields
-					//      (event_type:"book").  Sent on subscribe and after reconnect.
-					//   2. Price-change delta – single object with "price_changes" array
-					//      (event_type:"price_change").  Contains only changed levels
-					//      but NO size information, so we cannot update the full book
-					//      from them.  We apply the best-bid/ask update from the delta
-					//      and rely on the 4 ms REST poll for full-depth accuracy.
+					// Polymarket CLOB WS sends:
+					//   1. Book snapshots ("book") on subscribe/reconnect.
+					//   2. Price-change deltas ("price_change") with changed levels and
+					//      explicit best_bid / best_ask values.
+					//   3. Best-bid-ask updates ("best_bid_ask") when subscribed with
+					//      custom_feature_enabled.
 					//
-					// IMPORTANT: only write to TokenBids/TokenAsks when the parsed
-					// value is strictly positive — a zero value means "no orders on
-					// that side in this message" and must NOT overwrite a previously
-					// valid price from REST or an earlier WS snapshot.
+					// IMPORTANT: changed levels still update the local depth cache, but
+					// explicit best_bid / best_ask fields now take priority for BBO so
+					// one-sided book removals do not leave stale top-of-book behind.
 					if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 && books[0].AssetID != "" {
 						// ── Book snapshot (array) ──────────────────────────────
 						foundForThisTrader := false
@@ -1768,6 +1778,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 						// ── Price-change delta ─────────────────────────────────
 						foundForThisTrader := false
+						type explicitTopOfBook struct {
+							bid    float64
+							ask    float64
+							hasBid bool
+							hasAsk bool
+						}
+						explicitTopByOutcome := make(map[string]explicitTopOfBook)
 
 						t.mu.Lock()
 						for _, pc := range update.PriceChanges {
@@ -1788,9 +1805,22 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							case "SELL":
 								t.TokenFullAsks[outcome] = mkt.ApplyDelta(t.TokenFullAsks[outcome], p, s, false)
 							}
+
+							top := explicitTopByOutcome[outcome]
+							if bestBid, ok := parseWSQuotedPrice(pc.BestBid); ok {
+								top.bid = bestBid
+								top.hasBid = true
+							}
+							if bestAsk, ok := parseWSQuotedPrice(pc.BestAsk); ok {
+								top.ask = bestAsk
+								top.hasAsk = true
+							}
+							if top.hasBid || top.hasAsk {
+								explicitTopByOutcome[outcome] = top
+							}
 						}
 
-						for outcome := range t.TokenMap {
+						for _, outcome := range t.Outcomes {
 							bids := t.TokenFullBids[outcome]
 							if len(bids) > 0 {
 								t.TokenBids[outcome] = bids[0].Price
@@ -1803,6 +1833,15 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								t.TokenAsks[outcome] = asks[0].Price
 							} else {
 								t.TokenAsks[outcome] = 0
+							}
+
+							if top, ok := explicitTopByOutcome[outcome]; ok {
+								if top.hasBid {
+									t.TokenBids[outcome] = top.bid
+								}
+								if top.hasAsk {
+									t.TokenAsks[outcome] = top.ask
+								}
 							}
 
 							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
@@ -1828,6 +1867,32 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							syncPaperPairUpdate(t, now)
 						}
 						t.mu.Unlock()
+					} else if bbo, err := api.ParseBestBidAsk(msg); err == nil && strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") && bbo.AssetID != "" {
+						outcome := t.TokenMap[bbo.AssetID]
+						if outcome != "" {
+							t.mu.Lock()
+							now := time.Now()
+							t.LastUpdate = now
+							if bestBid, ok := parseWSQuotedPrice(bbo.BestBid); ok {
+								t.TokenBids[outcome] = bestBid
+							}
+							if bestAsk, ok := parseWSQuotedPrice(bbo.BestAsk); ok {
+								t.TokenAsks[outcome] = bestAsk
+							}
+							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
+								if t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+									t.TokenBids[outcome] = 0
+									t.TokenAsks[outcome] = 0
+								} else {
+									mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
+									t.FloatPrices[outcome] = mid
+									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
+									t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+								}
+							}
+							syncPaperPairUpdate(t, now)
+							t.mu.Unlock()
+						}
 					} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 						// ── Book snapshot (single object) ──────────────────────
 						bid, ask := 0.0, 0.0
