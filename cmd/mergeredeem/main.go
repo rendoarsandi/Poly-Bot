@@ -161,80 +161,45 @@ func main() {
 				continue
 			}
 
-			if info.Closed {
-				winnerOutcome := ""
-				for _, t := range info.Tokens {
-					if t.Winner {
-						winnerOutcome = t.Outcome
-					}
+			winnerOutcome, shouldRedeem := autoRedeemDecision(info, outcomes, remainingBalances)
+			if !shouldRedeem {
+				if !info.Closed {
+					printMarketHeader()
+					fmt.Printf("   ⏭️ Skip redeem: market not decided yet.\n")
+				} else if winnerOutcome == "" {
+					printMarketHeader()
+					fmt.Printf("   ⏭️ Skip redeem: winner not decided yet.\n")
 				}
+				continue
+			}
 
-				if winnerOutcome != "" {
-					hasWinner := false
-					if outcomes[0] == winnerOutcome && remainingBalances[0] >= 0.01 {
-						hasWinner = true
-					}
-					if outcomes[1] == winnerOutcome && remainingBalances[1] >= 0.01 {
-						hasWinner = true
-					}
+			printMarketHeader()
+			fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
+			fmt.Printf("   👉 ACTION: Auto redeem winning shares.\n")
+			fmt.Printf("   ⏳ Checking on-chain resolution status...")
+			isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
+			resolved := err == nil && isRes
+			if resolved {
+				fmt.Println(" ✅ READY")
+			} else {
+				fmt.Println(" ⚠️ NOT YET SETTLED - forcing redeem anyway")
+			}
 
-					if hasWinner {
-						printMarketHeader()
-						fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
-						fmt.Printf("   👉 ACTION: Winning shares detected! Redeem for USDC.\n")
+			redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
+			var tx string
+			if forceRedeem || !resolved {
+				tx, err = trader.RedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
+			} else {
+				tx, err = trader.RedeemOnChain(redeemCtx, m.ConditionID, len(m.Tokens))
+			}
+			cancelRedeem()
 
-						// Automatic wait for resolution
-						fmt.Printf("   ⏳ Checking on-chain resolution status...")
-						isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
-						resolved := err == nil && isRes
-
-						if resolved {
-							fmt.Println(" ✅ READY")
-							fmt.Print("   Confirm On-Chain Redeem? (y/n): ")
-						} else {
-							fmt.Println(" ⚠️ NOT YET SETTLED")
-							fmt.Print("   Market not settled on-chain. Force redemption attempt anyway? (y/n): ")
-						}
-
-						var confirm string
-						_, _ = fmt.Scanln(&confirm)
-						if strings.ToLower(confirm) == "y" {
-							var tx string
-							var err error
-							redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
-							if forceRedeem || !resolved {
-								tx, err = polygon.RedeemPositions(redeemCtx, trader.GetSigner(), m.ConditionID, len(m.Tokens))
-							} else {
-								tx, err = trader.RedeemOnChain(redeemCtx, m.ConditionID, len(m.Tokens))
-							}
-							cancelRedeem()
-
-							if err != nil {
-								if !isSkippableRedeemError(err) {
-									fmt.Printf("   ❌ Redeem failed: %v\n", err)
-								}
-							} else {
-								fmt.Printf("   ✅ Redeem successful! Tx: %s\n", tx)
-							}
-						}
-					}
+			if err != nil {
+				if !isSkippableRedeemError(err) {
+					fmt.Printf("   ❌ Redeem failed: %v\n", err)
 				}
 			} else {
-				printMarketHeader()
-				fmt.Printf("   ⏳ Market still active in API. If resolution is ready on-chain, you can force redeem.\n")
-				fmt.Print("   Try Force Redeem? (y/n): ")
-				var confirm string
-				_, _ = fmt.Scanln(&confirm)
-				if strings.ToLower(confirm) == "y" {
-					tx, err := trader.RedeemOnChain(ctx, m.ConditionID, len(m.Tokens))
-					if err != nil {
-						if !isSkippableRedeemError(err) {
-							fmt.Printf("   ❌ Force Redeem failed: %v\n", err)
-						}
-					} else {
-						fmt.Printf("   ✅ Force Redeem successful! Tx: %s\n", tx)
-					}
-				}
+				fmt.Printf("   ✅ Redeem successful! Tx: %s\n", tx)
 			}
 		}
 	}
@@ -254,6 +219,27 @@ func mergeablePairs(balances []float64) float64 {
 		return 0
 	}
 	return minQty
+}
+
+func autoRedeemDecision(info *api.MarketInfo, outcomes []string, balances []float64) (winnerOutcome string, shouldRedeem bool) {
+	if info == nil || !info.Closed {
+		return "", false
+	}
+	for _, t := range info.Tokens {
+		if t.Winner {
+			winnerOutcome = t.Outcome
+			break
+		}
+	}
+	if winnerOutcome == "" {
+		return "", false
+	}
+	for i, outcome := range outcomes {
+		if outcome == winnerOutcome && i < len(balances) && balances[i] >= minOnChainActionShares {
+			return winnerOutcome, true
+		}
+	}
+	return winnerOutcome, false
 }
 
 func isSkippableRedeemError(err error) bool {

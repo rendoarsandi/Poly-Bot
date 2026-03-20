@@ -4,6 +4,8 @@ import (
 	"errors"
 	"math"
 	"testing"
+
+	"Market-bot/internal/api"
 )
 
 func TestMergeablePairsAllowsDecimalPairs(t *testing.T) {
@@ -37,5 +39,51 @@ func TestIsSkippableRedeemError(t *testing.T) {
 		if got := isSkippableRedeemError(tt.err); got != tt.want {
 			t.Fatalf("%s: got %v want %v", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestAutoRedeemDecisionSkipsUndecidedMarkets(t *testing.T) {
+	info := &api.MarketInfo{Closed: false}
+	if winner, ok := autoRedeemDecision(info, []string{"Up", "Down"}, []float64{1, 0}); ok || winner != "" {
+		t.Fatalf("expected unresolved market to skip redeem, got winner=%q ok=%v", winner, ok)
+	}
+
+	info = &api.MarketInfo{
+		Closed: true,
+		Tokens: []struct {
+			TokenID string      `json:"token_id"`
+			Outcome string      `json:"outcome"`
+			Winner  bool        `json:"winner"`
+			Price   interface{} `json:"price"`
+		}{
+			{Outcome: "Up", Winner: false},
+			{Outcome: "Down", Winner: false},
+		},
+	}
+	if winner, ok := autoRedeemDecision(info, []string{"Up", "Down"}, []float64{1, 0}); ok || winner != "" {
+		t.Fatalf("expected no-winner market to skip redeem, got winner=%q ok=%v", winner, ok)
+	}
+}
+
+func TestAutoRedeemDecisionRedeemsOnlyWinningShares(t *testing.T) {
+	info := &api.MarketInfo{
+		Closed: true,
+		Tokens: []struct {
+			TokenID string      `json:"token_id"`
+			Outcome string      `json:"outcome"`
+			Winner  bool        `json:"winner"`
+			Price   interface{} `json:"price"`
+		}{
+			{Outcome: "Up", Winner: true},
+			{Outcome: "Down", Winner: false},
+		},
+	}
+
+	if winner, ok := autoRedeemDecision(info, []string{"Up", "Down"}, []float64{0.5, 1.0}); !ok || winner != "Up" {
+		t.Fatalf("expected winning balance to auto redeem, got winner=%q ok=%v", winner, ok)
+	}
+
+	if winner, ok := autoRedeemDecision(info, []string{"Up", "Down"}, []float64{0, 1.0}); ok || winner != "Up" {
+		t.Fatalf("expected only losing balance to skip redeem, got winner=%q ok=%v", winner, ok)
 	}
 }

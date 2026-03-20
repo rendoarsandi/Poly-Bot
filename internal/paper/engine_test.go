@@ -589,14 +589,14 @@ func TestEngine_RedeemWithDetails(t *testing.T) {
 	}
 }
 
-func TestEngine_GetStatsRealizedPnLTracksBookEquityWhileFlat(t *testing.T) {
+func TestEngine_GetStatsRealizedPnLIgnoresBalanceSyncWhileFlat(t *testing.T) {
 	engine := NewEngine(100.0)
 
 	engine.SetBalance(80.0)
 
 	stats := engine.GetStats()
-	if absFloat(stats.RealizedPnL+20.0) > 0.0001 {
-		t.Fatalf("expected realized pnl -20.00 while flat, got %.4f", stats.RealizedPnL)
+	if absFloat(stats.RealizedPnL) > 0.0001 {
+		t.Fatalf("expected realized pnl to stay 0.00 while flat, got %.4f", stats.RealizedPnL)
 	}
 }
 
