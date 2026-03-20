@@ -2659,7 +2659,7 @@ func displayedTradeBudgets(mode string, cash, equity, tradeFactor, maxTradeSize,
 	}
 
 	sizingCapital := equity
-	if strings.EqualFold(mode, "Real") {
+	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
 		sizingCapital = cash
 	}
 	base = sizingCapital * tradeFactor

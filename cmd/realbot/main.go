@@ -1511,9 +1511,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					tui.LogEvent("[%s] ⏳ Taker-close inventory locked in; waiting for market resolution and redemption", id)
 				}
 				go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
-					redeemCtx, redeemCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-					defer redeemCancel()
-					checkRedemption(redeemCtx, marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
+					checkRedemption(context.Background(), marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
 				}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
 				return
 			}
@@ -1523,9 +1521,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			}
 			cleanupCancel()
 			go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
-				redeemCtx, redeemCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				defer redeemCancel()
-				checkRedemption(redeemCtx, marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
+				checkRedemption(context.Background(), marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
 			}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
 			return
 		}
@@ -2589,10 +2585,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Dynamic trade size uses the last known cached balance.
 					// Do not block the panic-buy hot path on a fresh balance RPC here.
 
-					// For real bot, equity = cash + market value of positions
-					// Simplification: use cash balance as proxy for sizing, or fetch equity
-					currentEquity := currentBalance // In realbot we use cash as conservative equity
-					tradeSize := cfg.CalculateTradeSize(currentEquity)
+					// For real bot, size off cash balance so unresolved mark-to-market
+					// drawdown does not shrink the configured trade factor.
+					tradeSize := cfg.CalculateTradeSize(currentBalance)
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -3933,7 +3928,6 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		}
 	}
 
-	currentEquity := engine.GetEquity()
 	currentCash := engine.GetBalance()
 	reservedBuyNotional := realbotMakerReservedBuyNotional(makerQuotes)
 	quoteCash := math.Max(0, currentCash-reservedBuyNotional)
@@ -3960,7 +3954,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseTradeValue := cfg.CalculateTradeSize(currentEquity)
+	baseTradeValue := cfg.CalculateTradeSize(currentCash)
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
@@ -5234,17 +5228,21 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		}
 	}
 
-	// Retry resolution check with exponential backoff
-	// 15-min markets may take a few seconds to resolve
-	retryDelays := []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second}
 	numOutcomes := len(outcomes)
 
-	for attempt, delay := range retryDelays {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	checkRound := 0
+
+	for {
+		if checkRound > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 		}
+		checkRound++
 
 		resolved := false
 		winner := ""
@@ -5252,7 +5250,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			resCache.ForceRefresh(conditionID)
 			status := resCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
 			if status.Error != nil {
-				tui.LogEvent("[%s] ⚠️ Resolution check %d failed: %v", id, attempt+1, status.Error)
+				tui.LogEvent("[%s] ⚠️ Resolution check failed: %v", id, status.Error)
 			}
 			resolved = status.Resolved
 			winner = status.Winner
@@ -5262,7 +5260,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			info, err := trader.GetMarketInfo(ctx, conditionID)
 			if err != nil {
 				if !resolved {
-					tui.LogEvent("[%s] ⚠️ Resolution check %d failed: %v", id, attempt+1, err)
+					tui.LogEvent("[%s] ⚠️ Resolution check failed: %v", id, err)
 					continue
 				}
 			} else {
@@ -5321,7 +5319,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh during resolved-pending state failed: %v", id, err)
 			}
 			tui.UpdateWalletTruthResolution(id, true, "")
-			tui.LogEvent("[%s] ⏳ Market resolved on-chain, winner still pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
+			tui.LogEvent("[%s] ⏳ Market resolved on-chain, winner still pending...", id)
 			continue
 		}
 
@@ -5330,7 +5328,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			tui.LogEvent("[%s] ⚠️ Wallet-truth refresh during pending resolution failed: %v", id, err)
 		}
 		tui.UpdateWalletTruthResolution(id, false, "")
-		tui.LogEvent("[%s] ⏳ Resolution pending... (attempt %d/%d)", id, attempt+1, len(retryDelays))
+		tui.LogEvent("[%s] ⏳ Resolution pending...", id)
 	}
 
 }
