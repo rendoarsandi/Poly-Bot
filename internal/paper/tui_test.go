@@ -161,6 +161,16 @@ func TestDisplayedTradeBudgetsKeepsHighWaterSizingInRealModeAfterDrawdown(t *tes
 	}
 }
 
+func TestDisplayedTradeBudgetsUsesAdjustedSizingInRealMode(t *testing.T) {
+	base, effective := displayedTradeBudgets("Real", 90, 100, 100, 90, 0.10, 0, 1.50)
+	if base != 9 {
+		t.Fatalf("expected real trade budget to honor adjusted conservative sizing, got %.2f", base)
+	}
+	if effective != 9 {
+		t.Fatalf("expected real effective budget to match base in real mode, got %.2f", effective)
+	}
+}
+
 func TestShouldPersistIssueEvent(t *testing.T) {
 	tests := []struct {
 		name string
@@ -949,6 +959,27 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "$6.00/trade") {
 		t.Fatalf("expected real trade budget to use sizing high-water, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsResolutionEstimateForUnresolvedInventory(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  96.9,
+		StartingBalance: 100,
+		RealizedPnL:     0,
+	}, 3.1, 100, 100, 1.0, 100, 0, 0, 0, map[string]Position{
+		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 3.5, AvgPrice: 3.1 / 3.5, TotalCost: 3.1},
+	})
+
+	if !strings.Contains(rendered, "Resolve +$0.40/-$3.10") {
+		t.Fatalf("expected account status to show resolution estimate, got %q", rendered)
 	}
 }
 

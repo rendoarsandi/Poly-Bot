@@ -787,7 +787,6 @@ func startupPositionsSummary(positions []trading.PositionInfo) string {
 	}
 	return fmt.Sprintf("📊 Open positions: %d token(s), %.2f total shares", len(positions), totalShares)
 }
-
 func realbotConditionFingerprint(conditionID, slug string) string {
 	fingerprint := strings.TrimSpace(conditionID)
 	fingerprint = strings.TrimPrefix(strings.TrimPrefix(fingerprint, "0x"), "0X")
@@ -1006,7 +1005,6 @@ func realbotRefreshExternalCarry(ctx context.Context, trader *trading.RealTrader
 	}
 	return realbotRestoreExternalCarryPositions(verified, engine), nil
 }
-
 func realbotPairQuoteAge(now time.Time, outcomes []string, quoteState map[string]realbotQuoteState) time.Duration {
 	maxAge := time.Duration(0)
 	sawMissing := false

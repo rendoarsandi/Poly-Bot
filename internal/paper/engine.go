@@ -948,6 +948,82 @@ func (e *Engine) getBookEquity() float64 {
 	return e.currentBalance + e.getPositionBookValue() + e.getSplitInventoryValue() + e.getPendingRedemptionValue()
 }
 
+func (e *Engine) getResolutionPnLRange() (best float64, worst float64) {
+	type marketResolution struct {
+		totalCost      float64
+		outcomePayouts map[string]float64
+	}
+
+	byMarket := make(map[string]*marketResolution)
+	for key, pos := range e.positions {
+		marketID := strings.TrimSpace(pos.MarketID)
+		if marketID == "" {
+			marketID = key
+		}
+
+		entry := byMarket[marketID]
+		if entry == nil {
+			entry = &marketResolution{
+				outcomePayouts: make(map[string]float64),
+			}
+			byMarket[marketID] = entry
+		}
+
+		entry.totalCost += pos.TotalCost
+		entry.outcomePayouts[pos.Outcome] += pos.Quantity
+	}
+
+	for _, market := range byMarket {
+		if len(market.outcomePayouts) == 0 {
+			continue
+		}
+
+		marketBest := 0.0
+		marketWorst := 0.0
+		first := true
+
+		for _, payout := range market.outcomePayouts {
+			pnl := payout - market.totalCost
+			if first {
+				marketBest = pnl
+				marketWorst = pnl
+				first = false
+				continue
+			}
+			if pnl > marketBest {
+				marketBest = pnl
+			}
+			if pnl < marketWorst {
+				marketWorst = pnl
+			}
+		}
+
+		// If we only hold one side, include the opposite-outcome-loss scenario.
+		if len(market.outcomePayouts) == 1 {
+			fullLoss := -market.totalCost
+			if fullLoss < marketWorst {
+				marketWorst = fullLoss
+			}
+			if fullLoss > marketBest {
+				marketBest = fullLoss
+			}
+		}
+
+		best += marketBest
+		worst += marketWorst
+	}
+
+	return best, worst
+}
+
+// GetResolutionPnLRange returns best/worst realized PnL outcomes if current
+// unresolved positions were resolved immediately.
+func (e *Engine) GetResolutionPnLRange() (best float64, worst float64) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.getResolutionPnLRange()
+}
+
 func (e *Engine) getUnrealizedValue() float64 {
 	value := 0.0
 	for key, pos := range e.positions {
@@ -1330,13 +1406,26 @@ func (e *Engine) GetCompoundMultiplier() float64 {
 	return e.compoundMultiplier
 }
 
-// GetSizingBalance returns the ratcheting balance used for trade sizing.
-// It starts at the session baseline and only moves up when profitable rounds
-// lock in a new high-water mark.
+// GetSizingBalance returns the ratcheting balance used for trade sizing, then
+// discounts unresolved inventory by worst-case resolution outcomes.
 func (e *Engine) GetSizingBalance() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.sizingBalance
+
+	sizing := e.sizingBalance
+	if sizing < e.pnlBaseline {
+		sizing = e.pnlBaseline
+	}
+
+	_, worst := e.getResolutionPnLRange()
+	sizing += worst
+	if sizing < 0 {
+		sizing = 0
+	}
+	if e.currentBalance > sizing {
+		return e.currentBalance
+	}
+	return sizing
 }
 
 // UpdateCompoundMultiplier updates the multiplier based on round profit/loss
