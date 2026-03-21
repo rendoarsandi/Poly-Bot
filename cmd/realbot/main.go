@@ -35,6 +35,7 @@ const (
 	realbotExecQuoteTimeout       = 1500 * time.Millisecond
 	realbotOrderWarmTimeout       = 1500 * time.Millisecond
 	realbotRestBookMaxAge         = 2 * time.Second
+	realbotTakerCloseRESTTimeout  = 1200 * time.Millisecond
 	realbotWSWarnInterval         = 10 * time.Second
 	realbotWSForceReconnect       = 10 * time.Second
 	realbotMergeTimeout           = 120 * time.Second
@@ -46,6 +47,7 @@ const (
 	realbotFillPollInterval       = 50 * time.Millisecond
 	realbotTakerCloseQuoteRefresh = 500 * time.Millisecond
 	realbotTakerCloseLogInterval  = 5 * time.Second
+	realbotTakerCloseLocalMaxAge  = 350 * time.Millisecond
 	realbotMaxSaneOutcomeSpread   = 0.10
 	realbotMaxSaneAskPairSum      = 1.10
 	realbotMinSaneBidPairSum      = 0.90
@@ -2022,38 +2024,45 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 				if bestOutcome != "" {
 					confirmPrice := highestPrice
-					restConfirmOK := true
-					for _, token := range market.Tokens {
-						outcome := tokenToOutcome[token.TokenID]
-						if outcome != bestOutcome {
-							continue
-						}
-						checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
-						restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
-						cancelCheck()
-						if restErr != nil {
-							logKey := "rest-confirm-failed:" + outcome
-							if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, logKey, realbotTakerCloseLogInterval) {
-								tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s: %v — skipping this tick", id, outcome, restErr)
+					confirmSource := "WS"
+					localConfirmPrice, localReason, localConfirmOK := realbotCanUseLocalTakerCloseQuote(time.Now(), bestOutcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, realbotTakerCloseLocalMaxAge)
+					if localConfirmOK {
+						confirmPrice = localConfirmPrice
+					} else {
+						confirmSource = "REST"
+						restConfirmOK := true
+						for _, token := range market.Tokens {
+							outcome := tokenToOutcome[token.TokenID]
+							if outcome != bestOutcome {
+								continue
 							}
-							restConfirmOK = false
+							checkCtx, cancelCheck := context.WithTimeout(ctx, realbotTakerCloseRESTTimeout)
+							restBid, restAsk, restErr := restClient.GetBestBidAsk(checkCtx, token.TokenID)
+							cancelCheck()
+							if restErr != nil {
+								logKey := "rest-confirm-failed:" + outcome
+								if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, logKey, realbotTakerCloseLogInterval) {
+									tui.LogEvent("[%s] ⚠️ Taker close REST confirm failed for %s after local=%s: %v — skipping this tick", id, outcome, localReason, restErr)
+								}
+								restConfirmOK = false
+								break
+							}
+							confirmPrice = restAsk
+							if confirmPrice <= 0 || confirmPrice >= 1.0 {
+								confirmPrice = restBid
+							}
+							if confirmPrice <= 0 || confirmPrice >= 1.0 {
+								restConfirmOK = false
+							}
 							break
 						}
-						confirmPrice = restAsk
-						if confirmPrice <= 0 || confirmPrice >= 1.0 {
-							confirmPrice = restBid
+						if !restConfirmOK {
+							continue
 						}
-						if confirmPrice <= 0 || confirmPrice >= 1.0 {
-							restConfirmOK = false
-						}
-						break
-					}
-					if !restConfirmOK {
-						continue
 					}
 					if confirmPrice < minPrice {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
-							tui.LogEvent("[%s] ⏳ Taker close waiting: REST confirm $%.3f is below min $%.3f (WS $%.3f)", id, confirmPrice, minPrice, highestPrice)
+							tui.LogEvent("[%s] ⏳ Taker close waiting: %s confirm $%.3f is below min $%.3f (WS trigger $%.3f)", id, confirmSource, confirmPrice, minPrice, highestPrice)
 						}
 						continue
 					}
@@ -2084,8 +2093,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					initialPosition := trader.GetLivePositionSize(tokenID)
-					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, REST $%.3f, budget $%.2f)",
-						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmPrice, budget)
+					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, %s $%.3f, budget $%.2f)",
+						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmSource, confirmPrice, budget)
 					realbotMarkTakerCloseStateLogged(&lastTakerCloseLog, &lastTakerCloseLogKey, "submitted")
 
 					takerCloseAttempted = true
@@ -4473,6 +4482,41 @@ func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids, to
 		return false, maxObservedAge, reason
 	}
 	return true, maxObservedAge, ""
+}
+
+func realbotCanUseLocalTakerCloseQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (float64, string, bool) {
+	ask := tokenAsks[outcome]
+	if ask <= 0 || ask >= 1.0 {
+		return 0, fmt.Sprintf("missing local ask for %s", outcome), false
+	}
+	depth := tokenFullAsks[outcome]
+	if len(depth) == 0 {
+		return 0, fmt.Sprintf("missing local ask depth for %s", outcome), false
+	}
+	bestAsk, ok := realbotBestAskFromLevels(depth)
+	if !ok || bestAsk <= 0 || bestAsk >= 1.0 {
+		return 0, fmt.Sprintf("invalid local ask depth for %s", outcome), false
+	}
+	if math.Abs(bestAsk-ask) > 0.0005 {
+		return 0, fmt.Sprintf("local ask %.3f mismatches depth %.3f for %s", ask, bestAsk, outcome), false
+	}
+	state, ok := quoteState[outcome]
+	if !ok || state.UpdatedAt.IsZero() {
+		return 0, fmt.Sprintf("missing quote timestamp for %s", outcome), false
+	}
+	age := now.Sub(state.UpdatedAt)
+	if age > maxAge {
+		return 0, fmt.Sprintf("%s quote age %s > %s", outcome, age.Round(time.Millisecond), maxAge), false
+	}
+	source := strings.ToLower(strings.TrimSpace(state.Source))
+	if source != "ws" && source != "ws-bbo" {
+		return 0, fmt.Sprintf("quote source %s not aggressive-safe for %s", state.Source, outcome), false
+	}
+	bid := tokenBids[outcome]
+	if bid > 0 && !realbotHasSaneTopOfBook(bid, ask) {
+		return 0, fmt.Sprintf("crossed local quote for %s (bid %.3f >= ask %.3f)", outcome, bid, ask), false
+	}
+	return ask, "", true
 }
 
 func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (time.Duration, error) {

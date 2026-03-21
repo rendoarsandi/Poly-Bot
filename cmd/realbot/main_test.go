@@ -671,6 +671,49 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 	}
 }
 
+func TestRealbotCanUseLocalTakerCloseQuoteAcceptsFreshWSAsk(t *testing.T) {
+	now := time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)
+	bids := map[string]float64{"Up": 0.82}
+	asks := map[string]float64{"Up": 0.83}
+	depth := map[string][]paper.MarketLevel{
+		"Up": {{Price: 0.83, Size: 12}},
+	}
+	state := map[string]realbotQuoteState{
+		"Up": {UpdatedAt: now.Add(-120 * time.Millisecond), Source: "ws"},
+	}
+
+	price, reason, ok := realbotCanUseLocalTakerCloseQuote(now, "Up", bids, asks, depth, state, 350*time.Millisecond)
+	if !ok {
+		t.Fatalf("expected fresh WS taker-close quote, got reason=%q", reason)
+	}
+	if math.Abs(price-0.83) > 0.000001 {
+		t.Fatalf("expected local confirm price 0.83, got %.3f", price)
+	}
+}
+
+func TestRealbotCanUseLocalTakerCloseQuoteRejectsNonWSOrStaleQuote(t *testing.T) {
+	now := time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)
+	bids := map[string]float64{"Up": 0.82}
+	asks := map[string]float64{"Up": 0.83}
+	depth := map[string][]paper.MarketLevel{
+		"Up": {{Price: 0.83, Size: 12}},
+	}
+
+	price, reason, ok := realbotCanUseLocalTakerCloseQuote(now, "Up", bids, asks, depth, map[string]realbotQuoteState{
+		"Up": {UpdatedAt: now.Add(-100 * time.Millisecond), Source: "rest-exec"},
+	}, 350*time.Millisecond)
+	if ok || price != 0 || !strings.Contains(reason, "not aggressive-safe") {
+		t.Fatalf("expected rest-exec quote rejection, got ok=%v price=%.3f reason=%q", ok, price, reason)
+	}
+
+	price, reason, ok = realbotCanUseLocalTakerCloseQuote(now, "Up", bids, asks, depth, map[string]realbotQuoteState{
+		"Up": {UpdatedAt: now.Add(-500 * time.Millisecond), Source: "ws"},
+	}, 350*time.Millisecond)
+	if ok || price != 0 || !strings.Contains(reason, "quote age") {
+		t.Fatalf("expected stale quote rejection, got ok=%v price=%.3f reason=%q", ok, price, reason)
+	}
+}
+
 func TestHandleRestFallbackWithDepthSkipsOlderBooksWhenCurrentQuoteIsFresh(t *testing.T) {
 	staleTS := time.Now().Add(-2 * time.Second).UTC().Format(time.RFC3339Nano)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
