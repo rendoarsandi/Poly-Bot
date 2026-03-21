@@ -27,31 +27,32 @@ import (
 )
 
 const (
-	UseLiveUI                     = true // Set to false for traditional logging
-	paperArbModeTaker             = "taker"
-	paperArbModeMaker             = "maker"
-	terminalBidFloor              = 0.985
-	terminalAskCeil               = 0.015
-	realbotExecQuoteTimeout       = 1500 * time.Millisecond
-	realbotOrderWarmTimeout       = 1500 * time.Millisecond
-	realbotRestBookMaxAge         = 2 * time.Second
-	realbotTakerCloseRESTTimeout  = 1200 * time.Millisecond
-	realbotWSWarnInterval         = 10 * time.Second
-	realbotWSForceReconnect       = 10 * time.Second
-	realbotMergeTimeout           = 120 * time.Second
-	realbotCleanupVerifyTTL       = 20 * time.Second
-	realbotFastVerifyTTL          = 6 * time.Second
-	minOnChainActionShares        = 0.01
-	realbotUIRefreshInterval      = 100 * time.Millisecond
-	realbotMainLoopInterval       = 10 * time.Millisecond
-	realbotFillPollInterval       = 50 * time.Millisecond
-	realbotTakerCloseQuoteRefresh = 500 * time.Millisecond
-	realbotTakerCloseLogInterval  = 5 * time.Second
-	realbotTakerCloseLocalMaxAge  = 350 * time.Millisecond
-	realbotWalletTruthLogMinDelta = 0.25
-	realbotMaxSaneOutcomeSpread   = 0.10
-	realbotMaxSaneAskPairSum      = 1.10
-	realbotMinSaneBidPairSum      = 0.90
+	UseLiveUI                        = true // Set to false for traditional logging
+	paperArbModeTaker                = "taker"
+	paperArbModeMaker                = "maker"
+	terminalBidFloor                 = 0.985
+	terminalAskCeil                  = 0.015
+	realbotExecQuoteTimeout          = 1500 * time.Millisecond
+	realbotOrderWarmTimeout          = 1500 * time.Millisecond
+	realbotRestBookMaxAge            = 2 * time.Second
+	realbotTakerCloseRESTTimeout     = 1200 * time.Millisecond
+	realbotWSWarnInterval            = 10 * time.Second
+	realbotWSForceReconnect          = 10 * time.Second
+	realbotMergeTimeout              = 120 * time.Second
+	realbotCleanupVerifyTTL          = 20 * time.Second
+	realbotFastVerifyTTL             = 6 * time.Second
+	minOnChainActionShares           = 0.01
+	realbotUIRefreshInterval         = 100 * time.Millisecond
+	realbotMainLoopInterval          = 10 * time.Millisecond
+	realbotFillPollInterval          = 50 * time.Millisecond
+	realbotTakerCloseQuoteRefresh    = 500 * time.Millisecond
+	realbotTakerCloseLogInterval     = 5 * time.Second
+	realbotTakerCloseLocalMaxAge     = 350 * time.Millisecond
+	realbotWalletTruthLogMinDelta    = 0.25
+	realbotMaxSaneOutcomeSpread      = 0.10
+	realbotMaxSaneAskPairSum         = 1.10
+	realbotMinSaneBidPairSum         = 0.90
+	realbotExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -2554,16 +2555,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] 📈 SPLIT SELL candidate %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %s shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, formatShareQty(sharesToSell),
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-
-							execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
-							quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshSellExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, core.ResolveExecutionLocalQuoteMaxAge(cfg))
-							cancelExecQuote()
-							if quoteErr != nil {
-								tui.LogEvent("[%s] ⚠️ Split-sell execution quote unavailable: %v", id, quoteErr)
+							executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
+							freshLocalSellQuote, _, localSellQuoteReason := realbotCanUseLocalSellQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullBids, quoteState, executionQuoteMaxAge)
+							if !freshLocalSellQuote {
+								tui.LogEvent("[%s] ⚠️ Split-sell paused: awaiting fresh local quote (%s)", id, localSellQuoteReason)
 								continue
-							}
-							if quoteSource == "rest" {
-								tui.LogEvent("[%s] 📡 Refreshed split-sell books via REST in %s after %s", id, quoteMetric.Round(time.Millisecond), quoteDetail)
 							}
 							bid1 = tokenBids[outcomes[0]]
 							bid2 = tokenBids[outcomes[1]]
@@ -2793,33 +2789,26 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Scale shares based on margin (User requested NO fee buffer deduction)
 					shares := normalizeMarketBuyShares(tradeSize / sum)
 					requestedShares := shares
-
 					// Fee estimation and balance check logging removed per user request.
-					// If local WS books are stale or incomplete, force a fresh REST quote
-					// instead of skipping the opportunity outright.
-					execQuoteCtx, cancelExecQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
-					quoteSource, quoteMetric, quoteDetail, quoteErr := realbotEnsureFreshBuyExecutionQuote(execQuoteCtx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, core.ResolveExecutionLocalQuoteMaxAge(cfg))
-					cancelExecQuote()
-					if quoteErr != nil {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: execution quote unavailable (%v)", id, quoteErr)
+					executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
+					freshLocalBuyQuote, _, localBuyQuoteReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullAsks, quoteState, executionQuoteMaxAge)
+					if !freshLocalBuyQuote {
+						tui.LogEvent("[%s] ⚠️ Skipping buy: awaiting fresh local quote (%s)", id, localBuyQuoteReason)
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
-					}
-					if quoteSource == "rest" {
-						tui.LogEvent("[%s] 📡 Refreshed buy books via REST in %s after %s", id, quoteMetric.Round(time.Millisecond), quoteDetail)
 					}
 
 					ask1 = tokenAsks[outcomes[0]]
 					ask2 = tokenAsks[outcomes[1]]
 					if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: refreshed asks %.3f / %.3f outside configured range %.3f-%.3f", id, ask1, ask2, rMinAsk, rMaxAsk)
+						tui.LogEvent("[%s] ⚠️ Skipping buy: local asks %.3f / %.3f outside configured range %.3f-%.3f", id, ask1, ask2, rMinAsk, rMaxAsk)
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}
 					sum = ask1 + ask2
 					observedMargin = pairMarginPercent(sum)
 					if observedMargin < realbotCfg.MinMarginPercent-1e-4 {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: refreshed pair margin %.2f%% below configured %.2f%%", id, observedMargin, realbotCfg.MinMarginPercent)
+						tui.LogEvent("[%s] ⚠️ Skipping buy: local pair margin %.2f%% below configured %.2f%%", id, observedMargin, realbotCfg.MinMarginPercent)
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}
@@ -4453,6 +4442,13 @@ func realbotLocalQuoteSanityReason(outcomes []string, tokenBids, tokenAsks map[s
 
 func realbotHasSanePairQuotes(outcomes []string, tokenBids, tokenAsks map[string]float64) bool {
 	return realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks) == ""
+}
+
+func realbotExecutionQuoteGuardAge(localQuoteMaxAge time.Duration) time.Duration {
+	if localQuoteMaxAge <= 0 || localQuoteMaxAge > realbotExecutionGuardQuoteMaxAge {
+		return realbotExecutionGuardQuoteMaxAge
+	}
+	return localQuoteMaxAge
 }
 
 func realbotBestAskFromLevels(levels []paper.MarketLevel) (float64, bool) {

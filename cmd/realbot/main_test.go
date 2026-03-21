@@ -100,6 +100,18 @@ func TestMinExecutablePairSum(t *testing.T) {
 	}
 }
 
+func TestRealbotExecutionQuoteGuardAgeCapsAtAwaitingWindow(t *testing.T) {
+	if got := realbotExecutionQuoteGuardAge(3 * time.Second); got != realbotExecutionGuardQuoteMaxAge {
+		t.Fatalf("expected execution guard to cap at %s, got %s", realbotExecutionGuardQuoteMaxAge, got)
+	}
+}
+
+func TestRealbotExecutionQuoteGuardAgePreservesStricterConfig(t *testing.T) {
+	if got := realbotExecutionQuoteGuardAge(500 * time.Millisecond); got != 500*time.Millisecond {
+		t.Fatalf("expected stricter configured age to pass through, got %s", got)
+	}
+}
+
 func TestRealbotTakerCloseBudgetUsesStartingBalanceFloor(t *testing.T) {
 	budget := realbotTakerCloseBudget(59.20, 65.80, paper.TUISettings{
 		TradeScaleFactor: 0.05,

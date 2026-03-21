@@ -216,6 +216,18 @@ func TestShouldUseLocalPaperPairRequiresFreshValidBothSides(t *testing.T) {
 	}
 }
 
+func TestPaperExecutionQuoteGuardAgeCapsAtAwaitingWindow(t *testing.T) {
+	if got := paperExecutionQuoteGuardAge(3 * time.Second); got != paperExecutionGuardQuoteMaxAge {
+		t.Fatalf("expected execution guard to cap at %s, got %s", paperExecutionGuardQuoteMaxAge, got)
+	}
+}
+
+func TestPaperExecutionQuoteGuardAgePreservesStricterConfig(t *testing.T) {
+	if got := paperExecutionQuoteGuardAge(400 * time.Millisecond); got != 400*time.Millisecond {
+		t.Fatalf("expected stricter configured age to pass through, got %s", got)
+	}
+}
+
 func TestSummarizePaperRoundUsesSharedEngineDelta(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.AddBalance(4.65)

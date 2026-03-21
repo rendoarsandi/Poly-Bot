@@ -38,15 +38,16 @@ const (
 	MinSplitAmount   = 10.0  // Minimum split amount to execute ($)
 	MaxSharesPerSell = 250.0 // Hard safety cap on shares per sell
 
-	paperMakerQuoteStep           = 0.001
-	paperMakerBaseOffset          = 0.008
-	paperMakerInventorySkewStep   = 0.020
-	paperMakerInventoryTargetMult = 2.5
-	paperMakerInventoryCapMult    = 5.0
-	paperMakerQuoteSizeSkewFactor = 0.75
-	paperMakerRequoteInterval     = 1500 * time.Millisecond
-	paperMakerMinQuoteValue       = 1.0
-	paperMakerCashUsagePerOutcome = 0.35
+	paperMakerQuoteStep            = 0.001
+	paperMakerBaseOffset           = 0.008
+	paperMakerInventorySkewStep    = 0.020
+	paperMakerInventoryTargetMult  = 2.5
+	paperMakerInventoryCapMult     = 5.0
+	paperMakerQuoteSizeSkewFactor  = 0.75
+	paperMakerRequoteInterval      = 1500 * time.Millisecond
+	paperMakerMinQuoteValue        = 1.0
+	paperMakerCashUsagePerOutcome  = 0.35
+	paperExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 )
 
 var paperMakerStrategyParams = strategy.MakerParams{
@@ -307,6 +308,13 @@ func paperPairQuoteAge(lastPairUpdate, now time.Time) time.Duration {
 
 func shouldUseLocalPaperPair(outcomes []string, bids, asks map[string]float64, lastPairUpdate time.Time, maxAge time.Duration, now time.Time) bool {
 	return hasValidPaperPairQuotes(outcomes, bids, asks) && paperPairQuoteAge(lastPairUpdate, now) <= maxAge
+}
+
+func paperExecutionQuoteGuardAge(localQuoteMaxAge time.Duration) time.Duration {
+	if localQuoteMaxAge <= 0 || localQuoteMaxAge > paperExecutionGuardQuoteMaxAge {
+		return paperExecutionGuardQuoteMaxAge
+	}
+	return localQuoteMaxAge
 }
 
 func syncPaperPairUpdate(t *MarketTrader, now time.Time) {
@@ -596,7 +604,7 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		cancelAllPaperMakerQuotes(t, "maker mode requires exactly 2 outcomes")
 		return
 	}
-	localQuoteMaxAge := core.ResolveExecutionLocalQuoteMaxAge(t.Config)
+	localQuoteMaxAge := paperExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(t.Config))
 	if !shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now) {
 		cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
 		return
@@ -1999,7 +2007,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			now := time.Now()
 			pairQuoteAge := paperPairQuoteAge(t.LastPairUpdate, now)
 			localQuoteMaxAge := core.ResolveExecutionLocalQuoteMaxAge(t.Config)
+			executionQuoteMaxAge := paperExecutionQuoteGuardAge(localQuoteMaxAge)
 			localPairFresh := shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
+			executionPairFresh := shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
 
 			terminalBookState := paperLooksLikeTerminalBook(t.Outcomes, t.TokenBids, t.TokenAsks)
 			needsWSReconnect := shouldPaperReconnectWS(t.Outcomes, t.TokenBids, t.TokenAsks, pairQuoteAge, restFallbackQuoteAge, terminalBookState)
@@ -2094,7 +2104,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			liveCfg := t.TUI.GetSettings()
 			arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 			localQuoteMaxAge = core.ResolveExecutionLocalQuoteMaxAge(t.Config)
-			localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, time.Now())
+			executionQuoteMaxAge = paperExecutionQuoteGuardAge(localQuoteMaxAge)
+			now = time.Now()
+			localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
+			executionPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
 			if liveCfg.TakerCloseMarket {
 				cancelAllPaperMakerQuotes(t, "taker close market enabled")
 			} else if arbMode != paperArbModeMaker {
@@ -2108,7 +2121,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					continue
 				}
 
-				if !localPairFresh {
+				if !executionPairFresh {
 					if arbMode == paperArbModeMaker {
 						cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
 					}
