@@ -787,224 +787,7 @@ func startupPositionsSummary(positions []trading.PositionInfo) string {
 	}
 	return fmt.Sprintf("📊 Open positions: %d token(s), %.2f total shares", len(positions), totalShares)
 }
-func realbotConditionFingerprint(conditionID, slug string) string {
-	fingerprint := strings.TrimSpace(conditionID)
-	fingerprint = strings.TrimPrefix(strings.TrimPrefix(fingerprint, "0x"), "0X")
-	if fingerprint == "" {
-		fingerprint = strings.TrimSpace(slug)
-	}
-	if len(fingerprint) > 8 {
-		fingerprint = fingerprint[:8]
-	}
-	return strings.ToLower(fingerprint)
-}
 
-func realbotInferAssetIDFromSlug(slug string) string {
-	slug = strings.ToLower(strings.TrimSpace(slug))
-	switch {
-	case strings.HasPrefix(slug, "btc-") || strings.Contains(slug, "bitcoin"):
-		return "BTC"
-	case strings.HasPrefix(slug, "eth-") || strings.Contains(slug, "ethereum") || strings.Contains(slug, "ether-"):
-		return "ETH"
-	case strings.HasPrefix(slug, "sol-") || strings.Contains(slug, "solana"):
-		return "SOL"
-	case strings.HasPrefix(slug, "xrp-") || strings.Contains(slug, "ripple"):
-		return "XRP"
-	}
-
-	if head, _, ok := strings.Cut(slug, "-"); ok && head != "" {
-		return strings.ToUpper(head)
-	}
-	if slug == "" {
-		return "MARKET"
-	}
-	return strings.ToUpper(slug)
-}
-
-func realbotMarketIDForExternalPosition(existing map[string]paper.Position, pos trading.PositionInfo) string {
-	fingerprint := realbotConditionFingerprint(pos.ConditionID, pos.Slug)
-	if fingerprint != "" {
-		for _, existingPos := range existing {
-			marketID := strings.TrimSpace(existingPos.MarketID)
-			if marketID != "" && strings.HasSuffix(strings.ToLower(marketID), "#"+fingerprint) {
-				return marketID
-			}
-		}
-	}
-
-	return mkt.ScopedMarketID(realbotInferAssetIDFromSlug(pos.Slug), &api.Market{
-		ConditionID: pos.ConditionID,
-		Slug:        pos.Slug,
-	})
-}
-
-func realbotRestoreExternalCarryPositions(positions []trading.PositionInfo, engine *paper.Engine) int {
-	if engine == nil {
-		return 0
-	}
-
-	const eps = 1e-6
-	existing := engine.GetPositions()
-	synced := 0
-
-	type desiredCarry struct {
-		marketID  string
-		outcome   string
-		quantity  float64
-		markPrice float64
-	}
-	desiredByKey := make(map[string]desiredCarry)
-
-	for _, pos := range positions {
-		if pos.Size <= eps || strings.TrimSpace(pos.Outcome) == "" {
-			continue
-		}
-
-		marketID := realbotMarketIDForExternalPosition(existing, pos)
-		posKey := pos.Outcome
-		if marketID != "" {
-			posKey = marketID + ":" + pos.Outcome
-		}
-
-		markPrice := pos.AvgPrice
-		if markPrice <= 0 {
-			markPrice = 0.5
-		}
-		desired := desiredByKey[posKey]
-		if desired.marketID == "" {
-			desired.marketID = marketID
-			desired.outcome = pos.Outcome
-			desired.markPrice = markPrice
-		}
-		desired.quantity += pos.Size
-		desiredByKey[posKey] = desired
-	}
-
-	// First: upsert all externally reported positions.
-	for key, desired := range desiredByKey {
-		current, ok := existing[key]
-		if ok && math.Abs(current.Quantity-desired.quantity) <= eps {
-			continue
-		}
-		if engine.SyncExternalPosition(desired.marketID, desired.outcome, desired.quantity, desired.markPrice) {
-			synced++
-			existing = engine.GetPositions()
-		}
-	}
-
-	// Second: trim stale local carry that is absent in authoritative external snapshot.
-	for key, pos := range existing {
-		if pos.Quantity <= eps {
-			continue
-		}
-		if _, ok := desiredByKey[key]; ok {
-			continue
-		}
-		markPrice := pos.AvgPrice
-		if markPrice <= 0 && pos.Quantity > 0 {
-			markPrice = pos.TotalCost / pos.Quantity
-		}
-		if markPrice <= 0 {
-			markPrice = 0.5
-		}
-		if engine.SyncExternalPosition(pos.MarketID, pos.Outcome, 0, markPrice) {
-			synced++
-		}
-	}
-
-	return synced
-}
-
-// isRealbotMarketSlug returns true if the slug matches the pattern of a crypto fast-market.
-// This prevents manual positions in unrelated markets (e.g. elections, sports) from eating
-// up bot exposure limits.
-func isRealbotMarketSlug(slug string) bool {
-	s := strings.ToLower(strings.TrimSpace(slug))
-	if s == "" {
-		return false
-	}
-
-	hasCryptoPrefix := strings.HasPrefix(s, "btc-") || strings.HasPrefix(s, "eth-") || strings.HasPrefix(s, "sol-") || strings.HasPrefix(s, "xrp-")
-	if hasCryptoPrefix {
-		if strings.Contains(s, "-updown-") {
-			return true
-		}
-		if strings.Contains(s, "-1m-") || strings.Contains(s, "-5m-") || strings.Contains(s, "-15m-") || strings.Contains(s, "-30m-") || strings.Contains(s, "-1h-") || strings.Contains(s, "-2h-") || strings.Contains(s, "-4h-") || strings.Contains(s, "-12h-") || strings.Contains(s, "-1d-") {
-			return true
-		}
-	}
-
-	return false
-}
-func realbotVerifyExternalCarryPositions(
-	ctx context.Context,
-	positions []trading.PositionInfo,
-	getOnChainBalance func(context.Context, string) (float64, error),
-) ([]trading.PositionInfo, error) {
-	const eps = 1e-6
-	verified := make([]trading.PositionInfo, 0, len(positions))
-	verifyErrors := 0
-	var firstErr error
-
-	for _, pos := range positions {
-		if pos.Size <= eps || strings.TrimSpace(pos.Outcome) == "" {
-			continue
-		}
-
-		if !isRealbotMarketSlug(pos.Slug) {
-			continue
-		}
-
-		candidate := pos
-		if getOnChainBalance != nil {
-			tokenID := strings.TrimSpace(pos.TokenID)
-			if tokenID == "" {
-				verifyErrors++
-				if firstErr == nil {
-					firstErr = fmt.Errorf("missing token id for %s %s", strings.TrimSpace(pos.ConditionID), strings.TrimSpace(pos.Outcome))
-				}
-				continue
-			}
-
-			balanceCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			onChainSize, err := getOnChainBalance(balanceCtx, tokenID)
-			cancel()
-			if err != nil {
-				verifyErrors++
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			candidate.Size = onChainSize
-		}
-
-		if candidate.Size <= eps {
-			continue
-		}
-		verified = append(verified, candidate)
-	}
-
-	if verifyErrors > 0 {
-		return nil, fmt.Errorf("on-chain carry verification failed for %d token(s): %w", verifyErrors, firstErr)
-	}
-	return verified, nil
-}
-
-func realbotRefreshExternalCarry(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine) (int, error) {
-	if trader == nil || engine == nil {
-		return 0, nil
-	}
-	positions, err := trader.GetPositions(ctx)
-	if err != nil {
-		return 0, err
-	}
-	verified, verifyErr := realbotVerifyExternalCarryPositions(ctx, positions, trader.GetCTFBalanceFloat)
-	if verifyErr != nil {
-		return 0, verifyErr
-	}
-	return realbotRestoreExternalCarryPositions(verified, engine), nil
-}
 func realbotPairQuoteAge(now time.Time, outcomes []string, quoteState map[string]realbotQuoteState) time.Duration {
 	maxAge := time.Duration(0)
 	sawMissing := false
@@ -1343,13 +1126,6 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
-	startupCarryCtx, startupCarryCancel := context.WithTimeout(ctx, 30*time.Second)
-	if synced, carryErr := realbotRefreshExternalCarry(startupCarryCtx, realTrader, engine); carryErr != nil {
-		fmt.Printf("⚠️  Could not sync startup carry snapshot: %v\n", carryErr)
-	} else if synced > 0 {
-		fmt.Printf("🔄 Synced %d open position(s) with authoritative carry snapshot\n", synced)
-	}
-	startupCarryCancel()
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
 	} else {
@@ -1444,15 +1220,6 @@ func run() error {
 				engine.SetBalance(currentBalance)
 				engine.RecalculateDrawdown()
 			}
-		}
-		{
-			carryCtx, carryCancel := context.WithTimeout(ctx, 30*time.Second)
-			if synced, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
-				tui.LogEvent("⚠️ Could not refresh open carry positions: %v", carryErr)
-			} else if synced > 0 {
-				tui.LogEvent("🔄 Synced %d unresolved position(s) to wallet truth", synced)
-			}
-			carryCancel()
 		}
 
 		// Track starting equity for this round's PnL calculation
@@ -1592,15 +1359,6 @@ func run() error {
 				engine.RecalculateDrawdown()
 			}
 			endBalFn()
-		}
-		{
-			carryCtx, carryCancel := context.WithTimeout(ctx, 30*time.Second)
-			if synced, carryErr := realbotRefreshExternalCarry(carryCtx, realTrader, engine); carryErr != nil {
-				tui.LogEvent("⚠️ Could not refresh unresolved carry before round settlement: %v", carryErr)
-			} else if synced > 0 {
-				tui.LogEvent("🔄 Synced %d unresolved position(s) before round settlement", synced)
-			}
-			carryCancel()
 		}
 
 		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
