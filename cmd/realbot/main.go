@@ -565,7 +565,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			if newBal, balErr := trader.ForceRefreshBalance(balanceCtx); balErr != nil {
 				tui.LogEvent("[%s] ⚠️ Post-redeem balance refresh failed: %v", marketID, balErr)
 			} else {
-				engine.SetBalance(newBal)
+				engine.SyncBalanceNeutral(newBal)
 				engine.RecalculateDrawdown()
 			}
 			balanceCancel()
@@ -1223,7 +1223,7 @@ func run() error {
 				// keep currentBalance from last known value
 			} else {
 				currentBalance = newBal
-				engine.SetBalance(currentBalance)
+				engine.SyncBalanceNeutral(currentBalance)
 				engine.RecalculateDrawdown()
 			}
 		}
@@ -1358,10 +1358,11 @@ func run() error {
 		roundCancel()
 
 		// Sync engine with on-chain balance before calculating round PnL
+		balanceSyncDelta := 0.0
 		{
 			endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
 			if endBal, endBalErr := realTrader.GetBalance(endBalCtx); endBalErr == nil {
-				engine.SetBalance(endBal)
+				balanceSyncDelta = engine.SyncBalanceNeutral(endBal)
 				engine.RecalculateDrawdown()
 			}
 			endBalFn()
@@ -1384,7 +1385,7 @@ func run() error {
 
 		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
 		// until it is actually sold, merged, or redeemed.
-		roundPnL := realbotNeutralRoundPnL(startingEquity, engine.GetBookEquity(), reconciliationDelta)
+		roundPnL := realbotNeutralRoundPnL(startingEquity, engine.GetBookEquity(), reconciliationDelta+balanceSyncDelta)
 		engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
 		if roundPnL > 0 {
 			tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)
@@ -2200,7 +2201,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				refreshWalletTruth(5 * time.Second)
 				if newBal, err := trader.GetBalance(ctx); err == nil {
 					currentBalance = newBal
-					engine.SetBalance(currentBalance)
+					engine.SyncBalanceNeutral(currentBalance)
 					engine.RecalculateDrawdown()
 				}
 				switch {
@@ -3135,6 +3136,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							// Refresh balance for next trade
 							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 								currentBalance = newBal
+								engine.SyncBalanceNeutral(currentBalance)
+								engine.RecalculateDrawdown()
 							}
 							refreshWalletTruth(5 * time.Second)
 							time.Sleep(5 * time.Second)
@@ -3264,7 +3267,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Force refresh balance after trade to ensure accurate tracking
 						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 							currentBalance = newBal
-							// currentCash = newBal // Unused
+							engine.SyncBalanceNeutral(currentBalance)
+							engine.RecalculateDrawdown()
 						}
 						refreshWalletTruth(5 * time.Second)
 

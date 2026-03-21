@@ -660,6 +660,27 @@ func TestEngine_GetStatsRealizedPnLStaysNeutralForOpenInventory(t *testing.T) {
 	}
 }
 
+func TestEngine_SyncBalanceNeutralKeepsOpenInventorySessionNeutral(t *testing.T) {
+	engine := NewEngine(65.08)
+
+	if _, err := engine.BuyForMarket("m1", "Down", 3.25/3.5816, 3.5816); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	neutralized := engine.SyncBalanceNeutral(64.77)
+	if absFloat(neutralized-2.94) > 0.0001 {
+		t.Fatalf("expected neutralized balance delta 2.94, got %.4f", neutralized)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(engine.GetBookEquity()-stats.StartingBalance) > 0.0001 {
+		t.Fatalf("expected balance sync to keep open inventory neutral, equity %.4f baseline %.4f", engine.GetBookEquity(), stats.StartingBalance)
+	}
+	if absFloat(engine.GetCompoundMultiplier()-1.0) > 0.0001 {
+		t.Fatalf("expected neutral sync not to ratchet compounding, got %.4f", engine.GetCompoundMultiplier())
+	}
+}
+
 func TestEngine_GetResolutionPnLRangeSingleSidedPosition(t *testing.T) {
 	engine := NewEngine(100.0)
 

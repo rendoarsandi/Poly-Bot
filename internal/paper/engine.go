@@ -1265,6 +1265,44 @@ func (e *Engine) SetBalance(balance float64) {
 	e.currentBalance = balance
 }
 
+func (e *Engine) hasNeutralUnsettledInventoryLocked() bool {
+	if len(e.positions) > 0 {
+		return true
+	}
+	for _, inv := range e.splitInventories {
+		if inv == nil {
+			continue
+		}
+		if _, _, unrealizedValue := inv.GetStats(); unrealizedValue > 0.000001 {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncBalanceNeutral updates wallet cash from an external source. If unresolved
+// inventory is still open, the balance change is treated as a neutral sync
+// event rather than session PnL, and the returned delta should be excluded from
+// round PnL attribution.
+func (e *Engine) SyncBalanceNeutral(balance float64) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	delta := balance - e.currentBalance
+	e.currentBalance = balance
+
+	neutralized := 0.0
+	if math.Abs(delta) >= 0.000001 && e.hasNeutralUnsettledInventoryLocked() {
+		e.pnlBaseline += delta
+		e.sizingBalance += delta
+		e.refreshCompoundStateLocked(e.sizingBalance)
+		neutralized = delta
+	}
+
+	e.recalculateDrawdown()
+	return neutralized
+}
+
 func (e *Engine) refreshCompoundStateLocked(candidateSizingBalance float64) {
 	if candidateSizingBalance > e.sizingBalance {
 		e.sizingBalance = candidateSizingBalance
