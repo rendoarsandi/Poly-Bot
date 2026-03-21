@@ -670,6 +670,10 @@ type WalletTruthPosition struct {
 	ResolutionStatus string // "unresolved", "resolved", "redeemable"
 }
 
+func walletTruthOutcomeKey(outcome string) string {
+	return strings.ToLower(strings.TrimSpace(outcome))
+}
+
 type tickMsg time.Time
 
 func tickCmd(interval time.Duration) tea.Cmd {
@@ -1922,6 +1926,29 @@ func (t *TUI) SetWalletTruthPositions(marketID string, positions []WalletTruthPo
 		delete(t.walletTruth, marketID)
 		return
 	}
+	if existing, ok := t.walletTruth[marketID]; ok && len(existing) > 0 {
+		existingByOutcome := make(map[string]WalletTruthPosition, len(existing))
+		for _, pos := range existing {
+			existingByOutcome[walletTruthOutcomeKey(pos.Outcome)] = pos
+		}
+		for i := range positions {
+			prev, ok := existingByOutcome[walletTruthOutcomeKey(positions[i].Outcome)]
+			if !ok {
+				continue
+			}
+			// Refreshes usually only carry local/on-chain balances. Preserve known
+			// resolution metadata until a later resolution update overrides it.
+			if positions[i].ResolutionStatus == "" {
+				positions[i].ResolutionStatus = prev.ResolutionStatus
+			}
+			if !positions[i].IsWinner {
+				positions[i].IsWinner = prev.IsWinner
+			}
+			if !positions[i].Redeemable {
+				positions[i].Redeemable = prev.Redeemable
+			}
+		}
+	}
 	t.walletTruth[marketID] = append([]WalletTruthPosition(nil), positions...)
 }
 
@@ -1932,12 +1959,15 @@ func (t *TUI) UpdateWalletTruthRedeemable(marketID string, winningOutcome string
 	if !ok {
 		return
 	}
+	winningKey := walletTruthOutcomeKey(winningOutcome)
 	for i := range positions {
 		positions[i].ResolutionStatus = "resolved"
-		if positions[i].Outcome == winningOutcome {
+		positions[i].Redeemable = false
+		if walletTruthOutcomeKey(positions[i].Outcome) == winningKey {
 			positions[i].IsWinner = true
 			if positions[i].OnChainShares > 0 {
 				positions[i].Redeemable = true
+				positions[i].ResolutionStatus = "redeemable"
 			}
 		} else {
 			positions[i].IsWinner = false
@@ -1955,11 +1985,13 @@ func (t *TUI) UpdateWalletTruthResolution(marketID string, resolved bool, winnin
 	if !ok {
 		return
 	}
+	winningKey := walletTruthOutcomeKey(winningOutcome)
 	for i := range positions {
 		if resolved {
 			positions[i].ResolutionStatus = "resolved"
 			if winningOutcome != "" {
-				positions[i].IsWinner = positions[i].Outcome == winningOutcome
+				positions[i].IsWinner = walletTruthOutcomeKey(positions[i].Outcome) == winningKey
+				positions[i].Redeemable = false
 				if positions[i].IsWinner && positions[i].OnChainShares > 0 {
 					positions[i].Redeemable = true
 					positions[i].ResolutionStatus = "redeemable"

@@ -121,6 +121,67 @@ func TestTUI_SetWalletTruthPositionsClonesInput(t *testing.T) {
 	}
 }
 
+func TestTUI_SetWalletTruthPositionsPreservesResolutionStateAcrossRefresh(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tui.SetWalletTruthPositions("BTC#1", []WalletTruthPosition{{
+		MarketID:         "BTC#1",
+		Outcome:          "Up",
+		LocalShares:      3.25,
+		OnChainShares:    3.25,
+		IsWinner:         true,
+		Redeemable:       true,
+		ResolutionStatus: "redeemable",
+	}})
+
+	tui.SetWalletTruthPositions("BTC#1", []WalletTruthPosition{{
+		MarketID:      "BTC#1",
+		Outcome:       "Up",
+		LocalShares:   3.25,
+		OnChainShares: 3.25,
+	}})
+
+	got := tui.getWalletTruthPositions()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 wallet truth position, got %d", len(got))
+	}
+	if !got[0].IsWinner || !got[0].Redeemable || got[0].ResolutionStatus != "redeemable" {
+		t.Fatalf("expected refresh to preserve resolution state, got %+v", got[0])
+	}
+}
+
+func TestTUI_UpdateWalletTruthResolutionMatchesTrimmedWinner(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tui.SetWalletTruthPositions("BTC#2", []WalletTruthPosition{
+		{MarketID: "BTC#2", Outcome: "Up", OnChainShares: 3.25},
+		{MarketID: "BTC#2", Outcome: "Down", OnChainShares: 0},
+	})
+
+	tui.UpdateWalletTruthResolution("BTC#2", true, " up ")
+
+	got := tui.getWalletTruthPositions()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 wallet truth positions, got %d", len(got))
+	}
+	for _, pos := range got {
+		switch pos.Outcome {
+		case "Up":
+			if !pos.IsWinner || !pos.Redeemable || pos.ResolutionStatus != "redeemable" {
+				t.Fatalf("expected Up to be recognized as winner, got %+v", pos)
+			}
+		case "Down":
+			if pos.IsWinner || pos.Redeemable || pos.ResolutionStatus != "resolved" {
+				t.Fatalf("expected Down to be resolved loser, got %+v", pos)
+			}
+		}
+	}
+}
+
 func TestDisplayedTradeBudgetsUsesEquityAndCompoundInPaperMode(t *testing.T) {
 	base, effective := displayedTradeBudgets("Paper", 75, 100, 100, 100, 0.10, 0, 1.12)
 	if base != 10 {
