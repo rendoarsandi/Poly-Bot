@@ -240,11 +240,11 @@ func realbotSizingCapitalForTrade(engine *paper.Engine) float64 {
 	if engine == nil {
 		return 0
 	}
-	cash := engine.GetBalance()
-	if cash < 0 {
+	equity := engine.GetBookEquity()
+	if equity < 0 {
 		return 0
 	}
-	return cash
+	return equity
 }
 
 func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]float64) (string, float64) {

@@ -2694,7 +2694,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	tradeLine := ""
 	effectiveSizingBalance := sizingBalance
 	if isRealMode {
-		effectiveSizingBalance = stats.CurrentBalance
+		effectiveSizingBalance = sizingEquity
 		if effectiveSizingBalance < 0 {
 			effectiveSizingBalance = 0
 		}
