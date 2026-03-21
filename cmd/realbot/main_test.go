@@ -1226,3 +1226,28 @@ func TestRealbotNormalizeDisplaySource(t *testing.T) {
 		t.Fatalf("expected WS default for unknown, got %q", got)
 	}
 }
+
+func TestRealbotDisplayHasUsableQuotes(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+
+	if realbotDisplayHasUsableQuotes(outcomes,
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0},
+	) {
+		t.Fatal("expected empty display quotes to be unusable")
+	}
+
+	if !realbotDisplayHasUsableQuotes(outcomes,
+		map[string]float64{"Down": 0.44, "Up": 0.54},
+		map[string]float64{"Down": 0.45, "Up": 0.55},
+	) {
+		t.Fatal("expected sane two-sided display quotes to be usable")
+	}
+
+	if !realbotDisplayHasUsableQuotes(outcomes,
+		map[string]float64{"Down": 0.99, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.01},
+	) {
+		t.Fatal("expected terminal one-sided display quotes to be usable")
+	}
+}

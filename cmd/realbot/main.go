@@ -649,6 +649,10 @@ func realbotNormalizeDisplaySource(raw string) string {
 	}
 }
 
+func realbotDisplayHasUsableQuotes(outcomes []string, bids, asks map[string]float64) bool {
+	return realbotHasSanePairQuotes(outcomes, bids, asks) || realbotLooksLikeTerminalBook(outcomes, bids, asks)
+}
+
 func realbotSyncDisplayQuotes(outcomes []string, liveBids, liveAsks, displayBids, displayAsks map[string]float64, authoritative bool) bool {
 	nextBids := make(map[string]float64, len(outcomes))
 	nextAsks := make(map[string]float64, len(outcomes))
@@ -2077,7 +2081,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		quotesChanged := !realbotQuoteMapsEqual(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
 		latestQuoteAt, latestQuoteSource := realbotLatestQuoteUpdate(outcomes, quoteState)
-		freshnessAdvanced := !latestQuoteAt.IsZero() && latestQuoteAt.After(lastPublishedQuoteAt)
+		displayUsable := realbotDisplayHasUsableQuotes(outcomes, displayBids, displayAsks)
+		freshnessAdvanced := displayUsable && !latestQuoteAt.IsZero() && latestQuoteAt.After(lastPublishedQuoteAt)
 		if quotesChanged || freshnessAdvanced {
 			tui.UpdateMarketPricesWithSourceAt(id, displayBids, displayAsks, realbotNormalizeDisplaySource(latestQuoteSource), latestQuoteAt)
 			realbotStorePublishedQuotes(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
