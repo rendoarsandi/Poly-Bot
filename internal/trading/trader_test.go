@@ -621,6 +621,34 @@ func TestRealTrader_GetBalancePrefersOnChainUSDC(t *testing.T) {
 	}
 }
 
+func TestRealTrader_GetBalancePrefersLowerExchangeBalanceWhenOnChainIsHigher(t *testing.T) {
+	usdcRaw := big.NewInt(68284432)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"0x%064x"}`, usdcRaw)))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client: &stubExchangeClient{
+			balanceAllowance: &api.BalanceAllowance{
+				Balance:   49.93,
+				Allowance: 99999999,
+			},
+			address: "0x1111111111111111111111111111111111111111",
+		},
+		polygon: api.NewPolygonClient(server.URL),
+		config:  &core.Config{Exchange: "polymarket"},
+	}
+
+	balance, err := trader.ForceRefreshBalance(context.Background())
+	if err != nil {
+		t.Fatalf("GetBalance failed: %v", err)
+	}
+	if balance != 49.93 {
+		t.Fatalf("expected conservative balance 49.93, got %.6f", balance)
+	}
+}
+
 func TestRealTrader_RefreshStateAfterRedeemClearsCTFCacheAndRefreshesBalance(t *testing.T) {
 	trader := &RealTrader{
 		client: &stubExchangeClient{

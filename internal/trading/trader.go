@@ -766,12 +766,21 @@ func (t *RealTrader) fetchLiveBalance(ctx context.Context) (float64, error) {
 	}
 
 	if t.polygon != nil {
-		onChainBalance, err := t.polygon.GetUSDCBalance(ctx, t.client.Address())
-		if err == nil {
-			if ba, baErr := t.client.GetBalanceAllowance(ctx); baErr == nil && ba.Allowance > 0 && ba.Allowance < onChainBalance {
-				return ba.Allowance, nil
+		onChainBalance, onChainErr := t.polygon.GetUSDCBalance(ctx, t.client.Address())
+		ba, baErr := t.client.GetBalanceAllowance(ctx)
+		if onChainErr == nil && baErr == nil {
+			// Use the more conservative value to avoid overstating spendable cash
+			// when exchange balance and on-chain wallet balance briefly diverge.
+			if ba.Balance > 0 && (onChainBalance <= 0 || ba.Balance < onChainBalance) {
+				return ba.Balance, nil
 			}
 			return onChainBalance, nil
+		}
+		if onChainErr == nil {
+			return onChainBalance, nil
+		}
+		if baErr == nil {
+			return ba.Balance, nil
 		}
 	}
 

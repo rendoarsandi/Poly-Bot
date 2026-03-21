@@ -53,6 +53,8 @@ const (
 	realbotMaxSaneAskPairSum         = 1.10
 	realbotMinSaneBidPairSum         = 0.90
 	realbotExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
+	realbotBalanceSyncInterval       = 60 * time.Second
+	realbotBalanceSyncTimeout        = 8 * time.Second
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -967,7 +969,7 @@ func run() error {
 	initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
 
 	// Get balance from CLOB API
-	balance, err := realTrader.GetBalance(initCtx)
+	balance, err := realTrader.ForceRefreshBalance(initCtx)
 	if err != nil {
 		fmt.Printf("⚠️  Could not fetch balance: %v\n", err)
 	} else {
@@ -1213,6 +1215,28 @@ func run() error {
 		}
 	}()
 
+	// Balance sync heartbeat keeps UI cash/equity aligned with live wallet state
+	// even during quiet periods with no recent executions.
+	go func() {
+		ticker := time.NewTicker(realbotBalanceSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				balanceCtx, cancel := context.WithTimeout(ctx, realbotBalanceSyncTimeout)
+				newBal, balErr := realTrader.ForceRefreshBalance(balanceCtx)
+				cancel()
+				if balErr != nil {
+					continue
+				}
+				engine.SyncBalanceNeutral(newBal)
+				engine.RecalculateDrawdown()
+			}
+		}
+	}()
+
 	// Main trading loop - Keep running: after each round of markets ends, search for new ones.
 	globalSplitStatus := make(map[string]bool)
 	globalSplitInventories := make(map[string]*paper.SplitInventory)
@@ -1232,7 +1256,7 @@ func run() error {
 		// Refresh balance at the start of each round for compounding
 		{
 			balCtx, balFn := context.WithTimeout(ctx, 10*time.Second)
-			newBal, balErr := realTrader.GetBalance(balCtx)
+			newBal, balErr := realTrader.ForceRefreshBalance(balCtx)
 			balFn()
 			if balErr != nil {
 				tui.LogEvent("⚠️ Could not refresh balance: %v", balErr)
@@ -1377,9 +1401,11 @@ func run() error {
 		balanceSyncDelta := 0.0
 		{
 			endBalCtx, endBalFn := context.WithTimeout(ctx, 10*time.Second)
-			if endBal, endBalErr := realTrader.GetBalance(endBalCtx); endBalErr == nil {
+			if endBal, endBalErr := realTrader.ForceRefreshBalance(endBalCtx); endBalErr == nil {
 				balanceSyncDelta = engine.SyncBalanceNeutral(endBal)
 				engine.RecalculateDrawdown()
+			} else {
+				tui.LogEvent("⚠️ Round-end balance sync failed: %v", endBalErr)
 			}
 			endBalFn()
 		}
