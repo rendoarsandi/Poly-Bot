@@ -246,6 +246,22 @@ func TestDeriveAcknowledgedExecutionIgnoresLiveOrder(t *testing.T) {
 	}
 }
 
+func TestDeriveAcknowledgedExecutionAcceptsDecimalAmounts(t *testing.T) {
+	resp := &api.OrderResponse{
+		Status:       "matched",
+		MakingAmount: "3.189998",
+		TakingAmount: "3.2551",
+	}
+
+	qty, notional := deriveAcknowledgedExecution(resp, api.SideBuy)
+	if qty != 3.2551 {
+		t.Fatalf("expected acknowledged qty 3.2551, got %.6f", qty)
+	}
+	if notional != 3.189998 {
+		t.Fatalf("expected acknowledged notional 3.189998, got %.6f", notional)
+	}
+}
+
 // TestPaperTrader_SellAfterBuy verifies sell works after buying
 func TestPaperTrader_SellAfterBuy(t *testing.T) {
 	engine := paper.NewEngine(1000.0)

@@ -92,7 +92,16 @@ func parseMicroAmount(raw string) float64 {
 	if err != nil {
 		return 0
 	}
-	return val / 1e6
+	if strings.ContainsAny(raw, ".eE") {
+		return val
+	}
+	// Polymarket responses are inconsistent here: some endpoints return integer
+	// micros, others return already-decimal token/notional amounts. Large whole
+	// numbers are treated as micros; small integers are treated as literal units.
+	if math.Abs(val) >= 1000 {
+		return val / 1e6
+	}
+	return val
 }
 
 func responseWasImmediatelyMatched(resp *api.OrderResponse) bool {
