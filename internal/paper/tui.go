@@ -68,6 +68,7 @@ const (
 	recentQuoteDisplayGrace = 1500 * time.Millisecond
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
+	showWalletTruthPanels   = false
 )
 
 // ─── Asset style helpers ──────────────────────────────────────────────────────
@@ -2606,10 +2607,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	sizingEquity := bookEquity
 
 	netChange := displayEquity - stats.StartingBalance
-	changeSt := styleGreen
-	if netChange < 0 {
-		changeSt = styleRed
-	}
+	isRealMode := strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live")
 
 	hasWalletTruthInventory := false
 	for _, wt := range s.walletTruth {
@@ -2626,6 +2624,16 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	displayRealized := stats.RealizedPnL
 	if math.Abs(displayRealized) < 0.0001 && totalExposure <= 0.0001 && len(positions) == 0 && !hasWalletTruthInventory && math.Abs(netChange) >= 0.005 {
 		displayRealized = netChange
+	}
+	displayNetChange := netChange
+	if isRealMode {
+		displayNetChange = displayRealized
+	} else if totalExposure <= 0.0001 && len(positions) == 0 && !hasWalletTruthInventory && math.Abs(displayRealized-netChange) >= 0.005 {
+		displayNetChange = displayRealized
+	}
+	changeSt := styleGreen
+	if displayNetChange < 0 {
+		changeSt = styleRed
 	}
 
 	realizedSt := styleGreen
@@ -2684,16 +2692,10 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	// Trade size
 	tradeLine := ""
 	effectiveSizingBalance := sizingBalance
-	if strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live") {
-		if effectiveSizingBalance <= 0 {
-			effectiveSizingBalance = math.Max(stats.CurrentBalance, stats.StartingBalance)
-		}
-		effectiveSizingBalance += worstResolvePnL
+	if isRealMode {
+		effectiveSizingBalance = stats.CurrentBalance
 		if effectiveSizingBalance < 0 {
 			effectiveSizingBalance = 0
-		}
-		if stats.CurrentBalance > effectiveSizingBalance {
-			effectiveSizingBalance = stats.CurrentBalance
 		}
 	}
 	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, sizingEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
@@ -2725,8 +2727,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 
 	uptime := time.Since(s.startTime).Round(time.Second)
-	winCount := stats.WinningTrades
-	lossCount := stats.LosingTrades
+	winCount, lossCount := positionWinLossFromOrderHistory(s.orderHistory)
+	if winCount+lossCount == 0 {
+		winCount = stats.WinningTrades
+		lossCount = stats.LosingTrades
+	}
 	if winCount+lossCount == 0 && profitable+losingRounds > 0 && !hasWalletTruthInventory {
 		winCount = profitable
 		lossCount = losingRounds
@@ -2750,7 +2755,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
-		changeSt.Render(signedDollar(netChange)),
+		changeSt.Render(signedDollar(displayNetChange)),
 		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
 	)
 	row3 := tradeLine
@@ -2764,6 +2769,34 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4
 	return makePanel(inner, clrTeal, content)
+}
+
+func positionWinLossFromOrderHistory(orderHistory []OrderHistoryEntry) (wins, losses int) {
+	positionPnL := make(map[string]float64)
+	for _, entry := range orderHistory {
+		if !strings.EqualFold(strings.TrimSpace(entry.Side), "SELL") {
+			continue
+		}
+		status := strings.ToUpper(strings.TrimSpace(entry.Status))
+		if status == "FAILED" {
+			continue
+		}
+		marketID := strings.TrimSpace(entry.MarketID)
+		outcome := strings.TrimSpace(entry.Outcome)
+		if marketID == "" || outcome == "" {
+			continue
+		}
+		key := marketID + ":" + strings.ToLower(outcome)
+		positionPnL[key] += entry.Profit
+	}
+	for _, pnl := range positionPnL {
+		if pnl > 0.0001 {
+			wins++
+		} else if pnl < -0.0001 {
+			losses++
+		}
+	}
+	return wins, losses
 }
 
 func resolutionPnLRangeFromPositions(positions map[string]Position) (best float64, worst float64) {
@@ -2874,8 +2907,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	}
 	hasSplitInventory := len(splitPositions) > 0
 	hasWalletTruth := len(walletTruthPositions) > 0
+	hasWalletTruthDisplay := hasWalletTruth && showWalletTruthPanels
 
-	if !showInFlightPositions && !hasSplitInventory && !hasWalletTruth {
+	if !showInFlightPositions && !hasSplitInventory && !hasWalletTruthDisplay {
 		return makePanel(inner, clrSlate,
 			sectionHeader("📦", "POSITIONS", clrSlate)+"\n"+
 				styleDimmed.Render("  (none)"))
@@ -3035,44 +3069,44 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 	}
 
-	onChainInventoryByMarket := make(map[string][]WalletTruthPosition)
-	onChainInventoryCount := 0
-	for _, wt := range walletTruthPositions {
-		if wt.OnChainShares <= 0 {
-			continue
-		}
-		if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
-			continue
-		}
-		onChainInventoryByMarket[wt.MarketID] = append(onChainInventoryByMarket[wt.MarketID], wt)
-		onChainInventoryCount++
-	}
-	if onChainInventoryCount > 0 {
-		sb.WriteString("\n" + sectionHeader("🏦", "ON-CHAIN INVENTORY", clrTeal) + "\n")
-		onChainMarketIDs := make([]string, 0, len(onChainInventoryByMarket))
-		for marketID := range onChainInventoryByMarket {
-			onChainMarketIDs = append(onChainMarketIDs, marketID)
-		}
-		for _, marketID := range orderedMarketIDs(onChainMarketIDs) {
-			positions := onChainInventoryByMarket[marketID]
-			if len(positions) == 0 {
+	if hasWalletTruthDisplay {
+		onChainInventoryByMarket := make(map[string][]WalletTruthPosition)
+		onChainInventoryCount := 0
+		for _, wt := range walletTruthPositions {
+			if wt.OnChainShares <= 0 {
 				continue
 			}
-			aStyle := getAssetStyle(marketID)
-			sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
-			parts := make([]string, 0, len(positions))
-			for _, wt := range positions {
-				parts = append(parts, fmt.Sprintf("%s: %.4f %s",
-					core.SanitizeString(wt.Outcome),
-					wt.OnChainShares,
-					walletTruthInventoryStatus(wt),
-				))
+			if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
+				continue
 			}
-			sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  " + strings.Join(parts, "  │  ") + "\n")
+			onChainInventoryByMarket[wt.MarketID] = append(onChainInventoryByMarket[wt.MarketID], wt)
+			onChainInventoryCount++
 		}
-	}
+		if onChainInventoryCount > 0 {
+			sb.WriteString("\n" + sectionHeader("🏦", "ON-CHAIN INVENTORY", clrTeal) + "\n")
+			onChainMarketIDs := make([]string, 0, len(onChainInventoryByMarket))
+			for marketID := range onChainInventoryByMarket {
+				onChainMarketIDs = append(onChainMarketIDs, marketID)
+			}
+			for _, marketID := range orderedMarketIDs(onChainMarketIDs) {
+				positions := onChainInventoryByMarket[marketID]
+				if len(positions) == 0 {
+					continue
+				}
+				aStyle := getAssetStyle(marketID)
+				sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
+				parts := make([]string, 0, len(positions))
+				for _, wt := range positions {
+					parts = append(parts, fmt.Sprintf("%s: %.4f %s",
+						core.SanitizeString(wt.Outcome),
+						wt.OnChainShares,
+						walletTruthInventoryStatus(wt),
+					))
+				}
+				sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  " + strings.Join(parts, "  │  ") + "\n")
+			}
+		}
 
-	if hasWalletTruth {
 		sb.WriteString("\n" + sectionHeader("🧾", "WALLET TRUTH  (local vs on-chain)", clrTeal) + "\n")
 		truthByMarket := make(map[string][]WalletTruthPosition)
 		marketSet := make(map[string]struct{})

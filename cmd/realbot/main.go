@@ -48,6 +48,7 @@ const (
 	realbotTakerCloseQuoteRefresh = 500 * time.Millisecond
 	realbotTakerCloseLogInterval  = 5 * time.Second
 	realbotTakerCloseLocalMaxAge  = 350 * time.Millisecond
+	realbotWalletTruthLogMinDelta = 0.25
 	realbotMaxSaneOutcomeSpread   = 0.10
 	realbotMaxSaneAskPairSum      = 1.10
 	realbotMinSaneBidPairSum      = 0.90
@@ -233,6 +234,17 @@ func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISetti
 		budget = 1.0
 	}
 	return budget
+}
+
+func realbotSizingCapitalForTrade(engine *paper.Engine) float64 {
+	if engine == nil {
+		return 0
+	}
+	cash := engine.GetBalance()
+	if cash < 0 {
+		return 0
+	}
+	return cash
 }
 
 func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]float64) (string, float64) {
@@ -2093,7 +2105,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					budget := realbotTakerCloseBudget(engine.GetBalance(), engine.GetSizingBalance(), liveCfg)
+					budget := realbotTakerCloseBudget(engine.GetBalance(), realbotSizingCapitalForTrade(engine), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
@@ -2280,7 +2292,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			splitMu.Unlock()
 
 			if shouldSplit && replenishCtrl.MarkInProgress() {
-				baseTradeSize := cfg.CalculateTradeSize(engine.GetSizingBalance())
+				baseTradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
 
 				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
 				initialBuffer := baseTradeSize * 2.0
@@ -2352,7 +2364,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				sellMargin := (bidSum - 1.0) * 100 // Profit margin from selling
 
 				// BACKGROUND REPLENISHMENT
-				baseTradeSize := cfg.CalculateTradeSize(engine.GetSizingBalance())
+				baseTradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
 				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
@@ -2738,7 +2750,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Dynamic trade size uses the ratcheting session sizing balance.
 					// It only moves up when a profitable round locks in a new high-water mark,
 					// so drawdowns do not shrink the configured trade factor mid-session.
-					tradeSize := cfg.CalculateTradeSize(engine.GetSizingBalance())
+					tradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -4114,7 +4126,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseTradeValue := cfg.CalculateTradeSize(engine.GetSizingBalance())
+	baseTradeValue := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
@@ -5023,7 +5035,9 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		if desiredBoughtShares > localBoughtShares+1e-6 {
 			addQty := desiredBoughtShares - localBoughtShares
 			if engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, walletTruthSyncMarkPrice(engine, marketID, outcome)) {
-				tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcome, formatShareQty(addQty), localBoughtShares, onChainShares, splitShares)
+				if addQty >= realbotWalletTruthLogMinDelta {
+					tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcome, formatShareQty(addQty), localBoughtShares, onChainShares, splitShares)
+				}
 				changed = true
 			}
 			localBoughtShares = desiredBoughtShares
@@ -5165,26 +5179,34 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	if local0 > desired0+1e-6 {
 		trimQty := local0 - desired0
 		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
-			tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
+			if trimQty >= realbotWalletTruthLogMinDelta {
+				tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
+			}
 			changed = true
 		}
 	} else if desired0 > local0+1e-6 {
 		addQty := desired0 - local0
 		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
-			tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(addQty), local0, onChain0, split0)
+			if addQty >= realbotWalletTruthLogMinDelta {
+				tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(addQty), local0, onChain0, split0)
+			}
 			changed = true
 		}
 	}
 	if local1 > desired1+1e-6 {
 		trimQty := local1 - desired1
 		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {
-			tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
+			if trimQty >= realbotWalletTruthLogMinDelta {
+				tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
+			}
 			changed = true
 		}
 	} else if desired1 > local1+1e-6 {
 		addQty := desired1 - local1
 		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {
-			tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(addQty), local1, onChain1, split1)
+			if addQty >= realbotWalletTruthLogMinDelta {
+				tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(addQty), local1, onChain1, split1)
+			}
 			changed = true
 		}
 	}

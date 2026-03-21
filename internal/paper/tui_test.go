@@ -441,7 +441,7 @@ func TestRenderMarketPanelKeepsTerminalLastGoodQuotesVisible(t *testing.T) {
 	}
 }
 
-func TestRenderPositionsShowsWalletTruthResolutionTags(t *testing.T) {
+func TestRenderPositionsHidesWalletTruthResolutionPanel(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, nil)
 	tui.SetWalletTruthPositions("BTC", []WalletTruthPosition{
@@ -451,15 +451,15 @@ func TestRenderPositionsShowsWalletTruthResolutionTags(t *testing.T) {
 
 	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
 	rendered := model.renderPositions(120, nil)
-	if !strings.Contains(rendered, "RESOLVING") {
-		t.Fatalf("expected unresolved wallet-truth positions to show resolving status, got %q", rendered)
+	if strings.Contains(rendered, "WALLET TRUTH") || strings.Contains(rendered, "ON-CHAIN INVENTORY") {
+		t.Fatalf("expected wallet-truth panels to stay hidden, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "REDEEMABLE") {
-		t.Fatalf("expected redeemable wallet-truth positions to show redeemable status, got %q", rendered)
+	if !strings.Contains(rendered, "(none)") {
+		t.Fatalf("expected positions panel to collapse when only wallet-truth data exists, got %q", rendered)
 	}
 }
 
-func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
+func TestRenderPositionsHidesOnChainInventoryFromWalletTruth(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, nil)
 	tui.SetWalletTruthPositions("SOL", []WalletTruthPosition{
@@ -469,14 +469,11 @@ func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 
 	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
 	rendered := model.renderPositions(120, nil)
-	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
-		t.Fatalf("expected on-chain inventory section, got %q", rendered)
+	if strings.Contains(rendered, "ON-CHAIN INVENTORY") || strings.Contains(rendered, "WALLET TRUTH") {
+		t.Fatalf("expected wallet-truth inventory rows to stay hidden, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Up: 3.5000") || !strings.Contains(rendered, "OPEN") {
-		t.Fatalf("expected unresolved on-chain inventory row, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "Down: 1.2500") || !strings.Contains(rendered, "REDEEMABLE") {
-		t.Fatalf("expected redeemable on-chain inventory row, got %q", rendered)
+	if !strings.Contains(rendered, "(none)") {
+		t.Fatalf("expected positions panel to collapse when wallet-truth data is hidden, got %q", rendered)
 	}
 }
 
@@ -490,11 +487,8 @@ func TestRenderPositionsHidesResolvedLosersFromOnChainInventory(t *testing.T) {
 	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
 	rendered := model.renderPositions(120, nil)
 
-	if strings.Contains(rendered, "ON-CHAIN INVENTORY") {
-		t.Fatalf("expected loser-only on-chain inventory to be hidden, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "WALLET TRUTH") || !strings.Contains(rendered, "LOSER") {
-		t.Fatalf("expected loser to remain visible only in wallet truth, got %q", rendered)
+	if strings.Contains(rendered, "ON-CHAIN INVENTORY") || strings.Contains(rendered, "WALLET TRUTH") {
+		t.Fatalf("expected wallet-truth sections to stay hidden, got %q", rendered)
 	}
 }
 
@@ -973,6 +967,31 @@ func TestRenderAccountStatusFallsBackToNetChangeWhenFlat(t *testing.T) {
 	}
 }
 
+func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  66.35,
+		StartingBalance: 72.01,
+		RealizedPnL:     1.08,
+	}, 0.0, 66.35, 66.35, 1.0, 72.01, 2, 2, 0, nil)
+
+	if !strings.Contains(rendered, "(+$1.08)") {
+		t.Fatalf("expected real-mode account change to follow realized pnl, got %q", rendered)
+	}
+	if strings.Contains(rendered, "(-$5.66)") {
+		t.Fatalf("expected baseline drift to be hidden from real-mode account change, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "($3.32/trade)") {
+		t.Fatalf("expected 5%% trade budget to use current cash in real mode, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusDoesNotFallbackToNetChangeWhileWalletTruthInventoryOpen(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
@@ -1029,6 +1048,34 @@ func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 	}
 }
 
+func TestRenderAccountStatusUsesPositionWinLossFromOrderHistory(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+			orderHistory: []OrderHistoryEntry{
+				{MarketID: "BTC#m1", Outcome: "Up", Side: "SELL", Profit: 0.7, Status: "FILLED"},
+				{MarketID: "ETH#m2", Outcome: "Down", Side: "SELL", Profit: -0.2, Status: "FILLED"},
+				{MarketID: "BTC#m1", Outcome: "Up", Side: "SELL", Profit: 0.1, Status: "PARTIAL"},
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+		WinningTrades:   9,
+		LosingTrades:    1,
+	}, 0, 100, 100, 1.0, 120, 4, 4, 0, nil)
+
+	if !strings.Contains(rendered, "W/L 1/1") {
+		t.Fatalf("expected W/L to be based on per-position realized result from order history, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Win 50%") {
+		t.Fatalf("expected win rate to follow per-position W/L, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
@@ -1051,8 +1098,8 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	if strings.Contains(rendered, "profitable") {
 		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "$6.00/trade") {
-		t.Fatalf("expected real trade budget to use sizing high-water, got %q", rendered)
+	if !strings.Contains(rendered, "$5.00/trade") {
+		t.Fatalf("expected real trade budget to use current cash, got %q", rendered)
 	}
 }
 
