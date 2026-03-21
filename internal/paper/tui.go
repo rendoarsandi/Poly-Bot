@@ -1827,6 +1827,21 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	t.markDirtyLocked()
 }
 
+func pendingOrdersEqual(a, b []PendingOrder) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].MarketID != b[i].MarketID || a[i].Outcome != b[i].Outcome || a[i].Side != b[i].Side {
+			return false
+		}
+		if math.Abs(a[i].Price-b[i].Price) > 1e-9 || math.Abs(a[i].Qty-b[i].Qty) > 1e-9 {
+			return false
+		}
+	}
+	return true
+}
+
 func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1844,8 +1859,13 @@ func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder
 		}
 	}
 	if len(flattened) == 0 {
-		delete(t.pendingOrders, marketID)
-		t.markDirtyLocked()
+		if _, exists := t.pendingOrders[marketID]; exists {
+			delete(t.pendingOrders, marketID)
+			t.markDirtyLocked()
+		}
+		return
+	}
+	if existing, ok := t.pendingOrders[marketID]; ok && pendingOrdersEqual(existing, flattened) {
 		return
 	}
 	t.pendingOrders[marketID] = flattened

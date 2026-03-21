@@ -44,10 +44,16 @@ const (
 	paperMakerInventoryTargetMult  = 2.5
 	paperMakerInventoryCapMult     = 5.0
 	paperMakerQuoteSizeSkewFactor  = 0.75
-	paperMakerRequoteInterval      = 1500 * time.Millisecond
+	paperMakerRequoteInterval      = 500 * time.Millisecond
 	paperMakerMinQuoteValue        = 1.0
 	paperMakerCashUsagePerOutcome  = 0.35
 	paperExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
+	paperUIRefreshInterval         = 100 * time.Millisecond
+	paperMainLoopInterval          = 10 * time.Millisecond
+	paperFillPollInterval          = 50 * time.Millisecond
+	paperMaxSaneOutcomeSpread      = 0.10
+	paperMaxSaneAskPairSum         = 1.10
+	paperMinSaneBidPairSum         = 0.90
 )
 
 var paperMakerStrategyParams = strategy.MakerParams{
@@ -116,6 +122,11 @@ type MarketTrader struct {
 type marketResult struct {
 	realizedPnL float64
 	trades      int
+}
+
+type paperQuoteState struct {
+	UpdatedAt time.Time
+	Source    string
 }
 
 type paperExecutionLatency struct {
@@ -230,6 +241,49 @@ func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) floa
 	return paperMakerBaseOffset
 }
 
+func paperHasSaneTopOfBook(bid, ask float64) bool {
+	if bid <= 0 || ask <= 0 || bid >= ask {
+		return false
+	}
+	if bid >= terminalBidFloor || ask <= terminalAskCeil {
+		return true
+	}
+	return (ask - bid) <= paperMaxSaneOutcomeSpread
+}
+
+func paperLocalQuoteSanityReason(outcomes []string, bids, asks map[string]float64) string {
+	for _, outcome := range outcomes {
+		bid := bids[outcome]
+		ask := asks[outcome]
+		if !paperHasSaneTopOfBook(bid, ask) {
+			if bid <= 0 || ask <= 0 {
+				return fmt.Sprintf("missing two-sided quote for %s", outcome)
+			}
+			if bid >= ask {
+				return fmt.Sprintf("crossed local quote for %s (bid %.3f >= ask %.3f)", outcome, bid, ask)
+			}
+			return fmt.Sprintf("wide local spread for %s (bid %.3f ask %.3f spread %.3f > %.3f)", outcome, bid, ask, ask-bid, paperMaxSaneOutcomeSpread)
+		}
+	}
+
+	if len(outcomes) == 2 && !paperLooksLikeTerminalBook(outcomes, bids, asks) {
+		askSum := asks[outcomes[0]] + asks[outcomes[1]]
+		if askSum > paperMaxSaneAskPairSum {
+			return fmt.Sprintf("ask pair sum %.3f > %.3f", askSum, paperMaxSaneAskPairSum)
+		}
+		bidSum := bids[outcomes[0]] + bids[outcomes[1]]
+		if bidSum < paperMinSaneBidPairSum {
+			return fmt.Sprintf("bid pair sum %.3f < %.3f", bidSum, paperMinSaneBidPairSum)
+		}
+	}
+
+	return ""
+}
+
+func hasValidPaperPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
+	return paperLocalQuoteSanityReason(outcomes, bids, asks) == ""
+}
+
 func shouldPaperReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge, staleThreshold time.Duration, terminalBookState bool) bool {
 	if staleThreshold <= 0 {
 		staleThreshold = 15 * time.Second
@@ -240,7 +294,7 @@ func shouldPaperReconnectWS(outcomes []string, bids, asks map[string]float64, pa
 	for _, outcome := range outcomes {
 		bid := bids[outcome]
 		ask := asks[outcome]
-		if bid == 0 || ask == 0 || bid >= ask {
+		if !paperHasSaneTopOfBook(bid, ask) {
 			return true
 		}
 	}
@@ -271,6 +325,94 @@ func paperLooksLikeTerminalBook(outcomes []string, bids, asks map[string]float64
 	return sawExtreme
 }
 
+func paperQuoteMapsEqual(outcomes []string, bidsA, asksA, bidsB, asksB map[string]float64) bool {
+	for _, outcome := range outcomes {
+		if math.Abs(bidsA[outcome]-bidsB[outcome]) > 1e-9 {
+			return false
+		}
+		if math.Abs(asksA[outcome]-asksB[outcome]) > 1e-9 {
+			return false
+		}
+	}
+	return true
+}
+
+func paperShouldClearLocalPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
+	return !hasValidPaperPairQuotes(outcomes, bids, asks) && !paperLooksLikeTerminalBook(outcomes, bids, asks)
+}
+
+func paperStorePublishedQuotes(outcomes []string, srcBids, srcAsks, dstBids, dstAsks map[string]float64) {
+	for _, outcome := range outcomes {
+		dstBids[outcome] = srcBids[outcome]
+		dstAsks[outcome] = srcAsks[outcome]
+	}
+}
+
+func paperLatestQuoteUpdate(outcomes []string, quoteState map[string]paperQuoteState) (time.Time, string) {
+	latest := time.Time{}
+	latestSource := ""
+	for _, outcome := range outcomes {
+		state, ok := quoteState[outcome]
+		if !ok || state.UpdatedAt.IsZero() {
+			continue
+		}
+		if latest.IsZero() || state.UpdatedAt.After(latest) {
+			latest = state.UpdatedAt
+			latestSource = state.Source
+		}
+	}
+	return latest, latestSource
+}
+
+func paperNormalizeDisplaySource(raw string) string {
+	source := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case strings.HasPrefix(source, "rest"):
+		return "REST"
+	case strings.HasPrefix(source, "ws"):
+		return "WS"
+	default:
+		return "WS"
+	}
+}
+
+func paperDisplayHasUsableQuotes(outcomes []string, bids, asks map[string]float64) bool {
+	return hasValidPaperPairQuotes(outcomes, bids, asks) || paperLooksLikeTerminalBook(outcomes, bids, asks)
+}
+
+func paperSyncDisplayQuotes(outcomes []string, liveBids, liveAsks, displayBids, displayAsks map[string]float64, authoritative bool) bool {
+	nextBids := make(map[string]float64, len(outcomes))
+	nextAsks := make(map[string]float64, len(outcomes))
+	for _, outcome := range outcomes {
+		nextBids[outcome] = displayBids[outcome]
+		nextAsks[outcome] = displayAsks[outcome]
+	}
+
+	switch {
+	case hasValidPaperPairQuotes(outcomes, liveBids, liveAsks):
+		paperStorePublishedQuotes(outcomes, liveBids, liveAsks, nextBids, nextAsks)
+	case paperLooksLikeTerminalBook(outcomes, liveBids, liveAsks):
+		for _, outcome := range outcomes {
+			if liveBids[outcome] > 0 {
+				nextBids[outcome] = liveBids[outcome]
+			}
+			if liveAsks[outcome] > 0 {
+				nextAsks[outcome] = liveAsks[outcome]
+			}
+		}
+	case authoritative:
+		paperStorePublishedQuotes(outcomes, liveBids, liveAsks, nextBids, nextAsks)
+	default:
+		return false
+	}
+
+	if paperQuoteMapsEqual(outcomes, nextBids, nextAsks, displayBids, displayAsks) {
+		return false
+	}
+	paperStorePublishedQuotes(outcomes, nextBids, nextAsks, displayBids, displayAsks)
+	return true
+}
+
 func summarizePaperRound(engine *paper.Engine, startingEquity float64, roundStartTrades int) (roundPnL, totalEquity float64, roundTrades int, stats paper.Stats) {
 	stats = engine.GetStats()
 	totalEquity = engine.GetBookEquity()
@@ -280,20 +422,6 @@ func summarizePaperRound(engine *paper.Engine, startingEquity float64, roundStar
 		roundTrades = 0
 	}
 	return roundPnL, totalEquity, roundTrades, stats
-}
-
-func hasValidPaperPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
-	if len(outcomes) != 2 {
-		return false
-	}
-	for _, outcome := range outcomes[:2] {
-		bid := bids[outcome]
-		ask := asks[outcome]
-		if bid <= 0 || ask <= 0 || bid >= ask {
-			return false
-		}
-	}
-	return true
 }
 
 func paperPairQuoteAge(lastPairUpdate, now time.Time) time.Duration {
@@ -1002,7 +1130,7 @@ func run() error {
 
 	// Start TUI render loop — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
-		tui.StartRenderLoop(250*time.Millisecond, stop)
+		tui.StartRenderLoop(paperUIRefreshInterval, stop)
 		defer tui.Stop()
 	}
 
@@ -1048,23 +1176,6 @@ func run() error {
 
 				// Periodic memory cleanup - remove old filled/cancelled orders
 				tui.CleanupOrderBooks(5 * time.Minute)
-			}
-		}
-	}()
-
-	// Android background keepalive - prevents OS from throttling when alt-tabbed
-	// Performs lightweight work every 500ms to maintain activity
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				// Lightweight activity to prevent Android throttling
-				// Just reading the time is enough to keep the process active
-				_ = time.Now().UnixNano()
 			}
 		}
 	}()
@@ -1474,6 +1585,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	tradesAtStart := t.Engine.GetStats().TotalTrades
 
 	tokenPrices := make(map[string]string)
+	displayBids := make(map[string]float64)
+	displayAsks := make(map[string]float64)
+	publishedBids := make(map[string]float64)
+	publishedAsks := make(map[string]float64)
+	quoteState := make(map[string]paperQuoteState)
+	lastPublishedQuoteAt := time.Time{}
+	lastFillPoll := time.Time{}
 	lastReconnectCount := int32(0)    // Track reconnections
 	lastWsWarnTime := time.Time{}     // Rate-limit WS warnings
 	lastForceReconnect := time.Time{} // Track forced reconnection attempts
@@ -1772,7 +1890,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								t.mu.Lock()
 
 								// WS Snapshot is absolute state.
-								if bid > 0 && ask > 0 && bid >= ask {
+								if bid > 0 && ask > 0 && !paperHasSaneTopOfBook(bid, ask) {
 									// Reject crossed snapshot and clear state
 									t.TokenBids[outcome] = 0
 									t.TokenAsks[outcome] = 0
@@ -1791,10 +1909,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
 									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 								}
-								// Always update full depth from snapshots — REST will
-								// keep this fresh on the 4 ms poll as well.
+								// Always update full depth from snapshots.
 								t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
 								t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks, false)
+								quoteState[outcome] = paperQuoteState{UpdatedAt: time.Now(), Source: "ws"}
 								t.mu.Unlock()
 							}
 						}
@@ -1808,6 +1926,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
 						// ── Price-change delta ─────────────────────────────────
 						foundForThisTrader := false
+						touchedOutcomes := make(map[string]bool)
 						type explicitTopOfBook struct {
 							bid    float64
 							ask    float64
@@ -1823,6 +1942,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								continue
 							}
 							foundForThisTrader = true
+							touchedOutcomes[outcome] = true
 							p, errP := strconv.ParseFloat(pc.Price, 64)
 							s, errS := strconv.ParseFloat(pc.Size, 64)
 							if errP != nil || errS != nil || p <= 0 {
@@ -1875,8 +1995,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 
 							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
-								// Check for crossed book
-								if t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+								if !paperHasSaneTopOfBook(t.TokenBids[outcome], t.TokenAsks[outcome]) {
 									t.LastUpdate = time.Now().Add(-20 * time.Second)
 									t.TokenBids[outcome] = 0
 									t.TokenAsks[outcome] = 0
@@ -1895,6 +2014,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if foundForThisTrader {
 							t.LastUpdate = now
 							syncPaperPairUpdate(t, now)
+							for outcome := range touchedOutcomes {
+								quoteState[outcome] = paperQuoteState{UpdatedAt: now, Source: "ws"}
+							}
 						}
 						t.mu.Unlock()
 					} else if bbo, err := api.ParseBestBidAsk(msg); err == nil && strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") && bbo.AssetID != "" {
@@ -1910,7 +2032,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								t.TokenAsks[outcome] = bestAsk
 							}
 							if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 {
-								if t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+								if !paperHasSaneTopOfBook(t.TokenBids[outcome], t.TokenAsks[outcome]) {
 									t.TokenBids[outcome] = 0
 									t.TokenAsks[outcome] = 0
 								} else {
@@ -1920,6 +2042,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 									t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
 								}
 							}
+							quoteState[outcome] = paperQuoteState{UpdatedAt: now, Source: "ws-bbo"}
 							syncPaperPairUpdate(t, now)
 							t.mu.Unlock()
 						}
@@ -1939,7 +2062,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 						}
 
-						if bid > 0 && ask > 0 && bid >= ask {
+						if bid > 0 && ask > 0 && !paperHasSaneTopOfBook(bid, ask) {
 							continue // Reject crossed snapshot
 						}
 
@@ -1963,6 +2086,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							}
 							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 							t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
+							quoteState[outcome] = paperQuoteState{UpdatedAt: now, Source: "ws"}
 							syncPaperPairUpdate(t, now)
 							t.mu.Unlock()
 						}
@@ -1974,27 +2098,26 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 		doneProcessingWS:
 
-			// Final safety check: scrub any crossed books that survived the WS processing loop
+			// Final safety check: scrub invalid books that survived WS processing.
 			t.mu.Lock()
 			for outcome := range t.TokenMap {
-				if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 && t.TokenBids[outcome] >= t.TokenAsks[outcome] {
+				if t.TokenBids[outcome] > 0 && t.TokenAsks[outcome] > 0 && !paperHasSaneTopOfBook(t.TokenBids[outcome], t.TokenAsks[outcome]) {
 					t.TokenBids[outcome] = 0
 					t.TokenAsks[outcome] = 0
 					t.TokenFullBids[outcome] = nil
 					t.TokenFullAsks[outcome] = nil
-					t.LastUpdate = time.Now().Add(-20 * time.Second) // Mark stale until WS repairs the local book
+					t.LastUpdate = time.Now().Add(-20 * time.Second)
+				}
+			}
+			if paperShouldClearLocalPairQuotes(t.Outcomes, t.TokenBids, t.TokenAsks) {
+				for _, outcome := range t.Outcomes {
+					t.TokenBids[outcome] = 0
+					t.TokenAsks[outcome] = 0
+					t.TokenFullBids[outcome] = nil
+					t.TokenFullAsks[outcome] = nil
 				}
 			}
 			t.mu.Unlock()
-
-			// Update TUI after processing WS messages
-			if messagesProcessed > 0 {
-				t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "WS", t.LastUpdate)
-			}
-			// NOTE: Removed TouchMarket call - WS connection being "alive" doesn't mean
-			// data is fresh. WS often doesn't send liquidity updates, so we should only
-			// update LastUpdate when we actually receive new price/liquidity data.
-			// This ensures the UI accurately shows data staleness.
 
 			// Track feed age in the UI, but do not treat quiet prices as a broken socket.
 			wsConnected := wsMgr.IsConnected()
@@ -2029,10 +2152,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 			}
 
-			// Handle WebSocket issues - only reconnect if actually disconnected
-			// (Inactive markets with no trades won't send data, but connection is still alive)
 			if !wsMgr.IsConnected() && !wsChannelClosed {
-				// WebSocket disconnected, force reconnection (rate-limited)
 				if time.Since(lastForceReconnect) > wsForceReconnect {
 					lastForceReconnect = time.Now()
 					wsMgr.ForceReconnect()
@@ -2043,17 +2163,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 			}
 
-			// If WebSocket channel closed, log once and try reconnect
 			if wsChannelClosed && time.Since(lastWsWarnTime) > wsWarnInterval {
 				t.TUI.LogEvent("[%s] ⚠️ WebSocket closed - attempting reconnect", t.ID)
 				lastWsWarnTime = time.Now()
 				wsMgr.ForceReconnect()
 			}
 
+			restRecovered := false
 			if shouldRestFallback {
 				wasFallbackActive := t.RestFallbackActive
 				t.RestFallbackActive = true
-				recovered := t.handleRestFallback(ctx, tokenPrices, pairQuoteAge, wasFallbackActive && !t.RestRecoveryLogged)
+				recovered := t.handleRestFallback(ctx, tokenPrices, pairQuoteAge, quoteState, wasFallbackActive && !t.RestRecoveryLogged)
+				restRecovered = recovered
 				if recovered {
 					t.RestFallbackActive = false
 					t.RestRecoveryLogged = false
@@ -2065,36 +2186,54 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.RestRecoveryLogged = false
 			}
 
-			// Also update order book depth for live display
-			bidDepth := make(map[string][]paper.MarketLevel)
-			askDepth := make(map[string][]paper.MarketLevel)
-
-			t.mu.Lock()
-			// Map current trader's depth data for TUI
-			for _, outcome := range t.Outcomes {
-				if bids, ok := t.TokenFullBids[outcome]; ok {
-					bidDepth[outcome] = append([]paper.MarketLevel(nil), bids...)
-				}
-				if asks, ok := t.TokenFullAsks[outcome]; ok {
-					askDepth[outcome] = append([]paper.MarketLevel(nil), asks...)
+			displayUpdated := paperSyncDisplayQuotes(t.Outcomes, t.TokenBids, t.TokenAsks, displayBids, displayAsks, shouldRestFallback)
+			quotesChanged := !paperQuoteMapsEqual(t.Outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+			latestQuoteAt, latestQuoteSource := paperLatestQuoteUpdate(t.Outcomes, quoteState)
+			displayUsable := paperDisplayHasUsableQuotes(t.Outcomes, displayBids, displayAsks)
+			freshnessAdvanced := displayUsable && !latestQuoteAt.IsZero() && latestQuoteAt.After(lastPublishedQuoteAt)
+			if displayUpdated || quotesChanged || freshnessAdvanced {
+				t.TUI.UpdateMarketPricesWithSourceAt(t.ID, displayBids, displayAsks, paperNormalizeDisplaySource(latestQuoteSource), latestQuoteAt)
+				paperStorePublishedQuotes(t.Outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+				if freshnessAdvanced {
+					lastPublishedQuoteAt = latestQuoteAt
 				}
 			}
-			t.mu.Unlock()
 
-			t.TUI.UpdateOrderBookDepth(t.ID, bidDepth, askDepth)
+			bookChanged := messagesProcessed > 0 || restRecovered
+			if bookChanged {
+				bidDepth := make(map[string][]paper.MarketLevel)
+				askDepth := make(map[string][]paper.MarketLevel)
+				t.mu.Lock()
+				for _, outcome := range t.Outcomes {
+					if bids, ok := t.TokenFullBids[outcome]; ok {
+						bidDepth[outcome] = append([]paper.MarketLevel(nil), bids...)
+					}
+					if asks, ok := t.TokenFullAsks[outcome]; ok {
+						askDepth[outcome] = append([]paper.MarketLevel(nil), asks...)
+					}
+				}
+				t.mu.Unlock()
+				t.TUI.UpdateOrderBookDepth(t.ID, bidDepth, askDepth)
+			}
 
-			// Process order fills
-			t.mu.Lock()
-			for outcome := range tokenPrices {
-				bids := t.TokenFullBids[outcome]
-				asks := t.TokenFullAsks[outcome]
-				if len(bids) > 0 || len(asks) > 0 {
-					bidsCopy := append([]paper.MarketLevel(nil), bids...)
-					asksCopy := append([]paper.MarketLevel(nil), asks...)
-					t.OrderBook.ProcessPriceUpdate(outcome, bidsCopy, asksCopy)
+			shouldPollOrderFills := bookChanged || time.Since(lastFillPoll) >= paperFillPollInterval
+			if shouldPollOrderFills {
+				lastFillPoll = time.Now()
+				if len(t.OrderBook.GetOpenOrders()) > 0 {
+					t.mu.Lock()
+					for _, outcome := range t.Outcomes {
+						bids := t.TokenFullBids[outcome]
+						asks := t.TokenFullAsks[outcome]
+						if len(bids) == 0 && len(asks) == 0 {
+							continue
+						}
+						bidsCopy := append([]paper.MarketLevel(nil), bids...)
+						asksCopy := append([]paper.MarketLevel(nil), asks...)
+						t.OrderBook.ProcessPriceUpdate(outcome, bidsCopy, asksCopy)
+					}
+					t.mu.Unlock()
 				}
 			}
-			t.mu.Unlock()
 
 			// Check if market has ended (only exit condition that matters)
 			// DON'T exit on "liquidity dried up" - volatile markets can have extreme prices
@@ -2730,7 +2869,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(paperMainLoopInterval):
 			}
 		}
 	}
@@ -2786,37 +2925,32 @@ func (t *MarketTrader) determineWinner() string {
 	return bestOutcome
 }
 
-// handleRestFallback polls REST API for fresh liquidity data
-// REST is now the PRIMARY source for liquidity (WS only sends price changes)
-// Returns true if any data was successfully retrieved
-func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration, logRecovery bool) bool {
+// handleRestFallback polls REST API for fresh liquidity data.
+// Returns true if any data was successfully retrieved.
+func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration, quoteState map[string]paperQuoteState, logRecovery bool) bool {
 	t.LastRestPoll = time.Now()
 	staleSeconds := int(staleTime.Seconds())
 
-	// Poll REST synchronously for reliability
 	restSuccess := 0
 	restErrors := 0
 	restEmpty := 0
 	var lastErr error
 	for tokenID, outcome := range t.TokenMap {
-		// Use short timeout
 		restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
 		start := time.Now()
 		book, err := t.RestClient.GetOrderBook(restCtx, tokenID)
 		latency := time.Since(start)
 		restCancel()
 
-		// Update TUI with real REST latency
 		t.TUI.UpdateRestLatency(latency)
 
 		if err != nil {
 			restErrors++
 			lastErr = err
-			// If one request fails (likely due to no internet), break immediately to prevent further blocking
 			break
 		}
 
-		// Check if book is empty
+		updatedAt := time.Now()
 		if len(book.Bids) == 0 && len(book.Asks) == 0 {
 			restEmpty++
 			t.mu.Lock()
@@ -2824,18 +2958,17 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 			t.TokenAsks[outcome] = 0
 			t.TokenFullBids[outcome] = nil
 			t.TokenFullAsks[outcome] = nil
-			now := time.Now()
-			t.LastUpdate = now
-			t.LastPairUpdate = now
 			t.mu.Unlock()
+			quoteState[outcome] = paperQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 			restSuccess++
 			continue
 		}
+
 		bid, ask := 0.0, 0.0
 		for _, b := range book.Bids {
 			p, err := strconv.ParseFloat(b.Price, 64)
 			if err != nil {
-				t.TUI.LogEvent("[%s] Warning: failed to parse bid price '%s': %v", t.ID, b.Price, err)
+				t.TUI.LogEvent("[%s] Warning: failed to parse bid price %s: %v", t.ID, b.Price, err)
 				continue
 			}
 			if p > 0 && p <= 1.0 && p > bid {
@@ -2845,7 +2978,7 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		for _, a := range book.Asks {
 			p, err := strconv.ParseFloat(a.Price, 64)
 			if err != nil {
-				t.TUI.LogEvent("[%s] Warning: failed to parse ask price '%s': %v", t.ID, a.Price, err)
+				t.TUI.LogEvent("[%s] Warning: failed to parse ask price %s: %v", t.ID, a.Price, err)
 				continue
 			}
 			if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
@@ -2853,18 +2986,18 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 			}
 		}
 
-		if bid > 0 && ask > 0 && bid >= ask {
+		if bid > 0 && ask > 0 && !paperHasSaneTopOfBook(bid, ask) {
 			t.mu.Lock()
 			t.TokenBids[outcome] = 0
 			t.TokenAsks[outcome] = 0
 			t.TokenFullBids[outcome] = nil
 			t.TokenFullAsks[outcome] = nil
 			t.mu.Unlock()
-			restSuccess++ // Ensure UI gets updated to 0
-			continue      // Reject crossed book
+			quoteState[outcome] = paperQuoteState{UpdatedAt: updatedAt, Source: "rest"}
+			restSuccess++
+			continue
 		}
 
-		// Always update with whatever data we got (even partial)
 		t.mu.Lock()
 		t.TokenBids[outcome] = bid
 		t.TokenAsks[outcome] = ask
@@ -2878,28 +3011,24 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 		t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		t.mu.Unlock()
-
-		// Count as success to ensure UI gets updated
+		quoteState[outcome] = paperQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 		restSuccess++
 	}
 
-	// Log result - minimal spam, maximum info
 	if restSuccess > 0 {
 		now := time.Now()
 		t.LastUpdate = now
 		syncPaperPairUpdate(t, now)
-		t.TUI.UpdateMarketPricesWithSourceAt(t.ID, t.TokenBids, t.TokenAsks, "REST", t.LastUpdate)
 		if logRecovery && staleSeconds >= 10 {
 			t.TUI.LogEvent("[%s] ✅ REST recovered after %ds", t.ID, staleSeconds)
 		}
 		return true
-	} else if restErrors > 0 {
-		// Log errors every 10 seconds to avoid spam
+	}
+	if restErrors > 0 {
 		if staleSeconds%10 == 0 || staleSeconds == 10 {
 			t.TUI.LogEvent("[%s] ❌ REST fail %ds: %v", t.ID, staleSeconds, lastErr)
 		}
 	} else if restEmpty == len(t.TokenMap) {
-		// All books empty - likely market ended
 		if staleSeconds%10 == 0 {
 			t.TUI.LogEvent("[%s] 📭 All books empty (%ds)", t.ID, staleSeconds)
 		}
