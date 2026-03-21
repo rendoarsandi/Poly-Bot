@@ -229,8 +229,11 @@ func resolvePaperMakerQuoteGap(liveCfg paper.TUISettings, cfg *core.Config) floa
 	return paperMakerBaseOffset
 }
 
-func shouldPaperReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge time.Duration, terminalBookState bool) bool {
-	if terminalBookState || pairQuoteAge <= 15*time.Second {
+func shouldPaperReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge, staleThreshold time.Duration, terminalBookState bool) bool {
+	if staleThreshold <= 0 {
+		staleThreshold = 15 * time.Second
+	}
+	if terminalBookState || pairQuoteAge <= staleThreshold {
 		return false
 	}
 	for _, outcome := range outcomes {
@@ -1470,6 +1473,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 	const wsWarnInterval = 10 * time.Second   // Only warn once per 10 seconds
 	const wsForceReconnect = 10 * time.Second // Force reconnection after 10 seconds stale
+	restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(t.Config)
+	restFallbackPollInterval := core.ResolveRestFallbackPollInterval(t.Config)
 
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
@@ -1997,9 +2002,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			localPairFresh := shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
 
 			terminalBookState := paperLooksLikeTerminalBook(t.Outcomes, t.TokenBids, t.TokenAsks)
-			needsWSReconnect := shouldPaperReconnectWS(t.Outcomes, t.TokenBids, t.TokenAsks, pairQuoteAge, terminalBookState)
-			t.RestFallbackActive = false
-			t.RestRecoveryLogged = false
+			needsWSReconnect := shouldPaperReconnectWS(t.Outcomes, t.TokenBids, t.TokenAsks, pairQuoteAge, restFallbackQuoteAge, terminalBookState)
+			shouldRestFallback := !terminalBookState &&
+				!localPairFresh &&
+				pairQuoteAge > restFallbackQuoteAge &&
+				time.Since(t.LastRestPoll) >= restFallbackPollInterval
 
 			if wsConnected && !wsChannelClosed && needsWSReconnect {
 				if time.Since(lastForceReconnect) > wsForceReconnect {
@@ -2031,6 +2038,21 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.TUI.LogEvent("[%s] ⚠️ WebSocket closed - attempting reconnect", t.ID)
 				lastWsWarnTime = time.Now()
 				wsMgr.ForceReconnect()
+			}
+
+			if shouldRestFallback {
+				wasFallbackActive := t.RestFallbackActive
+				t.RestFallbackActive = true
+				recovered := t.handleRestFallback(ctx, tokenPrices, pairQuoteAge, wasFallbackActive && !t.RestRecoveryLogged)
+				if recovered {
+					t.RestFallbackActive = false
+					t.RestRecoveryLogged = false
+				} else if pairQuoteAge >= 10*time.Second {
+					t.RestRecoveryLogged = true
+				}
+			} else {
+				t.RestFallbackActive = false
+				t.RestRecoveryLogged = false
 			}
 
 			// Also update order book depth for live display

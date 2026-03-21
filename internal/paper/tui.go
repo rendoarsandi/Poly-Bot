@@ -280,17 +280,18 @@ func latencyDot(d time.Duration, warnMs, critMs int64) (string, lipgloss.Style) 
 
 // MarketData holds live data for a single market.
 type MarketData struct {
-	Slug        string
-	Outcomes    []string
-	EndTime     time.Time
-	Bids        map[string]float64
-	Asks        map[string]float64
-	ClearedBids map[string]bool
-	ClearedAsks map[string]bool
-	RealBids    map[string]float64
-	RealAsks    map[string]float64
-	LastUpdate  time.Time
-	DataSource  string // "WS" or "REST"
+	Slug            string
+	Outcomes        []string
+	EndTime         time.Time
+	Bids            map[string]float64
+	Asks            map[string]float64
+	ClearedBids     map[string]bool
+	ClearedAsks     map[string]bool
+	RealBids        map[string]float64
+	RealAsks        map[string]float64
+	LastUpdate      time.Time
+	LastDepthUpdate time.Time
+	DataSource      string // "WS" or "REST"
 }
 
 // PendingOrder represents an order the bot intends to place.
@@ -861,17 +862,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			snapMarkets := make(map[string]*MarketData)
 			for k, v := range m.tui.markets {
 				md := &MarketData{
-					Slug:        v.Slug,
-					Outcomes:    append([]string(nil), v.Outcomes...),
-					EndTime:     v.EndTime,
-					Bids:        make(map[string]float64),
-					Asks:        make(map[string]float64),
-					ClearedBids: make(map[string]bool),
-					ClearedAsks: make(map[string]bool),
-					RealBids:    make(map[string]float64),
-					RealAsks:    make(map[string]float64),
-					LastUpdate:  v.LastUpdate,
-					DataSource:  v.DataSource,
+					Slug:            v.Slug,
+					Outcomes:        append([]string(nil), v.Outcomes...),
+					EndTime:         v.EndTime,
+					Bids:            make(map[string]float64),
+					Asks:            make(map[string]float64),
+					ClearedBids:     make(map[string]bool),
+					ClearedAsks:     make(map[string]bool),
+					RealBids:        make(map[string]float64),
+					RealAsks:        make(map[string]float64),
+					LastUpdate:      v.LastUpdate,
+					LastDepthUpdate: v.LastDepthUpdate,
+					DataSource:      v.DataSource,
 				}
 				for outcome, price := range v.Bids {
 					md.Bids[outcome] = price
@@ -1698,35 +1700,70 @@ func (t *TUI) TouchMarket(marketID string) {
 	}
 }
 
+func marketDepthLevelsEqual(a, b []MarketLevel) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if math.Abs(a[i].Price-b[i].Price) > 1e-9 || math.Abs(a[i].Size-b[i].Size) > 1e-9 {
+			return false
+		}
+	}
+	return true
+}
+
 func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]MarketLevel) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.orderBookDepth[marketID] == nil {
 		t.orderBookDepth[marketID] = make(map[string][]MarketLevel)
 	}
+	marketDepth := t.orderBookDepth[marketID]
+	depthChanged := false
+
 	for outcome, levels := range bids {
+		key := outcome + "_bids"
 		if len(levels) > 0 {
 			copied := make([]MarketLevel, 0, 5)
 			for i := 0; i < len(levels) && i < 5; i++ {
 				copied = append(copied, levels[i])
 			}
-			t.orderBookDepth[marketID][outcome+"_bids"] = copied
+			if existing, ok := marketDepth[key]; !ok || !marketDepthLevelsEqual(existing, copied) {
+				depthChanged = true
+			}
+			marketDepth[key] = copied
 		} else {
-			delete(t.orderBookDepth[marketID], outcome+"_bids")
+			if _, ok := marketDepth[key]; ok {
+				depthChanged = true
+			}
+			delete(marketDepth, key)
 		}
 	}
 	for outcome, levels := range asks {
+		key := outcome + "_asks"
 		if len(levels) > 0 {
 			copied := make([]MarketLevel, 0, 5)
 			for i := 0; i < len(levels) && i < 5; i++ {
 				copied = append(copied, levels[i])
 			}
-			t.orderBookDepth[marketID][outcome+"_asks"] = copied
+			if existing, ok := marketDepth[key]; !ok || !marketDepthLevelsEqual(existing, copied) {
+				depthChanged = true
+			}
+			marketDepth[key] = copied
 		} else {
-			delete(t.orderBookDepth[marketID], outcome+"_asks")
+			if _, ok := marketDepth[key]; ok {
+				depthChanged = true
+			}
+			delete(marketDepth, key)
 		}
 	}
-	t.markDirtyLocked()
+
+	if depthChanged {
+		if market, ok := t.markets[marketID]; ok {
+			market.LastDepthUpdate = time.Now()
+		}
+		t.markDirtyLocked()
+	}
 }
 
 func (t *TUI) SetMarket(slug string, outcomes []string, endTime time.Time) {
@@ -2180,6 +2217,11 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 	// ── Staleness
 	age := time.Since(mkt.LastUpdate)
+	if !mkt.LastDepthUpdate.IsZero() {
+		if depthAge := time.Since(mkt.LastDepthUpdate); depthAge < age {
+			age = depthAge
+		}
+	}
 	ageSt := styleGreen
 	ageWarn := ""
 

@@ -476,16 +476,16 @@ func TestRealbotShouldReconnectWSOnlyForInvalidStaleBook(t *testing.T) {
 	validBids := map[string]float64{"Down": 0.46, "Up": 0.51}
 	validAsks := map[string]float64{"Down": 0.48, "Up": 0.53}
 
-	if realbotShouldReconnectWS(outcomes, validBids, validAsks, 25*time.Second, false) {
+	if realbotShouldReconnectWS(outcomes, validBids, validAsks, 25*time.Second, 15*time.Second, false) {
 		t.Fatal("expected quiet but valid local quotes to remain on WS")
 	}
 
 	invalidAsks := map[string]float64{"Down": 0.48, "Up": 0}
-	if !realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, false) {
+	if !realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, 15*time.Second, false) {
 		t.Fatal("expected reconnect when the stale local book loses one side")
 	}
 
-	if realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, true) {
+	if realbotShouldReconnectWS(outcomes, validBids, invalidAsks, 25*time.Second, 15*time.Second, true) {
 		t.Fatal("expected terminal-looking book to suppress reconnects")
 	}
 }

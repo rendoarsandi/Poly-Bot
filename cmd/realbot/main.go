@@ -88,8 +88,11 @@ func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWar
 	}()
 }
 
-func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge time.Duration, terminalBookState bool) bool {
-	if terminalBookState || pairQuoteAge <= 15*time.Second {
+func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge, staleThreshold time.Duration, terminalBookState bool) bool {
+	if staleThreshold <= 0 {
+		staleThreshold = 15 * time.Second
+	}
+	if terminalBookState || pairQuoteAge <= staleThreshold {
 		return false
 	}
 	for _, outcome := range outcomes {
@@ -1604,7 +1607,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	lastReconnectCount := int32(0)
 	lastWsWarnTime := time.Time{}
 	lastForceReconnect := time.Time{}
+	lastRestFallbackPoll := time.Time{}
+	restFallbackActive := false
+	restRecoveryLogged := false
 	wsChannelClosed := false
+	restFallbackQuoteAge := core.ResolveRestFallbackQuoteAge(cfg)
+	restFallbackPollInterval := core.ResolveRestFallbackPollInterval(cfg)
 
 	for {
 		select {
@@ -1988,7 +1996,28 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 		terminalBookState := realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks)
 		pairQuoteAge := realbotPairQuoteAge(time.Now(), outcomes, quoteState)
-		needsWSReconnect := realbotShouldReconnectWS(outcomes, tokenBids, tokenAsks, pairQuoteAge, terminalBookState)
+		needsWSReconnect := realbotShouldReconnectWS(outcomes, tokenBids, tokenAsks, pairQuoteAge, restFallbackQuoteAge, terminalBookState)
+		localPairSane := realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks)
+		shouldRestFallback := !terminalBookState &&
+			!localPairSane &&
+			pairQuoteAge > restFallbackQuoteAge &&
+			time.Since(lastRestFallbackPoll) >= restFallbackPollInterval
+
+		if shouldRestFallback {
+			wasFallbackActive := restFallbackActive
+			restFallbackActive = true
+			recovered := handleRestFallbackWithDepth(ctx, id, pairQuoteAge, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, wasFallbackActive && !restRecoveryLogged)
+			lastRestFallbackPoll = time.Now()
+			if recovered {
+				restFallbackActive = false
+				restRecoveryLogged = false
+			} else if pairQuoteAge >= 10*time.Second {
+				restRecoveryLogged = true
+			}
+		} else {
+			restFallbackActive = false
+			restRecoveryLogged = false
+		}
 
 		if !realbotQuoteMapsEqual(outcomes, displayBids, displayAsks, publishedBids, publishedAsks) {
 			tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, "WS")

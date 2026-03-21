@@ -155,16 +155,16 @@ func TestShouldPaperReconnectWSOnlyForInvalidStaleBooks(t *testing.T) {
 	validBids := map[string]float64{"Down": 0.48, "Up": 0.49}
 	validAsks := map[string]float64{"Down": 0.50, "Up": 0.51}
 
-	if shouldPaperReconnectWS(outcomes, validBids, validAsks, 30*time.Second, false) {
+	if shouldPaperReconnectWS(outcomes, validBids, validAsks, 30*time.Second, 15*time.Second, false) {
 		t.Fatal("expected quiet but valid WS book to stay connected")
 	}
 
 	invalidAsks := map[string]float64{"Down": 0.50, "Up": 0}
-	if !shouldPaperReconnectWS(outcomes, validBids, invalidAsks, 30*time.Second, false) {
+	if !shouldPaperReconnectWS(outcomes, validBids, invalidAsks, 30*time.Second, 15*time.Second, false) {
 		t.Fatal("expected missing side on a stale local book to trigger reconnect")
 	}
 
-	if shouldPaperReconnectWS(outcomes, validBids, invalidAsks, 30*time.Second, true) {
+	if shouldPaperReconnectWS(outcomes, validBids, invalidAsks, 30*time.Second, 15*time.Second, true) {
 		t.Fatal("expected terminal-looking book to suppress reconnects")
 	}
 }

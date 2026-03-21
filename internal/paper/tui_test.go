@@ -418,6 +418,30 @@ func TestRenderMarketPanelHidesGapWhenCurrentPairQuotesAreStale(t *testing.T) {
 	}
 }
 
+func TestRenderMarketPanelTreatsRecentDepthChangeAsFresh(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:            "btc-market",
+		Outcomes:        []string{"Yes", "No"},
+		EndTime:         time.Now().Add(10 * time.Minute),
+		LastUpdate:      time.Now().Add(-(recentQuoteDisplayGrace + 250*time.Millisecond)),
+		LastDepthUpdate: time.Now().Add(-250 * time.Millisecond),
+		Bids:            map[string]float64{"Yes": 0.41, "No": 0.57},
+		Asks:            map[string]float64{"Yes": 0.43, "No": 0.59},
+		RealBids:        map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:        map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource:      "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "awaiting price data") {
+		t.Fatalf("expected recent depth activity to keep panel fresh, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Buy $") {
+		t.Fatalf("expected spread line with recent depth activity, got %q", rendered)
+	}
+}
+
 func TestRenderMarketPanelKeepsTerminalLastGoodQuotesVisible(t *testing.T) {
 	model := tuiModel{}
 	mkt := &MarketData{
