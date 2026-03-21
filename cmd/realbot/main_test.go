@@ -1198,6 +1198,15 @@ func TestBuildRealbotTakerClosePlan_RejectsConfirmedPriceBelowMinPrice(t *testin
 	}
 }
 
+func TestNormalizedRealbotTakerCloseMinPriceRoundsToTwoDecimals(t *testing.T) {
+	if got := normalizedRealbotTakerCloseMinPrice(paper.TUISettings{TakerCloseMarketMinPrice: 0.895}); math.Abs(got-0.90) > 0.000001 {
+		t.Fatalf("expected min price 0.895 to normalize to 0.90, got %.6f", got)
+	}
+	if got := normalizedRealbotTakerCloseMinPrice(paper.TUISettings{TakerCloseMarketMinPrice: 0.9}); math.Abs(got-0.90) > 0.000001 {
+		t.Fatalf("expected min price 0.9 to stay 0.90, got %.6f", got)
+	}
+}
+
 func TestRealbotLatestQuoteUpdateReturnsFreshestState(t *testing.T) {
 	outcomes := []string{"Down", "Up"}
 	base := time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)

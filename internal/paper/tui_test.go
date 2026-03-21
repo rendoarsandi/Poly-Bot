@@ -575,6 +575,30 @@ func TestNormalizeTUISettingsNormalizesExecutionFloorToNonPositiveDecimal(t *tes
 	}
 }
 
+func TestNormalizeTUISettingsRoundsTakerClosePricesToDisplayPrecision(t *testing.T) {
+	cfg := normalizeTUISettings(TUISettings{
+		TakerCloseMarketSlippage: 0.9051,
+		TakerCloseMarketMinPrice: 0.895,
+	})
+	if math.Abs(cfg.TakerCloseMarketMinPrice-0.90) > 0.000001 {
+		t.Fatalf("expected taker-close min to round to 0.90, got %.6f", cfg.TakerCloseMarketMinPrice)
+	}
+	if math.Abs(cfg.TakerCloseMarketSlippage-0.91) > 0.000001 {
+		t.Fatalf("expected taker-close slippage to round to 0.91, got %.6f", cfg.TakerCloseMarketSlippage)
+	}
+
+	cfg = normalizeTUISettings(TUISettings{
+		TakerCloseMarketSlippage: 0.80,
+		TakerCloseMarketMinPrice: 0.895,
+	})
+	if math.Abs(cfg.TakerCloseMarketMinPrice-0.90) > 0.000001 {
+		t.Fatalf("expected taker-close min to round to 0.90, got %.6f", cfg.TakerCloseMarketMinPrice)
+	}
+	if math.Abs(cfg.TakerCloseMarketSlippage-0.90) > 0.000001 {
+		t.Fatalf("expected slippage to clamp up to normalized min 0.90, got %.6f", cfg.TakerCloseMarketSlippage)
+	}
+}
+
 func TestRenderSettingsShowsExecutionFloorAsPercent(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()

@@ -512,7 +512,26 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		}
 	}
 	s.BuyExecutionMarginFloorPercent = normalizeExecutionFloorSetting(s.BuyExecutionMarginFloorPercent)
+	s.TakerCloseMarketSlippage = normalizeTakerClosePriceSetting(s.TakerCloseMarketSlippage, 0.99)
+	s.TakerCloseMarketMinPrice = normalizeTakerClosePriceSetting(s.TakerCloseMarketMinPrice, 0.60)
+	if s.TakerCloseMarketSlippage < s.TakerCloseMarketMinPrice {
+		s.TakerCloseMarketSlippage = s.TakerCloseMarketMinPrice
+	}
 	return s
+}
+
+func normalizeTakerClosePriceSetting(v, fallback float64) float64 {
+	if v <= 0 || v >= 1.0 {
+		v = fallback
+	}
+	v = math.Round(v*100.0) / 100.0
+	if v < 0.01 {
+		return 0.01
+	}
+	if v > 0.99 {
+		return 0.99
+	}
+	return v
 }
 
 func normalizeExecutionFloorSetting(v float64) float64 {
@@ -1176,6 +1195,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				}
+				if changed {
+					m.tui.settings = normalizeTUISettings(m.tui.settings)
+				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -1333,6 +1355,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.99
 					}
 					changed = true
+				}
+				if changed {
+					m.tui.settings = normalizeTUISettings(m.tui.settings)
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {

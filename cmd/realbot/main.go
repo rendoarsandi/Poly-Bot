@@ -301,7 +301,14 @@ func realbotCanonicalizeMarketTokens(market *api.Market, info *api.MarketInfo) (
 func normalizedRealbotTakerCloseMinPrice(liveCfg paper.TUISettings) float64 {
 	minPrice := liveCfg.TakerCloseMarketMinPrice
 	if minPrice <= 0 || minPrice >= 1.0 {
-		return 0.60
+		minPrice = 0.60
+	}
+	minPrice = math.Round(minPrice*100.0) / 100.0
+	if minPrice < 0.01 {
+		return 0.01
+	}
+	if minPrice > 0.99 {
+		return 0.99
 	}
 	return minPrice
 }
@@ -2263,19 +2270,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
 						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
 					}
-					postLocalQty, _ := localBoughtPositionAvg(engine, id, bestOutcome)
+					postBuyLocalQty, _ := localBoughtPositionAvg(engine, id, bestOutcome)
 					tui.RecordOrder(id, bestOutcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "FILLED")
-					takerCloseExecutedAt = time.Now()
 					if recoveredLateFill {
 						tui.LogEvent("[%s] 🔄 Taker close recovered delayed fill: bought %s %s after post-timeout refresh", id, formatShareQty(execQty), bestOutcome)
 					}
+
 					if execPrice+1e-9 < plan.MinPrice {
 						tui.LogEvent("[%s] ℹ️ Taker close filled below the trigger price ($%.3f < $%.3f); the min-price gate only decides when to enter, and the venue matched at a better price", id, execPrice, plan.MinPrice)
 					}
+
+					takerCloseExecutedAt = time.Now()
 					tui.LogEvent("[%s] ✅ Taker close confirmed: bought %s %s at $%.3f (cap $%.3f)",
 						id, formatShareQty(execQty), bestOutcome, execPrice, plan.LimitPrice)
 					tui.LogEvent("[%s] 🧾 Taker close position delta: %s %s | local position %.4f → %.4f | spend $%.4f",
-						id, formatShareQty(execQty), bestOutcome, preLocalQty, postLocalQty, execCost)
+						id, formatShareQty(execQty), bestOutcome, preLocalQty, postBuyLocalQty, execCost)
 
 					refreshWalletTruth(5 * time.Second)
 				}
