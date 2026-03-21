@@ -790,6 +790,10 @@ func startupPositionsSummary(positions []trading.PositionInfo) string {
 	return fmt.Sprintf("📊 Open positions: %d token(s), %.2f total shares", len(positions), totalShares)
 }
 
+func realbotNeutralRoundPnL(startingEquity, endingEquity, reconciliationDelta float64) float64 {
+	return endingEquity - startingEquity - reconciliationDelta
+}
+
 func realbotPairQuoteAge(now time.Time, outcomes []string, quoteState map[string]realbotQuoteState) time.Duration {
 	maxAge := time.Duration(0)
 	sawMissing := false
@@ -1362,7 +1366,9 @@ func run() error {
 			}
 			endBalFn()
 		}
+		reconciliationDelta := 0.0
 		{
+			preReconcileBookEquity := engine.GetBookEquity()
 			reconcileCtx, reconcileCancel := context.WithTimeout(ctx, 20*time.Second)
 			if changed, reconcileErr := realbotReconcileTrackedRoundWalletTruth(reconcileCtx, markets, realTrader, engine, globalSplitInventories, &splitMu, tui); reconcileErr != nil {
 				tui.LogEvent("⚠️ Round-end wallet-truth reconciliation incomplete: %v", reconcileErr)
@@ -1370,11 +1376,15 @@ func run() error {
 				tui.LogEvent("🧾 Round-end wallet-truth reconciliation restored %d tracked market(s)", changed)
 			}
 			reconcileCancel()
+			reconciliationDelta = engine.GetBookEquity() - preReconcileBookEquity
+			if math.Abs(reconciliationDelta) >= 0.005 {
+				tui.LogEvent("🧮 Excluding wallet-truth sync delta %+0.2f from round PnL", reconciliationDelta)
+			}
 		}
 
 		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
 		// until it is actually sold, merged, or redeemed.
-		roundPnL := engine.GetBookEquity() - startingEquity
+		roundPnL := realbotNeutralRoundPnL(startingEquity, engine.GetBookEquity(), reconciliationDelta)
 		engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
 		if roundPnL > 0 {
 			tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)

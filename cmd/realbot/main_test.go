@@ -127,6 +127,13 @@ func TestRealbotTakerCloseBudgetKeepsHighWaterAfterDrawdown(t *testing.T) {
 	}
 }
 
+func TestRealbotNeutralRoundPnLExcludesWalletTruthReconciliationDelta(t *testing.T) {
+	roundPnL := realbotNeutralRoundPnL(64.67, 74.13, 9.46)
+	if math.Abs(roundPnL) > 0.000001 {
+		t.Fatalf("expected reconciliation delta to stay neutral, got %.4f", roundPnL)
+	}
+}
+
 func TestNormalizeExecutionToleranceFractionSupportsLegacyPercentAndDecimalForms(t *testing.T) {
 	if got := normalizeExecutionToleranceFraction(-1.0); math.Abs(got-0.01) > 0.000001 {
 		t.Fatalf("expected -1.0 to normalize to 1%%, got %.6f", got)
