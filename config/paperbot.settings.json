@@ -34,6 +34,7 @@
   "makerMinQuoteValue": 5,
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5,
+  "tradeWeekdaysOnlyUS": true,
   "takerCloseMarket": true,
   "takerCloseMarketTime": 10,
   "takerCloseMarketSlippage": 0.99,

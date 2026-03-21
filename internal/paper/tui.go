@@ -183,6 +183,18 @@ func signedDollar(amount float64) string {
 	return fmt.Sprintf("%s$%.2f", sign, amount)
 }
 
+func renderUSWeekdayTradingStatus(enabled bool, now time.Time) string {
+	usNow := core.USTime(now)
+	usClock := usNow.Format("Mon 2006-01-02 15:04:05 MST")
+	if !enabled {
+		return styleDimmed.Render("US time " + usClock + "  ·  Weekday Gate OFF")
+	}
+	if core.IsUSWeekday(usNow) {
+		return styleGreen.Render("US time " + usClock + "  ·  Weekday Gate OPEN (trading enabled)")
+	}
+	return styleRed.Render("US time " + usClock + "  ·  Weekday Gate CLOSED (weekend, trading blocked)")
+}
+
 func walletTruthInventoryStatus(wt WalletTruthPosition) string {
 	switch {
 	case wt.Redeemable:
@@ -338,6 +350,7 @@ type TUISettings struct {
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
 	SplitInitialCapPct             float64 // Initial Split Cap percentage
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
+	TradeWeekdaysOnlyUS            bool    // Restrict new trades to Mon-Fri in America/New_York
 	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
 	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MakerInventoryTargetMult       float64
@@ -355,9 +368,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradeWeekdaysOnlyUS: true, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradeWeekdaysOnlyUS: true, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradeWeekdaysOnlyUS: true, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
@@ -473,6 +486,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Taker Close Slippage"
 	case 24:
 		return "Taker Close Min Price"
+	case 25:
+		return "US Weekdays Only"
 	default:
 		return ""
 	}
@@ -638,6 +653,7 @@ type tuiSnapshot struct {
 	killReason     string
 	tradeFactor    float64
 	maxTradeSize   float64
+	settings       TUISettings
 	startTime      time.Time
 	width          int
 	height         int
@@ -970,6 +986,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.killReason = m.tui.killReason
 		m.snap.tradeFactor = m.tui.tradeFactor
 		m.snap.maxTradeSize = m.tui.settings.MaxTradeSize
+		m.snap.settings = m.tui.settings
 		m.snap.startTime = m.tui.startTime
 		m.snap.width = m.tui.width
 		m.snap.height = m.tui.height
@@ -1019,7 +1036,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for {
 					m.settingsCursor--
 					if m.settingsCursor < 0 {
-						m.settingsCursor = 24
+						m.settingsCursor = 25
 					}
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
@@ -1028,7 +1045,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "down", "j":
 				for {
-					m.settingsCursor = (m.settingsCursor + 1) % 25
+					m.settingsCursor = (m.settingsCursor + 1) % 26
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
 					}
@@ -1194,6 +1211,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.01
 					}
 					changed = true
+				case 25:
+					m.tui.settings.TradeWeekdaysOnlyUS = !m.tui.settings.TradeWeekdaysOnlyUS
+					changed = true
 				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
@@ -1354,6 +1374,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.tui.settings.TakerCloseMarketMinPrice > 0.99 {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.99
 					}
+					changed = true
+				case 25:
+					m.tui.settings.TradeWeekdaysOnlyUS = !m.tui.settings.TradeWeekdaysOnlyUS
 					changed = true
 				}
 				if changed {
@@ -2854,8 +2877,9 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		winCount, lossCount,
 		styleDimmed.Render(uptime.String()),
 	)
+	row5 := "  " + renderUSWeekdayTradingStatus(s.settings.TradeWeekdaysOnlyUS, time.Now())
 
-	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4
+	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4 + "\n" + row5
 	return makePanel(inner, clrTeal, content)
 }
 
@@ -3706,6 +3730,16 @@ func (m tuiModel) renderSettings(w int) string {
 			label: settingsRowLabel(cfg, 24),
 			value: fmt.Sprintf(" $%.2f ", cfg.TakerCloseMarketMinPrice),
 			bar:   renderBar(cfg.TakerCloseMarketMinPrice, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, 25),
+			value: func() string {
+				if cfg.TradeWeekdaysOnlyUS {
+					return styleGreen.Render("  ON ")
+				}
+				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
 		},
 	}
 

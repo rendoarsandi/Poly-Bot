@@ -357,6 +357,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		TakerCloseMarketTime:           cfg.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
+		TradeWeekdaysOnlyUS:            cfg.TradeWeekdaysOnlyUS,
 	}
 }
 
@@ -386,6 +387,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
 	cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+	cfg.TradeWeekdaysOnlyUS = s.TradeWeekdaysOnlyUS
 	if cfg.Exchange == "kalshi" {
 		cfg.SplitStrategyEnabled = false
 		cfg.MakerMergeBufferSeconds = 0
@@ -1642,6 +1644,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var lastTakerCloseLog time.Time
 	var lastTakerCloseLogKey string
 	var lastTakerCloseQuoteRefresh time.Time
+	usWeekdayGateClosedLogged := false
 	preserveWalletTruth := false
 	defer func() {
 		if !preserveWalletTruth {
@@ -1746,8 +1749,19 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		timeToExpiry := time.Until(endTime)
 
 		liveCfg := tui.GetSettings()
+		usNow := core.USTime(time.Now())
+		weekdayTradingAllowed := !liveCfg.TradeWeekdaysOnlyUS || core.IsUSWeekday(usNow)
+		if !weekdayTradingAllowed {
+			if !usWeekdayGateClosedLogged {
+				tui.LogEvent("[%s] 🗓️ US weekday gate closed at %s - new trades paused", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+				usWeekdayGateClosedLogged = true
+			}
+		} else if usWeekdayGateClosedLogged {
+			tui.LogEvent("[%s] ✅ US weekday gate open at %s - trading resumed", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+			usWeekdayGateClosedLogged = false
+		}
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
-		if realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
+		if weekdayTradingAllowed && realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
 			// If taker close just fired, suppress sell actions for 15s to prevent racing
 			// against the just-placed GTC buy order. The merge buffer cleanup would
 			// otherwise sell the shares we just bought before the order fully fills.
@@ -2127,7 +2141,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// React only after we have drained the current WS queue so the decision
 		// follows the latest local WS book state.
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-		if liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+		if weekdayTradingAllowed && liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted && !time.Now().Before(nextTakerCloseAttempt) {
 				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
@@ -2304,6 +2318,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg = tui.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
+		weekdayTradingAllowed = !liveCfg.TradeWeekdaysOnlyUS || core.IsUSWeekday(time.Now())
+		if !weekdayTradingAllowed {
+			pauseMakerCtx, pauseMakerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			realbotCancelAllMakerQuotes(pauseMakerCtx, id, "US weekday gate closed", trader, engine, tui, makerQuotes)
+			pauseMakerCancel()
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 
 		if !liveCfg.TakerCloseMarket && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)

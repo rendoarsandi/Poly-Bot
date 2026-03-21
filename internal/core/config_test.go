@@ -91,6 +91,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.MakerQuoteGap != 0.004 {
 		t.Fatalf("expected JSON MakerQuoteGap 0.004, got %.3f", cfg.MakerQuoteGap)
 	}
+	if !cfg.TradeWeekdaysOnlyUS {
+		t.Fatal("expected missing JSON tradeWeekdaysOnlyUS to keep default true")
+	}
 	if cfg.APIKey != "env-api-key" {
 		t.Fatalf("expected env secret to remain loaded, got %q", cfg.APIKey)
 	}
@@ -111,6 +114,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.RestFallbackPollIntervalMs = 900
 	cfg.PaperArbMode = "maker"
 	cfg.MakerQuoteGap = 0.005
+	cfg.TradeWeekdaysOnlyUS = false
 
 	if err := cfg.SaveSettings(); err != nil {
 		t.Fatalf("SaveSettings failed: %v", err)
@@ -147,5 +151,8 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.MakerQuoteGap != 0.005 {
 		t.Fatalf("expected saved MakerQuoteGap 0.005, got %.3f", settings.MakerQuoteGap)
+	}
+	if settings.TradeWeekdaysOnlyUS {
+		t.Fatal("expected saved TradeWeekdaysOnlyUS false")
 	}
 }

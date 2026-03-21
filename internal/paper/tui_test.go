@@ -717,7 +717,7 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
-	for _, idx := range []int{0, 1, 2, 3, 5, 6, 11, 19, 20, 21, 22, 23, 24} {
+	for _, idx := range []int{0, 1, 2, 3, 5, 6, 11, 19, 20, 21, 22, 23, 24, 25} {
 		if !isRowVisible(cfg, idx) {
 			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
 		}
@@ -1275,5 +1275,29 @@ func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
 	}
 	if got.MaxMarkets != 2 {
 		t.Fatalf("expected two-market selection to clamp MaxMarkets to 2, got %d", got.MaxMarkets)
+	}
+}
+
+func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				TradeWeekdaysOnlyUS: true,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+	}, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "US time") {
+		t.Fatalf("expected account status to include US clock, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Weekday Gate") {
+		t.Fatalf("expected account status to include weekday gate status, got %q", rendered)
 	}
 }

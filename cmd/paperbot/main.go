@@ -1085,6 +1085,7 @@ func run() error {
 		TakerCloseMarketTime:     cfg.TakerCloseMarketTime,
 		TakerCloseMarketSlippage: cfg.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice: cfg.TakerCloseMarketMinPrice,
+		TradeWeekdaysOnlyUS:      cfg.TradeWeekdaysOnlyUS,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -1107,6 +1108,7 @@ func run() error {
 		cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
 		cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 		cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+		cfg.TradeWeekdaysOnlyUS = s.TradeWeekdaysOnlyUS
 
 		// Update the REST client exchange if it changed
 		if restClient.Exchange != s.Exchange {
@@ -1606,6 +1608,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	wsChannelClosed := false
 	takerCloseAttempted := false
 	var lastTakerCloseLog time.Time
+	usWeekdayGateClosedLogged := false
 
 	for {
 		select {
@@ -1692,9 +1695,22 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Handle market ending
 			timeToEnd := time.Until(t.EndTime)
 
+			liveCfg := t.TUI.GetSettings()
+			usNow := core.USTime(time.Now())
+			weekdayTradingAllowed := !liveCfg.TradeWeekdaysOnlyUS || core.IsUSWeekday(usNow)
+			if !weekdayTradingAllowed {
+				if !usWeekdayGateClosedLogged {
+					t.TUI.LogEvent("[%s] 🗓️ US weekday gate closed at %s - new trades paused", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+					usWeekdayGateClosedLogged = true
+				}
+			} else if usWeekdayGateClosedLogged {
+				t.TUI.LogEvent("[%s] ✅ US weekday gate open at %s - trading resumed", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+				usWeekdayGateClosedLogged = false
+			}
+
 			// --- TAKER CLOSE MARKET LOGIC ---
-			takerCloseTime := time.Duration(t.TUI.GetSettings().TakerCloseMarketTime) * time.Second
-			if t.TUI.GetSettings().TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
+			takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
+			if weekdayTradingAllowed && liveCfg.TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
 				if !takerCloseAttempted {
 					t.mu.Lock()
 					bestOutcome := ""
@@ -1713,7 +1729,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 					t.mu.Unlock()
 
-					minPrice := t.TUI.GetSettings().TakerCloseMarketMinPrice
+					minPrice := liveCfg.TakerCloseMarketMinPrice
 					if minPrice <= 0 {
 						minPrice = 0.60
 					}
@@ -1725,7 +1741,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						budget := t.Config.CalculateTradeSize(t.Engine.GetBookEquity())
 						// Calculate expected execution price (price + absolute slippage allowance)
 						// e.g. price 0.70 + (-0.03) = 0.73
-						slippageDec := t.TUI.GetSettings().BuyExecutionMarginFloorPercent
+						slippageDec := liveCfg.BuyExecutionMarginFloorPercent
 						if slippageDec < 0 {
 							slippageDec = -slippageDec // e.g. -0.03 becomes 0.03
 						}
@@ -1740,7 +1756,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						}
 
 						// But send the absolute max slippage (e.g. 0.99) as the limit price to ensure it fills
-						limitPrice := t.TUI.GetSettings().TakerCloseMarketSlippage
+						limitPrice := liveCfg.TakerCloseMarketSlippage
 						if limitPrice <= 0 || limitPrice >= 1.0 {
 							limitPrice = 0.99
 						}
@@ -2240,14 +2256,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// and that's normal market behavior, not a reason to exit
 
 			// Trading logic - check every tick for arbitrage opportunities
-			liveCfg := t.TUI.GetSettings()
+			liveCfg = t.TUI.GetSettings()
 			arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 			localQuoteMaxAge = core.ResolveExecutionLocalQuoteMaxAge(t.Config)
 			executionQuoteMaxAge = paperExecutionQuoteGuardAge(localQuoteMaxAge)
 			now = time.Now()
 			localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
 			executionPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
-			if liveCfg.TakerCloseMarket {
+			if !weekdayTradingAllowed {
+				cancelAllPaperMakerQuotes(t, "US weekday gate closed")
+			} else if liveCfg.TakerCloseMarket {
 				cancelAllPaperMakerQuotes(t, "taker close market enabled")
 			} else if arbMode != paperArbModeMaker {
 				cancelAllPaperMakerQuotes(t, "maker mode disabled")
@@ -2255,6 +2273,10 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 			}
 			if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
+				if !weekdayTradingAllowed {
+					continue
+				}
+
 				// Skip normal trading completely if TakerCloseMarket is enabled
 				if liveCfg.TakerCloseMarket {
 					continue
@@ -2623,7 +2645,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// SPLIT STRATEGY SIMULATION: Sell when bid_sum > $1.00 + margin
 			// This simulates the panic sell strategy without real blockchain calls
 			// ═══════════════════════════════════════════════════════════════════════════
-			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled && localPairFresh {
+			if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled && localPairFresh && weekdayTradingAllowed {
 				bid1 := t.TokenBids[t.Outcomes[0]]
 				bid2 := t.TokenBids[t.Outcomes[1]]
 				currentBookEquity := t.Engine.GetBookEquity()
