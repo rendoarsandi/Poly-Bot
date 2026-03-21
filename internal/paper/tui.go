@@ -68,6 +68,7 @@ const (
 	recentQuoteDisplayGrace = 1500 * time.Millisecond
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
+	showOnChainInventory    = true
 	showWalletTruthPanels   = false
 )
 
@@ -2907,9 +2908,22 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	}
 	hasSplitInventory := len(splitPositions) > 0
 	hasWalletTruth := len(walletTruthPositions) > 0
+	hasOnChainInventory := false
+	if showOnChainInventory {
+		for _, wt := range walletTruthPositions {
+			if wt.OnChainShares <= 0 {
+				continue
+			}
+			if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
+				continue
+			}
+			hasOnChainInventory = true
+			break
+		}
+	}
 	hasWalletTruthDisplay := hasWalletTruth && showWalletTruthPanels
 
-	if !showInFlightPositions && !hasSplitInventory && !hasWalletTruthDisplay {
+	if !showInFlightPositions && !hasSplitInventory && !hasOnChainInventory && !hasWalletTruthDisplay {
 		return makePanel(inner, clrSlate,
 			sectionHeader("📦", "POSITIONS", clrSlate)+"\n"+
 				styleDimmed.Render("  (none)"))
@@ -3069,7 +3083,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 	}
 
-	if hasWalletTruthDisplay {
+	if hasOnChainInventory {
 		onChainInventoryByMarket := make(map[string][]WalletTruthPosition)
 		onChainInventoryCount := 0
 		for _, wt := range walletTruthPositions {
@@ -3107,6 +3121,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			}
 		}
 
+	}
+
+	if hasWalletTruthDisplay {
 		sb.WriteString("\n" + sectionHeader("🧾", "WALLET TRUTH  (local vs on-chain)", clrTeal) + "\n")
 		truthByMarket := make(map[string][]WalletTruthPosition)
 		marketSet := make(map[string]struct{})

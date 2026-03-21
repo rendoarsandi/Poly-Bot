@@ -451,15 +451,18 @@ func TestRenderPositionsHidesWalletTruthResolutionPanel(t *testing.T) {
 
 	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
 	rendered := model.renderPositions(120, nil)
-	if strings.Contains(rendered, "WALLET TRUTH") || strings.Contains(rendered, "ON-CHAIN INVENTORY") {
-		t.Fatalf("expected wallet-truth panels to stay hidden, got %q", rendered)
+	if strings.Contains(rendered, "WALLET TRUTH") {
+		t.Fatalf("expected wallet-truth detail panel to stay hidden, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "(none)") {
-		t.Fatalf("expected positions panel to collapse when only wallet-truth data exists, got %q", rendered)
+	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
+		t.Fatalf("expected on-chain inventory panel to stay visible, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Up: 10.0000") || !strings.Contains(rendered, "Down: 10.0000") {
+		t.Fatalf("expected on-chain inventory rows to be rendered, got %q", rendered)
 	}
 }
 
-func TestRenderPositionsHidesOnChainInventoryFromWalletTruth(t *testing.T) {
+func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, nil)
 	tui.SetWalletTruthPositions("SOL", []WalletTruthPosition{
@@ -469,11 +472,17 @@ func TestRenderPositionsHidesOnChainInventoryFromWalletTruth(t *testing.T) {
 
 	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
 	rendered := model.renderPositions(120, nil)
-	if strings.Contains(rendered, "ON-CHAIN INVENTORY") || strings.Contains(rendered, "WALLET TRUTH") {
-		t.Fatalf("expected wallet-truth inventory rows to stay hidden, got %q", rendered)
+	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
+		t.Fatalf("expected on-chain inventory section, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "(none)") {
-		t.Fatalf("expected positions panel to collapse when wallet-truth data is hidden, got %q", rendered)
+	if strings.Contains(rendered, "WALLET TRUTH") {
+		t.Fatalf("expected wallet-truth detail panel to stay hidden, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Up: 3.5000") || !strings.Contains(rendered, "OPEN") {
+		t.Fatalf("expected unresolved on-chain inventory row, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Down: 1.2500") || !strings.Contains(rendered, "REDEEMABLE") {
+		t.Fatalf("expected redeemable on-chain inventory row, got %q", rendered)
 	}
 }
 
@@ -488,7 +497,10 @@ func TestRenderPositionsHidesResolvedLosersFromOnChainInventory(t *testing.T) {
 	rendered := model.renderPositions(120, nil)
 
 	if strings.Contains(rendered, "ON-CHAIN INVENTORY") || strings.Contains(rendered, "WALLET TRUTH") {
-		t.Fatalf("expected wallet-truth sections to stay hidden, got %q", rendered)
+		t.Fatalf("expected resolved loser-only wallet-truth sections to stay hidden, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(none)") {
+		t.Fatalf("expected positions panel to collapse for resolved loser-only inventory, got %q", rendered)
 	}
 }
 
