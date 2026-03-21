@@ -912,6 +912,39 @@ func TestRenderAccountStatusFallsBackToNetChangeWhenFlat(t *testing.T) {
 	}
 }
 
+func TestRenderAccountStatusDoesNotFallbackToNetChangeWhileWalletTruthInventoryOpen(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+			walletTruth: []WalletTruthPosition{
+				{
+					MarketID:         "BTC#latefill",
+					Outcome:          "Up",
+					OnChainShares:    3.5,
+					ResolutionStatus: "unresolved",
+				},
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  96.9,
+		StartingBalance: 100,
+		RealizedPnL:     0,
+	}, 0, 96.9, 96.9, 1.0, 100, 1, 0, 1, nil)
+
+	if strings.Contains(rendered, "Realized -$3.10") {
+		t.Fatalf("expected open wallet-truth inventory to suppress net-change realized fallback, got %q", rendered)
+	}
+	if strings.Contains(rendered, "W/L 0/1") {
+		t.Fatalf("expected unresolved wallet-truth inventory to suppress round loss fallback, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Realized +$0.00") {
+		t.Fatalf("expected realized pnl to stay neutral while inventory is unresolved, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

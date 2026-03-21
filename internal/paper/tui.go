@@ -2579,8 +2579,20 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		changeSt = styleRed
 	}
 
+	hasWalletTruthInventory := false
+	for _, wt := range s.walletTruth {
+		if wt.OnChainShares <= 0.000001 {
+			continue
+		}
+		if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
+			continue
+		}
+		hasWalletTruthInventory = true
+		break
+	}
+
 	displayRealized := stats.RealizedPnL
-	if math.Abs(displayRealized) < 0.0001 && totalExposure <= 0.0001 && len(positions) == 0 && math.Abs(netChange) >= 0.005 {
+	if math.Abs(displayRealized) < 0.0001 && totalExposure <= 0.0001 && len(positions) == 0 && !hasWalletTruthInventory && math.Abs(netChange) >= 0.005 {
 		displayRealized = netChange
 	}
 
@@ -2683,7 +2695,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	uptime := time.Since(s.startTime).Round(time.Second)
 	winCount := stats.WinningTrades
 	lossCount := stats.LosingTrades
-	if winCount+lossCount == 0 && profitable+losingRounds > 0 {
+	if winCount+lossCount == 0 && profitable+losingRounds > 0 && !hasWalletTruthInventory {
 		winCount = profitable
 		lossCount = losingRounds
 	}

@@ -1360,6 +1360,15 @@ func run() error {
 			}
 			endBalFn()
 		}
+		{
+			reconcileCtx, reconcileCancel := context.WithTimeout(ctx, 20*time.Second)
+			if changed, reconcileErr := realbotReconcileTrackedRoundWalletTruth(reconcileCtx, markets, realTrader, engine, globalSplitInventories, &splitMu, tui); reconcileErr != nil {
+				tui.LogEvent("⚠️ Round-end wallet-truth reconciliation incomplete: %v", reconcileErr)
+			} else if changed > 0 {
+				tui.LogEvent("🧾 Round-end wallet-truth reconciliation restored %d tracked market(s)", changed)
+			}
+			reconcileCancel()
+		}
 
 		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
 		// until it is actually sold, merged, or redeemed.
@@ -1551,7 +1560,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	refreshWalletTruth := func(timeout time.Duration) {
 		truthCtx, truthCancel := context.WithTimeout(ctx, timeout)
 		defer truthCancel()
-		_ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)
+		_, _ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)
 	}
 	refreshWalletTruth(5 * time.Second)
 	go func() {
@@ -4927,7 +4936,7 @@ func reconcileBoughtPairBalances(ctx context.Context, trader *trading.RealTrader
 	return acquired0, acquired1, live0, live1, source, onChainErr
 }
 
-func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) error {
+func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) (bool, error) {
 	enginePositions := engine.GetPositions()
 	localByOutcome := make(map[string]float64)
 	for _, pos := range enginePositions {
@@ -4938,13 +4947,14 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 	}
 
 	positions := make([]paper.WalletTruthPosition, 0, len(tokenToOutcome))
+	changed := false
 	for tokenID, outcome := range tokenToOutcome {
 		if tokenID == "" || outcome == "" {
 			continue
 		}
 		onChainShares, err := trader.GetCTFBalanceFloat(ctx, tokenID)
 		if err != nil {
-			return err
+			return changed, err
 		}
 		localBoughtShares := localByOutcome[outcome]
 		splitShares := 0.0
@@ -4953,7 +4963,11 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		}
 		desiredBoughtShares := math.Max(0, onChainShares-splitShares)
 		if desiredBoughtShares > localBoughtShares+1e-6 {
-			engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, walletTruthSyncMarkPrice(engine, marketID, outcome))
+			addQty := desiredBoughtShares - localBoughtShares
+			if engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, walletTruthSyncMarkPrice(engine, marketID, outcome)) {
+				tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcome, formatShareQty(addQty), localBoughtShares, onChainShares, splitShares)
+				changed = true
+			}
 			localBoughtShares = desiredBoughtShares
 		}
 		localShares := localBoughtShares + splitShares
@@ -4972,7 +4986,58 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		return positions[i].MarketID < positions[j].MarketID
 	})
 	tui.SetWalletTruthPositions(marketID, positions)
-	return nil
+	return changed, nil
+}
+
+func realbotReconcileTrackedRoundWalletTruth(ctx context.Context, markets map[string]*api.Market, trader *trading.RealTrader, engine *paper.Engine, splitInventories map[string]*paper.SplitInventory, splitMu *sync.Mutex, tui *paper.TUI) (int, error) {
+	if trader == nil || engine == nil || len(markets) == 0 {
+		return 0, nil
+	}
+
+	changedMarkets := 0
+	var firstErr error
+
+	for assetID, market := range markets {
+		if market == nil {
+			continue
+		}
+
+		tokenToOutcome := make(map[string]string)
+		for _, token := range market.Tokens {
+			if token.TokenID == "" || token.Outcome == "" {
+				continue
+			}
+			tokenToOutcome[token.TokenID] = token.Outcome
+		}
+		if len(tokenToOutcome) == 0 {
+			continue
+		}
+
+		marketID := mkt.ScopedMarketID(assetID, market)
+		var splitInventory *paper.SplitInventory
+		if splitMu != nil {
+			splitMu.Lock()
+			splitInventory = splitInventories[market.ConditionID]
+			splitMu.Unlock()
+		} else {
+			splitInventory = splitInventories[market.ConditionID]
+		}
+
+		marketCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		changed, err := syncWalletTruthPositions(marketCtx, marketID, tokenToOutcome, trader, engine, splitInventory, tui)
+		cancel()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", marketID, err)
+			}
+			continue
+		}
+		if changed {
+			changedMarkets++
+		}
+	}
+
+	return changedMarkets, firstErr
 }
 
 func localBoughtPairBalances(engine *paper.Engine, marketID, outcome0, outcome1 string) (bal0, bal1 float64) {
