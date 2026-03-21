@@ -198,7 +198,8 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 
 // resolveViaREST tries to get market info via REST client's GetMarket endpoint.
 // This is the fallback path when clobClient is nil (e.g., paperbot).
-// Note: REST GetMarket only provides Active/Closed state, not winner info.
+// Note: REST GetMarket may include token winner flags on some venues;
+// if absent, Winner remains false and we rely on on-chain checks.
 func (rc *ResolutionCache) resolveViaREST(ctx context.Context, conditionID string, outcomes []string) (*MarketInfo, error) {
 	if rc.restClient == nil {
 		return nil, nil
@@ -213,8 +214,7 @@ func (rc *ResolutionCache) resolveViaREST(ctx context.Context, conditionID strin
 		Active:      market.Active,
 		Closed:      market.Closed,
 	}
-	// REST Token doesn't have Winner field — only outcome/tokenID.
-	// Winner detection requires CLOB API or on-chain check.
+	// Preserve winner metadata when present in REST payloads.
 	for _, token := range market.Tokens {
 		info.Tokens = append(info.Tokens, struct {
 			TokenID string      `json:"token_id"`
@@ -224,7 +224,7 @@ func (rc *ResolutionCache) resolveViaREST(ctx context.Context, conditionID strin
 		}{
 			TokenID: token.TokenID,
 			Outcome: token.Outcome,
-			Winner:  false, // REST doesn't provide winner info
+			Winner:  token.Winner,
 		})
 	}
 	return info, nil

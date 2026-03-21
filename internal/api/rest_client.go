@@ -49,6 +49,7 @@ var httpClient = &http.Client{
 type Token struct {
 	TokenID string `json:"token_id"`
 	Outcome string `json:"outcome"`
+	Winner  bool   `json:"winner"`
 }
 
 type Market struct {
@@ -77,7 +78,7 @@ type RestClient struct {
 
 func NewRestClient(exchange string) *RestClient {
 	limiter := time.NewTicker(time.Second / 500)
-	
+
 	client := &RestClient{
 		Exchange:      exchange,
 		BaseURL:       "https://clob.polymarket.com",
@@ -280,7 +281,7 @@ func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []s
 						{TokenID: mkt.Ticker + "-NO", Outcome: "No"},
 					},
 				})
-				
+
 				foundForAsset++
 				// Just grab up to 3 active markets for this asset
 				if foundForAsset >= 3 {
@@ -581,10 +582,10 @@ func (c *RestClient) kalshiGetOrderBook(ctx context.Context, ticker string) (*Or
 	// Convert Kalshi Bids to standard Bids/Asks
 	// Yes Bids = Bids for Yes
 	// No Bids = Asks for Yes (Ask Price = 100 - No Bid Price)
-	
+
 	book := &OrderBookResponse{
-		Bids: make([]PriceLevel, 0),
-		Asks: make([]PriceLevel, 0),
+		Bids:      make([]PriceLevel, 0),
+		Asks:      make([]PriceLevel, 0),
 		Timestamp: fmt.Sprintf("%d", time.Now().UnixMilli()),
 	}
 
@@ -595,7 +596,7 @@ func (c *RestClient) kalshiGetOrderBook(ctx context.Context, ticker string) (*Or
 			book.Bids = append(book.Bids, PriceLevel{Price: fmt.Sprintf("%.3f", price), Size: fmt.Sprintf("%.2f", size)})
 		}
 		for _, yb := range kalshiResp.Orderbook.Yes {
-			askPrice := float64(100 - yb.Price) / 100.0
+			askPrice := float64(100-yb.Price) / 100.0
 			size := float64(yb.Quantity)
 			book.Asks = append(book.Asks, PriceLevel{Price: fmt.Sprintf("%.3f", askPrice), Size: fmt.Sprintf("%.2f", size)})
 		}
@@ -606,7 +607,7 @@ func (c *RestClient) kalshiGetOrderBook(ctx context.Context, ticker string) (*Or
 			book.Bids = append(book.Bids, PriceLevel{Price: fmt.Sprintf("%.3f", price), Size: fmt.Sprintf("%.2f", size)})
 		}
 		for _, nb := range kalshiResp.Orderbook.No {
-			askPrice := float64(100 - nb.Price) / 100.0
+			askPrice := float64(100-nb.Price) / 100.0
 			size := float64(nb.Quantity)
 			book.Asks = append(book.Asks, PriceLevel{Price: fmt.Sprintf("%.3f", askPrice), Size: fmt.Sprintf("%.2f", size)})
 		}
