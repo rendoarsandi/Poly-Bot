@@ -621,6 +621,34 @@ func realbotStorePublishedQuotes(outcomes []string, srcBids, srcAsks, dstBids, d
 	}
 }
 
+func realbotLatestQuoteUpdate(outcomes []string, quoteState map[string]realbotQuoteState) (time.Time, string) {
+	latest := time.Time{}
+	latestSource := ""
+	for _, outcome := range outcomes {
+		state, ok := quoteState[outcome]
+		if !ok || state.UpdatedAt.IsZero() {
+			continue
+		}
+		if latest.IsZero() || state.UpdatedAt.After(latest) {
+			latest = state.UpdatedAt
+			latestSource = state.Source
+		}
+	}
+	return latest, latestSource
+}
+
+func realbotNormalizeDisplaySource(raw string) string {
+	source := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case strings.HasPrefix(source, "rest"):
+		return "REST"
+	case strings.HasPrefix(source, "ws"):
+		return "WS"
+	default:
+		return "WS"
+	}
+}
+
 func realbotSyncDisplayQuotes(outcomes []string, liveBids, liveAsks, displayBids, displayAsks map[string]float64, authoritative bool) bool {
 	nextBids := make(map[string]float64, len(outcomes))
 	nextAsks := make(map[string]float64, len(outcomes))
@@ -1539,6 +1567,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	publishedBids := make(map[string]float64)
 	publishedAsks := make(map[string]float64)
 	quoteState := make(map[string]realbotQuoteState)
+	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -2046,9 +2075,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			restRecoveryLogged = false
 		}
 
-		if !realbotQuoteMapsEqual(outcomes, displayBids, displayAsks, publishedBids, publishedAsks) {
-			tui.UpdateMarketPricesWithSource(id, displayBids, displayAsks, "WS")
+		quotesChanged := !realbotQuoteMapsEqual(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+		latestQuoteAt, latestQuoteSource := realbotLatestQuoteUpdate(outcomes, quoteState)
+		freshnessAdvanced := !latestQuoteAt.IsZero() && latestQuoteAt.After(lastPublishedQuoteAt)
+		if quotesChanged || freshnessAdvanced {
+			tui.UpdateMarketPricesWithSourceAt(id, displayBids, displayAsks, realbotNormalizeDisplaySource(latestQuoteSource), latestQuoteAt)
 			realbotStorePublishedQuotes(outcomes, displayBids, displayAsks, publishedBids, publishedAsks)
+			if freshnessAdvanced {
+				lastPublishedQuoteAt = latestQuoteAt
+			}
 		}
 
 		if needsWSReconnect && wsMgr.IsConnected() && !wsChannelClosed && time.Since(lastForceReconnect) > realbotWSForceReconnect {

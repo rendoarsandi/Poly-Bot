@@ -1197,3 +1197,32 @@ func TestBuildRealbotTakerClosePlan_RejectsConfirmedPriceBelowMinPrice(t *testin
 		t.Fatal("expected close plan to reject confirmed price below configured min price")
 	}
 }
+
+func TestRealbotLatestQuoteUpdateReturnsFreshestState(t *testing.T) {
+	outcomes := []string{"Down", "Up"}
+	base := time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)
+	state := map[string]realbotQuoteState{
+		"Down": {UpdatedAt: base.Add(150 * time.Millisecond), Source: "ws"},
+		"Up":   {UpdatedAt: base.Add(350 * time.Millisecond), Source: "rest"},
+	}
+
+	updatedAt, source := realbotLatestQuoteUpdate(outcomes, state)
+	if !updatedAt.Equal(base.Add(350 * time.Millisecond)) {
+		t.Fatalf("expected freshest timestamp %s, got %s", base.Add(350*time.Millisecond), updatedAt)
+	}
+	if source != "rest" {
+		t.Fatalf("expected freshest source rest, got %q", source)
+	}
+}
+
+func TestRealbotNormalizeDisplaySource(t *testing.T) {
+	if got := realbotNormalizeDisplaySource("ws-bbo"); got != "WS" {
+		t.Fatalf("expected WS for ws-bbo, got %q", got)
+	}
+	if got := realbotNormalizeDisplaySource("rest-exec"); got != "REST" {
+		t.Fatalf("expected REST for rest-exec, got %q", got)
+	}
+	if got := realbotNormalizeDisplaySource("unknown"); got != "WS" {
+		t.Fatalf("expected WS default for unknown, got %q", got)
+	}
+}
