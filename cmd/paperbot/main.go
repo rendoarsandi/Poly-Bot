@@ -51,7 +51,6 @@ const (
 	paperUIRefreshInterval         = 100 * time.Millisecond
 	paperMainLoopInterval          = 10 * time.Millisecond
 	paperFillPollInterval          = 50 * time.Millisecond
-	paperResolutionCheckInterval   = 15 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
@@ -548,6 +547,34 @@ func isPaperOrderActive(order *paper.LimitOrder) bool {
 func getPaperMarketPosition(positions map[string]paper.Position, marketID, outcome string) (paper.Position, bool) {
 	pos, ok := positions[marketID+":"+outcome]
 	return pos, ok
+}
+
+func estimatePaperWinner(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64) {
+	if len(outcomes) == 0 {
+		return "", 0
+	}
+
+	bestOutcome := outcomes[0]
+	highestProb := 0.0
+
+	for _, outcome := range outcomes {
+		prob := bids[outcome]
+		if prob <= 0 {
+			ask := asks[outcome]
+			if ask > 0 {
+				prob = ask - 0.01
+			}
+		}
+		if prob <= 0 {
+			prob = floatPrices[outcome]
+		}
+		if prob > highestProb {
+			highestProb = prob
+			bestOutcome = outcome
+		}
+	}
+
+	return bestOutcome, highestProb
 }
 
 func computePaperMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
@@ -1610,7 +1637,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	takerCloseAttempted := false
 	var lastTakerCloseLog time.Time
 	usWeekdayGateClosedLogged := false
-	nextResolutionCheck := time.Time{}
 
 	mainLoopTicker := time.NewTicker(paperMainLoopInterval)
 	defer mainLoopTicker.Stop()
@@ -1672,18 +1698,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.OrderBook.CancelAllOrders()
 			t.LadderMgr.CancelAllLadders()
 
-			// Try authoritative resolution before timing out.
-			winner, resolved := t.determineWinner()
+			winner := t.determineWinner()
 			if winner != "" {
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
 				t.Engine.RedeemWithDetails(t.ID, winner)
 				if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
 					t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
 				}
-			} else if resolved {
-				t.TUI.LogEvent("[%s] ⏳ Timeout reached: market resolved but winner still pending", t.ID)
-			} else {
-				t.TUI.LogEvent("[%s] ⏳ Timeout reached: resolution still pending", t.ID)
 			}
 			finalStats := t.Engine.GetStats()
 			return &marketResult{
@@ -1798,28 +1819,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		// --------------------------------
 		isExpired := timeToEnd <= 0
 
-		if isExpired {
-			if !t.MarketEnded {
-				t.MarketEnded = true
-				nextResolutionCheck = time.Time{}
-				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - waiting for authoritative resolution")
-			}
+		if isExpired && !t.MarketEnded {
+			t.MarketEnded = true
+			logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
 
-			if !nextResolutionCheck.IsZero() && time.Now().Before(nextResolutionCheck) {
-				continue
-			}
-			nextResolutionCheck = time.Now().Add(paperResolutionCheckInterval)
-
-			winner, resolved := t.determineWinner()
-			if winner == "" {
-				if resolved {
-					t.TUI.LogEvent("[%s] ⏳ Market resolved, winner still pending...", t.ID)
-				} else {
-					t.TUI.LogEvent("[%s] ⏳ Resolution pending...", t.ID)
-				}
-				continue
-			}
-
+			winner := t.determineWinner()
 			logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
 
 			// Use detailed redemption
@@ -2921,17 +2925,18 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	}
 }
 
-// determineWinner resolves market outcome from authoritative sources.
-// Returns winner outcome and whether the market is resolved.
-func (t *MarketTrader) determineWinner() (string, bool) {
+// determineWinner uses authoritative resolution when available, otherwise
+// falls back to the last known price-based estimate so paper rounds can rotate
+// immediately after expiry.
+func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
-		return "", false
+		return ""
 	}
 
-	resolveByCondition := func(conditionID string, outcomes []string, marketEndTime time.Time) (winner string, resolved bool, checked bool) {
+	resolveByCondition := func(conditionID string, outcomes []string, marketEndTime time.Time) (winner string, checked bool) {
 		conditionID = strings.TrimSpace(conditionID)
 		if t.ResolutionCache == nil || conditionID == "" {
-			return "", false, false
+			return "", false
 		}
 
 		t.ResolutionCache.ForceRefresh(conditionID)
@@ -2940,68 +2945,57 @@ func (t *MarketTrader) determineWinner() (string, bool) {
 
 		status := t.ResolutionCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
 		if status.Error != nil {
-			t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v", t.ID, status.Error)
+			t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v (falling back to price estimate)", t.ID, status.Error)
 		}
 		if status.Resolved && status.Winner != "" {
-			return status.Winner, true, true
+			return status.Winner, true
 		}
-		return "", status.Resolved, true
-	}
-
-	if t.Market != nil {
-		if winner, resolved, checked := resolveByCondition(t.Market.ConditionID, t.Outcomes, t.EndTime); checked {
-			if winner != "" {
-				t.TUI.LogEvent("[%s] 🔗 Resolution: %s", t.ID, winner)
-				return winner, true
-			}
-			if resolved {
-				return "", true
-			}
-		}
-	}
-
-	if t.RestClient == nil || t.Market == nil || strings.TrimSpace(t.Market.Slug) == "" {
-		return "", false
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	historyMarket, err := t.RestClient.GetMarket(ctx, t.Market.Slug)
-	if err != nil {
-		t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v", t.ID, err)
-		return "", false
-	}
-
-	historyOutcomes := make([]string, 0, len(historyMarket.Tokens))
-	for _, token := range historyMarket.Tokens {
-		if token.Outcome != "" {
-			historyOutcomes = append(historyOutcomes, token.Outcome)
-		}
-		if token.Winner {
-			t.TUI.LogEvent("[%s] 🧾 Historical slug resolution: %s", t.ID, token.Outcome)
-			return token.Outcome, true
-		}
-	}
-	if len(historyOutcomes) == 0 {
-		historyOutcomes = append(historyOutcomes, t.Outcomes...)
-	}
-
-	if winner, resolved, checked := resolveByCondition(historyMarket.ConditionID, historyOutcomes, t.EndTime); checked {
-		if winner != "" {
-			t.TUI.LogEvent("[%s] 🧾 Historical condition resolution: %s", t.ID, winner)
-			return winner, true
-		}
-		if resolved {
-			return "", true
-		}
-	}
-
-	if historyMarket.Closed {
 		return "", true
 	}
 
-	return "", false
+	if t.Market != nil {
+		if winner, checked := resolveByCondition(t.Market.ConditionID, t.Outcomes, t.EndTime); checked && winner != "" {
+			t.TUI.LogEvent("[%s] 🔗 Resolution: %s", t.ID, winner)
+			return winner
+		}
+	}
+
+	if t.RestClient != nil && t.Market != nil && strings.TrimSpace(t.Market.Slug) != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		historyMarket, err := t.RestClient.GetMarket(ctx, t.Market.Slug)
+		cancel()
+
+		if err != nil {
+			t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v (falling back to price estimate)", t.ID, err)
+		} else {
+			historyOutcomes := make([]string, 0, len(historyMarket.Tokens))
+			for _, token := range historyMarket.Tokens {
+				if token.Outcome != "" {
+					historyOutcomes = append(historyOutcomes, token.Outcome)
+				}
+				if token.Winner {
+					t.TUI.LogEvent("[%s] 🧾 Historical slug resolution: %s", t.ID, token.Outcome)
+					return token.Outcome
+				}
+			}
+			if len(historyOutcomes) == 0 {
+				historyOutcomes = append(historyOutcomes, t.Outcomes...)
+			}
+			if winner, checked := resolveByCondition(historyMarket.ConditionID, historyOutcomes, t.EndTime); checked && winner != "" {
+				t.TUI.LogEvent("[%s] 🧾 Historical condition resolution: %s", t.ID, winner)
+				return winner
+			}
+		}
+	}
+
+	t.mu.Lock()
+	bestOutcome, highestProb := estimatePaperWinner(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
+	t.mu.Unlock()
+
+	if bestOutcome != "" {
+		t.TUI.LogEvent("[%s] 📊 Price-based winner estimate: %s ($%.3f) [no on-chain data]", t.ID, bestOutcome, highestProb)
+	}
+	return bestOutcome
 }
 
 // handleRestFallback polls REST API for fresh liquidity data.

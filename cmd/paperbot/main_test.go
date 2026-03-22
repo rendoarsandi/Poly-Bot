@@ -421,3 +421,46 @@ func TestShouldPaperMakerBlockBuyRejectsNoExitAddOn(t *testing.T) {
 		t.Fatal("expected underweight side to remain buyable when completion price is safe")
 	}
 }
+
+func TestEstimatePaperWinnerPrefersHighestBid(t *testing.T) {
+	winner, prob := estimatePaperWinner(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.99, "Up": 0.01},
+		map[string]float64{"Down": 0.99, "Up": 0.01},
+		map[string]float64{"Down": 0.99, "Up": 0.01},
+	)
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+	if prob != 0.99 {
+		t.Fatalf("prob = %.3f, want 0.990", prob)
+	}
+}
+
+func TestEstimatePaperWinnerFallsBackToAskThenMid(t *testing.T) {
+	winner, prob := estimatePaperWinner(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0.98, "Up": 0},
+		map[string]float64{"Down": 0.50, "Up": 0.75},
+	)
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+	if prob != 0.97 {
+		t.Fatalf("prob = %.3f, want 0.970", prob)
+	}
+
+	winner, prob = estimatePaperWinner(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0.40, "Up": 0.60},
+	)
+	if winner != "Up" {
+		t.Fatalf("winner = %q, want Up", winner)
+	}
+	if prob != 0.60 {
+		t.Fatalf("prob = %.3f, want 0.600", prob)
+	}
+}
