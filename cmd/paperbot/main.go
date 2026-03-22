@@ -251,12 +251,28 @@ func paperHasSaneTopOfBook(bid, ask float64) bool {
 	return (ask - bid) <= paperMaxSaneOutcomeSpread
 }
 
+const paperHighBidThreshold = 0.60
+
+func paperPairHasHighBid(outcomes []string, tokenBids map[string]float64) bool {
+	for _, out := range outcomes {
+		if tokenBids[out] >= paperHighBidThreshold {
+			return true
+		}
+	}
+	return false
+}
+
 func paperLocalQuoteSanityReason(outcomes []string, bids, asks map[string]float64) string {
+	highBidPresent := paperPairHasHighBid(outcomes, bids)
+
 	for _, outcome := range outcomes {
 		bid := bids[outcome]
 		ask := asks[outcome]
 		if !paperHasSaneTopOfBook(bid, ask) {
 			if bid <= 0 || ask <= 0 {
+				if highBidPresent {
+					continue
+				}
 				return fmt.Sprintf("missing two-sided quote for %s", outcome)
 			}
 			if bid >= ask {
@@ -268,7 +284,7 @@ func paperLocalQuoteSanityReason(outcomes []string, bids, asks map[string]float6
 
 	if len(outcomes) == 2 && !paperLooksLikeTerminalBook(outcomes, bids, asks) {
 		askSum := asks[outcomes[0]] + asks[outcomes[1]]
-		if askSum > paperMaxSaneAskPairSum {
+		if !highBidPresent && askSum > paperMaxSaneAskPairSum {
 			return fmt.Sprintf("ask pair sum %.3f > %.3f", askSum, paperMaxSaneAskPairSum)
 		}
 		bidSum := bids[outcomes[0]] + bids[outcomes[1]]
@@ -291,14 +307,7 @@ func shouldPaperReconnectWS(outcomes []string, bids, asks map[string]float64, pa
 	if terminalBookState || pairQuoteAge <= staleThreshold {
 		return false
 	}
-	for _, outcome := range outcomes {
-		bid := bids[outcome]
-		ask := asks[outcome]
-		if !paperHasSaneTopOfBook(bid, ask) {
-			return true
-		}
-	}
-	return false
+	return paperLocalQuoteSanityReason(outcomes, bids, asks) != ""
 }
 
 func paperLooksLikeTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
@@ -338,7 +347,13 @@ func paperQuoteMapsEqual(outcomes []string, bidsA, asksA, bidsB, asksB map[strin
 }
 
 func paperShouldClearLocalPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
-	return !hasValidPaperPairQuotes(outcomes, bids, asks) && !paperLooksLikeTerminalBook(outcomes, bids, asks)
+	if hasValidPaperPairQuotes(outcomes, bids, asks) || paperLooksLikeTerminalBook(outcomes, bids, asks) {
+		return false
+	}
+	if paperPairHasHighBid(outcomes, bids) {
+		return false
+	}
+	return true
 }
 
 func paperStorePublishedQuotes(outcomes []string, srcBids, srcAsks, dstBids, dstAsks map[string]float64) {
@@ -1113,7 +1128,7 @@ func run() error {
 		TakerCloseMarketTime:     cfg.TakerCloseMarketTime,
 		TakerCloseMarketSlippage: cfg.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice: cfg.TakerCloseMarketMinPrice,
-		TradeWeekdaysOnlyUS:      cfg.TradeWeekdaysOnlyUS,
+		TradingHoursMode:         cfg.TradingHoursMode,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -1136,7 +1151,7 @@ func run() error {
 		cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
 		cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 		cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
-		cfg.TradeWeekdaysOnlyUS = s.TradeWeekdaysOnlyUS
+		cfg.TradingHoursMode = s.TradingHoursMode
 
 		// Update the REST client exchange if it changed
 		if restClient.Exchange != s.Exchange {
@@ -1635,6 +1650,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	// Track WebSocket channel closure state (outside loop to persist across ticks)
 	wsChannelClosed := false
 	takerCloseAttempted := false
+	var takerCloseTriggerOutcome string
+	var takerCloseTriggerTime time.Time
 	var lastTakerCloseLog time.Time
 	usWeekdayGateClosedLogged := false
 
@@ -1729,14 +1746,21 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 		liveCfg := t.TUI.GetSettings()
 		usNow := core.USTime(time.Now())
-		weekdayTradingAllowed := !liveCfg.TradeWeekdaysOnlyUS || core.IsUSWeekday(usNow)
+		
+		weekdayTradingAllowed := true
+		if liveCfg.TradingHoursMode == "weekdays trade only" {
+			weekdayTradingAllowed = core.IsUSWeekday(usNow)
+		} else if liveCfg.TradingHoursMode == "us open only" {
+			weekdayTradingAllowed = core.IsUSMarketOpen(time.Now())
+		}
+
 		if !weekdayTradingAllowed {
 			if !usWeekdayGateClosedLogged {
-				t.TUI.LogEvent("[%s] 🗓️ US weekday gate closed at %s - new trades paused", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+				t.TUI.LogEvent("[%s] 🗓️ Trading gate closed at %s - new trades paused", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
 				usWeekdayGateClosedLogged = true
 			}
 		} else if usWeekdayGateClosedLogged {
-			t.TUI.LogEvent("[%s] ✅ US weekday gate open at %s - trading resumed", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+			t.TUI.LogEvent("[%s] ✅ Trading gate open at %s - trading resumed", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
 			usWeekdayGateClosedLogged = false
 		}
 
@@ -1766,7 +1790,29 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					minPrice = 0.60
 				}
 
+				if bestOutcome == "" || highestPrice < minPrice {
+					takerCloseTriggerOutcome = ""
+					takerCloseTriggerTime = time.Time{}
+					if time.Since(lastTakerCloseLog) > 5*time.Second {
+						t.TUI.LogEvent("[%s] ⏳ Taker close waiting for valid quote (highest: $%.3f, needs >= $%.3f)", t.ID, highestPrice, minPrice)
+						lastTakerCloseLog = time.Now()
+					}
+					continue
+				}
+
 				if bestOutcome != "" && highestPrice >= minPrice {
+					if takerCloseTriggerOutcome != bestOutcome {
+						takerCloseTriggerOutcome = bestOutcome
+						takerCloseTriggerTime = time.Now()
+					}
+					if time.Since(takerCloseTriggerTime) < 1*time.Second {
+						if time.Since(lastTakerCloseLog) > 5*time.Second {
+							t.TUI.LogEvent("[%s] ⏳ Taker close stabilizing: %s at $%.3f (waiting 1s)", t.ID, bestOutcome, highestPrice)
+							lastTakerCloseLog = time.Now()
+						}
+						continue
+					}
+
 					takerCloseAttempted = true
 					t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
@@ -2301,9 +2347,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
 		executionPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
 		if !weekdayTradingAllowed {
-			cancelAllPaperMakerQuotes(t, "US weekday gate closed")
-		} else if liveCfg.TakerCloseMarket {
-			cancelAllPaperMakerQuotes(t, "taker close market enabled")
+			cancelAllPaperMakerQuotes(t, "trading gate closed")
+		} else if liveCfg.TakerCloseMarket {			cancelAllPaperMakerQuotes(t, "taker close market enabled")
 		} else if arbMode != paperArbModeMaker {
 			cancelAllPaperMakerQuotes(t, "maker mode disabled")
 		} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {

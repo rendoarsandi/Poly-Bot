@@ -1284,7 +1284,7 @@ func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
 			mode:        "Paper",
 			tradeFactor: 0.05,
 			settings: TUISettings{
-				TradeWeekdaysOnlyUS: true,
+				TradingHoursMode: "weekdays trade only",
 			},
 		},
 	}

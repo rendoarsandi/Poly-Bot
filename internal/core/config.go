@@ -106,7 +106,7 @@ type Config struct {
 	MakerMinQuoteValue       float64 // Minimum shares to quote (default: 10.0)
 	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
-	TradeWeekdaysOnlyUS      bool    // Restrict new trades to Mon-Fri in America/New_York
+	TradingHoursMode         string  // "off", "weekdays trade only", "us open only"
 	TakerCloseMarket         bool    // Force GTC buy right before market closes
 	TakerCloseMarketTime     int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage float64 // Limit price for taker close (default: 0.99)
@@ -153,7 +153,7 @@ type RuntimeSettings struct {
 	MakerMinQuoteValue             float64 `json:"makerMinQuoteValue"`
 	SplitInitialCapPct             float64 `json:"splitInitialCapPct"`
 	SplitReplenishCapPct           float64 `json:"splitReplenishCapPct"`
-	TradeWeekdaysOnlyUS            bool    `json:"tradeWeekdaysOnlyUS"`
+	TradingHoursMode               string  `json:"tradingHoursMode"`
 	TakerCloseMarket               bool    `json:"takerCloseMarket"`
 	TakerCloseMarketTime           int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage       float64 `json:"takerCloseMarketSlippage"`
@@ -221,7 +221,7 @@ func LoadConfig() (*Config, error) {
 		MakerMinQuoteValue:       parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
 		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
-		TradeWeekdaysOnlyUS:      parseEnvBool("TRADE_WEEKDAYS_ONLY_US", true),
+		TradingHoursMode:         parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
 	}
 
 	return cfg, nil
@@ -423,13 +423,21 @@ func parseEnvBool(key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	switch val {
-	case "1", "true", "yes", "y", "on":
+	case "true", "1", "yes", "on":
 		return true
-	case "0", "false", "no", "n", "off":
+	case "false", "0", "no", "off":
 		return false
 	default:
 		return defaultVal
 	}
+}
+
+func parseEnvString(key string, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
 }
 
 func settingsPathForProfile(profile string) string {
@@ -507,9 +515,8 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MakerMinQuoteValue:             c.MakerMinQuoteValue,
 		SplitInitialCapPct:             c.SplitInitialCapPct,
 		SplitReplenishCapPct:           c.SplitReplenishCapPct,
-		TradeWeekdaysOnlyUS:            c.TradeWeekdaysOnlyUS,
-		TakerCloseMarket:               c.TakerCloseMarket,
-		TakerCloseMarketTime:           c.TakerCloseMarketTime,
+		TradingHoursMode:               c.TradingHoursMode,
+		TakerCloseMarket:               c.TakerCloseMarket,		TakerCloseMarketTime:           c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       c.TakerCloseMarketMinPrice,
 		StartupWizardSeen:              c.StartupWizardSeen,
@@ -554,7 +561,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.MakerMinQuoteValue = s.MakerMinQuoteValue
 	c.SplitInitialCapPct = s.SplitInitialCapPct
 	c.SplitReplenishCapPct = s.SplitReplenishCapPct
-	c.TradeWeekdaysOnlyUS = s.TradeWeekdaysOnlyUS
+	c.TradingHoursMode = s.TradingHoursMode
 	c.TakerCloseMarket = s.TakerCloseMarket
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
@@ -597,7 +604,7 @@ func (c *Config) SaveSettings() error {
 	envMap["MAKER_QUOTE_GAP"] = strconv.FormatFloat(c.MakerQuoteGap, 'f', -1, 64)
 	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
 	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
-	envMap["TRADE_WEEKDAYS_ONLY_US"] = strconv.FormatBool(c.TradeWeekdaysOnlyUS)
+	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
 
 	return godotenv.Write(envMap, ".env")
 }

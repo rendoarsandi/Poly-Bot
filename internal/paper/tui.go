@@ -183,16 +183,29 @@ func signedDollar(amount float64) string {
 	return fmt.Sprintf("%s$%.2f", sign, amount)
 }
 
-func renderUSWeekdayTradingStatus(enabled bool, now time.Time) string {
+func renderTradingHoursStatus(mode string, now time.Time) string {
 	usNow := core.USTime(now)
 	usClock := usNow.Format("Mon 2006-01-02 15:04:05 MST")
-	if !enabled {
-		return styleDimmed.Render("US time " + usClock + "  ·  Weekday Gate OFF")
+
+	if mode == "off" {
+		return styleDimmed.Render("US time " + usClock + "  ·  Trading Gate OFF (24/7)")
 	}
-	if core.IsUSWeekday(usNow) {
-		return styleGreen.Render("US time " + usClock + "  ·  Weekday Gate OPEN (trading enabled)")
+
+	if mode == "weekdays trade only" {
+		if core.IsUSWeekday(usNow) {
+			return styleGreen.Render("US time " + usClock + "  ·  Weekday Gate OPEN (trading enabled)")
+		}
+		return styleRed.Render("US time " + usClock + "  ·  Weekday Gate CLOSED (weekend, trading blocked)")
 	}
-	return styleRed.Render("US time " + usClock + "  ·  Weekday Gate CLOSED (weekend, trading blocked)")
+
+	if mode == "us open only" {
+		if core.IsUSMarketOpen(now) {
+			return styleGreen.Render("US time " + usClock + "  ·  US Market Gate OPEN (trading enabled)")
+		}
+		return styleRed.Render("US time " + usClock + "  ·  US Market Gate CLOSED (outside hours, trading blocked)")
+	}
+
+	return styleDimmed.Render("US time " + usClock + "  ·  Trading Gate OFF")
 }
 
 func walletTruthInventoryStatus(wt WalletTruthPosition) string {
@@ -350,7 +363,7 @@ type TUISettings struct {
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
 	SplitInitialCapPct             float64 // Initial Split Cap percentage
 	SplitReplenishCapPct           float64 // Replenishment Cap percentage
-	TradeWeekdaysOnlyUS            bool    // Restrict new trades to Mon-Fri in America/New_York
+	TradingHoursMode               string  // "off", "weekdays trade only", "us open only"
 	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
 	MakerQuoteGap                  float64 // distance from mid for maker quotes
 	MakerInventoryTargetMult       float64
@@ -368,9 +381,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradeWeekdaysOnlyUS: true, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradeWeekdaysOnlyUS: true, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradeWeekdaysOnlyUS: true, TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
@@ -487,7 +500,7 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case 24:
 		return "Taker Close Min Price"
 	case 25:
-		return "US Weekdays Only"
+		return "Trading Hours Mode"
 	default:
 		return ""
 	}
@@ -1212,9 +1225,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 25:
-					m.tui.settings.TradeWeekdaysOnlyUS = !m.tui.settings.TradeWeekdaysOnlyUS
-					changed = true
-				}
+					if m.tui.settings.TradingHoursMode == "off" {
+						m.tui.settings.TradingHoursMode = "weekdays trade only"
+					} else if m.tui.settings.TradingHoursMode == "weekdays trade only" {
+						m.tui.settings.TradingHoursMode = "us open only"
+					} else {
+						m.tui.settings.TradingHoursMode = "off"
+					}
+					changed = true				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
 				}
@@ -1376,9 +1394,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case 25:
-					m.tui.settings.TradeWeekdaysOnlyUS = !m.tui.settings.TradeWeekdaysOnlyUS
-					changed = true
-				}
+					if m.tui.settings.TradingHoursMode == "off" {
+						m.tui.settings.TradingHoursMode = "weekdays trade only"
+					} else if m.tui.settings.TradingHoursMode == "weekdays trade only" {
+						m.tui.settings.TradingHoursMode = "us open only"
+					} else {
+						m.tui.settings.TradingHoursMode = "off"
+					}
+					changed = true				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
 				}
@@ -2877,7 +2900,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		winCount, lossCount,
 		styleDimmed.Render(uptime.String()),
 	)
-	row5 := "  " + renderUSWeekdayTradingStatus(s.settings.TradeWeekdaysOnlyUS, time.Now())
+	row5 := "  " + renderTradingHoursStatus(s.settings.TradingHoursMode, time.Now())
 
 	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4 + "\n" + row5
 	return makePanel(inner, clrTeal, content)
@@ -3734,8 +3757,10 @@ func (m tuiModel) renderSettings(w int) string {
 		{
 			label: settingsRowLabel(cfg, 25),
 			value: func() string {
-				if cfg.TradeWeekdaysOnlyUS {
-					return styleGreen.Render("  ON ")
+				if cfg.TradingHoursMode == "weekdays trade only" {
+					return styleGreen.Render(" WEEKDAYS ")
+				} else if cfg.TradingHoursMode == "us open only" {
+					return styleYellow.Render(" US OPEN ")
 				}
 				return styleMuted.Render(" OFF ")
 			}(),

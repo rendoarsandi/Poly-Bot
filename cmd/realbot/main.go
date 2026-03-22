@@ -98,14 +98,8 @@ func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, 
 	if terminalBookState || pairQuoteAge <= staleThreshold {
 		return false
 	}
-	for _, outcome := range outcomes {
-		bid := bids[outcome]
-		ask := asks[outcome]
-		if bid == 0 || ask == 0 || !realbotHasSaneTopOfBook(bid, ask) {
-			return true
-		}
-	}
-	return false
+	reason := realbotLocalQuoteSanityReason(outcomes, bids, asks)
+	return reason != ""
 }
 
 func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
@@ -357,7 +351,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		TakerCloseMarketTime:           cfg.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
-		TradeWeekdaysOnlyUS:            cfg.TradeWeekdaysOnlyUS,
+		TradingHoursMode:               cfg.TradingHoursMode,
 	}
 }
 
@@ -387,7 +381,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
 	cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
-	cfg.TradeWeekdaysOnlyUS = s.TradeWeekdaysOnlyUS
+	cfg.TradingHoursMode = s.TradingHoursMode
 	if cfg.Exchange == "kalshi" {
 		cfg.SplitStrategyEnabled = false
 		cfg.MakerMergeBufferSeconds = 0
@@ -1649,6 +1643,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	takerCloseAttempted := false
+	var takerCloseTriggerOutcome string
+	var takerCloseTriggerTime time.Time
 	var takerCloseExecutedAt time.Time // When taker close buy was confirmed (for merge-buffer cooldown)
 	var nextTakerCloseAttempt time.Time
 	var lastTakerCloseLog time.Time
@@ -1760,14 +1756,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg := tui.GetSettings()
 		usNow := core.USTime(time.Now())
-		weekdayTradingAllowed := !liveCfg.TradeWeekdaysOnlyUS || core.IsUSWeekday(usNow)
+		
+		weekdayTradingAllowed := true
+		if liveCfg.TradingHoursMode == "weekdays trade only" {
+			weekdayTradingAllowed = core.IsUSWeekday(usNow)
+		} else if liveCfg.TradingHoursMode == "us open only" {
+			weekdayTradingAllowed = core.IsUSMarketOpen(time.Now())
+		}
+
 		if !weekdayTradingAllowed {
 			if !usWeekdayGateClosedLogged {
-				tui.LogEvent("[%s] 🗓️ US weekday gate closed at %s - new trades paused", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+				tui.LogEvent("[%s] 🗓️ Trading gate closed at %s - new trades paused", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
 				usWeekdayGateClosedLogged = true
 			}
 		} else if usWeekdayGateClosedLogged {
-			tui.LogEvent("[%s] ✅ US weekday gate open at %s - trading resumed", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
+			tui.LogEvent("[%s] ✅ Trading gate open at %s - trading resumed", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
 			usWeekdayGateClosedLogged = false
 		}
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
@@ -2168,6 +2171,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 				}
 				if bestOutcome == "" || highestPrice < minPrice {
+					takerCloseTriggerOutcome = ""
+					takerCloseTriggerTime = time.Time{}
 					if highestPrice <= 0 {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
 							tui.LogEvent("[%s] ⏳ Taker close awaiting valid quote (needs >= $%.3f)", id, minPrice)
@@ -2178,6 +2183,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					continue
 				}
 				if bestOutcome != "" {
+					if takerCloseTriggerOutcome != bestOutcome {
+						takerCloseTriggerOutcome = bestOutcome
+						takerCloseTriggerTime = time.Now()
+					}
+					if time.Since(takerCloseTriggerTime) < 1*time.Second {
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "stabilizing", realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⏳ Taker close stabilizing: %s at $%.3f (waiting 1s)", id, bestOutcome, highestPrice)
+						}
+						continue
+					}
+
 					confirmPrice := highestPrice
 					confirmSource := "WS"
 					localConfirmPrice, localReason, localConfirmOK := realbotCanUseLocalTakerCloseQuote(time.Now(), bestOutcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, realbotTakerCloseLocalMaxAge)
@@ -2333,10 +2349,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg = tui.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
-		weekdayTradingAllowed = !liveCfg.TradeWeekdaysOnlyUS || core.IsUSWeekday(time.Now())
+		weekdayTradingAllowed = true
+		if liveCfg.TradingHoursMode == "weekdays trade only" {
+			weekdayTradingAllowed = core.IsUSWeekday(core.USTime(time.Now()))
+		} else if liveCfg.TradingHoursMode == "us open only" {
+			weekdayTradingAllowed = core.IsUSMarketOpen(time.Now())
+		}
 		if !weekdayTradingAllowed {
 			pauseMakerCtx, pauseMakerCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			realbotCancelAllMakerQuotes(pauseMakerCtx, id, "US weekday gate closed", trader, engine, tui, makerQuotes)
+			realbotCancelAllMakerQuotes(pauseMakerCtx, id, "trading gate closed", trader, engine, tui, makerQuotes)
 			pauseMakerCancel()
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -4548,12 +4569,7 @@ func realbotLocalQuoteSanityReason(outcomes []string, tokenBids, tokenAsks map[s
 				// In high-price regimes the complement side naturally has
 				// sparse or missing asks. Tolerate a one-sided book when
 				// the pair has a high bid so we don't keep clearing data.
-				if highBidPresent && bid > 0 {
-					continue
-				}
-				// Also tolerate the high-bid side itself if only the ask
-				// is momentarily missing (WS sweep).
-				if highBidPresent && ask > 0 {
+				if highBidPresent {
 					continue
 				}
 				return fmt.Sprintf("missing two-sided quote for %s", out)
