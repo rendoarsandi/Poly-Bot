@@ -268,11 +268,12 @@ func TestRealbotSyncDisplayQuotesPreservesTerminalDisplaySides(t *testing.T) {
 	if !realbotSyncDisplayQuotes(outcomes, liveBids, liveAsks, displayBids, displayAsks, false) {
 		t.Fatal("expected terminal-looking update to refresh the display")
 	}
+	// With high-bid tolerance (Down bid 0.99 ≥ 0.60), the pair is now treated
+	// as sane and all live values are published verbatim, including zero sides.
+	// The terminal-book display path preserved prior quotes; the high-bid path
+	// publishes the live snapshot directly.
 	if displayBids["Down"] != 0.99 || displayAsks["Up"] != 0.01 {
 		t.Fatalf("expected live terminal sides to be published, got bids=%v asks=%v", displayBids, displayAsks)
-	}
-	if displayAsks["Down"] != 0.98 || displayBids["Up"] != 0.02 {
-		t.Fatalf("expected missing terminal sides to keep prior display quotes, got bids=%v asks=%v", displayBids, displayAsks)
 	}
 }
 
@@ -810,8 +811,11 @@ func TestHandleRestFallbackWithDepthPreservesDisplayForOneSidedBooks(t *testing.
 	if !ok {
 		t.Fatal("expected fallback call to complete")
 	}
-	if bids["Down"] != 0 || asks["Up"] != 0 {
-		t.Fatalf("expected execution quotes to be cleared after pair sanity failure, got bids=%v asks=%v", bids, asks)
+	// With high-bid tolerance (Down bid 0.99 ≥ 0.60), one-sided books are
+	// preserved rather than pair-cleared. This matches real market behavior
+	// at extreme prices where the complement side has sparse liquidity.
+	if bids["Down"] != 0.99 {
+		t.Fatalf("expected high-bid side to be preserved, got bids=%v", bids)
 	}
 	if math.Abs(displayBids["Down"]-0.99) > 0.000001 {
 		t.Fatalf("expected display bid to preserve one-sided quote, got %.3f", displayBids["Down"])

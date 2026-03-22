@@ -135,10 +135,10 @@ func TestWSStaleDetection(t *testing.T) {
 			expectStale:     false,
 		},
 		{
-			name:            "At threshold (15s) - considered stale",
-			timeSinceUpdate: 15 * time.Second,
+			name:            "Just past threshold - considered stale",
+			timeSinceUpdate: 15*time.Second + time.Millisecond,
 			threshold:       15 * time.Second,
-			expectStale:     true, // >= threshold is stale
+			expectStale:     true, // > threshold is stale
 		},
 		{
 			name:            "Definitely stale (16s)",

@@ -516,17 +516,18 @@ func TestRealTrader_DailyLossReset(t *testing.T) {
 	// This test verifies the daily loss reset logic conceptually
 	// In production, RealTrader.checkSafetyLimits() resets when day changes
 
-	now := time.Now()
+	now := time.Now().UTC()
 	startOfDay := now.Truncate(24 * time.Hour)
 
 	// Verify truncation works as expected
 	if startOfDay.Hour() != 0 || startOfDay.Minute() != 0 || startOfDay.Second() != 0 {
-		t.Error("Truncate should give start of day (00:00:00)")
+		t.Errorf("Truncate should give start of day (00:00:00), got %02d:%02d:%02d",
+			startOfDay.Hour(), startOfDay.Minute(), startOfDay.Second())
 	}
 
 	// Next day should be different
 	tomorrow := now.Add(24 * time.Hour).Truncate(24 * time.Hour)
-	if tomorrow == startOfDay {
+	if tomorrow.Equal(startOfDay) {
 		t.Error("Tomorrow should not equal today's start of day")
 	}
 }

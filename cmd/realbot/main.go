@@ -620,7 +620,17 @@ func realbotQuoteMapsEqual(outcomes []string, bidsA, asksA, bidsB, asksB map[str
 }
 
 func realbotShouldClearLocalPairQuotes(outcomes []string, bids, asks map[string]float64) bool {
-	return !realbotHasSanePairQuotes(outcomes, bids, asks) && !realbotLooksLikeTerminalBook(outcomes, bids, asks)
+	if realbotHasSanePairQuotes(outcomes, bids, asks) || realbotLooksLikeTerminalBook(outcomes, bids, asks) {
+		return false
+	}
+	// In high-price regimes (any bid ≥ 0.60), transient one-sided gaps are
+	// expected due to thin complement-side books. Preserve whatever data we
+	// have and let the WS/REST recovery fill in the missing side, instead of
+	// nuking all quotes and showing "awaiting liquidity".
+	if realbotPairHasHighBid(outcomes, bids) {
+		return false
+	}
+	return true
 }
 
 func realbotStorePublishedQuotes(outcomes []string, srcBids, srcAsks, dstBids, dstAsks map[string]float64) {
@@ -2047,6 +2057,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				tokenFullAsks[outcome] = nil
 			}
 		}
+		// Only clear pair quotes when no outcome has a high bid. When one side
+		// has a valid high-price bid (≥0.60), the complement naturally has sparse
+		// or empty asks — this is normal market microstructure, not a WS error.
+		// Clearing both outcomes here would cause the "awaiting liquidity" freeze
+		// during high-volatility conditions near extreme prices.
 		if realbotShouldClearLocalPairQuotes(outcomes, tokenBids, tokenAsks) {
 			for _, outcome := range outcomes {
 				tokenBids[outcome] = 0
@@ -4508,12 +4523,39 @@ func realbotHasSaneTopOfBook(bid, ask float64) bool {
 	return (ask - bid) <= realbotMaxSaneOutcomeSpread
 }
 
+// realbotPairHasHighBid returns true if either outcome in the pair has a
+// valid bid at or above the given threshold. This signals a high-price
+// market regime where the complement naturally has sparse liquidity.
+const realbotHighBidThreshold = 0.60
+
+func realbotPairHasHighBid(outcomes []string, tokenBids map[string]float64) bool {
+	for _, out := range outcomes {
+		if tokenBids[out] >= realbotHighBidThreshold {
+			return true
+		}
+	}
+	return false
+}
+
 func realbotLocalQuoteSanityReason(outcomes []string, tokenBids, tokenAsks map[string]float64) string {
+	highBidPresent := realbotPairHasHighBid(outcomes, tokenBids)
+
 	for _, out := range outcomes {
 		bid := tokenBids[out]
 		ask := tokenAsks[out]
 		if !realbotHasSaneTopOfBook(bid, ask) {
 			if bid <= 0 || ask <= 0 {
+				// In high-price regimes the complement side naturally has
+				// sparse or missing asks. Tolerate a one-sided book when
+				// the pair has a high bid so we don't keep clearing data.
+				if highBidPresent && bid > 0 {
+					continue
+				}
+				// Also tolerate the high-bid side itself if only the ask
+				// is momentarily missing (WS sweep).
+				if highBidPresent && ask > 0 {
+					continue
+				}
 				return fmt.Sprintf("missing two-sided quote for %s", out)
 			}
 			if bid >= ask {
@@ -4525,7 +4567,10 @@ func realbotLocalQuoteSanityReason(outcomes []string, tokenBids, tokenAsks map[s
 
 	if len(outcomes) == 2 && !realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks) {
 		askSum := tokenAsks[outcomes[0]] + tokenAsks[outcomes[1]]
-		if askSum > realbotMaxSaneAskPairSum {
+		// When one side has a high bid, the complementary ask is near zero
+		// by definition, so an ask sum > threshold should only be enforced
+		// in balanced-market conditions.
+		if !highBidPresent && askSum > realbotMaxSaneAskPairSum {
 			return fmt.Sprintf("ask pair sum %.3f > %.3f", askSum, realbotMaxSaneAskPairSum)
 		}
 		bidSum := tokenBids[outcomes[0]] + tokenBids[outcomes[1]]
