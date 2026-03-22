@@ -42,7 +42,7 @@ const (
 	realbotCleanupVerifyTTL          = 20 * time.Second
 	realbotFastVerifyTTL             = 6 * time.Second
 	minOnChainActionShares           = 0.01
-	realbotUIRefreshInterval         = 100 * time.Millisecond
+	realbotUIRefreshInterval         = 500 * time.Millisecond
 	realbotMainLoopInterval          = 10 * time.Millisecond
 	realbotFillPollInterval          = 50 * time.Millisecond
 	realbotTakerCloseQuoteRefresh    = 500 * time.Millisecond
