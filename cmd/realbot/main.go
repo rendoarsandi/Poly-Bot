@@ -5576,10 +5576,16 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 
 		// REST is authoritative state. If both sides are empty, clear stale local quotes.
 		updatedAt := realbotQuoteTimestampOrNow(book.Timestamp)
+		now := time.Now()
 		if realbotShouldSkipStaleQuoteUpdate(quoteState, outcome, updatedAt, bids[outcome], asks[outcome]) {
 			success = true
+			if state, ok := quoteState[outcome]; ok {
+				state.UpdatedAt = now
+				quoteState[outcome] = state
+			}
 			continue
 		}
+		updatedAt = now
 		if len(book.Bids) == 0 && len(book.Asks) == 0 {
 			restEmpty++
 			bids[outcome] = 0
