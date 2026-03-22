@@ -1877,10 +1877,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			lastReconnectCount = reconnects
 		}
 
-		// Process ALL available WebSocket messages (real-time, non-blocking)
-		// This drains the channel to get the latest data
+		// Process queued WebSocket messages, but bound per tick so heavy WS traffic
+		// cannot starve timeout/expiry/reconciliation logic.
 		messagesProcessed := 0
+		wsDrainStartedAt := time.Now()
+		const maxWSMessagesPerTick = 300
+		const maxWSDrainPerTick = 5 * time.Millisecond
 		for {
+			if messagesProcessed >= maxWSMessagesPerTick || time.Since(wsDrainStartedAt) >= maxWSDrainPerTick {
+				goto doneProcessingWS
+			}
 			select {
 			case msg, ok := <-wsMsgChan:
 				if !ok {
