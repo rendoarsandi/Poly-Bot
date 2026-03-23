@@ -733,12 +733,19 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	}
 	cachedBal := t.cachedBalance
 	hasCache := !t.lastBalanceUpdate.IsZero()
+	
+	// Prevent cache stampede by temporarily marking as updated
+	t.lastBalanceUpdate = time.Now()
 	t.mu.Unlock()
 
 	bal, err := t.fetchLiveBalance(ctx)
 	if err != nil {
 		// Return cached balance on error if available
 		if hasCache {
+			// Reset the update time so it retries sooner rather than waiting full 30s
+			t.mu.Lock()
+			t.lastBalanceUpdate = time.Time{}
+			t.mu.Unlock()
 			return cachedBal, nil
 		}
 		return 0, err
@@ -1240,17 +1247,24 @@ func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (fl
 	t.ctfMu.Lock()
 	cachedBal, ok := t.ctfBalanceCache[tokenID]
 	lastUpdate, okTime := t.lastCTFBalanceUpdate[tokenID]
-	t.ctfMu.Unlock()
 
 	// Use cache if it's less than 2 seconds old
 	if ok && okTime && time.Since(lastUpdate) < 2*time.Second {
+		t.ctfMu.Unlock()
 		return cachedBal, nil
 	}
+
+	// Prevent cache stampede by temporarily marking as updated
+	t.lastCTFBalanceUpdate[tokenID] = time.Now()
+	t.ctfMu.Unlock()
 
 	tid := new(big.Int)
 	tid.SetString(tokenID, 10)
 	bal, err := t.polygon.GetCTFBalance(ctx, t.client.Address(), tid)
 	if err != nil {
+		t.ctfMu.Lock()
+		t.lastCTFBalanceUpdate[tokenID] = time.Time{} // reset so it retries immediately
+		t.ctfMu.Unlock()
 		return 0, err
 	}
 	shares := new(big.Float).SetInt(bal)

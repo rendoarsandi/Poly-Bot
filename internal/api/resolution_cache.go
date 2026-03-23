@@ -62,20 +62,29 @@ func NewResolutionCache(polygon *PolygonClient, clobClient ExchangeClient, restC
 // This method never blocks for long — if the network call fails, it returns
 // the last known status (or empty/unresolved).
 func (rc *ResolutionCache) GetResolution(ctx context.Context, conditionID string, outcomes []string, marketEndTime time.Time) ResolutionStatus {
-	rc.mu.RLock()
+	rc.mu.Lock()
 	entry, exists := rc.entries[conditionID]
-	rc.mu.RUnlock()
-
-	if exists {
+	if !exists {
+		entry = &cacheEntry{
+			ttl: resolutionMinTTL,
+		}
+		rc.entries[conditionID] = entry
+	} else {
 		// If resolved, return cached forever
 		if entry.status.Resolved && entry.status.Winner != "" {
+			rc.mu.Unlock()
 			return entry.status
 		}
 		// If not stale yet, return cached
 		if time.Since(entry.status.CheckedAt) < entry.ttl {
+			rc.mu.Unlock()
 			return entry.status
 		}
 	}
+
+	// Prevent cache stampede by temporarily marking as updated
+	entry.status.CheckedAt = time.Now()
+	rc.mu.Unlock()
 
 	// Don't check if market hasn't ended yet (no point)
 	if time.Now().Before(marketEndTime) {
@@ -94,12 +103,6 @@ func (rc *ResolutionCache) GetResolution(ctx context.Context, conditionID string
 
 	// Update cache
 	rc.mu.Lock()
-	if !exists {
-		entry = &cacheEntry{
-			ttl: resolutionMinTTL,
-		}
-		rc.entries[conditionID] = entry
-	}
 	entry.status = status
 	entry.checkCount++
 
