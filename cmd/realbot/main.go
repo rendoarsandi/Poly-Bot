@@ -254,10 +254,15 @@ func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISetti
 	if tradeFactor <= 0 {
 		tradeFactor = 0.01
 	}
-	if sizingBalance <= 0 {
-		sizingBalance = cash
+
+	// Taker-close inventory is directional and can remain open through expiry.
+	// Size from liquid cash so unresolved carry does not ratchet notional upward.
+	sizingBase := cash
+	if sizingBalance > 0 && sizingBalance < sizingBase {
+		sizingBase = sizingBalance
 	}
-	budget := sizingBalance * tradeFactor
+
+	budget := sizingBase * tradeFactor
 	if budget > cash {
 		budget = cash
 	}

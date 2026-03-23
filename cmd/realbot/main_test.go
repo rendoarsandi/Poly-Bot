@@ -112,12 +112,12 @@ func TestRealbotExecutionQuoteGuardAgePreservesStricterConfig(t *testing.T) {
 	}
 }
 
-func TestRealbotTakerCloseBudgetUsesStartingBalanceFloor(t *testing.T) {
+func TestRealbotTakerCloseBudgetUsesCashWhenSizingIsHigher(t *testing.T) {
 	budget := realbotTakerCloseBudget(59.20, 65.80, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
-	if math.Abs(budget-3.29) > 0.000001 {
-		t.Fatalf("expected taker-close budget 3.29, got %.2f", budget)
+	if math.Abs(budget-2.96) > 0.000001 {
+		t.Fatalf("expected taker-close budget 2.96, got %.2f", budget)
 	}
 }
 
@@ -130,12 +130,12 @@ func TestRealbotTakerCloseBudgetCompoundsUpWithCashGrowth(t *testing.T) {
 	}
 }
 
-func TestRealbotTakerCloseBudgetKeepsHighWaterAfterDrawdown(t *testing.T) {
+func TestRealbotTakerCloseBudgetCapsToCashAfterDrawdown(t *testing.T) {
 	budget := realbotTakerCloseBudget(59.20, 72.00, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
-	if math.Abs(budget-3.60) > 0.000001 {
-		t.Fatalf("expected taker-close budget to stay at high-water 3.60, got %.2f", budget)
+	if math.Abs(budget-2.96) > 0.000001 {
+		t.Fatalf("expected taker-close budget to cap at cash-based 2.96, got %.2f", budget)
 	}
 }
 

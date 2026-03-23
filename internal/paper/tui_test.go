@@ -1052,6 +1052,31 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	}
 }
 
+func TestRenderAccountStatusRealModeTakerCloseUsesCashBudget(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				TakerCloseMarket: true,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  61.53,
+		StartingBalance: 56.00,
+		RealizedPnL:     5.59,
+	}, 0.0, 203.20, 203.20, 1.0, 203.20, 4, 4, 0, nil)
+
+	if !strings.Contains(rendered, "($3.08/trade)") {
+		t.Fatalf("expected taker-close trade budget to be anchored to cash, got %q", rendered)
+	}
+	if strings.Contains(rendered, "($10.16/trade)") {
+		t.Fatalf("expected taker-close mode to avoid sizing from inflated book equity, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusDoesNotFallbackToNetChangeWhileWalletTruthInventoryOpen(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

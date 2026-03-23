@@ -1232,7 +1232,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.tui.settings.TradingHoursMode = "off"
 					}
-					changed = true				}
+					changed = true
+				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
 				}
@@ -1401,7 +1402,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.tui.settings.TradingHoursMode = "off"
 					}
-					changed = true				}
+					changed = true
+				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
 				}
@@ -2828,6 +2830,9 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	effectiveSizingBalance := sizingBalance
 	if isRealMode {
 		effectiveSizingBalance = sizingEquity
+		if s.settings.TakerCloseMarket {
+			effectiveSizingBalance = stats.CurrentBalance
+		}
 		if effectiveSizingBalance < 0 {
 			effectiveSizingBalance = 0
 		}
