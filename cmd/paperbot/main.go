@@ -718,7 +718,7 @@ func ensurePaperMakerSplitInventory(t *MarketTrader, currentBookEquity, currentC
 		return
 	}
 	if !t.SplitInitialized {
-		baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
+		baseTradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 		initialBuffer := baseTradeSize * 2.0
 		if initialBuffer < MinSplitBuffer {
 			initialBuffer = MinSplitBuffer
@@ -739,7 +739,7 @@ func ensurePaperMakerSplitInventory(t *MarketTrader, currentBookEquity, currentC
 		}
 	}
 
-	baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
+	baseTradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 	targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
 	currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 	replenishAmount := baseTradeSize * 2.0
@@ -793,7 +793,6 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 	}
 
 	liveCfg := t.TUI.GetSettings()
-	currentBookEquity := t.Engine.GetBookEquity()
 	currentCash := t.Engine.GetBalance()
 	positions := t.Engine.GetPositions()
 	pos1, hasPos1 := getPaperMarketPosition(positions, t.ID, t.Outcomes[0])
@@ -883,7 +882,7 @@ func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
 		capMult = paperMakerInventoryCapMult
 	}
 
-	baseTradeValue := t.Config.CalculateTradeSize(currentBookEquity)
+	baseTradeValue := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.
@@ -1816,7 +1815,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					takerCloseAttempted = true
 					t.TUI.LogEvent("[%s] ⚡ TAKER CLOSE TRIGGERED: Force buy %s (price: $%.2f)", t.ID, bestOutcome, highestPrice)
 
-					budget := t.Config.CalculateTradeSize(t.Engine.GetBookEquity())
+					budget := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 					// Calculate expected execution price (price + absolute slippage allowance)
 					// e.g. price 0.70 + (-0.03) = 0.73
 					slippageDec := liveCfg.BuyExecutionMarginFloorPercent
@@ -2400,9 +2399,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				// Calculate dynamic trade size based on EQUITY (not just cash)
 				// This ensures consistent sizing regardless of how much is in positions
 				// $100 equity * 5% = $5 trade size (even if only $10 is cash)
-				currentBookEquity := t.Engine.GetBookEquity()
 				currentCash := t.Engine.GetBalance()
-				tradeSize := t.Config.CalculateTradeSize(currentBookEquity)
+				tradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 				baseSharesPerTrade := tradeSize / sum // Shares = $ / price per share pair
 
 				// Evaluate portfolio risk before trading
@@ -2735,7 +2733,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			// Initial split: create simulated inventory
 			// Split is always safe - can merge back to USDC anytime at 1:1
 			if !t.SplitInitialized {
-				baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
+				baseTradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 				initialBuffer := baseTradeSize * 2.0
 				if initialBuffer < MinSplitBuffer {
 					initialBuffer = MinSplitBuffer
@@ -2761,7 +2759,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				sellMargin := (bidSum - 1.0) * 100
 
 				// Background replenishment check
-				baseTradeSize := t.Config.CalculateTradeSize(currentBookEquity)
+				baseTradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
 				targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
 				currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
