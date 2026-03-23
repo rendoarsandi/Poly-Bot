@@ -1667,18 +1667,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		_, _ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)
 	}
 	refreshWalletTruth(5 * time.Second)
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				refreshWalletTruth(5 * time.Second)
-			}
-		}
-	}()
 
 	lastReconnectCount := int32(0)
 	lastWsWarnTime := time.Time{}

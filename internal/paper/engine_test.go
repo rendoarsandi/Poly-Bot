@@ -710,8 +710,9 @@ func TestEngine_GetSizingBalanceDiscountsWorstCaseUnresolvedRisk(t *testing.T) {
 	}
 
 	got := engine.GetSizingBalance()
-	if absFloat(got-90.0) > 0.0001 {
-		t.Fatalf("expected sizing balance 90.00 after worst-case unresolved discount, got %.4f", got)
+	// No longer discounted
+	if absFloat(got-100.0) > 0.0001 {
+		t.Fatalf("expected sizing balance 100.00 after removing worst-case unresolved discount, got %.4f", got)
 	}
 }
 
@@ -731,8 +732,8 @@ func TestEngine_GetSizingBalanceIncludesLockedPairUpside(t *testing.T) {
 	}
 
 	got := engine.GetSizingBalance()
-	if absFloat(got-100.5) > 0.0001 {
-		t.Fatalf("expected sizing balance 100.50 for locked pair, got %.4f", got)
+	if absFloat(got-100.0) > 0.0001 {
+		t.Fatalf("expected sizing balance 100.00 for locked pair (no longer adds worst-case), got %.4f", got)
 	}
 }
 

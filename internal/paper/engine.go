@@ -1444,8 +1444,7 @@ func (e *Engine) GetCompoundMultiplier() float64 {
 	return e.compoundMultiplier
 }
 
-// GetSizingBalance returns the ratcheting balance used for trade sizing, then
-// discounts unresolved inventory by worst-case resolution outcomes.
+// GetSizingBalance returns the ratcheting balance used for trade sizing.
 func (e *Engine) GetSizingBalance() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -1455,8 +1454,9 @@ func (e *Engine) GetSizingBalance() float64 {
 		sizing = e.pnlBaseline
 	}
 
-	_, worst := e.getResolutionPnLRange()
-	sizing += worst
+	// We no longer deduct worst-case open risk here so that trade sizing
+	// remains stable at the high-water mark even while holding positions.
+
 	if sizing < 0 {
 		sizing = 0
 	}
@@ -1465,7 +1465,6 @@ func (e *Engine) GetSizingBalance() float64 {
 	}
 	return sizing
 }
-
 // UpdateCompoundMultiplier updates the multiplier based on round profit/loss
 // Profitable rounds ratchet the sizing base upward to the new high-water mark.
 // Losses do not shrink sizing; they only affect round win/loss reporting.
