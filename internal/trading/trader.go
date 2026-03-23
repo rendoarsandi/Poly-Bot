@@ -20,6 +20,7 @@ const (
 	realTraderBalanceCacheTTL     = 30 * time.Second
 	realTraderOnChainBalanceTTL   = 20 * time.Second
 	realTraderOnChainRetryBackoff = 3 * time.Second
+	realTraderCTFBalanceTTL       = 15 * time.Second
 )
 
 // Trader defines the interface for placing trades (paper or real)
@@ -288,6 +289,7 @@ type RealTrader struct {
 
 	ctfBalanceCache      map[string]float64
 	lastCTFBalanceUpdate map[string]time.Time
+	lastCTFBalanceTry    map[string]time.Time
 	ctfMu                sync.Mutex
 
 	livePositions       map[string]float64
@@ -325,6 +327,7 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		startOfDay:           time.Now().Truncate(24 * time.Hour),
 		ctfBalanceCache:      make(map[string]float64),
 		lastCTFBalanceUpdate: make(map[string]time.Time),
+		lastCTFBalanceTry:    make(map[string]time.Time),
 		livePositions:        make(map[string]float64),
 		confirmedOrderFills:  make(map[string]float64),
 	}
@@ -887,12 +890,14 @@ func (t *RealTrader) InvalidateCTFBalanceCache(tokenIDs ...string) {
 	if len(tokenIDs) == 0 {
 		t.ctfBalanceCache = make(map[string]float64)
 		t.lastCTFBalanceUpdate = make(map[string]time.Time)
+		t.lastCTFBalanceTry = make(map[string]time.Time)
 		return
 	}
 
 	for _, tokenID := range tokenIDs {
 		delete(t.ctfBalanceCache, tokenID)
 		delete(t.lastCTFBalanceUpdate, tokenID)
+		delete(t.lastCTFBalanceTry, tokenID)
 	}
 }
 
@@ -1326,29 +1331,56 @@ func (t *RealTrader) Address() string {
 
 // GetCTFBalanceFloat returns the on-chain CTF token balance as a float64 (human-readable shares)
 func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
-	t.ctfMu.Lock()
-	cachedBal, ok := t.ctfBalanceCache[tokenID]
-	lastUpdate, okTime := t.lastCTFBalanceUpdate[tokenID]
+	if t.polygon == nil {
+		return 0, fmt.Errorf("polygon client not initialized")
+	}
+	if t.client == nil {
+		return 0, fmt.Errorf("exchange client not initialized")
+	}
 
-	// Use cache if it's less than 2 seconds old
-	if ok && okTime && time.Since(lastUpdate) < 2*time.Second {
+	now := time.Now()
+	t.ctfMu.Lock()
+	if t.ctfBalanceCache == nil {
+		t.ctfBalanceCache = make(map[string]float64)
+	}
+	if t.lastCTFBalanceUpdate == nil {
+		t.lastCTFBalanceUpdate = make(map[string]time.Time)
+	}
+	if t.lastCTFBalanceTry == nil {
+		t.lastCTFBalanceTry = make(map[string]time.Time)
+	}
+
+	cachedBal, hasCache := t.ctfBalanceCache[tokenID]
+	lastUpdate := t.lastCTFBalanceUpdate[tokenID]
+	lastTry := t.lastCTFBalanceTry[tokenID]
+
+	if hasCache && !lastUpdate.IsZero() && now.Sub(lastUpdate) < realTraderCTFBalanceTTL {
 		t.ctfMu.Unlock()
 		return cachedBal, nil
 	}
-
-	// Prevent cache stampede by temporarily marking as updated
-	t.lastCTFBalanceUpdate[tokenID] = time.Now()
+	if !lastTry.IsZero() && now.Sub(lastTry) < realTraderOnChainRetryBackoff {
+		t.ctfMu.Unlock()
+		if hasCache {
+			return cachedBal, nil
+		}
+		return 0, fmt.Errorf("ctf balance refresh throttled")
+	}
+	t.lastCTFBalanceTry[tokenID] = now
 	t.ctfMu.Unlock()
 
 	tid := new(big.Int)
-	tid.SetString(tokenID, 10)
+	if _, ok := tid.SetString(tokenID, 10); !ok {
+		return 0, fmt.Errorf("invalid token id: %s", tokenID)
+	}
+
 	bal, err := t.polygon.GetCTFBalance(ctx, t.client.Address(), tid)
 	if err != nil {
-		t.ctfMu.Lock()
-		t.lastCTFBalanceUpdate[tokenID] = time.Time{} // reset so it retries immediately
-		t.ctfMu.Unlock()
+		if hasCache {
+			return cachedBal, nil
+		}
 		return 0, err
 	}
+
 	shares := new(big.Float).SetInt(bal)
 	shares = shares.Quo(shares, big.NewFloat(1e6))
 	s, _ := shares.Float64()

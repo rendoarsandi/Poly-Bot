@@ -835,3 +835,57 @@ func TestRealTrader_ForceRefreshBalanceBacksOffOnChainRetryAfterFailure(t *testi
 		t.Fatalf("expected on-chain retry backoff to limit calls to 1, got %d", calls)
 	}
 }
+
+func TestRealTrader_GetCTFBalanceFloatUsesCacheTTL(t *testing.T) {
+	var rpcCalls int32
+	rawBalance := big.NewInt(2500000) // 2.5 shares in 6-decimal units
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&rpcCalls, 1)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"0x%064x"}`, rawBalance)))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client:  &stubExchangeClient{address: "0x1111111111111111111111111111111111111111"},
+		polygon: api.NewPolygonClient(server.URL),
+	}
+
+	for i := 0; i < 3; i++ {
+		bal, err := trader.GetCTFBalanceFloat(context.Background(), "12345")
+		if err != nil {
+			t.Fatalf("GetCTFBalanceFloat failed on iteration %d: %v", i, err)
+		}
+		if bal != 2.5 {
+			t.Fatalf("expected 2.5 shares, got %.6f", bal)
+		}
+	}
+
+	if calls := atomic.LoadInt32(&rpcCalls); calls != 1 {
+		t.Fatalf("expected 1 RPC call due CTF cache TTL, got %d", calls)
+	}
+}
+
+func TestRealTrader_GetCTFBalanceFloatBacksOffAfterFailure(t *testing.T) {
+	var rpcCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&rpcCalls, 1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"rate limit"}}`))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client:  &stubExchangeClient{address: "0x1111111111111111111111111111111111111111"},
+		polygon: api.NewPolygonClient(server.URL),
+	}
+
+	if _, err := trader.GetCTFBalanceFloat(context.Background(), "54321"); err == nil {
+		t.Fatal("expected first CTF balance fetch to fail")
+	}
+	if _, err := trader.GetCTFBalanceFloat(context.Background(), "54321"); err == nil {
+		t.Fatal("expected second CTF balance fetch to be throttled/fail")
+	}
+
+	if calls := atomic.LoadInt32(&rpcCalls); calls != 1 {
+		t.Fatalf("expected retry backoff to limit CTF RPC calls to 1, got %d", calls)
+	}
+}
