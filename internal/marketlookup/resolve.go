@@ -77,12 +77,14 @@ func ResolveMarkets(ctx context.Context, trader *trading.RealTrader, polygon *ap
 		if len(byCondition) > 0 {
 			sources = append(sources, "API positions")
 		}
-	} else if len(byCondition) == 0 {
-		// Continue to recent wallet scan fallback below.
 	}
 
-	if added, _ := collectMarketsFromRecentWalletScan(ctx, trader, rest, byCondition); added > 0 {
-		sources = append(sources, "recent wallet scan")
+	// Only perform the expensive on-chain balance scan fallback if we couldn't
+	// find any positions via the API or if the API request completely failed.
+	if len(byCondition) == 0 {
+		if added, _ := collectMarketsFromRecentWalletScan(ctx, trader, rest, byCondition); added > 0 {
+			sources = append(sources, "recent wallet scan")
+		}
 	}
 
 	markets := marketsFromConditionMap(byCondition)

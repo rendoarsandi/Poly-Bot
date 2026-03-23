@@ -1599,24 +1599,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	currentBalance := startingBalance
 	// currentCash := startingBalance // Unused after removing balance checks
 
-	// Background ticker to keep balance and allowance fresh without blocking WS loop
-	go func() {
-		ticker := time.NewTicker(8 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				bgCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_ = trader.UpdateBalanceAllowance(bgCtx)
-				// Polymarket's user WS does not expose USDC balance. Keep the
-				// cached on-chain balance warm instead of forcing a refresh every tick.
-				_, _ = trader.GetBalance(bgCtx)
-				cancel()
-			}
-		}
-	}()
+	// The global balance sync ticker handles balance and allowance updates.
+	// We no longer run a per-market ticker here to avoid RPC spam.
 
 	// Helper to get token ID from outcome
 	getTokenID := func(outcome string) string {
