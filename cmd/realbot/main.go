@@ -1298,6 +1298,8 @@ func run() error {
 		default:
 		}
 
+		roundStartTime := time.Now()
+
 		// Refresh balance at the start of each round for compounding
 		{
 			balCtx, balFn := context.WithTimeout(ctx, 10*time.Second)
@@ -1488,7 +1490,16 @@ func run() error {
 		tui.ClearMarkets()
 		orderBook.CancelAllOrders()
 		engine.ClearMarketData()
-	}
+
+		// Prevent tight loops if all markets exit instantly
+		if elapsed := time.Since(roundStartTime); elapsed < 10*time.Second {
+			select {
+			case <-time.After(10*time.Second - elapsed):
+			case <-ctx.Done():
+				goto shutdown
+			}
+		}
+		} // End of main round loop
 
 shutdown:
 	tui.Stop()
