@@ -988,97 +988,6 @@ func utilbotRunQuotePump(ctx context.Context, client *api.RestClient, tokenMap, 
 	}
 }
 
-func utilbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]utilbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
-	maxObservedAge := time.Duration(0)
-	for _, out := range outcomes {
-		if len(tokenFullAsks[out]) == 0 {
-			return false, maxObservedAge, fmt.Sprintf("missing local ask depth for %s", out)
-		}
-		state, ok := quoteState[out]
-		if !ok || state.UpdatedAt.IsZero() {
-			return false, maxObservedAge, fmt.Sprintf("missing quote timestamp for %s", out)
-		}
-		age := now.Sub(state.UpdatedAt)
-		if age > maxObservedAge {
-			maxObservedAge = age
-		}
-		if age > maxAge {
-			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
-		}
-	}
-	return true, maxObservedAge, ""
-}
-
-func utilbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, side string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, prices map[string]float64) (time.Duration, error) {
-	type quoteResult struct {
-		outcome string
-		bids    []paper.MarketLevel
-		asks    []paper.MarketLevel
-		latency time.Duration
-		err     error
-	}
-
-	results := make(chan quoteResult, len(outcomes))
-	for _, out := range outcomes {
-		tokenID := mkt.GetTokenIDForOutcome(market, out)
-		if tokenID == "" {
-			return 0, fmt.Errorf("missing token id for outcome %s", out)
-		}
-		go func(outcome, token string) {
-			start := time.Now()
-			book, err := restClient.GetOrderBook(ctx, token)
-			latency := time.Since(start)
-			if err != nil {
-				results <- quoteResult{outcome: outcome, latency: latency, err: err}
-				return
-			}
-			results <- quoteResult{
-				outcome: outcome,
-				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
-				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
-				latency: latency,
-			}
-		}(out, tokenID)
-	}
-
-	maxLatency := time.Duration(0)
-	for i := 0; i < len(outcomes); i++ {
-		res := <-results
-		if res.latency > maxLatency {
-			maxLatency = res.latency
-		}
-		if res.err != nil {
-			return maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
-		}
-		tokenFullBids[res.outcome] = res.bids
-		tokenFullAsks[res.outcome] = res.asks
-
-		if side == "BUY" {
-			bestAsk, found := utilbotBestAskFromLevels(tokenFullAsks[res.outcome])
-			if !found {
-				return maxLatency, fmt.Errorf("no live ask found for %s", res.outcome)
-			}
-			prices[res.outcome] = bestAsk
-			continue
-		}
-
-		bestBid, found := utilbotBestBidFromLevels(tokenFullBids[res.outcome])
-		if !found {
-			return maxLatency, fmt.Errorf("no live bid found for %s", res.outcome)
-		}
-		prices[res.outcome] = bestBid
-	}
-	return maxLatency, nil
-}
-
-func utilbotBuyLimitPrice(bookAsk, pairedAsk float64, cfg *core.Config) (float64, error) {
-	price, _, err := core.BuyExecutionLimitPrices(bookAsk, pairedAsk, cfg.MinAskPrice, cfg.MaxAskPrice, cfg.BuyExecutionMarginFloorPercent)
-	if err != nil {
-		return 0, err
-	}
-	return price, nil
-}
-
 func tradeSucceeded(res *trading.TradeResult, err error) bool {
 	if err != nil || res == nil || !res.Success {
 		return false
@@ -1101,10 +1010,6 @@ func utilbotAnyTradeSucceeded(results []*trading.TradeResult, errs []error) bool
 
 func incrementalBalance(initial, current float64) float64 {
 	return math.Max(0, current-initial)
-}
-
-func incrementalBalancedPairs(initial0, initial1, current0, current1 float64) float64 {
-	return math.Min(incrementalBalance(initial0, current0), incrementalBalance(initial1, current1))
 }
 
 func utilbotBalancedAndExcessShares(acquired0, acquired1 float64) (balanced, excess0, excess1 float64) {

@@ -388,24 +388,6 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	}
 }
 
-func roundDown(v float64) float64 {
-	return math.Floor(v*1000) / 1000
-}
-
-func roundRealbotMakerPrice(v float64) float64 {
-	return math.Round(v*1000) / 1000
-}
-
-func clampFloat64(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 func realbotRoundedLimitBuyCost(price, qty float64) float64 {
 	if price <= 0 || price >= 1.0 || qty <= 0 {
 		return 0
@@ -886,55 +868,6 @@ func main() {
 type realbotCLOBWarmer struct {
 	client *api.RestClient
 	trader *trading.RealTrader
-}
-
-func (w *realbotCLOBWarmer) WarmOrderPath(ctx context.Context) error {
-	var firstErr error
-	var errMu sync.Mutex
-
-	if w.client != nil {
-		var wg sync.WaitGroup
-		for i := 0; i < 2; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := w.client.Ping(ctx); err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					errMu.Unlock()
-				}
-			}()
-		}
-		wg.Wait()
-	}
-	// Occasional balance check to keep auth paths warm
-	if w.trader != nil && time.Now().Unix()%15 == 0 {
-		if _, err := w.trader.GetTradingAllowance(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func startRealbotOrderWarmLoop(ctx context.Context, warmer *realbotCLOBWarmer) func() {
-	warmCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		ticker := time.NewTicker(900 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-warmCtx.Done():
-				return
-			case <-ticker.C:
-				singleCtx, singleCancel := context.WithTimeout(warmCtx, 1200*time.Millisecond)
-				_ = warmer.WarmOrderPath(singleCtx)
-				singleCancel()
-			}
-		}
-	}()
-	return cancel
 }
 
 func run() error {
@@ -3969,10 +3902,6 @@ func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
 }
 
-func computeRealbotMakerSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
-	return strategy.ComputeMakerSellFeeUsdc(shares, price, feeRateBps)
-}
-
 func computeRealbotMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
 	return strategy.ComputeMakerInventorySkew(positionShares, peerShares, targetShares)
 }
@@ -4880,124 +4809,6 @@ func realbotMatchedBidLiquidity(bids0, bids1 []paper.MarketLevel, minExecutionSu
 	)
 }
 
-func realbotRefreshBuyExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel) (map[string]float64, time.Duration, error) {
-	type quoteResult struct {
-		outcome string
-		bids    []paper.MarketLevel
-		asks    []paper.MarketLevel
-		latency time.Duration
-		err     error
-	}
-
-	results := make(chan quoteResult, len(outcomes))
-	var wg sync.WaitGroup
-	for _, out := range outcomes {
-		tokenID := mkt.GetTokenIDForOutcome(market, out)
-		if tokenID == "" {
-			return nil, 0, fmt.Errorf("missing token id for outcome %s", out)
-		}
-		wg.Add(1)
-		go func(outcome, token string) {
-			defer wg.Done()
-			start := time.Now()
-			book, err := restClient.GetOrderBook(ctx, token)
-			latency := time.Since(start)
-			if err != nil {
-				results <- quoteResult{outcome: outcome, latency: latency, err: err}
-				return
-			}
-			results <- quoteResult{
-				outcome: outcome,
-				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
-				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
-				latency: latency,
-			}
-		}(out, tokenID)
-	}
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	prices := make(map[string]float64, len(outcomes))
-	var maxLatency time.Duration
-	for res := range results {
-		if res.latency > maxLatency {
-			maxLatency = res.latency
-		}
-		if res.err != nil {
-			return nil, maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
-		}
-		tokenFullBids[res.outcome] = res.bids
-		tokenFullAsks[res.outcome] = res.asks
-		bestAsk, found := realbotBestAskFromLevels(res.asks)
-		if !found {
-			return nil, maxLatency, fmt.Errorf("no live ask found for %s", res.outcome)
-		}
-		prices[res.outcome] = bestAsk
-	}
-	return prices, maxLatency, nil
-}
-
-func realbotRefreshSellExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel) (map[string]float64, time.Duration, error) {
-	type quoteResult struct {
-		outcome string
-		bids    []paper.MarketLevel
-		asks    []paper.MarketLevel
-		latency time.Duration
-		err     error
-	}
-
-	results := make(chan quoteResult, len(outcomes))
-	var wg sync.WaitGroup
-	for _, out := range outcomes {
-		tokenID := mkt.GetTokenIDForOutcome(market, out)
-		if tokenID == "" {
-			return nil, 0, fmt.Errorf("missing token id for outcome %s", out)
-		}
-		wg.Add(1)
-		go func(outcome, token string) {
-			defer wg.Done()
-			start := time.Now()
-			book, err := restClient.GetOrderBook(ctx, token)
-			latency := time.Since(start)
-			if err != nil {
-				results <- quoteResult{outcome: outcome, latency: latency, err: err}
-				return
-			}
-			results <- quoteResult{
-				outcome: outcome,
-				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
-				asks:    mkt.LevelsToPriceDepth(book.Asks, false),
-				latency: latency,
-			}
-		}(out, tokenID)
-	}
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	prices := make(map[string]float64, len(outcomes))
-	var maxLatency time.Duration
-	for res := range results {
-		if res.latency > maxLatency {
-			maxLatency = res.latency
-		}
-		if res.err != nil {
-			return nil, maxLatency, fmt.Errorf("fetching fresh order book for %s failed: %w", res.outcome, res.err)
-		}
-		tokenFullBids[res.outcome] = res.bids
-		tokenFullAsks[res.outcome] = res.asks
-		bestBid, found := realbotBestBidFromLevels(res.bids)
-		if !found {
-			return nil, maxLatency, fmt.Errorf("no live bid found for %s", res.outcome)
-		}
-		prices[res.outcome] = bestBid
-	}
-	return prices, maxLatency, nil
-}
-
 func subtractMergedPairBalances(bal0, bal1, mergeQty float64) (float64, float64) {
 	if mergeQty <= 0 {
 		return bal0, bal1
@@ -5071,16 +4882,6 @@ func loadPairOnChainBalances(ctx context.Context, trader *trading.RealTrader, to
 		return bal0, bal1, fmt.Errorf("on-chain balance check failed (err0=%v err1=%v)", err0, err1)
 	}
 	return bal0, bal1, nil
-}
-
-func captureInitialPairSnapshot(ctx context.Context, trader *trading.RealTrader, token0, token1 string) (bal0, bal1 float64, source string, ok bool) {
-	if onChain0, onChain1, err := loadPairOnChainBalances(ctx, trader, token0, token1); err == nil {
-		return onChain0, onChain1, "on-chain", true
-	}
-	if pos0, pos1, err := loadPairPositionBalances(ctx, trader, token0, token1); err == nil {
-		return pos0, pos1, "external position snapshot", true
-	}
-	return 0, 0, "", false
 }
 
 func incrementalBalance(initial, current float64) float64 {

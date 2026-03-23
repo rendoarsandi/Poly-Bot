@@ -209,16 +209,6 @@ func roundPaperMakerPrice(v float64) float64 {
 	return math.Round(v*1000) / 1000
 }
 
-func clampFloat64(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 func parseWSQuotedPrice(raw string) (float64, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -544,10 +534,6 @@ func computePaperMakerSplitSellPrices(bid1, ask1, bid2, ask2, minSum float64) (f
 	return price1, price2, true
 }
 
-func computePaperSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
-	return strategy.ComputeMakerSellFeeUsdc(shares, price, feeRateBps)
-}
-
 func paperMakerQuoteKey(side, outcome string) string {
 	return strings.ToLower(strings.TrimSpace(side)) + ":" + outcome
 }
@@ -627,18 +613,6 @@ func clearPaperMakerQuoteReference(t *MarketTrader, order *paper.LimitOrder) {
 	}
 }
 
-func isPaperMakerQuote(t *MarketTrader, order *paper.LimitOrder) bool {
-	if order == nil {
-		return false
-	}
-	for _, existing := range t.MakerQuotes {
-		if existing != nil && existing.ID == order.ID {
-			return true
-		}
-	}
-	return false
-}
-
 func cancelPaperMakerQuote(t *MarketTrader, side, outcome string) bool {
 	key := paperMakerQuoteKey(side, outcome)
 	existing := t.MakerQuotes[key]
@@ -711,63 +685,6 @@ func updatePaperPendingOrders(t *MarketTrader) {
 		})
 	}
 	t.TUI.SetPendingOrders(t.ID, pending)
-}
-
-func ensurePaperMakerSplitInventory(t *MarketTrader, currentBookEquity, currentCash, sellMargin float64) {
-	if len(t.Outcomes) != 2 {
-		return
-	}
-	if !t.SplitInitialized {
-		baseTradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
-		initialBuffer := baseTradeSize * 2.0
-		if initialBuffer < MinSplitBuffer {
-			initialBuffer = MinSplitBuffer
-		}
-		maxInitial := currentBookEquity * t.Config.SplitInitialCapPct
-		splitAmount := math.Min(initialBuffer, maxInitial)
-		if splitAmount > currentCash {
-			splitAmount = currentCash
-		}
-		if splitAmount >= MinSplitAmount {
-			t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], splitAmount)
-			t.Engine.DeductBalance(splitAmount)
-			t.Engine.RecalculateDrawdown()
-			t.SplitInitialized = true
-			t.InitialSplitAmount = splitAmount
-			t.TUI.LogEvent("[%s] 🔀 SPLIT (sim): Created %.0f shares ($%.2f)", t.ID, splitAmount, splitAmount)
-			currentCash -= splitAmount
-		}
-	}
-
-	baseTradeSize := t.Config.CalculateTradeSize(t.Engine.GetSizingBalance())
-	targetBuffer := baseTradeSize * t.Config.MaxAggressionMultiplier
-	currentShares := t.SplitInventory.GetMinSplitShares(t.ID, t.Outcomes[0], t.Outcomes[1])
-	replenishAmount := baseTradeSize * 2.0
-
-	decision := t.ReplenishCtrl.CheckReplenish(paper.ReplenishParams{
-		CurrentShares:      currentShares,
-		TargetBuffer:       targetBuffer,
-		InitialShares:      t.InitialSplitAmount,
-		SellMargin:         sellMargin,
-		MinMarginThreshold: t.Config.SplitMinMarginSell - 1.0,
-		CurrentBalance:     currentCash,
-		ReplenishAmount:    replenishAmount,
-		MaxBalancePercent:  t.Config.SplitReplenishCapPct,
-	})
-
-	if decision.ShouldReplenish && t.ReplenishCtrl.MarkInProgress() {
-		actualReplenish := decision.Amount
-		if actualReplenish > currentCash {
-			actualReplenish = currentCash
-		}
-		if actualReplenish >= MinSplitAmount {
-			t.SplitInventory.RecordSplit(t.ID, t.Outcomes[0], t.Outcomes[1], actualReplenish)
-			t.Engine.DeductBalance(actualReplenish)
-			t.Engine.RecalculateDrawdown()
-			t.TUI.LogEvent("[%s] 🔄 SPLIT (sim): Replenished +%.0f shares (now %.0f)", t.ID, actualReplenish, t.InitialSplitAmount)
-		}
-		t.ReplenishCtrl.MarkComplete()
-	}
 }
 
 func maintainPaperMakerInventoryQuotes(t *MarketTrader, now time.Time) {
