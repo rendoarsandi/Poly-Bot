@@ -936,3 +936,19 @@ func TestEngine_UpdateCompoundMultiplierKeepsSizingHighWaterAfterLosses(t *testi
 		t.Fatalf("expected multiplier 1.35 at new high-water, got %.4f", got)
 	}
 }
+
+func TestEngine_GetCompoundStatsUsesEffectiveSizingBalance(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	engine.SetBalance(120.0)
+	_, _, _, _, sizing := engine.GetCompoundStats()
+	if absFloat(sizing-120.0) > 0.0001 {
+		t.Fatalf("expected compound stats sizing balance to grow with current balance, got %.4f", sizing)
+	}
+
+	engine.SetBalance(90.0)
+	_, _, _, _, sizing = engine.GetCompoundStats()
+	if absFloat(sizing-100.0) > 0.0001 {
+		t.Fatalf("expected compound stats sizing balance to keep high-water floor, got %.4f", sizing)
+	}
+}

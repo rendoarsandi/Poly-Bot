@@ -76,6 +76,40 @@ var realbotMakerStrategyParams = strategy.MakerParams{
 	MinQuoteValue:       realbotMakerMinQuoteValue,
 }
 
+// realbotEntryGate ensures only one aggressive live entry (panic-buy/taker-close)
+// is submitted at a time across all concurrent market goroutines.
+type realbotEntryGate struct {
+	token chan struct{}
+}
+
+func newRealbotEntryGate() *realbotEntryGate {
+	g := &realbotEntryGate{token: make(chan struct{}, 1)}
+	g.token <- struct{}{}
+	return g
+}
+
+func (g *realbotEntryGate) TryAcquire() bool {
+	if g == nil {
+		return true
+	}
+	select {
+	case <-g.token:
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *realbotEntryGate) Release() {
+	if g == nil {
+		return
+	}
+	select {
+	case g.token <- struct{}{}:
+	default:
+	}
+}
+
 type realbotOrderPathWarmer interface {
 	GetTradingAllowance(ctx context.Context) (float64, error)
 }
@@ -1221,6 +1255,7 @@ func run() error {
 	globalInitialSplits := make(map[string]float64)
 	var splitMu sync.Mutex
 	var splitTxMu sync.Mutex
+	entryGate := newRealbotEntryGate()
 	currentBalance := balance // Seed with the pre-fetched balance
 
 	for {
@@ -1331,7 +1366,7 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, resolutionCache)
+				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, resolutionCache)
 			}(marketID, market, endTime, marketRiskMgr, currentBalance)
 		}
 
@@ -1432,7 +1467,7 @@ func run() error {
 				goto shutdown
 			}
 		}
-		} // End of main round loop
+	} // End of main round loop
 
 shutdown:
 	tui.Stop()
@@ -1444,7 +1479,7 @@ shutdown:
 func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
-	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, resolutionCache *api.ResolutionCache) {
+	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, resolutionCache *api.ResolutionCache) {
 
 	if market != nil && market.ConditionID != "" {
 		infoCtx, infoCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -1672,7 +1707,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg := tui.GetSettings()
 		usNow := core.USTime(time.Now())
-		
+
 		weekdayTradingAllowed := true
 		if liveCfg.TradingHoursMode == "weekdays trade only" {
 			weekdayTradingAllowed = core.IsUSWeekday(usNow)
@@ -2179,6 +2214,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
+					if entryGate != nil && !entryGate.TryAcquire() {
+						nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
+						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "entry-gate-busy", realbotTakerCloseLogInterval) {
+							tui.LogEvent("[%s] ⏳ Taker close paused: another market is executing a live entry", id)
+						}
+						continue
+					}
+
 					initialPosition := trader.GetLivePositionSize(tokenID)
 					tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, %s $%.3f, budget $%.2f)",
 						id, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmSource, confirmPrice, budget)
@@ -2210,12 +2253,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						} else {
 							tui.LogEvent("[%s] ⚠️ Taker close buy not filled before timeout at cap $%.3f", id, plan.LimitPrice)
 						}
+						if entryGate != nil {
+							entryGate.Release()
+						}
 						continue
 					}
 
 					execQty := attributedBuyFill(exec, plan.RequestedQty, 0, false)
 					if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
 						tui.LogEvent("[%s] ⚠️ Taker close execution below confirmation threshold: %s shares", id, formatShareQty(execQty))
+						if entryGate != nil {
+							entryGate.Release()
+						}
 						continue
 					}
 
@@ -2248,6 +2297,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						id, formatShareQty(execQty), bestOutcome, preLocalQty, postBuyLocalQty, execCost)
 
 					refreshWalletTruth(5 * time.Second)
+					if entryGate != nil {
+						entryGate.Release()
+					}
 				}
 			}
 		}
@@ -3018,6 +3070,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							continue
 						}
 
+						if entryGate != nil && !entryGate.TryAcquire() {
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							tui.LogEvent("[%s] ⏳ Skipping buy: another market is executing a live entry", id)
+							continue
+						}
+
 						// Sync CLOB allowance with on-chain state right before trading.
 						// Root cause of "insufficient balance/allowance" errors in realbot:
 						// allowance synced once at startup can go stale by the time an arb opportunity arrives.
@@ -3350,6 +3408,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							engine.RecalculateDrawdown()
 						}
 						refreshWalletTruth(5 * time.Second)
+						if entryGate != nil {
+							entryGate.Release()
+						}
 
 						lastTrade = time.Now()
 					}

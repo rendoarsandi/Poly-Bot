@@ -1465,6 +1465,7 @@ func (e *Engine) GetSizingBalance() float64 {
 	}
 	return sizing
 }
+
 // UpdateCompoundMultiplier updates the multiplier based on round profit/loss
 // Profitable rounds ratchet the sizing base upward to the new high-water mark.
 // Losses do not shrink sizing; they only affect round win/loss reporting.
@@ -1492,5 +1493,17 @@ func (e *Engine) UpdateCompoundMultiplier(roundPnL float64, startingEquity float
 func (e *Engine) GetCompoundStats() (multiplier float64, rounds int, profitable int, losing int, sizingBalance float64) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds, e.losingRounds, e.sizingBalance
+
+	sizing := e.sizingBalance
+	if sizing < e.pnlBaseline {
+		sizing = e.pnlBaseline
+	}
+	if sizing < 0 {
+		sizing = 0
+	}
+	if e.currentBalance > sizing {
+		sizing = e.currentBalance
+	}
+
+	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds, e.losingRounds, sizing
 }

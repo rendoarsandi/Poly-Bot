@@ -139,6 +139,21 @@ func TestRealbotTakerCloseBudgetKeepsHighWaterAfterDrawdown(t *testing.T) {
 	}
 }
 
+func TestRealbotEntryGateAllowsOnlyOneConcurrentAcquire(t *testing.T) {
+	gate := newRealbotEntryGate()
+	if !gate.TryAcquire() {
+		t.Fatal("expected first acquire to succeed")
+	}
+	if gate.TryAcquire() {
+		t.Fatal("expected second acquire to be blocked while gate is held")
+	}
+	gate.Release()
+	if !gate.TryAcquire() {
+		t.Fatal("expected acquire to succeed again after release")
+	}
+	gate.Release()
+}
+
 func TestRealbotNeutralRoundPnLExcludesWalletTruthReconciliationDelta(t *testing.T) {
 	roundPnL := realbotNeutralRoundPnL(64.67, 74.13, 9.46)
 	if math.Abs(roundPnL) > 0.000001 {
