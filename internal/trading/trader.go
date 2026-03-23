@@ -16,6 +16,12 @@ import (
 	"Market-bot/internal/paper"
 )
 
+const (
+	realTraderBalanceCacheTTL     = 30 * time.Second
+	realTraderOnChainBalanceTTL   = 20 * time.Second
+	realTraderOnChainRetryBackoff = 3 * time.Second
+)
+
 // Trader defines the interface for placing trades (paper or real)
 type Trader interface {
 	// Buy places a buy order
@@ -275,6 +281,10 @@ type RealTrader struct {
 
 	cachedBalance     float64
 	lastBalanceUpdate time.Time
+	cachedOnChainUSDC float64
+	lastOnChainUSDC   time.Time
+	lastOnChainTry    time.Time
+	hasOnChainUSDC    bool
 
 	ctfBalanceCache      map[string]float64
 	lastCTFBalanceUpdate map[string]time.Time
@@ -616,7 +626,10 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		t.mu.Unlock()
 	}
 
-	status := "PENDING"
+	status := strings.TrimSpace(resp.Status)
+	if status == "" {
+		status = "PENDING"
+	}
 	if t.client.IsTestMode() {
 		status = "TEST"
 	}
@@ -686,7 +699,10 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		t.mu.Unlock()
 	}
 
-	status := "PENDING"
+	status := strings.TrimSpace(resp.Status)
+	if status == "" {
+		status = "PENDING"
+	}
 	if t.client.IsTestMode() {
 		status = "TEST"
 	}
@@ -726,26 +742,27 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 	t.mu.Lock()
 	// If background sync is keeping this fresh, we can rely on it.
 	// We use a 30s TTL here so if the background ticker is delayed, we still use the cache instead of blocking the WS loop.
-	if time.Since(t.lastBalanceUpdate) < 30*time.Second && !t.lastBalanceUpdate.IsZero() {
+	if time.Since(t.lastBalanceUpdate) < realTraderBalanceCacheTTL && !t.lastBalanceUpdate.IsZero() {
 		bal := t.cachedBalance
 		t.mu.Unlock()
 		return bal, nil
 	}
 	cachedBal := t.cachedBalance
 	hasCache := !t.lastBalanceUpdate.IsZero()
-	
+
 	// Prevent cache stampede by temporarily marking as updated
 	t.lastBalanceUpdate = time.Now()
 	t.mu.Unlock()
 
 	bal, err := t.fetchLiveBalance(ctx)
 	if err != nil {
+		// Clear temporary marker so callers can retry without waiting for cache TTL.
+		t.mu.Lock()
+		t.lastBalanceUpdate = time.Time{}
+		t.mu.Unlock()
+
 		// Return cached balance on error if available
 		if hasCache {
-			// Reset the update time so it retries sooner rather than waiting full 30s
-			t.mu.Lock()
-			t.lastBalanceUpdate = time.Time{}
-			t.mu.Unlock()
 			return cachedBal, nil
 		}
 		return 0, err
@@ -773,7 +790,7 @@ func (t *RealTrader) fetchLiveBalance(ctx context.Context) (float64, error) {
 	}
 
 	if t.polygon != nil {
-		onChainBalance, onChainErr := t.polygon.GetUSDCBalance(ctx, t.client.Address())
+		onChainBalance, onChainErr := t.getOnChainUSDCBalance(ctx)
 		ba, baErr := t.client.GetBalanceAllowance(ctx)
 		if onChainErr == nil && baErr == nil {
 			// Use the more conservative value to avoid overstating spendable cash
@@ -796,6 +813,60 @@ func (t *RealTrader) fetchLiveBalance(ctx context.Context) (float64, error) {
 		return 0, err
 	}
 	return ba.Balance, nil
+}
+
+func (t *RealTrader) getOnChainUSDCBalance(ctx context.Context) (float64, error) {
+	if t.polygon == nil {
+		return 0, fmt.Errorf("polygon client not initialized")
+	}
+	if t.client == nil {
+		return 0, fmt.Errorf("exchange client not initialized")
+	}
+
+	now := time.Now()
+	t.mu.Lock()
+	cached := t.cachedOnChainUSDC
+	hasCached := t.hasOnChainUSDC
+	lastUpdate := t.lastOnChainUSDC
+	lastTry := t.lastOnChainTry
+	if hasCached && !lastUpdate.IsZero() && now.Sub(lastUpdate) < realTraderOnChainBalanceTTL {
+		t.mu.Unlock()
+		return cached, nil
+	}
+	if !lastTry.IsZero() && now.Sub(lastTry) < realTraderOnChainRetryBackoff {
+		// We recently attempted chain refresh; avoid tight retry loops.
+		t.mu.Unlock()
+		if hasCached {
+			return cached, nil
+		}
+		return 0, fmt.Errorf("on-chain balance refresh throttled")
+	}
+	t.lastOnChainTry = now
+	t.mu.Unlock()
+
+	bal, err := t.polygon.GetUSDCBalance(ctx, t.client.Address())
+	if err != nil {
+		if hasCached {
+			return cached, nil
+		}
+		return 0, err
+	}
+
+	t.mu.Lock()
+	t.cachedOnChainUSDC = bal
+	t.lastOnChainUSDC = time.Now()
+	t.hasOnChainUSDC = true
+	t.mu.Unlock()
+	return bal, nil
+}
+
+func (t *RealTrader) invalidateOnChainBalanceCache() {
+	t.mu.Lock()
+	t.cachedOnChainUSDC = 0
+	t.lastOnChainUSDC = time.Time{}
+	t.lastOnChainTry = time.Time{}
+	t.hasOnChainUSDC = false
+	t.mu.Unlock()
 }
 
 // ForceRefreshBalance clears the cache and fetches fresh balance
@@ -890,6 +961,7 @@ func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
 
 func (t *RealTrader) refreshStateAfterRedeem(ctx context.Context) {
 	t.InvalidateCTFBalanceCache()
+	t.invalidateOnChainBalanceCache()
 
 	const maxAttempts = 3
 	const refreshDelay = 250 * time.Millisecond
@@ -1034,9 +1106,14 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	amountFloat := shares * 1e6
 	amount.SetInt64(int64(math.Round(amountFloat)))
 
-	return t.retryOnChainTx(ctx, "merge", func() (string, error) {
+	txHash, err := t.retryOnChainTx(ctx, "merge", func() (string, error) {
 		return t.polygon.MergePositions(ctx, t.client.GetSigner(), conditionID, amount, numOutcomes)
 	})
+	if err != nil {
+		return txHash, err
+	}
+	t.invalidateOnChainBalanceCache()
+	return txHash, nil
 }
 
 // SplitOnChain converts USDC into YES+NO token pairs
@@ -1055,9 +1132,14 @@ func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcA
 	amountFloat := usdcAmount * 1e6
 	amount.SetInt64(int64(math.Round(amountFloat)))
 
-	return t.retryOnChainTx(ctx, "split", func() (string, error) {
+	txHash, err := t.retryOnChainTx(ctx, "split", func() (string, error) {
 		return t.polygon.SplitPositions(ctx, t.client.GetSigner(), conditionID, amount, numOutcomes)
 	})
+	if err != nil {
+		return txHash, err
+	}
+	t.invalidateOnChainBalanceCache()
+	return txHash, nil
 }
 
 // retryRPC retries a function that returns (T, error) upon rate limit errors

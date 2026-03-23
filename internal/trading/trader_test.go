@@ -764,3 +764,74 @@ func TestRealTrader_WaitForLivePairPositionsTimeoutReturnsLatestSnapshot(t *test
 		t.Fatalf("unexpected balances %.2f / %.2f", bal0, bal1)
 	}
 }
+
+func TestRealTrader_ForceRefreshBalanceThrottlesOnChainUSDCReads(t *testing.T) {
+	var rpcCalls int32
+	usdcRaw := big.NewInt(68284432)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&rpcCalls, 1)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"0x%064x"}`, usdcRaw)))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client: &stubExchangeClient{
+			balanceAllowance: &api.BalanceAllowance{
+				Balance:   99999999,
+				Allowance: 99999999,
+			},
+			address: "0x1111111111111111111111111111111111111111",
+		},
+		polygon: api.NewPolygonClient(server.URL),
+		config:  &core.Config{Exchange: "polymarket"},
+	}
+
+	for i := 0; i < 5; i++ {
+		balance, err := trader.ForceRefreshBalance(context.Background())
+		if err != nil {
+			t.Fatalf("ForceRefreshBalance failed on iteration %d: %v", i, err)
+		}
+		if balance != 68.284432 {
+			t.Fatalf("expected on-chain USDC balance 68.284432, got %.6f", balance)
+		}
+	}
+
+	if calls := atomic.LoadInt32(&rpcCalls); calls != 1 {
+		t.Fatalf("expected exactly 1 on-chain balance RPC, got %d", calls)
+	}
+}
+
+func TestRealTrader_ForceRefreshBalanceBacksOffOnChainRetryAfterFailure(t *testing.T) {
+	var rpcCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&rpcCalls, 1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"rate limit"}}`))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client: &stubExchangeClient{
+			balanceAllowance: &api.BalanceAllowance{
+				Balance:   42.5,
+				Allowance: 42.5,
+			},
+			address: "0x1111111111111111111111111111111111111111",
+		},
+		polygon: api.NewPolygonClient(server.URL),
+		config:  &core.Config{Exchange: "polymarket"},
+	}
+
+	for i := 0; i < 2; i++ {
+		balance, err := trader.ForceRefreshBalance(context.Background())
+		if err != nil {
+			t.Fatalf("ForceRefreshBalance failed on iteration %d: %v", i, err)
+		}
+		if balance != 42.5 {
+			t.Fatalf("expected exchange fallback balance 42.5, got %.2f", balance)
+		}
+	}
+
+	if calls := atomic.LoadInt32(&rpcCalls); calls != 1 {
+		t.Fatalf("expected on-chain retry backoff to limit calls to 1, got %d", calls)
+	}
+}

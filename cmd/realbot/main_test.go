@@ -1279,3 +1279,28 @@ func TestRealbotDisplayHasUsableQuotes(t *testing.T) {
 		t.Fatal("expected terminal one-sided display quotes to be usable")
 	}
 }
+
+func TestShouldSkipImmediateExecutionConfirmationForFAKNoMatch(t *testing.T) {
+	result := &trading.TradeResult{
+		Success: false,
+		Status:  "KILLED",
+		Message: "no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.",
+	}
+
+	if !shouldSkipImmediateExecutionConfirmation(result, nil) {
+		t.Fatal("expected immediate confirmation skip for explicit FAK no-match")
+	}
+}
+
+func TestShouldSkipImmediateExecutionConfirmationKeepsVerificationWhenFillSignalsExist(t *testing.T) {
+	result := &trading.TradeResult{
+		Success:         false,
+		Status:          "KILLED",
+		Message:         "order was killed",
+		AcknowledgedQty: 1.25,
+	}
+
+	if shouldSkipImmediateExecutionConfirmation(result, nil) {
+		t.Fatal("expected verification to continue when venue acknowledged quantity exists")
+	}
+}

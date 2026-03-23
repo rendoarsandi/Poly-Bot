@@ -3750,11 +3750,53 @@ func hydrateDirectMarketTradeResult(req directMarketOrderSignalRequest, result *
 	return result
 }
 
+func shouldSkipImmediateExecutionConfirmation(result *trading.TradeResult, err error) bool {
+	if err != nil || result == nil {
+		return false
+	}
+	if result.Success {
+		return false
+	}
+	if result.AcknowledgedQty > 0 || result.AcknowledgedNotional > 0 || len(result.TransactionsHashes) > 0 || len(result.TradeIDs) > 0 {
+		return false
+	}
+
+	status := strings.ToUpper(strings.TrimSpace(result.Status))
+	switch status {
+	case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
+		return true
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(result.Message))
+	if msg == "" {
+		return false
+	}
+	if strings.Contains(msg, "no orders found to match with fak order") {
+		return true
+	}
+	if strings.Contains(msg, "order was killed") || strings.Contains(msg, "order was cancelled") || strings.Contains(msg, "order was expired") || strings.Contains(msg, "order was rejected") {
+		return true
+	}
+	return false
+}
+
 func finalizeDirectMarketExecutionWithSignals(ctx context.Context, trader *trading.RealTrader, req directMarketOrderSignalRequest, confirmTimeout time.Duration, result *trading.TradeResult, err error) directMarketExecution {
 	result = hydrateDirectMarketTradeResult(req, result)
 	orderID := result.OrderID
 	acknowledgedQty := result.AcknowledgedQty
 	acknowledgedNotional := result.AcknowledgedNotional
+
+	if shouldSkipImmediateExecutionConfirmation(result, err) {
+		return directMarketExecution{
+			Result:               result,
+			Err:                  err,
+			ExecutedQty:          0,
+			AcknowledgedQty:      acknowledgedQty,
+			AcknowledgedNotional: acknowledgedNotional,
+			Success:              false,
+		}
+	}
+
 	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, req.Side, orderID, req.TokenID, req.InitialBalance, confirmTimeout)
 	if acknowledgedQty > executedQty {
 		executedQty = acknowledgedQty
