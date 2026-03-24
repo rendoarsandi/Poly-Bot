@@ -1424,6 +1424,11 @@ func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (fl
 	return s, nil
 }
 
+func (t *RealTrader) ForceRefreshCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
+	t.InvalidateCTFBalanceCache(tokenID)
+	return t.GetCTFBalanceFloat(ctx, tokenID)
+}
+
 // WaitForFill waits for an order to be filled
 func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout time.Duration) (bool, error) {
 	if orderID == "" {

@@ -1680,7 +1680,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var nextNearCloseCleanup time.Time
 	var nearExpiryNoticeSent bool
 
+	walletTruthTokenIDs := make([]string, 0, len(tokenToOutcome))
+	for tokenID := range tokenToOutcome {
+		walletTruthTokenIDs = append(walletTruthTokenIDs, tokenID)
+	}
+	sort.Strings(walletTruthTokenIDs)
+
 	refreshWalletTruth := func(timeout time.Duration) {
+		if len(walletTruthTokenIDs) > 0 {
+			trader.InvalidateCTFBalanceCache(walletTruthTokenIDs...)
+		}
 		truthCtx, truthCancel := context.WithTimeout(ctx, timeout)
 		defer truthCancel()
 		_, _ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)

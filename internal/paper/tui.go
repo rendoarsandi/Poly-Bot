@@ -208,8 +208,24 @@ func renderTradingHoursStatus(mode string, now time.Time) string {
 	return styleDimmed.Render("US time " + usClock + "  ·  Trading Gate OFF")
 }
 
+func walletTruthInventoryDisplayShares(wt WalletTruthPosition) (float64, bool) {
+	switch {
+	case wt.OnChainShares > 0:
+		if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
+			return 0, false
+		}
+		return wt.OnChainShares, true
+	case wt.LocalShares > 0 && wt.ResolutionStatus != "resolved":
+		return wt.LocalShares, true
+	default:
+		return 0, false
+	}
+}
+
 func walletTruthInventoryStatus(wt WalletTruthPosition) string {
 	switch {
+	case wt.OnChainShares <= 0 && wt.LocalShares > 0 && wt.ResolutionStatus != "resolved":
+		return styleYellow.Render("[SYNCING]")
 	case wt.Redeemable:
 		return styleGreen.Render("[REDEEMABLE]")
 	case wt.IsWinner:
@@ -3049,10 +3065,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	hasOnChainInventory := false
 	if showOnChainInventory {
 		for _, wt := range walletTruthPositions {
-			if wt.OnChainShares <= 0 {
-				continue
-			}
-			if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
+			if _, ok := walletTruthInventoryDisplayShares(wt); !ok {
 				continue
 			}
 			hasOnChainInventory = true
@@ -3225,10 +3238,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		onChainInventoryByMarket := make(map[string][]WalletTruthPosition)
 		onChainInventoryCount := 0
 		for _, wt := range walletTruthPositions {
-			if wt.OnChainShares <= 0 {
-				continue
-			}
-			if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
+			if _, ok := walletTruthInventoryDisplayShares(wt); !ok {
 				continue
 			}
 			onChainInventoryByMarket[wt.MarketID] = append(onChainInventoryByMarket[wt.MarketID], wt)
@@ -3249,9 +3259,10 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
 				parts := make([]string, 0, len(positions))
 				for _, wt := range positions {
+					displayShares, _ := walletTruthInventoryDisplayShares(wt)
 					parts = append(parts, fmt.Sprintf("%s: %.4f %s",
 						core.SanitizeString(wt.Outcome),
-						wt.OnChainShares,
+						displayShares,
 						walletTruthInventoryStatus(wt),
 					))
 				}

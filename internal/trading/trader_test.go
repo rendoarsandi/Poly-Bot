@@ -886,6 +886,44 @@ func TestRealTrader_ForceRefreshBalanceBacksOffOnChainRetryAfterFailure(t *testi
 	}
 }
 
+func TestRealTrader_ForceRefreshCTFBalanceFloatBypassesCacheTTL(t *testing.T) {
+	var rpcCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := atomic.AddInt32(&rpcCalls, 1)
+		rawBalance := big.NewInt(2500000)
+		if call > 1 {
+			rawBalance = big.NewInt(3500000)
+		}
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"0x%064x"}`, rawBalance)))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client:  &stubExchangeClient{address: "0x1111111111111111111111111111111111111111"},
+		polygon: api.NewPolygonClient(server.URL),
+	}
+
+	bal1, err := trader.GetCTFBalanceFloat(context.Background(), "12345")
+	if err != nil {
+		t.Fatalf("GetCTFBalanceFloat failed: %v", err)
+	}
+	if bal1 != 2.5 {
+		t.Fatalf("expected cached balance 2.5 shares, got %.6f", bal1)
+	}
+
+	bal2, err := trader.ForceRefreshCTFBalanceFloat(context.Background(), "12345")
+	if err != nil {
+		t.Fatalf("ForceRefreshCTFBalanceFloat failed: %v", err)
+	}
+	if bal2 != 3.5 {
+		t.Fatalf("expected refreshed balance 3.5 shares, got %.6f", bal2)
+	}
+
+	if calls := atomic.LoadInt32(&rpcCalls); calls != 2 {
+		t.Fatalf("expected force refresh to trigger a second RPC call, got %d", calls)
+	}
+}
+
 func TestRealTrader_GetCTFBalanceFloatUsesCacheTTL(t *testing.T) {
 	var rpcCalls int32
 	rawBalance := big.NewInt(2500000) // 2.5 shares in 6-decimal units

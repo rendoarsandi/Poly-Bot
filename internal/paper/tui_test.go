@@ -510,6 +510,23 @@ func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsShowsSyncingInventoryUntilChainCatchesUp(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+	tui.SetWalletTruthPositions("BTC", []WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 3.21, OnChainShares: 0, ResolutionStatus: "unresolved"},
+	})
+
+	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
+	rendered := model.renderPositions(120, nil)
+	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
+		t.Fatalf("expected syncing inventory section, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Up: 3.2100") || !strings.Contains(rendered, "SYNCING") {
+		t.Fatalf("expected syncing inventory row, got %q", rendered)
+	}
+}
+
 func TestRenderPositionsHidesResolvedLosersFromOnChainInventory(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, nil)
