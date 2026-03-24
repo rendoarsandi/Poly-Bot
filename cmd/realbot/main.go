@@ -246,8 +246,8 @@ func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, merg
 	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
 }
 
-func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISettings) float64 {
-	if cash <= 0 && sizingBalance <= 0 {
+func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISettings) float64 {
+	if cash <= 0 && sizingCapital <= 0 {
 		return 0
 	}
 	tradeFactor := liveCfg.TradeScaleFactor
@@ -255,10 +255,13 @@ func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISetti
 		tradeFactor = 0.01
 	}
 
-	// Keep taker-close sizing anchored to the ratcheting high-water base so
-	// drawdowns and temporary carry do not shrink the configured per-trade notional.
-	sizingBase := sizingBalance
+	// Real-mode sizing should follow current live equity/book value so open
+	// inventory does not shrink sizing to cash-only, but realized losses do.
+	sizingBase := sizingCapital
 	if sizingBase <= 0 {
+		sizingBase = cash
+	}
+	if cash > sizingBase {
 		sizingBase = cash
 	}
 
@@ -276,9 +279,12 @@ func realbotSizingCapitalForTrade(engine *paper.Engine) float64 {
 	if engine == nil {
 		return 0
 	}
-	sizing := engine.GetSizingBalance()
+	sizing := engine.GetBookEquity()
 	if sizing < 0 {
 		return 0
+	}
+	if cash := engine.GetBalance(); cash > sizing {
+		return cash
 	}
 	return sizing
 }
@@ -2872,9 +2878,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					// Dynamic trade size uses the ratcheting session sizing balance.
-					// It only moves up when a profitable round locks in a new high-water mark,
-					// so drawdowns do not shrink the configured trade factor mid-session.
+					// Real-mode trade size follows current live equity/book value so
+					// inventory carry does not shrink to cash-only while realized losses do.
 					tradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
 
 					// Get max fee rate for conservative margin calculation

@@ -112,7 +112,7 @@ func TestRealbotExecutionQuoteGuardAgePreservesStricterConfig(t *testing.T) {
 	}
 }
 
-func TestRealbotTakerCloseBudgetUsesHighWaterSizingWhenAboveCash(t *testing.T) {
+func TestRealbotTakerCloseBudgetUsesCurrentEquityWhenAboveCash(t *testing.T) {
 	budget := realbotTakerCloseBudget(59.20, 65.80, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
@@ -121,7 +121,7 @@ func TestRealbotTakerCloseBudgetUsesHighWaterSizingWhenAboveCash(t *testing.T) {
 	}
 }
 
-func TestRealbotTakerCloseBudgetCompoundsUpWithCashGrowth(t *testing.T) {
+func TestRealbotTakerCloseBudgetGrowsWithCurrentCashWhenAboveEquity(t *testing.T) {
 	budget := realbotTakerCloseBudget(72.00, 72.00, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
@@ -130,12 +130,23 @@ func TestRealbotTakerCloseBudgetCompoundsUpWithCashGrowth(t *testing.T) {
 	}
 }
 
-func TestRealbotTakerCloseBudgetKeepsHighWaterAfterDrawdown(t *testing.T) {
-	budget := realbotTakerCloseBudget(59.20, 72.00, paper.TUISettings{
+func TestRealbotTakerCloseBudgetUsesCurrentEquityAfterDrawdown(t *testing.T) {
+	budget := realbotTakerCloseBudget(59.20, 59.20, paper.TUISettings{
 		TradeScaleFactor: 0.05,
 	})
-	if math.Abs(budget-3.60) > 0.000001 {
-		t.Fatalf("expected taker-close budget to stay at high-water 3.60, got %.2f", budget)
+	if math.Abs(budget-2.96) > 0.000001 {
+		t.Fatalf("expected taker-close budget to follow current equity 2.96, got %.2f", budget)
+	}
+}
+
+func TestRealbotSizingCapitalForTradeUsesBookEquityInsteadOfHighWater(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	engine.UpdateCompoundMultiplier(20.0, 100.0)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.50, 10.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if got := realbotSizingCapitalForTrade(engine); math.Abs(got-100.0) > 0.000001 {
+		t.Fatalf("expected live sizing capital to use book equity 100.00, got %.2f", got)
 	}
 }
 

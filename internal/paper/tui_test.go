@@ -212,22 +212,22 @@ func TestDisplayedTradeBudgetsCompoundsUpInRealModeWhenCashGrows(t *testing.T) {
 	}
 }
 
-func TestDisplayedTradeBudgetsKeepsHighWaterSizingInRealModeAfterDrawdown(t *testing.T) {
+func TestDisplayedTradeBudgetsUsesCurrentEquityInRealModeAfterDrawdown(t *testing.T) {
 	base, effective := displayedTradeBudgets("Real", 100, 100, 100, 120, 0.10, 0, 1.0)
-	if base != 12 {
-		t.Fatalf("expected real trade budget to keep high-water sizing base, got %.2f", base)
+	if base != 10 {
+		t.Fatalf("expected real trade budget to follow current equity after drawdown, got %.2f", base)
 	}
-	if effective != 12 {
-		t.Fatalf("expected real effective budget to match high-water base, got %.2f", effective)
+	if effective != 10 {
+		t.Fatalf("expected real effective budget to match current equity base, got %.2f", effective)
 	}
 }
 
-func TestDisplayedTradeBudgetsUsesAdjustedSizingInRealMode(t *testing.T) {
+func TestDisplayedTradeBudgetsUsesEquityInsteadOfCashOnlyInRealMode(t *testing.T) {
 	base, effective := displayedTradeBudgets("Real", 90, 100, 100, 90, 0.10, 0, 1.50)
-	if base != 9 {
-		t.Fatalf("expected real trade budget to honor adjusted conservative sizing, got %.2f", base)
+	if base != 10 {
+		t.Fatalf("expected real trade budget to use current equity, not cash-only sizing, got %.2f", base)
 	}
-	if effective != 9 {
+	if effective != 10 {
 		t.Fatalf("expected real effective budget to match base in real mode, got %.2f", effective)
 	}
 }
@@ -1047,12 +1047,12 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	if strings.Contains(rendered, "(-$5.66)") {
 		t.Fatalf("expected baseline drift to be hidden from real-mode account change, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "($3.60/trade)") {
-		t.Fatalf("expected 5%% trade budget to keep high-water sizing in real mode, got %q", rendered)
+	if !strings.Contains(rendered, "($3.32/trade)") {
+		t.Fatalf("expected 5%% trade budget to follow current live equity in real mode, got %q", rendered)
 	}
 }
 
-func TestRenderAccountStatusRealModeTakerCloseKeepsHighWaterSizingBudget(t *testing.T) {
+func TestRenderAccountStatusRealModeTakerCloseUsesCurrentEquityBudget(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Real",
@@ -1067,13 +1067,13 @@ func TestRenderAccountStatusRealModeTakerCloseKeepsHighWaterSizingBudget(t *test
 		CurrentBalance:  61.53,
 		StartingBalance: 56.00,
 		RealizedPnL:     5.59,
-	}, 0.0, 203.20, 203.20, 1.0, 203.20, 4, 4, 0, nil)
+	}, 0.0, 61.53, 61.53, 1.0, 203.20, 4, 4, 0, nil)
 
-	if !strings.Contains(rendered, "($10.16/trade)") {
-		t.Fatalf("expected taker-close trade budget to keep high-water sizing, got %q", rendered)
+	if !strings.Contains(rendered, "($3.08/trade)") {
+		t.Fatalf("expected taker-close trade budget to follow current live equity, got %q", rendered)
 	}
-	if strings.Contains(rendered, "($3.08/trade)") {
-		t.Fatalf("expected taker-close mode not to shrink to cash-only sizing, got %q", rendered)
+	if strings.Contains(rendered, "($10.16/trade)") {
+		t.Fatalf("expected taker-close mode to ignore stale high-water sizing, got %q", rendered)
 	}
 }
 
@@ -1183,8 +1183,8 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	if strings.Contains(rendered, "profitable") {
 		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "$6.00/trade") {
-		t.Fatalf("expected real trade budget to keep high-water sizing, got %q", rendered)
+	if !strings.Contains(rendered, "$5.00/trade") {
+		t.Fatalf("expected real trade budget to follow current equity, got %q", rendered)
 	}
 }
 

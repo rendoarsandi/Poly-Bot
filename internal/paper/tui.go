@@ -3010,7 +3010,7 @@ func displayedTradeBudgets(mode string, cash, equity, startingBalance, sizingBal
 
 	sizingCapital := equity
 	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
-		sizingCapital = sizingBalance
+		sizingCapital = equity
 		if sizingCapital <= 0 {
 			sizingCapital = math.Max(cash, startingBalance)
 		}
