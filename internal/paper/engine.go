@@ -1342,7 +1342,11 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 	const eps = 1e-6
 
 	if quantity <= eps {
-		if _, exists := e.positions[posKey]; exists {
+		if pos, exists := e.positions[posKey]; exists {
+			removedCost := pos.TotalCost
+			e.pnlBaseline -= removedCost
+			e.sizingBalance -= removedCost
+			e.refreshCompoundStateLocked(e.sizingBalance)
 			delete(e.positions, posKey)
 			e.recalculateDrawdown()
 			return true
@@ -1367,7 +1371,8 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 		// External carry should start neutral in the session PnL view until it is
 		// actually sold, merged, or redeemed on-chain.
 		e.pnlBaseline += totalCost
-		e.refreshCompoundStateLocked(e.pnlBaseline)
+		e.sizingBalance += totalCost
+		e.refreshCompoundStateLocked(e.sizingBalance)
 		e.recalculateDrawdown()
 		return true
 	}
@@ -1376,16 +1381,25 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 	switch {
 	case quantity > pos.Quantity+eps:
 		addQty := quantity - pos.Quantity
-		pos.TotalCost += addQty * markPrice
-		e.pnlBaseline += addQty * markPrice
-		e.refreshCompoundStateLocked(e.pnlBaseline)
+		addCost := addQty * markPrice
+		pos.TotalCost += addCost
+		e.pnlBaseline += addCost
+		e.sizingBalance += addCost
+		e.refreshCompoundStateLocked(e.sizingBalance)
 		pos.Quantity = quantity
 		changed = true
 	case quantity < pos.Quantity-eps:
+		prevCost := pos.TotalCost
 		if pos.Quantity > eps {
 			pos.TotalCost *= quantity / pos.Quantity
 		} else {
 			pos.TotalCost = quantity * markPrice
+		}
+		removedCost := prevCost - pos.TotalCost
+		if removedCost > eps {
+			e.pnlBaseline -= removedCost
+			e.sizingBalance -= removedCost
+			e.refreshCompoundStateLocked(e.sizingBalance)
 		}
 		pos.Quantity = quantity
 		changed = true

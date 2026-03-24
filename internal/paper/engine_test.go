@@ -298,6 +298,14 @@ func TestEngine_SyncExternalPosition(t *testing.T) {
 		t.Fatalf("expected total cost %.4f, got %.4f", expectedCost, pos.TotalCost)
 	}
 
+	stats := engine.GetStats()
+	if absFloat(stats.StartingBalance-102.1) > 0.0001 {
+		t.Fatalf("expected pnl baseline 102.10 after increase, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(engine.GetSizingBalance()-102.1) > 0.0001 {
+		t.Fatalf("expected sizing balance 102.10 after increase, got %.4f", engine.GetSizingBalance())
+	}
+
 	changed = engine.SyncExternalPosition("BTC", "Down", 1.5, 0.80)
 	if !changed {
 		t.Fatal("expected quantity decrease sync to report a change")
@@ -310,6 +318,17 @@ func TestEngine_SyncExternalPosition(t *testing.T) {
 	}
 	if absFloat(engine.GetBalance()-100.0) > 0.0001 {
 		t.Fatalf("expected balance to remain unchanged after trim, got %.4f", engine.GetBalance())
+	}
+	expectedTrimmedCost := expectedCost * (1.5 / 3.0)
+	if absFloat(pos.TotalCost-expectedTrimmedCost) > 0.0001 {
+		t.Fatalf("expected trimmed total cost %.4f, got %.4f", expectedTrimmedCost, pos.TotalCost)
+	}
+	stats = engine.GetStats()
+	if absFloat(stats.StartingBalance-101.05) > 0.0001 {
+		t.Fatalf("expected pnl baseline 101.05 after trim, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(engine.GetSizingBalance()-101.05) > 0.0001 {
+		t.Fatalf("expected sizing balance 101.05 after trim, got %.4f", engine.GetSizingBalance())
 	}
 }
 
@@ -342,6 +361,58 @@ func TestEngine_SyncExternalPositionTrimsWithoutChangingRealizedPnL(t *testing.T
 	stats := engine.GetStats()
 	if absFloat(stats.RealizedPnL) > 0.000001 {
 		t.Fatalf("expected sync trim to avoid local realized pnl, got %.6f", stats.RealizedPnL)
+	}
+}
+
+func TestEngine_SyncExternalPositionCarryRoundTripRestoresSizingBase(t *testing.T) {
+	engine := NewEngine(62.24)
+
+	if !engine.SyncExternalPosition("BTC", "Up", 3.3029, 0.99) {
+		t.Fatal("expected sync to import carry position")
+	}
+
+	expectedImportedSizing := 62.24 + (3.3029 * 0.99)
+	if absFloat(engine.GetSizingBalance()-expectedImportedSizing) > 0.0001 {
+		t.Fatalf("expected sizing balance %.4f after import, got %.4f", expectedImportedSizing, engine.GetSizingBalance())
+	}
+
+	if !engine.SyncExternalPosition("BTC", "Up", 0.0, 0.99) {
+		t.Fatal("expected sync to clear imported carry position")
+	}
+
+	if absFloat(engine.GetSizingBalance()-62.24) > 0.0001 {
+		t.Fatalf("expected sizing balance to return to 62.24 after carry clear, got %.4f", engine.GetSizingBalance())
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.StartingBalance-62.24) > 0.0001 {
+		t.Fatalf("expected pnl baseline to return to 62.24, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(stats.RealizedPnL) > 0.000001 {
+		t.Fatalf("expected carry sync round-trip to stay neutral, got realized pnl %.6f", stats.RealizedPnL)
+	}
+}
+
+func TestEngine_SyncExternalPositionCarryRoundTripPreservesProfitHighWater(t *testing.T) {
+	engine := NewEngine(100.0)
+	engine.UpdateCompoundMultiplier(20.0, 100.0)
+
+	if absFloat(engine.GetSizingBalance()-120.0) > 0.0001 {
+		t.Fatalf("expected initial profit high-water sizing 120.00, got %.4f", engine.GetSizingBalance())
+	}
+
+	if !engine.SyncExternalPosition("BTC", "Up", 10.0, 0.50) {
+		t.Fatal("expected sync to import carry position")
+	}
+	if absFloat(engine.GetSizingBalance()-125.0) > 0.0001 {
+		t.Fatalf("expected carry import to temporarily lift sizing to 125.00, got %.4f", engine.GetSizingBalance())
+	}
+
+	if !engine.SyncExternalPosition("BTC", "Up", 0.0, 0.50) {
+		t.Fatal("expected sync to clear carry position")
+	}
+	if absFloat(engine.GetSizingBalance()-120.0) > 0.0001 {
+		t.Fatalf("expected sizing to return to prior profit high-water 120.00, got %.4f", engine.GetSizingBalance())
 	}
 }
 
