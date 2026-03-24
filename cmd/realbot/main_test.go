@@ -150,6 +150,23 @@ func TestRealbotSizingCapitalForTradeUsesBookEquityInsteadOfHighWater(t *testing
 	}
 }
 
+func TestRealbotShouldKeepPendingRedeemTxTracksConfirmationTimeouts(t *testing.T) {
+	err := errors.New("redeem tx 0xabc confirmation pending: timeout waiting for transaction")
+	if !realbotShouldKeepPendingRedeemTx("0xabc", err) {
+		t.Fatal("expected pending redeem tx to stay in-flight")
+	}
+	if realbotShouldKeepPendingRedeemTx("", err) {
+		t.Fatal("expected empty tx hash not to be tracked")
+	}
+}
+
+func TestRealbotShouldKeepPendingRedeemTxIgnoresHardFailures(t *testing.T) {
+	err := errors.New("transaction reverted")
+	if realbotShouldKeepPendingRedeemTx("0xabc", err) {
+		t.Fatal("expected hard failure not to be tracked as pending")
+	}
+}
+
 func TestRealbotEntryGateAllowsOnlyOneConcurrentAcquire(t *testing.T) {
 	gate := newRealbotEntryGate()
 	if !gate.TryAcquire() {

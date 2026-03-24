@@ -576,29 +576,77 @@ func realbotRecoverLateBuyFill(trader *trading.RealTrader, tokenID string, initi
 	return qty, nil
 }
 
+func realbotShortTxHash(txHash string) string {
+	txHash = strings.TrimSpace(txHash)
+	if len(txHash) > 10 {
+		return txHash[:10] + "..."
+	}
+	return txHash
+}
+
+func realbotShouldKeepPendingRedeemTx(txHash string, err error) bool {
+	if strings.TrimSpace(txHash) == "" || err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "confirmation pending") || strings.Contains(errStr, "timeout waiting for transaction")
+
+}
+
 func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	go func() {
 		attempt := 0
+		pendingTxHash := ""
 		for {
 			attempt++
-			redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			txHash, err := trader.RedeemOnChainForce(redeemCtx, conditionID, numOutcomes)
-			cancel()
+			skipSubmit := false
+
+			if pendingTxHash != "" {
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				txState, probeErr := trader.GetOnChainTxState(probeCtx, pendingTxHash)
+				probeCancel()
+
+				if probeErr != nil {
+					tui.LogEvent("[%s] ⚠️ Redeem tx %s probe failed: %v", marketID, realbotShortTxHash(pendingTxHash), probeErr)
+					skipSubmit = true
+				} else {
+					switch txState {
+					case "success":
+						tui.LogEvent("[%s] ✅ Redeem tx confirmed: %s", marketID, realbotShortTxHash(pendingTxHash))
+						pendingTxHash = ""
+						skipSubmit = true
+					case "reverted":
+						tui.LogEvent("[%s] ⚠️ Redeem tx reverted on-chain: %s", marketID, realbotShortTxHash(pendingTxHash))
+						pendingTxHash = ""
+					case "dropped":
+						tui.LogEvent("[%s] ⚠️ Redeem tx dropped from RPC: %s", marketID, realbotShortTxHash(pendingTxHash))
+						pendingTxHash = ""
+					default:
+						tui.LogEvent("[%s] ⏳ Redeem tx still pending: %s", marketID, realbotShortTxHash(pendingTxHash))
+						skipSubmit = true
+					}
+				}
+			}
+
+			if !skipSubmit && pendingTxHash == "" {
+				redeemCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				txHash, err := trader.RedeemOnChainForce(redeemCtx, conditionID, numOutcomes)
+				cancel()
+
+				if err == nil {
+					tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", marketID, realbotShortTxHash(txHash))
+				} else if realbotShouldKeepPendingRedeemTx(txHash, err) {
+					pendingTxHash = txHash
+					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted, waiting on-chain: %s", marketID, attempt, realbotShortTxHash(txHash))
+				} else {
+					tui.LogEvent("[%s] ⚠️ Redeem attempt %d failed: %v", marketID, attempt, err)
+				}
+			}
 
 			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
 			refreshErr := refreshWalletTruthForRedemption(refreshCtx, marketID, conditionID, trader, engine, tui)
 			positions, positionsErr := realbotWalletTruthPositionsForRedemption(refreshCtx, marketID, conditionID, trader, engine)
 			refreshCancel()
-
-			if err == nil {
-				if len(txHash) >= 10 {
-					tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", marketID, txHash[:10]+"...")
-				} else {
-					tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", marketID, txHash)
-				}
-			} else {
-				tui.LogEvent("[%s] ⚠️ Redeem attempt %d pending: %v", marketID, attempt, err)
-			}
 
 			if refreshErr != nil {
 				tui.LogEvent("[%s] ⚠️ Post-redeem wallet-truth refresh failed: %v", marketID, refreshErr)

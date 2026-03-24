@@ -650,6 +650,56 @@ func TestRealTrader_GetBalancePrefersLowerExchangeBalanceWhenOnChainIsHigher(t *
 	}
 }
 
+func TestRealTrader_GetOnChainTxStatePending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req api.RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "eth_getTransactionReceipt":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+		case "eth_getTransactionByHash":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"hash":"0xabc","blockNumber":"0x"}}`))
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{polygon: api.NewPolygonClient(server.URL)}
+	state, err := trader.GetOnChainTxState(context.Background(), "0xabc")
+	if err != nil {
+		t.Fatalf("GetOnChainTxState failed: %v", err)
+	}
+	if state != "pending" {
+		t.Fatalf("expected pending state, got %q", state)
+	}
+}
+
+func TestRealTrader_GetOnChainTxStateSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req api.RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Method != "eth_getTransactionReceipt" {
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"0x1","blockNumber":"0x1","gasUsed":"0x5208","transactionHash":"0xabc","logs":[]}}`))
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{polygon: api.NewPolygonClient(server.URL)}
+	state, err := trader.GetOnChainTxState(context.Background(), "0xabc")
+	if err != nil {
+		t.Fatalf("GetOnChainTxState failed: %v", err)
+	}
+	if state != "success" {
+		t.Fatalf("expected success state, got %q", state)
+	}
+}
+
 func TestRealTrader_RefreshStateAfterRedeemClearsCTFCacheAndRefreshesBalance(t *testing.T) {
 	trader := &RealTrader{
 		client: &stubExchangeClient{

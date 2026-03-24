@@ -986,6 +986,37 @@ func (t *RealTrader) refreshStateAfterRedeem(ctx context.Context) {
 	}
 }
 
+func (t *RealTrader) GetOnChainTxState(ctx context.Context, txHash string) (string, error) {
+	txHash = strings.TrimSpace(txHash)
+	if txHash == "" {
+		return "", fmt.Errorf("tx hash is empty")
+	}
+
+	receipt, err := t.polygon.GetTransactionReceipt(ctx, txHash)
+	if err != nil {
+		return "", err
+	}
+	if receipt != nil {
+		if receipt.Status == "0x1" {
+			return "success", nil
+		}
+		return "reverted", nil
+	}
+
+	tx, err := t.polygon.GetTransactionByHash(ctx, txHash)
+	if err != nil {
+		return "", err
+	}
+	if tx == nil {
+		return "dropped", nil
+	}
+	if tx.BlockNumber == "" || tx.BlockNumber == "0x" || tx.BlockNumber == "0x0" {
+		return "pending", nil
+	}
+
+	return "pending", nil
+}
+
 // RedeemOnChain performs the on-chain redemption of winning tokens
 func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
 	if t.config.Exchange == "kalshi" {
