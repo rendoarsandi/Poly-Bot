@@ -1117,6 +1117,23 @@ func TestDirectExecutionHasSizingDriftIgnoresTinyRoundingNoise(t *testing.T) {
 	}
 }
 
+func TestReportedBuyCostUsesAcknowledgedNotionalWhenAttributedSizeMatches(t *testing.T) {
+	exec := directMarketExecution{AcknowledgedQty: 3.14, AcknowledgedNotional: 3.1086}
+	got := reportedBuyCost(exec, 0.99, 3.12, 3.14)
+	if math.Abs(got-3.1086) > 0.000001 {
+		t.Fatalf("expected acknowledged notional 3.1086, got %.6f", got)
+	}
+}
+
+func TestReportedBuyCostUsesAttributedSizeWhenAcknowledgedSizeDrifts(t *testing.T) {
+	exec := directMarketExecution{AcknowledgedQty: 3.14, AcknowledgedNotional: 3.1086}
+	got := reportedBuyCost(exec, 0.99, 3.00, 3.14)
+	expected := 2.97
+	if math.Abs(got-expected) > 0.000001 {
+		t.Fatalf("expected attributed notional %.6f, got %.6f", expected, got)
+	}
+}
+
 func TestStartupPositionsSummarySuppressesDetailedDump(t *testing.T) {
 	summary := startupPositionsSummary([]trading.PositionInfo{
 		{TokenID: "token-a", Outcome: "YES", Size: 2.89, AvgPrice: 0},

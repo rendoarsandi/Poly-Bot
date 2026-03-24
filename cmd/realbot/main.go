@@ -2275,10 +2275,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						execPrice = plan.LimitPrice
 					}
 					preLocalQty, _ := localBoughtPositionAvg(engine, id, bestOutcome)
-					execCost := execQty * execPrice
-					if exec.AcknowledgedNotional > 0 {
-						execCost = exec.AcknowledgedNotional
-					}
+					execCost := reportedBuyCost(exec, execPrice, execQty, plan.RequestedQty)
 					if _, buyErr := engine.BuyForMarket(id, bestOutcome, execPrice, execQty); buyErr != nil {
 						tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", id, buyErr)
 					}
@@ -3653,7 +3650,7 @@ func ackNotionalMatchesAttributedBuy(exec directMarketExecution, attributedQty f
 		return false
 	}
 	diff := math.Abs(exec.AcknowledgedQty - attributedQty)
-	return diff <= math.Max(0.05, attributedQty*0.05)
+	return diff <= math.Max(0.02, attributedQty*0.02)
 }
 
 func reportedBuyCost(exec directMarketExecution, observedPrice, attributedQty, requestedQty float64) float64 {
