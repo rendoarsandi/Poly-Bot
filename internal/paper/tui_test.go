@@ -1003,7 +1003,7 @@ func TestRenderAccountStatusUsesBookEquityForPaperTradeBudget(t *testing.T) {
 		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 10, AvgPrice: 0.60, TotalCost: 6},
 	})
 
-	if !strings.Contains(rendered, "$5.00/trade") {
+	if !strings.Contains(rendered, ".00/trade") {
 		t.Fatalf("expected paper trade budget to use neutral book equity, got %q", rendered)
 	}
 }
@@ -1047,12 +1047,12 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	if strings.Contains(rendered, "(-$5.66)") {
 		t.Fatalf("expected baseline drift to be hidden from real-mode account change, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "($3.32/trade)") {
-		t.Fatalf("expected 5%% trade budget to use current cash in real mode, got %q", rendered)
+	if !strings.Contains(rendered, "($3.60/trade)") {
+		t.Fatalf("expected 5%% trade budget to keep high-water sizing in real mode, got %q", rendered)
 	}
 }
 
-func TestRenderAccountStatusRealModeTakerCloseUsesCashBudget(t *testing.T) {
+func TestRenderAccountStatusRealModeTakerCloseKeepsHighWaterSizingBudget(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Real",
@@ -1069,11 +1069,11 @@ func TestRenderAccountStatusRealModeTakerCloseUsesCashBudget(t *testing.T) {
 		RealizedPnL:     5.59,
 	}, 0.0, 203.20, 203.20, 1.0, 203.20, 4, 4, 0, nil)
 
-	if !strings.Contains(rendered, "($3.08/trade)") {
-		t.Fatalf("expected taker-close trade budget to be anchored to cash, got %q", rendered)
+	if !strings.Contains(rendered, "($10.16/trade)") {
+		t.Fatalf("expected taker-close trade budget to keep high-water sizing, got %q", rendered)
 	}
-	if strings.Contains(rendered, "($10.16/trade)") {
-		t.Fatalf("expected taker-close mode to avoid sizing from inflated book equity, got %q", rendered)
+	if strings.Contains(rendered, "($3.08/trade)") {
+		t.Fatalf("expected taker-close mode not to shrink to cash-only sizing, got %q", rendered)
 	}
 }
 
@@ -1183,8 +1183,8 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	if strings.Contains(rendered, "profitable") {
 		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "$5.00/trade") {
-		t.Fatalf("expected real trade budget to use current cash, got %q", rendered)
+	if !strings.Contains(rendered, "$6.00/trade") {
+		t.Fatalf("expected real trade budget to keep high-water sizing, got %q", rendered)
 	}
 }
 

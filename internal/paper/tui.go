@@ -2829,9 +2829,8 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	tradeLine := ""
 	effectiveSizingBalance := sizingBalance
 	if isRealMode {
-		effectiveSizingBalance = sizingEquity
-		if s.settings.TakerCloseMarket {
-			effectiveSizingBalance = stats.CurrentBalance
+		if effectiveSizingBalance <= 0 {
+			effectiveSizingBalance = math.Max(stats.StartingBalance, stats.CurrentBalance)
 		}
 		if effectiveSizingBalance < 0 {
 			effectiveSizingBalance = 0

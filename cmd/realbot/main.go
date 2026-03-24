@@ -247,7 +247,7 @@ func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, merg
 }
 
 func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISettings) float64 {
-	if cash <= 0 {
+	if cash <= 0 && sizingBalance <= 0 {
 		return 0
 	}
 	tradeFactor := liveCfg.TradeScaleFactor
@@ -255,17 +255,14 @@ func realbotTakerCloseBudget(cash, sizingBalance float64, liveCfg paper.TUISetti
 		tradeFactor = 0.01
 	}
 
-	// Taker-close inventory is directional and can remain open through expiry.
-	// Size from liquid cash so unresolved carry does not ratchet notional upward.
-	sizingBase := cash
-	if sizingBalance > 0 && sizingBalance < sizingBase {
-		sizingBase = sizingBalance
+	// Keep taker-close sizing anchored to the ratcheting high-water base so
+	// drawdowns and temporary carry do not shrink the configured per-trade notional.
+	sizingBase := sizingBalance
+	if sizingBase <= 0 {
+		sizingBase = cash
 	}
 
 	budget := sizingBase * tradeFactor
-	if budget > cash {
-		budget = cash
-	}
 	if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
 		budget = liveCfg.MaxTradeSize
 	}
