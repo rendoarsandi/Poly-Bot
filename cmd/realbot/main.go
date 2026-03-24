@@ -255,8 +255,8 @@ func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISetti
 		tradeFactor = 0.01
 	}
 
-	// Real-mode sizing should follow current live equity/book value so open
-	// inventory does not shrink sizing to cash-only, but realized losses do.
+	// Taker-close sizing follows current live equity/book value so late-market
+	// entries do not keep trading off a stale high-water budget.
 	sizingBase := sizingCapital
 	if sizingBase <= 0 {
 		sizingBase = cash
@@ -275,7 +275,7 @@ func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISetti
 	return budget
 }
 
-func realbotSizingCapitalForTrade(engine *paper.Engine) float64 {
+func realbotCurrentSizingCapital(engine *paper.Engine) float64 {
 	if engine == nil {
 		return 0
 	}
@@ -285,6 +285,20 @@ func realbotSizingCapitalForTrade(engine *paper.Engine) float64 {
 	}
 	if cash := engine.GetBalance(); cash > sizing {
 		return cash
+	}
+	return sizing
+}
+
+func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISettings) float64 {
+	if engine == nil {
+		return 0
+	}
+	if realbotTakerCloseHoldMode(liveCfg) {
+		return realbotCurrentSizingCapital(engine)
+	}
+	sizing := engine.GetSizingBalance()
+	if sizing < 0 {
+		return 0
 	}
 	return sizing
 }
@@ -2269,7 +2283,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					budget := realbotTakerCloseBudget(engine.GetBalance(), realbotSizingCapitalForTrade(engine), liveCfg)
+					budget := realbotTakerCloseBudget(engine.GetBalance(), realbotSizingCapitalForTrade(engine, liveCfg), liveCfg)
 					plan, planErr := buildRealbotTakerClosePlan(budget, confirmPrice, liveCfg)
 					if planErr != nil {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "plan-rejected:"+strings.TrimSpace(planErr.Error()), realbotTakerCloseLogInterval) {
@@ -2485,7 +2499,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			splitMu.Unlock()
 
 			if shouldSplit && replenishCtrl.MarkInProgress() {
-				baseTradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
+				baseTradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, liveCfg))
 
 				// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance
 				initialBuffer := baseTradeSize * 2.0
@@ -2557,7 +2571,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				sellMargin := (bidSum - 1.0) * 100 // Profit margin from selling
 
 				// BACKGROUND REPLENISHMENT
-				baseTradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
+				baseTradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, liveCfg))
 				targetBuffer := baseTradeSize * cfg.MaxAggressionMultiplier
 				currentShares := splitInventory.GetMinSplitShares(id, outcomes[0], outcomes[1])
 				replenishAmount := baseTradeSize * 2.0
@@ -2935,9 +2949,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					// Real-mode trade size follows current live equity/book value so
-					// inventory carry does not shrink to cash-only while realized losses do.
-					tradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
+					// Normal real-mode sizing uses the ratcheting high-water sizing base so
+					// above-water drawdowns or withdrawals do not shrink trade budgets mid-session.
+					tradeSize := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, realbotCfg))
 
 					// Get max fee rate for conservative margin calculation
 					maxFeeRateBps := 0
@@ -4353,7 +4367,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseTradeValue := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine))
+	baseTradeValue := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, liveCfg))
 	// We no longer clamp baseTradeValue up to minQuoteValue to avoid forcing users
 	// to trade larger amounts than their configured TradeScaleFactor. If baseTradeValue
 	// is too small, strategy.ComputeMakerBuyQty will return 0 and skip quoting.

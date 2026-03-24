@@ -2843,16 +2843,28 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 
 	// Trade size
 	tradeLine := ""
+	tradeBudgetEquity := sizingEquity
 	effectiveSizingBalance := sizingBalance
 	if isRealMode {
-		if effectiveSizingBalance <= 0 {
-			effectiveSizingBalance = math.Max(stats.StartingBalance, stats.CurrentBalance)
+		useCurrentEquityBudget := s.settings.TakerCloseMarket && !isMakerSettingsMode(s.settings)
+		if useCurrentEquityBudget {
+			if tradeBudgetEquity <= 0 {
+				tradeBudgetEquity = math.Max(stats.StartingBalance, stats.CurrentBalance)
+			}
+		} else {
+			if effectiveSizingBalance <= 0 {
+				effectiveSizingBalance = math.Max(stats.StartingBalance, stats.CurrentBalance)
+			}
+			tradeBudgetEquity = effectiveSizingBalance
+		}
+		if tradeBudgetEquity < 0 {
+			tradeBudgetEquity = 0
 		}
 		if effectiveSizingBalance < 0 {
 			effectiveSizingBalance = 0
 		}
 	}
-	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, sizingEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
+	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
 		if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
 		} else {

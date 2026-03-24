@@ -1064,8 +1064,8 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	if strings.Contains(rendered, "(-$5.66)") {
 		t.Fatalf("expected baseline drift to be hidden from real-mode account change, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "($3.32/trade)") {
-		t.Fatalf("expected 5%% trade budget to follow current live equity in real mode, got %q", rendered)
+	if !strings.Contains(rendered, "($3.60/trade)") {
+		t.Fatalf("expected 5%% trade budget to keep the real-mode high-water floor, got %q", rendered)
 	}
 }
 
@@ -1200,8 +1200,8 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	if strings.Contains(rendered, "profitable") {
 		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "$5.00/trade") {
-		t.Fatalf("expected real trade budget to follow current equity, got %q", rendered)
+	if !strings.Contains(rendered, "$6.00/trade") {
+		t.Fatalf("expected real trade budget to follow high-water sizing, got %q", rendered)
 	}
 }
 

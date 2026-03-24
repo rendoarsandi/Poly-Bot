@@ -139,14 +139,25 @@ func TestRealbotTakerCloseBudgetUsesCurrentEquityAfterDrawdown(t *testing.T) {
 	}
 }
 
-func TestRealbotSizingCapitalForTradeUsesBookEquityInsteadOfHighWater(t *testing.T) {
+func TestRealbotSizingCapitalForTradeUsesHighWaterOutsideTakerClose(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.UpdateCompoundMultiplier(20.0, 100.0)
 	if _, err := engine.BuyForMarket("BTC", "Up", 0.50, 10.0); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
 	}
-	if got := realbotSizingCapitalForTrade(engine); math.Abs(got-100.0) > 0.000001 {
-		t.Fatalf("expected live sizing capital to use book equity 100.00, got %.2f", got)
+	if got := realbotSizingCapitalForTrade(engine, paper.TUISettings{}); math.Abs(got-120.0) > 0.000001 {
+		t.Fatalf("expected live sizing capital to keep high-water 120.00, got %.2f", got)
+	}
+}
+
+func TestRealbotSizingCapitalForTradeUsesCurrentEquityInTakerClose(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	engine.UpdateCompoundMultiplier(20.0, 100.0)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.50, 10.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if got := realbotSizingCapitalForTrade(engine, paper.TUISettings{TakerCloseMarket: true}); math.Abs(got-100.0) > 0.000001 {
+		t.Fatalf("expected taker-close sizing capital to use book equity 100.00, got %.2f", got)
 	}
 }
 
