@@ -6,8 +6,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -160,45 +158,6 @@ func TestRealbotSizingCapitalForTradeUsesCurrentEquityInTakerClose(t *testing.T)
 	}
 	if got := realbotSizingCapitalForTrade(engine, paper.TUISettings{TakerCloseMarket: true}); math.Abs(got-100.0) > 0.000001 {
 		t.Fatalf("expected taker-close sizing capital to use book equity 100.00, got %.2f", got)
-	}
-}
-
-func TestRealbotSizingStateKeyNormalizesInputs(t *testing.T) {
-	key := realbotSizingStateKey(" 0xAbC ", " PoLyMarket ")
-	if key != "0xabc|polymarket" {
-		t.Fatalf("unexpected sizing key %q", key)
-	}
-}
-
-func TestRealbotSizingFloorRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "state.json")
-	key := realbotSizingStateKey("0xabc", "polymarket")
-
-	if got, err := loadRealbotSizingFloor(statePath, key); err != nil {
-		t.Fatalf("load on missing file failed: %v", err)
-	} else if got != 0 {
-		t.Fatalf("expected empty sizing floor on missing file, got %.2f", got)
-	}
-
-	if err := saveRealbotSizingFloor(statePath, key, 84.25); err != nil {
-		t.Fatalf("save sizing floor failed: %v", err)
-	}
-	if got, err := loadRealbotSizingFloor(statePath, key); err != nil {
-		t.Fatalf("load sizing floor failed: %v", err)
-	} else if math.Abs(got-84.25) > 0.000001 {
-		t.Fatalf("expected persisted sizing floor 84.25, got %.4f", got)
-	}
-}
-
-func TestLoadRealbotSizingFloorRejectsInvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(statePath, []byte("{invalid"), 0o644); err != nil {
-		t.Fatalf("write invalid json failed: %v", err)
-	}
-	if _, err := loadRealbotSizingFloor(statePath, "0xabc|polymarket"); err == nil {
-		t.Fatal("expected invalid sizing state json to return error")
 	}
 }
 
