@@ -1294,8 +1294,12 @@ func (e *Engine) SyncBalanceNeutral(balance float64) float64 {
 	neutralized := 0.0
 	if math.Abs(delta) >= 0.000001 && e.hasNeutralUnsettledInventoryLocked() {
 		e.pnlBaseline += delta
-		e.sizingBalance += delta
-		e.refreshCompoundStateLocked(e.sizingBalance)
+		if delta > 0 {
+			e.sizingBalance += delta
+			e.refreshCompoundStateLocked(e.sizingBalance)
+		} else {
+			e.refreshCompoundStateLocked(0)
+		}
 		neutralized = delta
 	}
 

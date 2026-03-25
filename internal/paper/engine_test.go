@@ -752,6 +752,28 @@ func TestEngine_SyncBalanceNeutralKeepsOpenInventorySessionNeutral(t *testing.T)
 	}
 }
 
+func TestEngine_SyncBalanceNeutralDoesNotLowerHighWaterOnNegativeDelta(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	engine.UpdateCompoundMultiplier(20.0, 100.0)
+	if got := engine.GetSizingBalance(); absFloat(got-120.0) > 0.0001 {
+		t.Fatalf("expected initial high-water sizing 120.00, got %.4f", got)
+	}
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.50, 10.0); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	postBuyBalance := engine.GetBalance()
+	neutralized := engine.SyncBalanceNeutral(postBuyBalance - 5.0)
+	if absFloat(neutralized+5.0) > 0.0001 {
+		t.Fatalf("expected neutralized negative delta -5.00, got %.4f", neutralized)
+	}
+	if got := engine.GetSizingBalance(); absFloat(got-120.0) > 0.0001 {
+		t.Fatalf("expected negative neutral sync to preserve high-water 120.00, got %.4f", got)
+	}
+}
+
 func TestEngine_GetResolutionPnLRangeSingleSidedPosition(t *testing.T) {
 	engine := NewEngine(100.0)
 
