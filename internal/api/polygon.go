@@ -192,7 +192,7 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	}
 
 	// Sign transaction
-	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 200000, gasPrice, data)
+	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 350000, gasPrice, data)
 	if err != nil {
 		return "", err
 	}
