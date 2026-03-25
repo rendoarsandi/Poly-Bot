@@ -774,6 +774,23 @@ func TestEngine_SyncBalanceNeutralDoesNotLowerHighWaterOnNegativeDelta(t *testin
 	}
 }
 
+func TestEngine_RestoreSizingFloorRaisesHighWaterWithoutChangingCash(t *testing.T) {
+	engine := NewEngine(75.0)
+	if got := engine.GetSizingBalance(); absFloat(got-75.0) > 0.0001 {
+		t.Fatalf("expected initial sizing 75.00, got %.4f", got)
+	}
+
+	if !engine.RestoreSizingFloor(82.5) {
+		t.Fatal("expected restore sizing floor to report changed")
+	}
+	if got := engine.GetSizingBalance(); absFloat(got-82.5) > 0.0001 {
+		t.Fatalf("expected sizing floor 82.50 after restore, got %.4f", got)
+	}
+	if got := engine.GetBalance(); absFloat(got-75.0) > 0.0001 {
+		t.Fatalf("expected restore sizing floor not to change cash, got %.4f", got)
+	}
+}
+
 func TestEngine_GetResolutionPnLRangeSingleSidedPosition(t *testing.T) {
 	engine := NewEngine(100.0)
 

@@ -1484,6 +1484,23 @@ func (e *Engine) GetSizingBalance() float64 {
 	return sizing
 }
 
+// RestoreSizingFloor applies a persisted sizing floor without mutating cash.
+// It is used by realbot startup to keep high-water sizing across process restarts.
+func (e *Engine) RestoreSizingFloor(sizing float64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if sizing <= 0 {
+		return false
+	}
+	if sizing <= e.sizingBalance+1e-9 {
+		return false
+	}
+	e.sizingBalance = sizing
+	e.refreshCompoundStateLocked(e.sizingBalance)
+	return true
+}
+
 // UpdateCompoundMultiplier updates the multiplier based on round profit/loss
 // Profitable rounds ratchet the sizing base upward to the new high-water mark.
 // Losses do not shrink sizing; they only affect round win/loss reporting.

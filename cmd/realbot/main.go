@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -55,6 +56,7 @@ const (
 	realbotExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 	realbotBalanceSyncInterval       = 60 * time.Second
 	realbotBalanceSyncTimeout        = 8 * time.Second
+	realbotSizingStateFileName       = "realbot-sizing-state.json"
 
 	realbotMakerQuoteStep           = 0.001
 	realbotMakerBaseOffset          = 0.008
@@ -108,6 +110,85 @@ func (g *realbotEntryGate) Release() {
 	case g.token <- struct{}{}:
 	default:
 	}
+}
+
+type realbotSizingStateStore struct {
+	Entries map[string]realbotSizingStateEntry `json:"entries"`
+}
+
+type realbotSizingStateEntry struct {
+	SizingBalance float64 `json:"sizingBalance"`
+	UpdatedAt     string  `json:"updatedAt"`
+}
+
+func realbotSizingStateKey(walletAddress, exchange string) string {
+	wallet := strings.ToLower(strings.TrimSpace(walletAddress))
+	ex := strings.ToLower(strings.TrimSpace(exchange))
+	if wallet == "" {
+		wallet = "unknown"
+	}
+	if ex == "" {
+		ex = "unknown"
+	}
+	return wallet + "|" + ex
+}
+
+func loadRealbotSizingFloor(path, key string) (float64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	var store realbotSizingStateStore
+	if err := json.Unmarshal(data, &store); err != nil {
+		return 0, err
+	}
+	if store.Entries == nil {
+		return 0, nil
+	}
+	entry, ok := store.Entries[key]
+	if !ok || entry.SizingBalance <= 0 {
+		return 0, nil
+	}
+	return entry.SizingBalance, nil
+}
+
+func saveRealbotSizingFloor(path, key string, sizingFloor float64) error {
+	if sizingFloor <= 0 {
+		return nil
+	}
+
+	store := realbotSizingStateStore{Entries: make(map[string]realbotSizingStateEntry)}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &store)
+		if store.Entries == nil {
+			store.Entries = make(map[string]realbotSizingStateEntry)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	store.Entries[key] = realbotSizingStateEntry{
+		SizingBalance: sizingFloor,
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	encoded, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, encoded, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 type realbotOrderPathWarmer interface {
@@ -1232,6 +1313,13 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
+	sizingStatePath := filepath.Join("logs", realbotSizingStateFileName)
+	sizingStateKey := realbotSizingStateKey(realTrader.Address(), cfg.Exchange)
+	if persistedFloor, loadErr := loadRealbotSizingFloor(sizingStatePath, sizingStateKey); loadErr != nil {
+		tui.LogEvent("⚠️ Could not load persisted sizing floor: %v", loadErr)
+	} else if engine.RestoreSizingFloor(persistedFloor) {
+		tui.LogEvent("📈 Restored sizing floor $%.2f for %s", persistedFloor, strings.Split(sizingStateKey, "|")[0])
+	}
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
 	} else {
@@ -1523,6 +1611,10 @@ func run() error {
 		}
 		tui.LogEvent("🔄 Next round")
 
+		if saveErr := saveRealbotSizingFloor(sizingStatePath, sizingStateKey, engine.GetSizingBalance()); saveErr != nil {
+			tui.LogEvent("⚠️ Could not persist sizing floor: %v", saveErr)
+		}
+
 		// Release stale keep-alive connections before the next search phase.
 		restClient.CloseIdleConnections()
 		tui.ClearMarkets()
@@ -1542,6 +1634,9 @@ func run() error {
 shutdown:
 	tui.Stop()
 	fmt.Println("\n👋 Bot stopped.")
+	if saveErr := saveRealbotSizingFloor(sizingStatePath, sizingStateKey, engine.GetSizingBalance()); saveErr != nil {
+		tui.LogEvent("⚠️ Could not persist sizing floor on shutdown: %v", saveErr)
+	}
 	emergencyCleanup()
 	return nil
 }
