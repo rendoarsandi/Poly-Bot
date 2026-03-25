@@ -1676,7 +1676,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	takerCloseAttempted := false
 	var takerCloseExecutedAt time.Time // When taker close buy was confirmed (for merge-buffer cooldown)
-	var nextTakerCloseAttempt time.Time
 	var lastTakerCloseLog time.Time
 	var lastTakerCloseLogKey string
 	var lastTakerCloseQuoteRefresh time.Time
@@ -2187,7 +2186,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// follows the latest local WS book state.
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
 		if weekdayTradingAllowed && liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
-			if !takerCloseAttempted && !time.Now().Before(nextTakerCloseAttempt) {
+			if !takerCloseAttempted {
 				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
 				if bestOutcome == "" && time.Since(lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
@@ -2261,7 +2260,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 					}
 					if tokenID == "" {
-						nextTakerCloseAttempt = time.Now().Add(1 * time.Second)
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "missing-token-id:"+bestOutcome, realbotTakerCloseLogInterval) {
 							tui.LogEvent("[%s] ⚠️ Taker close skipped: missing token id for %s", id, bestOutcome)
 						}
@@ -2279,7 +2277,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					if entryGate != nil && !entryGate.TryAcquire() {
-						nextTakerCloseAttempt = time.Now().Add(750 * time.Millisecond)
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "entry-gate-busy", realbotTakerCloseLogInterval) {
 							tui.LogEvent("[%s] ⏳ Taker close paused: another market is executing a live entry", id)
 						}
