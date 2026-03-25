@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 type UserWSMakerOrder struct {
@@ -125,8 +124,9 @@ func (c *UserWSClient) listenLoop() {
 
 		msg, err := c.manager.ReadMessage(ctx)
 		if err != nil {
-			// Reconnection is handled by WSManager, we just back off slightly
-			time.Sleep(1 * time.Second)
+			if ctx.Err() != nil {
+				return
+			}
 			continue
 		}
 

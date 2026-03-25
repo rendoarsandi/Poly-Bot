@@ -1771,8 +1771,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	engine.RegisterSplitInventory(splitInventory) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInventory)    // Register for TUI display
 	takerCloseAttempted := false
-	var takerCloseTriggerOutcome string
-	var takerCloseTriggerTime time.Time
 	var takerCloseExecutedAt time.Time // When taker close buy was confirmed (for merge-buffer cooldown)
 	var nextTakerCloseAttempt time.Time
 	var lastTakerCloseLog time.Time
@@ -2296,8 +2294,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 				}
 				if bestOutcome == "" || highestPrice < minPrice {
-					takerCloseTriggerOutcome = ""
-					takerCloseTriggerTime = time.Time{}
 					if highestPrice <= 0 {
 						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
 							tui.LogEvent("[%s] ⏳ Taker close awaiting valid quote (needs >= $%.3f)", id, minPrice)
@@ -2308,16 +2304,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					continue
 				}
 				if bestOutcome != "" {
-					if takerCloseTriggerOutcome != bestOutcome {
-						takerCloseTriggerOutcome = bestOutcome
-						takerCloseTriggerTime = time.Now()
-					}
-					if time.Since(takerCloseTriggerTime) < 1*time.Second {
-						if realbotShouldLogTakerCloseState(&lastTakerCloseLog, &lastTakerCloseLogKey, "stabilizing", realbotTakerCloseLogInterval) {
-							tui.LogEvent("[%s] ⏳ Taker close stabilizing: %s at $%.3f (waiting 1s)", id, bestOutcome, highestPrice)
-						}
-						continue
-					}
 
 					confirmPrice := highestPrice
 					confirmSource := "WS"
