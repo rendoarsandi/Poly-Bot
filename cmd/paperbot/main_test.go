@@ -464,3 +464,69 @@ func TestEstimatePaperWinnerFallsBackToAskThenMid(t *testing.T) {
 		t.Fatalf("prob = %.3f, want 0.600", prob)
 	}
 }
+
+func TestDetectTerminalWinnerFromPricesAcceptsPinnedBidWithMissingPeerQuotes(t *testing.T) {
+	winner, prob, source, ok := detectTerminalWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.99, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0},
+	)
+	if !ok {
+		t.Fatal("expected 0.99 pinned side to be accepted as terminal winner")
+	}
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+	if prob != 0.99 {
+		t.Fatalf("prob = %.3f, want 0.990", prob)
+	}
+	if source != "bid" {
+		t.Fatalf("source = %q, want bid", source)
+	}
+}
+
+func TestDetectTerminalWinnerFromPricesUsesPeerAskNearZeroFallback(t *testing.T) {
+	winner, prob, source, ok := detectTerminalWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.01},
+		map[string]float64{"Down": 0, "Up": 0},
+	)
+	if !ok {
+		t.Fatal("expected peer ask near zero to infer opposite terminal winner")
+	}
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+	if prob != 1.0 {
+		t.Fatalf("prob = %.3f, want 1.000", prob)
+	}
+	if source != "peer_ask" {
+		t.Fatalf("source = %q, want peer_ask", source)
+	}
+}
+
+func TestDetectTerminalWinnerFromPricesRejectsNonTerminalLevels(t *testing.T) {
+	winner, _, _, ok := detectTerminalWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.94, "Up": 0.06},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0},
+	)
+	if ok || winner != "" {
+		t.Fatalf("expected no terminal winner, got winner=%q ok=%v", winner, ok)
+	}
+}
+
+func TestDetectTerminalWinnerFromPricesRejectsTiesAtTerminalLevel(t *testing.T) {
+	winner, _, _, ok := detectTerminalWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.99, "Up": 0.99},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0},
+	)
+	if ok || winner != "" {
+		t.Fatalf("expected tie to be unresolved, got winner=%q ok=%v", winner, ok)
+	}
+}

@@ -32,6 +32,9 @@ const (
 	paperArbModeMaker = "maker"
 	terminalBidFloor  = 0.985
 	terminalAskCeil   = 0.015
+	// Price threshold used for post-expiry winner fallback when authoritative
+	// resolution is still unavailable.
+	terminalWinnerFloor = 0.99
 
 	// Split strategy constants
 	MinSplitBuffer   = 50.0  // Minimum initial split buffer ($)
@@ -576,6 +579,65 @@ func estimatePaperWinner(outcomes []string, bids, asks, floatPrices map[string]f
 	}
 
 	return bestOutcome, highestProb
+}
+
+func detectTerminalWinnerFromPrices(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64, string, bool) {
+	if len(outcomes) == 0 {
+		return "", 0, "", false
+	}
+
+	bestOutcome := ""
+	bestPrice := 0.0
+	bestSource := ""
+	secondBest := 0.0
+
+	for i, outcome := range outcomes {
+		candidatePrice := 0.0
+		candidateSource := ""
+
+		if bid := bids[outcome]; bid > candidatePrice {
+			candidatePrice = bid
+			candidateSource = "bid"
+		}
+		if ask := asks[outcome]; ask >= terminalWinnerFloor && ask > candidatePrice {
+			candidatePrice = ask
+			candidateSource = "ask"
+		}
+		if mid := floatPrices[outcome]; mid > candidatePrice {
+			candidatePrice = mid
+			candidateSource = "mid"
+		}
+
+		// Binary fallback: if the peer ask is pinned near $0, this outcome is
+		// effectively pinned near $1 even when one side disappears in sparse books.
+		if len(outcomes) == 2 {
+			peer := outcomes[1-i]
+			if peerAsk := asks[peer]; peerAsk > 0 && peerAsk <= terminalAskCeil {
+				if 1.0 > candidatePrice {
+					candidatePrice = 1.0
+					candidateSource = "peer_ask"
+				}
+			}
+		}
+
+		if candidatePrice > bestPrice+1e-9 {
+			secondBest = bestPrice
+			bestPrice = candidatePrice
+			bestOutcome = outcome
+			bestSource = candidateSource
+		} else if candidatePrice > secondBest {
+			secondBest = candidatePrice
+		}
+	}
+
+	if bestOutcome == "" || bestPrice < terminalWinnerFloor {
+		return "", 0, "", false
+	}
+	if math.Abs(bestPrice-secondBest) <= 1e-6 {
+		return "", 0, "", false
+	}
+
+	return bestOutcome, bestPrice, bestSource, true
 }
 
 func computePaperMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
@@ -1569,6 +1631,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	var takerCloseTriggerOutcome string
 	var takerCloseTriggerTime time.Time
 	var lastTakerCloseLog time.Time
+	lastResolutionPendingLog := time.Time{}
 	usWeekdayGateClosedLogged := false
 
 	mainLoopTicker := time.NewTicker(paperMainLoopInterval)
@@ -1662,7 +1725,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 		liveCfg := t.TUI.GetSettings()
 		usNow := core.USTime(time.Now())
-		
+
 		weekdayTradingAllowed := true
 		if liveCfg.TradingHoursMode == "weekdays trade only" {
 			weekdayTradingAllowed = core.IsUSWeekday(usNow)
@@ -1782,47 +1845,54 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		isExpired := timeToEnd <= 0
 
 		if isExpired && !t.MarketEnded {
-			t.MarketEnded = true
-			logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
-
 			winner := t.determineWinner()
-			logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
-
-			// Use detailed redemption
-			result := t.Engine.RedeemWithDetails(t.ID, winner)
-			if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
-				t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
-			}
-
-			if result.WinningShares > 0 || result.LosingShares > 0 {
-				t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
-					t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)
-				if result.LosingShares > 0 {
-					t.TUI.LogEvent("[%s] 💀 LOSS: %.0f shares → $0 (lost: $%.2f)",
-						t.ID, result.LosingShares, result.LosingCost)
+			if winner == "" {
+				if time.Since(lastResolutionPendingLog) > 1*time.Second {
+					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED_WAIT", "MARKET EXPIRED - waiting for winner confirmation")
+					t.TUI.LogEvent("[%s] ⏳ Market expired - waiting for winner confirmation (on-chain or terminal >= $0.99)", t.ID)
+					lastResolutionPendingLog = time.Now()
 				}
-				pnlSign := "+"
-				pnlColor := "🟢"
-				if result.TotalPnL < 0 {
-					pnlSign = ""
-					pnlColor = "🔴"
-				}
-				t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
 			} else {
-				t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
+				t.MarketEnded = true
+				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
+				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
+
+				// Use detailed redemption
+				result := t.Engine.RedeemWithDetails(t.ID, winner)
+				if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
+					t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
+				}
+
+				if result.WinningShares > 0 || result.LosingShares > 0 {
+					t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
+						t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)
+					if result.LosingShares > 0 {
+						t.TUI.LogEvent("[%s] 💀 LOSS: %.0f shares → $0 (lost: $%.2f)",
+							t.ID, result.LosingShares, result.LosingCost)
+					}
+					pnlSign := "+"
+					pnlColor := "🟢"
+					if result.TotalPnL < 0 {
+						pnlSign = ""
+						pnlColor = "🔴"
+					}
+					t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
+				} else {
+					t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
+				}
+
+				if t.CSVLogger != nil {
+					t.CSVLogger.Log("INFO", t.ID, "REDEEM", fmt.Sprintf("Winner: %s, PnL: %.2f", winner, result.TotalPnL), t.Engine.GetEquity())
+				}
+
+				finalStats := t.Engine.GetStats()
+				marketPnL := finalStats.RealizedPnL - startingRealizedPnL
+
+				return &marketResult{
+					realizedPnL: marketPnL,
+					trades:      finalStats.TotalTrades - tradesAtStart,
+				}, nil
 			}
-
-			if t.CSVLogger != nil {
-				t.CSVLogger.Log("INFO", t.ID, "REDEEM", fmt.Sprintf("Winner: %s, PnL: %.2f", winner, result.TotalPnL), t.Engine.GetEquity())
-			}
-
-			finalStats := t.Engine.GetStats()
-			marketPnL := finalStats.RealizedPnL - startingRealizedPnL
-
-			return &marketResult{
-				realizedPnL: marketPnL,
-				trades:      finalStats.TotalTrades - tradesAtStart,
-			}, nil
 		}
 
 		if marketState == paper.MarketStateEnding && !t.MarketEnded {
@@ -2264,7 +2334,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		executionPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
 		if !weekdayTradingAllowed {
 			cancelAllPaperMakerQuotes(t, "trading gate closed")
-		} else if liveCfg.TakerCloseMarket {			cancelAllPaperMakerQuotes(t, "taker close market enabled")
+		} else if liveCfg.TakerCloseMarket {
+			cancelAllPaperMakerQuotes(t, "taker close market enabled")
 		} else if arbMode != paperArbModeMaker {
 			cancelAllPaperMakerQuotes(t, "maker mode disabled")
 		} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
@@ -2886,8 +2957,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 }
 
 // determineWinner uses authoritative resolution when available, otherwise
-// falls back to the last known price-based estimate so paper rounds can rotate
-// immediately after expiry.
+// waits for a terminal post-expiry price signal (>= $0.99) before settling.
 func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
 		return ""
@@ -2949,13 +3019,14 @@ func (t *MarketTrader) determineWinner() string {
 	}
 
 	t.mu.Lock()
-	bestOutcome, highestProb := estimatePaperWinner(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
+	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	t.mu.Unlock()
 
-	if bestOutcome != "" {
-		t.TUI.LogEvent("[%s] 📊 Price-based winner estimate: %s ($%.3f) [no on-chain data]", t.ID, bestOutcome, highestProb)
+	if ok {
+		t.TUI.LogEvent("[%s] 📊 Terminal price winner: %s ($%.3f via %s) [no on-chain winner yet]", t.ID, bestOutcome, highestProb, signalSource)
+		return bestOutcome
 	}
-	return bestOutcome
+	return ""
 }
 
 // handleRestFallback polls REST API for fresh liquidity data.
