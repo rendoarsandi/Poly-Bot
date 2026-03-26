@@ -54,6 +54,10 @@ const (
 	paperUIRefreshInterval         = 100 * time.Millisecond
 	paperMainLoopInterval          = 10 * time.Millisecond
 	paperFillPollInterval          = 50 * time.Millisecond
+	paperResolutionRefreshInterval = 2 * time.Second
+	paperHistoricalLookupInterval  = 2 * time.Second
+	paperHistoricalNotFoundRetry   = 30 * time.Second
+	paperResolutionErrorLogGap     = 5 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
@@ -120,6 +124,13 @@ type MarketTrader struct {
 	RestFallbackActive bool
 	RestRecoveryLogged bool
 	mu                 sync.Mutex
+
+	nextResolutionRefreshAt        time.Time
+	lastResolutionErrorLogAt       time.Time
+	lastResolutionError            string
+	nextHistoricalLookupAt         time.Time
+	lastHistoricalLookupErrorLogAt time.Time
+	lastHistoricalLookupError      string
 }
 
 type marketResult struct {
@@ -2962,6 +2973,7 @@ func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
 		return ""
 	}
+	now := time.Now()
 
 	resolveByCondition := func(conditionID string, outcomes []string, marketEndTime time.Time) (winner string, checked bool) {
 		conditionID = strings.TrimSpace(conditionID)
@@ -2969,18 +2981,119 @@ func (t *MarketTrader) determineWinner() string {
 			return "", false
 		}
 
-		t.ResolutionCache.ForceRefresh(conditionID)
+		if t.nextResolutionRefreshAt.IsZero() || !now.Before(t.nextResolutionRefreshAt) {
+			t.ResolutionCache.ForceRefresh(conditionID)
+			t.nextResolutionRefreshAt = now.Add(paperResolutionRefreshInterval)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		status := t.ResolutionCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
 		if status.Error != nil {
-			t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v (falling back to price estimate)", t.ID, status.Error)
+			errMsg := status.Error.Error()
+			if errMsg != t.lastResolutionError || t.lastResolutionErrorLogAt.IsZero() || now.Sub(t.lastResolutionErrorLogAt) >= paperResolutionErrorLogGap {
+				t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v (falling back to price estimate)", t.ID, status.Error)
+				t.lastResolutionError = errMsg
+				t.lastResolutionErrorLogAt = now
+			}
 		}
 		if status.Resolved && status.Winner != "" {
 			return status.Winner, true
 		}
 		return "", true
+	}
+
+	selectHistoricalMarket := func(markets []api.Market) *api.Market {
+		if len(markets) == 0 {
+			return nil
+		}
+
+		if t.Market != nil {
+			conditionID := strings.TrimSpace(t.Market.ConditionID)
+			if conditionID != "" {
+				for i := range markets {
+					if strings.TrimSpace(markets[i].ConditionID) == conditionID {
+						return &markets[i]
+					}
+				}
+			}
+		}
+
+		if len(t.Outcomes) > 0 {
+			expectedOutcomes := make(map[string]struct{}, len(t.Outcomes))
+			for _, outcome := range t.Outcomes {
+				expectedOutcomes[strings.ToLower(strings.TrimSpace(outcome))] = struct{}{}
+			}
+			for i := range markets {
+				matched := 0
+				for _, token := range markets[i].Tokens {
+					if _, ok := expectedOutcomes[strings.ToLower(strings.TrimSpace(token.Outcome))]; ok {
+						matched++
+					}
+				}
+				if matched == len(expectedOutcomes) {
+					return &markets[i]
+				}
+			}
+		}
+
+		return &markets[0]
+	}
+
+	lookupHistoricalMarket := func(ctx context.Context) (*api.Market, error) {
+		if t.Market == nil {
+			return nil, fmt.Errorf("missing market metadata")
+		}
+
+		slugs := make([]string, 0, 2)
+		if marketSlug := strings.TrimSpace(t.Market.MarketSlug); marketSlug != "" {
+			slugs = append(slugs, marketSlug)
+		}
+		if slug := strings.TrimSpace(t.Market.Slug); slug != "" {
+			duplicate := false
+			for _, s := range slugs {
+				if strings.EqualFold(s, slug) {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				slugs = append(slugs, slug)
+			}
+		}
+
+		if len(slugs) == 0 {
+			return nil, fmt.Errorf("missing market slug")
+		}
+
+		var lastErr error
+		for _, slug := range slugs {
+			historyMarket, err := t.RestClient.GetMarket(ctx, slug)
+			if err == nil {
+				return historyMarket, nil
+			}
+			lastErr = err
+
+			if !strings.Contains(err.Error(), "status 404") {
+				continue
+			}
+
+			marketsByEvent, eventErr := t.RestClient.GetMarketsByEventSlug(ctx, slug)
+			if eventErr != nil {
+				lastErr = fmt.Errorf("%v; event lookup failed: %v", err, eventErr)
+				continue
+			}
+
+			selected := selectHistoricalMarket(marketsByEvent)
+			if selected != nil {
+				return selected, nil
+			}
+		}
+
+		if lastErr == nil {
+			lastErr = fmt.Errorf("historical market lookup returned no matches")
+		}
+		return nil, lastErr
 	}
 
 	if t.Market != nil {
@@ -2990,14 +3103,26 @@ func (t *MarketTrader) determineWinner() string {
 		}
 	}
 
-	if t.RestClient != nil && t.Market != nil && strings.TrimSpace(t.Market.Slug) != "" {
+	if t.RestClient != nil && t.Market != nil && (t.nextHistoricalLookupAt.IsZero() || !now.Before(t.nextHistoricalLookupAt)) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		historyMarket, err := t.RestClient.GetMarket(ctx, t.Market.Slug)
+		historyMarket, err := lookupHistoricalMarket(ctx)
 		cancel()
 
 		if err != nil {
-			t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v (falling back to price estimate)", t.ID, err)
+			errMsg := err.Error()
+			retryAfter := paperHistoricalLookupInterval
+			if strings.Contains(errMsg, "status 404") || strings.Contains(errMsg, "no event found for slug") {
+				retryAfter = paperHistoricalNotFoundRetry
+			}
+			t.nextHistoricalLookupAt = now.Add(retryAfter)
+			if errMsg != t.lastHistoricalLookupError || t.lastHistoricalLookupErrorLogAt.IsZero() || now.Sub(t.lastHistoricalLookupErrorLogAt) >= paperResolutionErrorLogGap {
+				t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v (falling back to price estimate)", t.ID, err)
+				t.lastHistoricalLookupError = errMsg
+				t.lastHistoricalLookupErrorLogAt = now
+			}
 		} else {
+			t.nextHistoricalLookupAt = now.Add(paperHistoricalLookupInterval)
+			t.lastHistoricalLookupError = ""
 			historyOutcomes := make([]string, 0, len(historyMarket.Tokens))
 			for _, token := range historyMarket.Tokens {
 				if token.Outcome != "" {
