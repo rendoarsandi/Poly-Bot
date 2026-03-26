@@ -1273,6 +1273,55 @@ func TestBuildRealbotTakerClosePlan_RejectsConfirmedPriceBelowMinPrice(t *testin
 	}
 }
 
+func TestBuildRealbotMakerCloseStylePlan_UsesMaxPriceAndLowestAskOutcome(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketTime: 5,
+		MaxAskPrice:          0.80,
+	}
+	outcomes := []string{"Down", "Up"}
+	asks := map[string]float64{"Down": 0.46, "Up": 0.62}
+
+	plan, err := buildRealbotMakerCloseStylePlan(4.0, outcomes, asks, liveCfg, 3*time.Second)
+	if err != nil {
+		t.Fatalf("expected maker close-style plan, got %v", err)
+	}
+	if plan.Outcome != "Down" {
+		t.Fatalf("expected lowest ask outcome Down, got %q", plan.Outcome)
+	}
+	if math.Abs(plan.LimitPrice-0.80) > 0.000001 {
+		t.Fatalf("expected max-price limit 0.80, got %.3f", plan.LimitPrice)
+	}
+	if math.Abs(plan.RequestedQty-5.0000) > 0.000001 {
+		t.Fatalf("expected 5.0000 shares at $0.80 cap for $4 budget, got %.4f", plan.RequestedQty)
+	}
+}
+
+func TestBuildRealbotMakerCloseStylePlan_RequiresMakerEntryWindow(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketTime: 5,
+		MaxAskPrice:          0.80,
+	}
+	outcomes := []string{"Down", "Up"}
+	asks := map[string]float64{"Down": 0.46, "Up": 0.62}
+
+	if _, err := buildRealbotMakerCloseStylePlan(4.0, outcomes, asks, liveCfg, 8*time.Second); err == nil {
+		t.Fatal("expected maker close-style plan to wait for configured time window")
+	}
+}
+
+func TestBuildRealbotMakerCloseStylePlan_RejectsAsksAboveMaxPrice(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketTime: 5,
+		MaxAskPrice:          0.40,
+	}
+	outcomes := []string{"Down", "Up"}
+	asks := map[string]float64{"Down": 0.46, "Up": 0.62}
+
+	if _, err := buildRealbotMakerCloseStylePlan(4.0, outcomes, asks, liveCfg, 3*time.Second); err == nil {
+		t.Fatal("expected maker close-style plan to reject asks above configured max")
+	}
+}
+
 func TestNormalizedRealbotTakerCloseMinPriceRoundsToTwoDecimals(t *testing.T) {
 	if got := normalizedRealbotTakerCloseMinPrice(paper.TUISettings{TakerCloseMarketMinPrice: 0.895}); math.Abs(got-0.90) > 0.000001 {
 		t.Fatalf("expected min price 0.895 to normalize to 0.90, got %.6f", got)
