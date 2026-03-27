@@ -634,6 +634,36 @@ func TestRenderSettingsShowsExecutionFloorAsPercent(t *testing.T) {
 	}
 }
 
+func TestNormalizeTUISettingsRoundsFixedTradeSizeUSDC(t *testing.T) {
+	cfg := normalizeTUISettings(TUISettings{
+		TradeSizingMode: core.TradeSizingModeUSDC,
+		TradeSizeUSDC:   2.34,
+	})
+	if cfg.TradeSizingMode != core.TradeSizingModeUSDC {
+		t.Fatalf("expected trade sizing mode usdc, got %q", cfg.TradeSizingMode)
+	}
+	if cfg.TradeSizeUSDC != 2.3 {
+		t.Fatalf("expected trade size to round to 2.3, got %.1f", cfg.TradeSizeUSDC)
+	}
+}
+
+func TestRenderSettingsShowsFixedTradeSizeControls(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		TradeSizingMode: core.TradeSizingModeUSDC,
+		TradeSizeUSDC:   2.3,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	for _, want := range []string{"Trade Size Mode", "Trade Size (USDC)", "USDC", "$2.30", "Fixed sizing active"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected fixed trade sizing controls to render %q, got %q", want, view)
+		}
+	}
+}
+
 func TestTUI_getSplitPositions(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -720,12 +750,12 @@ func TestTUI_getSplitPositions_MultipleInventories(t *testing.T) {
 
 func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "maker"}
-	for _, idx := range []int{6, 7, 8, 9, 10} {
+	for _, idx := range []int{settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
 		if settingsRowEditable(cfg, idx) {
 			t.Fatalf("expected row %d to be read-only in maker mode", idx)
 		}
 	}
-	for _, idx := range []int{4, 11, 12, 13} {
+	for _, idx := range []int{settingsRowMinMargin, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice} {
 		if !settingsRowEditable(cfg, idx) {
 			t.Fatalf("expected row %d to remain editable in maker mode", idx)
 		}
@@ -734,7 +764,7 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
-	for _, idx := range []int{0, 1, 2, 3, 5, 6, 11, 19, 20, 21, 22, 23, 24, 25} {
+	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {
 		if !isRowVisible(cfg, idx) {
 			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
 		}
@@ -743,7 +773,7 @@ func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 
 func TestIsRowVisibleHidesUnrelatedRowsWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
-	for _, idx := range []int{4, 7, 8, 9, 10, 12, 13} {
+	for _, idx := range []int{settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowMinAskPrice, settingsRowMaxAskPrice} {
 		if isRowVisible(cfg, idx) {
 			t.Fatalf("expected row %d to be hidden with taker close enabled", idx)
 		}
@@ -752,7 +782,7 @@ func TestIsRowVisibleHidesUnrelatedRowsWhenTakerCloseEnabled(t *testing.T) {
 
 func TestIsRowVisibleShowsMaxAskPriceInTakerMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker"}
-	if !isRowVisible(cfg, 13) {
+	if !isRowVisible(cfg, settingsRowMaxAskPrice) {
 		t.Fatalf("expected Max Ask Price row to remain visible in taker mode")
 	}
 }
@@ -1022,6 +1052,31 @@ func TestRenderAccountStatusUsesBookEquityForPaperTradeBudget(t *testing.T) {
 
 	if !strings.Contains(rendered, ".00/trade") {
 		t.Fatalf("expected paper trade budget to use neutral book equity, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsFixedUSDCTradeBudget(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				TradeSizingMode: core.TradeSizingModeUSDC,
+				TradeSizeUSDC:   2.3,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+	}, 0, 100, 100, 1.3, 100, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Trade $2.30 fixed") {
+		t.Fatalf("expected account status to show fixed trade sizing, got %q", rendered)
+	}
+	if strings.Contains(rendered, "effective") {
+		t.Fatalf("expected fixed trade sizing to ignore paper compounding preview, got %q", rendered)
 	}
 }
 

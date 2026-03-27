@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 )
@@ -136,6 +137,16 @@ func TestRealbotTakerCloseBudgetUsesCurrentEquityAfterDrawdown(t *testing.T) {
 	})
 	if math.Abs(budget-2.96) > 0.000001 {
 		t.Fatalf("expected taker-close budget to follow current equity 2.96, got %.2f", budget)
+	}
+}
+
+func TestRealbotTakerCloseBudgetSupportsFixedUSDCMode(t *testing.T) {
+	budget := realbotTakerCloseBudget(59.20, 65.80, paper.TUISettings{
+		TradeSizingMode: core.TradeSizingModeUSDC,
+		TradeSizeUSDC:   2.3,
+	})
+	if math.Abs(budget-2.3) > 0.000001 {
+		t.Fatalf("expected fixed taker-close budget 2.3, got %.2f", budget)
 	}
 }
 

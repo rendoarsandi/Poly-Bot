@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,9 @@ type TradingMode string
 const (
 	ModePaper TradingMode = "paper"
 	ModeReal  TradingMode = "real"
+
+	TradeSizingModePercent = "percent"
+	TradeSizingModeUSDC    = "usdc"
 
 	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
@@ -52,6 +56,8 @@ type Config struct {
 	BaseTradeSize    float64 // Trade size at base balance ($50 default)
 	MinMarginPercent float64 // Minimum arbitrage margin to trade (1% default)
 	TradeScaleFactor float64 // Fraction of balance to use per trade (0.05 = 5% default)
+	TradeSizingMode  string  // "percent" or "usdc"
+	TradeSizeUSDC    float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 
 	// Fee settings (for paper trading simulation)
 	// Polymarket fees use price-curve: fee_tokens = shares * base_rate * 2 * p * (1-p)
@@ -126,6 +132,8 @@ type RuntimeSettings struct {
 	BaseTradeSize                  float64 `json:"baseTradeSize"`
 	MinMarginPercent               float64 `json:"minMarginPercent"`
 	TradeScaleFactor               float64 `json:"tradeScaleFactor"`
+	TradeSizingMode                string  `json:"tradeSizingMode"`
+	TradeSizeUSDC                  float64 `json:"tradeSizeUsdc"`
 	FeeRateBps                     int     `json:"feeRateBps"`
 	MaxTradeSize                   float64 `json:"maxTradeSize"`
 	MaxDailyLoss                   float64 `json:"maxDailyLoss"`
@@ -183,6 +191,8 @@ func LoadConfig() (*Config, error) {
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
 		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 2.0),
 		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.05), // 5% of balance
+		TradeSizingMode:  normalizeTradeSizingMode(parseEnvString("TRADE_SIZING_MODE", TradeSizingModePercent)),
+		TradeSizeUSDC:    normalizeFixedTradeSizeUSDC(parseEnvFloat("TRADE_SIZE_USDC", 1.0)),
 		// Fee settings (paper trading)
 		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 312), // Calibrated: ~1.6% effective at p=0.50
 		// Safety settings
@@ -225,6 +235,47 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func normalizeTradeSizingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case TradeSizingModeUSDC:
+		return TradeSizingModeUSDC
+	default:
+		return TradeSizingModePercent
+	}
+}
+
+func normalizeFixedTradeSizeUSDC(size float64) float64 {
+	if size <= 0 {
+		return 1.0
+	}
+	size = math.Round(size*10.0) / 10.0
+	if size < 0.1 {
+		return 0.1
+	}
+	return size
+}
+
+func CalculateTradeSizeForMode(currentBalance, tradeScaleFactor, tradeSizeUSDC, maxTradeSize float64, tradeSizingMode string) float64 {
+	var tradeSize float64
+	switch normalizeTradeSizingMode(tradeSizingMode) {
+	case TradeSizingModeUSDC:
+		tradeSize = normalizeFixedTradeSizeUSDC(tradeSizeUSDC)
+	default:
+		if tradeScaleFactor <= 0 {
+			tradeScaleFactor = 0.01
+		}
+		tradeSize = currentBalance * tradeScaleFactor
+	}
+
+	if maxTradeSize > 0 && tradeSize > maxTradeSize {
+		tradeSize = maxTradeSize
+	}
+	if tradeSize < 0.1 {
+		tradeSize = 0.1
+	}
+	return tradeSize
 }
 
 func LoadBotConfig(profile string) (*Config, error) {
@@ -350,20 +401,7 @@ func (c *Config) IsPaperMode() bool {
 // Example: $1000 balance * 0.10 = $100 trade size
 // For $100 balance: $100 * 0.10 = $10 trade size
 func (c *Config) CalculateTradeSize(currentBalance float64) float64 {
-	// Calculate scaled trade size based on balance
-	tradeSize := currentBalance * c.TradeScaleFactor
-
-	// Apply max trade size cap if configured
-	if c.MaxTradeSize > 0 && tradeSize > c.MaxTradeSize {
-		tradeSize = c.MaxTradeSize
-	}
-
-	// Minimum trade size of $1 to avoid dust orders
-	if tradeSize < 1.0 {
-		tradeSize = 1.0
-	}
-
-	return tradeSize
+	return CalculateTradeSizeForMode(currentBalance, c.TradeScaleFactor, c.TradeSizeUSDC, c.MaxTradeSize, c.TradeSizingMode)
 }
 
 // CalculateShares returns the number of shares to buy based on balance, margin, and price sum
@@ -488,6 +526,8 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		BaseTradeSize:                  c.BaseTradeSize,
 		MinMarginPercent:               c.MinMarginPercent,
 		TradeScaleFactor:               c.TradeScaleFactor,
+		TradeSizingMode:                normalizeTradeSizingMode(c.TradeSizingMode),
+		TradeSizeUSDC:                  normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC),
 		FeeRateBps:                     c.FeeRateBps,
 		MaxTradeSize:                   c.MaxTradeSize,
 		MaxDailyLoss:                   c.MaxDailyLoss,
@@ -516,7 +556,8 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		SplitInitialCapPct:             c.SplitInitialCapPct,
 		SplitReplenishCapPct:           c.SplitReplenishCapPct,
 		TradingHoursMode:               c.TradingHoursMode,
-		TakerCloseMarket:               c.TakerCloseMarket,		TakerCloseMarketTime:           c.TakerCloseMarketTime,
+		TakerCloseMarket:               c.TakerCloseMarket,
+		TakerCloseMarketTime:           c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       c.TakerCloseMarketMinPrice,
 		StartupWizardSeen:              c.StartupWizardSeen,
@@ -534,6 +575,8 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.BaseTradeSize = s.BaseTradeSize
 	c.MinMarginPercent = s.MinMarginPercent
 	c.TradeScaleFactor = s.TradeScaleFactor
+	c.TradeSizingMode = normalizeTradeSizingMode(s.TradeSizingMode)
+	c.TradeSizeUSDC = normalizeFixedTradeSizeUSDC(s.TradeSizeUSDC)
 	c.FeeRateBps = s.FeeRateBps
 	c.MaxTradeSize = s.MaxTradeSize
 	c.MaxDailyLoss = s.MaxDailyLoss
@@ -593,6 +636,8 @@ func (c *Config) SaveSettings() error {
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
+	envMap["TRADE_SIZING_MODE"] = normalizeTradeSizingMode(c.TradeSizingMode)
+	envMap["TRADE_SIZE_USDC"] = strconv.FormatFloat(normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC), 'f', -1, 64)
 	envMap["PAPER_ARB_MODE"] = c.PaperArbMode
 	envMap["MIN_ASK_PRICE"] = strconv.FormatFloat(c.MinAskPrice, 'f', -1, 64)
 	envMap["MAX_ASK_PRICE"] = strconv.FormatFloat(c.MaxAskPrice, 'f', -1, 64)

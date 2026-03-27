@@ -49,6 +49,8 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	data := []byte(`{
 		"marketSlug": "json-market",
 		"minMarginPercent": 1.5,
+		"tradeSizingMode": "usdc",
+		"tradeSizeUsdc": 2.4,
 		"enableRawApiLog": true,
 		"executionLocalQuoteMaxAgeMs": 900,
 		"restFallbackQuoteAgeMs": 2500,
@@ -72,6 +74,12 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.MinMarginPercent != 1.5 {
 		t.Fatalf("expected JSON MinMarginPercent 1.5, got %.2f", cfg.MinMarginPercent)
+	}
+	if cfg.TradeSizingMode != TradeSizingModeUSDC {
+		t.Fatalf("expected JSON TradeSizingMode usdc, got %q", cfg.TradeSizingMode)
+	}
+	if cfg.TradeSizeUSDC != 2.4 {
+		t.Fatalf("expected JSON TradeSizeUSDC 2.4, got %.1f", cfg.TradeSizeUSDC)
 	}
 	if !cfg.EnableRawAPILog {
 		t.Fatal("expected JSON EnableRawAPILog to override env/default")
@@ -108,6 +116,8 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.settingsPath = filepath.Join(t.TempDir(), "paperbot.settings.json")
 	cfg.MarketSlug = "paper-json"
 	cfg.MinMarginPercent = 2.75
+	cfg.TradeSizingMode = TradeSizingModeUSDC
+	cfg.TradeSizeUSDC = 2.3
 	cfg.EnableRawAPILog = true
 	cfg.ExecutionLocalQuoteMaxAgeMs = 850
 	cfg.RestFallbackQuoteAgeMs = 2800
@@ -134,6 +144,12 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.MinMarginPercent != 2.75 {
 		t.Fatalf("expected saved MinMarginPercent 2.75, got %.2f", settings.MinMarginPercent)
 	}
+	if settings.TradeSizingMode != TradeSizingModeUSDC {
+		t.Fatalf("expected saved TradeSizingMode usdc, got %q", settings.TradeSizingMode)
+	}
+	if settings.TradeSizeUSDC != 2.3 {
+		t.Fatalf("expected saved TradeSizeUSDC 2.3, got %.1f", settings.TradeSizeUSDC)
+	}
 	if !settings.EnableRawAPILog {
 		t.Fatal("expected saved EnableRawAPILog true")
 	}
@@ -154,5 +170,26 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.TradingHoursMode != "off" {
 		t.Fatal("expected saved TradingHoursMode off")
+	}
+}
+
+func TestCalculateTradeSizeForModeUsesFixedUSDC(t *testing.T) {
+	got := CalculateTradeSizeForMode(1000, 0.05, 2.3, 0, TradeSizingModeUSDC)
+	if got != 2.3 {
+		t.Fatalf("expected fixed trade size 2.3, got %.1f", got)
+	}
+}
+
+func TestCalculateTradeSizeForModeRoundsAndClampsFixedUSDC(t *testing.T) {
+	got := CalculateTradeSizeForMode(1000, 0.05, 0.04, 0, TradeSizingModeUSDC)
+	if got != 0.1 {
+		t.Fatalf("expected fixed trade size to clamp to 0.1, got %.1f", got)
+	}
+}
+
+func TestCalculateTradeSizeForModeHonorsMaxTradeCap(t *testing.T) {
+	got := CalculateTradeSizeForMode(1000, 0.05, 7.5, 5.0, TradeSizingModeUSDC)
+	if got != 5.0 {
+		t.Fatalf("expected max trade cap 5.0, got %.1f", got)
 	}
 }

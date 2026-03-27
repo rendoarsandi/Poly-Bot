@@ -249,10 +249,6 @@ func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISetti
 	if cash <= 0 && sizingCapital <= 0 {
 		return 0
 	}
-	tradeFactor := liveCfg.TradeScaleFactor
-	if tradeFactor <= 0 {
-		tradeFactor = 0.01
-	}
 
 	// Taker-close sizing follows current live equity/book value so late-market
 	// entries do not keep trading off a stale high-water budget.
@@ -264,14 +260,13 @@ func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISetti
 		sizingBase = cash
 	}
 
-	budget := sizingBase * tradeFactor
-	if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
-		budget = liveCfg.MaxTradeSize
-	}
-	if budget < 1.0 {
-		budget = 1.0
-	}
-	return budget
+	return core.CalculateTradeSizeForMode(
+		sizingBase,
+		liveCfg.TradeScaleFactor,
+		liveCfg.TradeSizeUSDC,
+		liveCfg.MaxTradeSize,
+		liveCfg.TradeSizingMode,
+	)
 }
 
 func realbotCurrentSizingCapital(engine *paper.Engine) float64 {
@@ -385,7 +380,9 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		MarketSlug:                     cfg.MarketSlug,
 		MaxMarkets:                     cfg.MaxMarkets,
 		Timeframe:                      cfg.Timeframe,
+		TradeSizingMode:                cfg.TradeSizingMode,
 		TradeScaleFactor:               cfg.TradeScaleFactor,
+		TradeSizeUSDC:                  cfg.TradeSizeUSDC,
 		MinMarginPercent:               cfg.MinMarginPercent,
 		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
@@ -415,7 +412,9 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.MarketSlug = s.MarketSlug
 	cfg.MaxMarkets = s.MaxMarkets
 	cfg.Timeframe = s.Timeframe
+	cfg.TradeSizingMode = s.TradeSizingMode
 	cfg.TradeScaleFactor = s.TradeScaleFactor
+	cfg.TradeSizeUSDC = s.TradeSizeUSDC
 	cfg.MinMarginPercent = s.MinMarginPercent
 	cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent

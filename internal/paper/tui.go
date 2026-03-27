@@ -371,7 +371,9 @@ type TUISettings struct {
 	MarketSlug                     string  // Current selected market slug or ALL or BTC,ETH
 	MaxMarkets                     int     // Max concurrent markets to trade
 	Timeframe                      string  // "5m" or "15m"
+	TradeSizingMode                string  // "percent" or "usdc"
 	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
+	TradeSizeUSDC                  float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
 	PaperArbMode                   string  // taker or maker
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
@@ -397,9 +399,40 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeScaleFactor: 0.01, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.05, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeScaleFactor: 0.10, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+)
+
+const (
+	settingsRowMarket = iota
+	settingsRowMaxMarkets
+	settingsRowTimeframe
+	settingsRowTradeSizingMode
+	settingsRowTradeSizingValue
+	settingsRowMinMargin
+	settingsRowPaperArbMode
+	settingsRowExecutionSlip
+	settingsRowSplitMinMargin
+	settingsRowSplitStrategy
+	settingsRowSplitInitialCap
+	settingsRowSplitReplenishCap
+	settingsRowTakerCloseMarket
+	settingsRowMinAskPrice
+	settingsRowMaxAskPrice
+	settingsRowMakerMergeBuffer
+	settingsRowMakerQuoteGap
+	settingsRowMakerTargetMult
+	settingsRowMakerCapMult
+	settingsRowMakerMinQuoteValue
+	settingsRowMaxTradeSize
+	settingsRowMaxDailyLoss
+	settingsRowExchange
+	settingsRowTakerCloseTime
+	settingsRowTakerCloseSlippage
+	settingsRowTakerCloseMinPrice
+	settingsRowTradingHoursMode
+	settingsRowCount
 )
 
 func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
@@ -430,7 +463,7 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
 		switch idx {
-		case 2, 7, 8, 9, 10:
+		case settingsRowTimeframe, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
 			return false
 		}
 	}
@@ -439,17 +472,17 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 		// Taker-close mode bypasses the normal split/panic-buy paths, so hide
 		// controls that do not affect the dedicated close-market execution flow.
 		switch idx {
-		case 4, 7, 8, 9, 10, 12, 13:
+		case settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowMinAskPrice, settingsRowMaxAskPrice:
 			return false
 		}
 	}
 
 	switch idx {
-	case 6, 7, 8, 9, 10: // Taker specific
+	case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
 		return !maker
-	case 14, 15, 16, 17, 18: // Maker specific
+	case settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue:
 		return maker
-	case 22, 23, 24: // Close Market specific
+	case settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
 		return closeMarket
 	default:
 		return true
@@ -466,56 +499,63 @@ func settingsRowEditable(cfg TUISettings, idx int) bool {
 func settingsRowLabel(cfg TUISettings, idx int) string {
 	maker := isMakerSettingsMode(cfg)
 	switch idx {
-	case 4:
+	case settingsRowTradeSizingMode:
+		return "Trade Size Mode"
+	case settingsRowTradeSizingValue:
+		if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+			return "Trade Size (USDC)"
+		}
+		return "Trade Scale Factor"
+	case settingsRowMinMargin:
 		if maker {
 			return "Maker Min Sell Edge %"
 		}
 		return "Buy Min Margin %"
-	case 6:
+	case settingsRowExecutionSlip:
 		return "Max Exec Slip %"
-	case 7:
+	case settingsRowSplitMinMargin:
 		return "Split Min Margin"
-	case 8:
+	case settingsRowSplitStrategy:
 		return "Split Strategy"
-	case 9:
+	case settingsRowSplitInitialCap:
 		return "Split Initial Cap"
-	case 10:
+	case settingsRowSplitReplenishCap:
 		return "Split Replenish Cap"
-	case 11:
+	case settingsRowTakerCloseMarket:
 		return "Taker Close Market"
-	case 12:
+	case settingsRowMinAskPrice:
 		if maker {
 			return "Maker Min Buy Price"
 		}
 		return "Min Ask Price"
-	case 13:
+	case settingsRowMaxAskPrice:
 		if maker {
 			return "Maker Max Buy Price"
 		}
 		return "Max Ask Price"
-	case 14:
+	case settingsRowMakerMergeBuffer:
 		return "Maker Merge Buffer"
-	case 15:
+	case settingsRowMakerQuoteGap:
 		return "Maker Quote Gap"
-	case 16:
+	case settingsRowMakerTargetMult:
 		return "Maker Target Mult"
-	case 17:
+	case settingsRowMakerCapMult:
 		return "Maker Cap Mult"
-	case 18:
+	case settingsRowMakerMinQuoteValue:
 		return "Maker Min Quote ($)"
-	case 19:
+	case settingsRowMaxTradeSize:
 		return "Max Trade Size"
-	case 20:
+	case settingsRowMaxDailyLoss:
 		return "Max Daily Loss"
-	case 21:
+	case settingsRowExchange:
 		return "Exchange"
-	case 22:
+	case settingsRowTakerCloseTime:
 		return "Taker Close Time"
-	case 23:
+	case settingsRowTakerCloseSlippage:
 		return "Taker Close Slippage"
-	case 24:
+	case settingsRowTakerCloseMinPrice:
 		return "Taker Close Min Price"
-	case 25:
+	case settingsRowTradingHoursMode:
 		return "Trading Hours Mode"
 	default:
 		return ""
@@ -546,6 +586,24 @@ func normalizeMarketSelection(slug string) string {
 
 func normalizeTUISettings(s TUISettings) TUISettings {
 	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	if strings.EqualFold(strings.TrimSpace(s.TradeSizingMode), core.TradeSizingModeUSDC) {
+		s.TradeSizingMode = core.TradeSizingModeUSDC
+	} else {
+		s.TradeSizingMode = core.TradeSizingModePercent
+	}
+	if s.TradeSizeUSDC <= 0 {
+		s.TradeSizeUSDC = math.Round(math.Max(s.TradeScaleFactor*100.0, 0.1)*10.0) / 10.0
+	}
+	s.TradeSizeUSDC = math.Round(s.TradeSizeUSDC*10.0) / 10.0
+	if s.TradeSizeUSDC < 0.1 {
+		s.TradeSizeUSDC = 0.1
+	}
+	if s.TradeScaleFactor <= 0 {
+		s.TradeScaleFactor = 0.01
+	}
+	if s.TradeScaleFactor > 1.0 {
+		s.TradeScaleFactor = 1.0
+	}
 	if s.MaxMarkets < 1 {
 		s.MaxMarkets = 1
 	}
@@ -595,6 +653,30 @@ func normalizeExecutionFloorSetting(v float64) float64 {
 
 func executionFloorDisplayPercent(v float64) float64 {
 	return normalizeExecutionFloorSetting(v) * 100.0
+}
+
+func displayedTradeBudgetsWithMode(mode string, cash, equity, startingBalance, sizingBalance, tradeFactor, tradeSizeUSDC, maxTradeSize, multiplier float64, tradeSizingMode string) (base, effective float64) {
+	sizingCapital := equity
+	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
+		sizingCapital = equity
+		if sizingCapital <= 0 {
+			sizingCapital = math.Max(cash, startingBalance)
+		}
+		if cash > sizingCapital {
+			sizingCapital = cash
+		}
+	}
+
+	base = core.CalculateTradeSizeForMode(sizingCapital, tradeFactor, tradeSizeUSDC, maxTradeSize, tradeSizingMode)
+	if base <= 0 {
+		return 0, 0
+	}
+
+	effective = base
+	if strings.EqualFold(mode, "Paper") && multiplier > 1.0 && !strings.EqualFold(tradeSizingMode, core.TradeSizingModeUSDC) {
+		effective = base * multiplier
+	}
+	return base, effective
 }
 
 // ─── TUI struct ───────────────────────────────────────────────────────────────
@@ -1065,7 +1147,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for {
 					m.settingsCursor--
 					if m.settingsCursor < 0 {
-						m.settingsCursor = 25
+						m.settingsCursor = settingsRowCount - 1
 					}
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
@@ -1074,7 +1156,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "down", "j":
 				for {
-					m.settingsCursor = (m.settingsCursor + 1) % 26
+					m.settingsCursor = (m.settingsCursor + 1) % settingsRowCount
 					if isRowVisible(m.tui.settings, m.settingsCursor) {
 						break
 					}
@@ -1088,7 +1170,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				switch m.settingsCursor {
-				case 0: // Market
+				case settingsRowMarket:
 					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
 					idx := 0
 					for i, mkt := range markets {
@@ -1103,144 +1185,158 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.tui.settings.MarketSlug = markets[idx]
 					changed = true
-				case 1: // MaxMarkets
+				case settingsRowMaxMarkets:
 					m.tui.settings.MaxMarkets--
 					if m.tui.settings.MaxMarkets < 1 {
 						m.tui.settings.MaxMarkets = 1
 					}
 					changed = true
-				case 2: // Timeframe
+				case settingsRowTimeframe:
 					if m.tui.settings.Timeframe == "15m" {
 						m.tui.settings.Timeframe = "5m"
 					} else {
 						m.tui.settings.Timeframe = "15m"
 					}
 					changed = true
-				case 3:
-					m.tui.settings.TradeScaleFactor -= 0.01
-					if m.tui.settings.TradeScaleFactor < 0.01 {
-						m.tui.settings.TradeScaleFactor = 0.01
+				case settingsRowTradeSizingMode:
+					if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+						m.tui.settings.TradeSizingMode = core.TradeSizingModePercent
+					} else {
+						m.tui.settings.TradeSizingMode = core.TradeSizingModeUSDC
 					}
 					changed = true
-				case 4:
+				case settingsRowTradeSizingValue:
+					if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+						m.tui.settings.TradeSizeUSDC -= 0.1
+						if m.tui.settings.TradeSizeUSDC < 0.1 {
+							m.tui.settings.TradeSizeUSDC = 0.1
+						}
+					} else {
+						m.tui.settings.TradeScaleFactor -= 0.01
+						if m.tui.settings.TradeScaleFactor < 0.01 {
+							m.tui.settings.TradeScaleFactor = 0.01
+						}
+					}
+					changed = true
+				case settingsRowMinMargin:
 					m.tui.settings.MinMarginPercent -= 0.5
 					if m.tui.settings.MinMarginPercent < 0.5 {
 						m.tui.settings.MinMarginPercent = 0.5
 					}
 					changed = true
-				case 5:
+				case settingsRowPaperArbMode:
 					m.tui.settings.PaperArbMode = "taker"
 					changed = true
-				case 6:
+				case settingsRowExecutionSlip:
 					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.01
 					if m.tui.settings.BuyExecutionMarginFloorPercent < -0.10 {
 						m.tui.settings.BuyExecutionMarginFloorPercent = -0.10
 					}
 					changed = true
-				case 7:
+				case settingsRowSplitMinMargin:
 					m.tui.settings.SplitMinMarginSell -= 0.5
 					if m.tui.settings.SplitMinMarginSell < 1.0 {
 						m.tui.settings.SplitMinMarginSell = 1.0
 					}
 					changed = true
-				case 8:
+				case settingsRowSplitStrategy:
 					m.tui.settings.SplitStrategyEnabled = false
 					changed = true
-				case 9:
+				case settingsRowSplitInitialCap:
 					m.tui.settings.SplitInitialCapPct -= 0.05
 					if m.tui.settings.SplitInitialCapPct < 0.05 {
 						m.tui.settings.SplitInitialCapPct = 0.05
 					}
 					changed = true
-				case 10:
+				case settingsRowSplitReplenishCap:
 					m.tui.settings.SplitReplenishCapPct -= 0.05
 					if m.tui.settings.SplitReplenishCapPct < 0.05 {
 						m.tui.settings.SplitReplenishCapPct = 0.05
 					}
 					changed = true
-				case 11:
+				case settingsRowTakerCloseMarket:
 					m.tui.settings.TakerCloseMarket = !m.tui.settings.TakerCloseMarket
 					changed = true
-				case 12:
+				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
 						m.tui.settings.MinAskPrice = 0.01
 					}
 					changed = true
-				case 13:
+				case settingsRowMaxAskPrice:
 					m.tui.settings.MaxAskPrice -= 0.01
 					if m.tui.settings.MaxAskPrice < 0.01 {
 						m.tui.settings.MaxAskPrice = 0.01
 					}
 					changed = true
-				case 14:
+				case settingsRowMakerMergeBuffer:
 					m.tui.settings.MakerMergeBufferSeconds -= 5
 					if m.tui.settings.MakerMergeBufferSeconds < 5 {
 						m.tui.settings.MakerMergeBufferSeconds = 5
 					}
 					changed = true
-				case 15:
+				case settingsRowMakerQuoteGap:
 					m.tui.settings.MakerQuoteGap -= 0.001
 					if m.tui.settings.MakerQuoteGap < 0.001 {
 						m.tui.settings.MakerQuoteGap = 0.001
 					}
 					changed = true
-				case 16:
+				case settingsRowMakerTargetMult:
 					m.tui.settings.MakerInventoryTargetMult -= 0.5
 					if m.tui.settings.MakerInventoryTargetMult < 1.0 {
 						m.tui.settings.MakerInventoryTargetMult = 1.0
 					}
 					changed = true
-				case 17:
+				case settingsRowMakerCapMult:
 					m.tui.settings.MakerInventoryCapMult -= 0.5
 					if m.tui.settings.MakerInventoryCapMult < 1.0 {
 						m.tui.settings.MakerInventoryCapMult = 1.0
 					}
 					changed = true
-				case 18:
+				case settingsRowMakerMinQuoteValue:
 					m.tui.settings.MakerMinQuoteValue -= 1.0
 					if m.tui.settings.MakerMinQuoteValue < 1.0 {
 						m.tui.settings.MakerMinQuoteValue = 1.0
 					}
 					changed = true
-				case 19:
+				case settingsRowMaxTradeSize:
 					m.tui.settings.MaxTradeSize -= 5.0
 					if m.tui.settings.MaxTradeSize < 0.0 {
 						m.tui.settings.MaxTradeSize = 0.0
 					}
 					changed = true
-				case 20:
+				case settingsRowMaxDailyLoss:
 					m.tui.settings.MaxDailyLoss -= 5.0
 					if m.tui.settings.MaxDailyLoss < 0.0 {
 						m.tui.settings.MaxDailyLoss = 0.0
 					}
 					changed = true
-				case 21:
+				case settingsRowExchange:
 					newM, cmd := m.toggleExchange()
 					if cmd != nil {
 						m.tui.mu.Unlock()
 						return newM, cmd
 					}
 					changed = true
-				case 22:
+				case settingsRowTakerCloseTime:
 					m.tui.settings.TakerCloseMarketTime -= 1
 					if m.tui.settings.TakerCloseMarketTime < 1 {
 						m.tui.settings.TakerCloseMarketTime = 1
 					}
 					changed = true
-				case 23:
+				case settingsRowTakerCloseSlippage:
 					m.tui.settings.TakerCloseMarketSlippage -= 0.01
 					if m.tui.settings.TakerCloseMarketSlippage < 0.50 {
 						m.tui.settings.TakerCloseMarketSlippage = 0.50
 					}
 					changed = true
-				case 24:
+				case settingsRowTakerCloseMinPrice:
 					m.tui.settings.TakerCloseMarketMinPrice -= 0.01
 					if m.tui.settings.TakerCloseMarketMinPrice < 0.01 {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.01
 					}
 					changed = true
-				case 25:
+				case settingsRowTradingHoursMode:
 					if m.tui.settings.TradingHoursMode == "off" {
 						m.tui.settings.TradingHoursMode = "weekdays trade only"
 					} else if m.tui.settings.TradingHoursMode == "weekdays trade only" {
@@ -1267,7 +1363,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				switch m.settingsCursor {
-				case 0: // Market
+				case settingsRowMarket:
 					markets := []string{"ALL", "BTC", "ETH", "SOL", "XRP", "BTC,ETH", "SOL,XRP", "BTC,ETH,SOL"}
 					idx := 0
 					for i, mkt := range markets {
@@ -1279,138 +1375,149 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx = (idx + 1) % len(markets)
 					m.tui.settings.MarketSlug = markets[idx]
 					changed = true
-				case 1: // MaxMarkets
+				case settingsRowMaxMarkets:
 					m.tui.settings.MaxMarkets++
 					if m.tui.settings.MaxMarkets > 20 {
 						m.tui.settings.MaxMarkets = 20
 					}
 					changed = true
-				case 2: // Timeframe
+				case settingsRowTimeframe:
 					if m.tui.settings.Timeframe == "15m" {
 						m.tui.settings.Timeframe = "5m"
 					} else {
 						m.tui.settings.Timeframe = "15m"
 					}
 					changed = true
-				case 3:
-					m.tui.settings.TradeScaleFactor += 0.01
-					if m.tui.settings.TradeScaleFactor > 1.0 {
-						m.tui.settings.TradeScaleFactor = 1.0
+				case settingsRowTradeSizingMode:
+					if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+						m.tui.settings.TradeSizingMode = core.TradeSizingModePercent
+					} else {
+						m.tui.settings.TradeSizingMode = core.TradeSizingModeUSDC
 					}
 					changed = true
-				case 4:
+				case settingsRowTradeSizingValue:
+					if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+						m.tui.settings.TradeSizeUSDC += 0.1
+					} else {
+						m.tui.settings.TradeScaleFactor += 0.01
+						if m.tui.settings.TradeScaleFactor > 1.0 {
+							m.tui.settings.TradeScaleFactor = 1.0
+						}
+					}
+					changed = true
+				case settingsRowMinMargin:
 					m.tui.settings.MinMarginPercent += 0.5
 					if m.tui.settings.MinMarginPercent > 20.0 {
 						m.tui.settings.MinMarginPercent = 20.0
 					}
 					changed = true
-				case 5:
+				case settingsRowPaperArbMode:
 					m.tui.settings.PaperArbMode = "maker"
 					changed = true
-				case 6:
+				case settingsRowExecutionSlip:
 					m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
 					if m.tui.settings.BuyExecutionMarginFloorPercent > 0.0 {
 						m.tui.settings.BuyExecutionMarginFloorPercent = 0.0
 					}
 					changed = true
-				case 7:
+				case settingsRowSplitMinMargin:
 					m.tui.settings.SplitMinMarginSell += 0.5
 					if m.tui.settings.SplitMinMarginSell > 20.0 {
 						m.tui.settings.SplitMinMarginSell = 20.0
 					}
 					changed = true
-				case 8:
+				case settingsRowSplitStrategy:
 					m.tui.settings.SplitStrategyEnabled = true
 					changed = true
-				case 9:
+				case settingsRowSplitInitialCap:
 					m.tui.settings.SplitInitialCapPct += 0.05
 					if m.tui.settings.SplitInitialCapPct > 1.0 {
 						m.tui.settings.SplitInitialCapPct = 1.0
 					}
 					changed = true
-				case 10:
+				case settingsRowSplitReplenishCap:
 					m.tui.settings.SplitReplenishCapPct += 0.05
 					if m.tui.settings.SplitReplenishCapPct > 1.0 {
 						m.tui.settings.SplitReplenishCapPct = 1.0
 					}
 					changed = true
-				case 11:
+				case settingsRowTakerCloseMarket:
 					m.tui.settings.TakerCloseMarket = !m.tui.settings.TakerCloseMarket
 					changed = true
-				case 12:
+				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
 						m.tui.settings.MinAskPrice = 0.99
 					}
 					changed = true
-				case 13:
+				case settingsRowMaxAskPrice:
 					m.tui.settings.MaxAskPrice += 0.01
 					if m.tui.settings.MaxAskPrice > 0.99 {
 						m.tui.settings.MaxAskPrice = 0.99
 					}
 					changed = true
-				case 14:
+				case settingsRowMakerMergeBuffer:
 					m.tui.settings.MakerMergeBufferSeconds += 5
 					if m.tui.settings.MakerMergeBufferSeconds > 300 {
 						m.tui.settings.MakerMergeBufferSeconds = 300
 					}
 					changed = true
-				case 15:
+				case settingsRowMakerQuoteGap:
 					m.tui.settings.MakerQuoteGap += 0.001
 					if m.tui.settings.MakerQuoteGap > 0.100 {
 						m.tui.settings.MakerQuoteGap = 0.100
 					}
 					changed = true
-				case 16:
+				case settingsRowMakerTargetMult:
 					m.tui.settings.MakerInventoryTargetMult += 0.5
 					if m.tui.settings.MakerInventoryTargetMult > 20.0 {
 						m.tui.settings.MakerInventoryTargetMult = 20.0
 					}
 					changed = true
-				case 17:
+				case settingsRowMakerCapMult:
 					m.tui.settings.MakerInventoryCapMult += 0.5
 					if m.tui.settings.MakerInventoryCapMult > 50.0 {
 						m.tui.settings.MakerInventoryCapMult = 50.0
 					}
 					changed = true
-				case 18:
+				case settingsRowMakerMinQuoteValue:
 					m.tui.settings.MakerMinQuoteValue += 1.0
 					if m.tui.settings.MakerMinQuoteValue > 500.0 {
 						m.tui.settings.MakerMinQuoteValue = 500.0
 					}
 					changed = true
-				case 19:
+				case settingsRowMaxTradeSize:
 					m.tui.settings.MaxTradeSize += 5.0
 					changed = true
-				case 20:
+				case settingsRowMaxDailyLoss:
 					m.tui.settings.MaxDailyLoss += 5.0
 					changed = true
-				case 21:
+				case settingsRowExchange:
 					newM, cmd := m.toggleExchange()
 					if cmd != nil {
 						m.tui.mu.Unlock()
 						return newM, cmd
 					}
 					changed = true
-				case 22:
+				case settingsRowTakerCloseTime:
 					m.tui.settings.TakerCloseMarketTime += 1
 					if m.tui.settings.TakerCloseMarketTime > 60 {
 						m.tui.settings.TakerCloseMarketTime = 60
 					}
 					changed = true
-				case 23:
+				case settingsRowTakerCloseSlippage:
 					m.tui.settings.TakerCloseMarketSlippage += 0.01
 					if m.tui.settings.TakerCloseMarketSlippage > 0.99 {
 						m.tui.settings.TakerCloseMarketSlippage = 0.99
 					}
 					changed = true
-				case 24:
+				case settingsRowTakerCloseMinPrice:
 					m.tui.settings.TakerCloseMarketMinPrice += 0.01
 					if m.tui.settings.TakerCloseMarketMinPrice > 0.99 {
 						m.tui.settings.TakerCloseMarketMinPrice = 0.99
 					}
 					changed = true
-				case 25:
+				case settingsRowTradingHoursMode:
 					if m.tui.settings.TradingHoursMode == "off" {
 						m.tui.settings.TradingHoursMode = "weekdays trade only"
 					} else if m.tui.settings.TradingHoursMode == "weekdays trade only" {
@@ -1432,20 +1539,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Quick presets
 			case "1":
 				m.tui.mu.Lock()
-				m.tui.settings = SettingsConservative
+				m.tui.settings = normalizeTUISettings(SettingsConservative)
 				m.tui.tradeFactor = SettingsConservative.TradeScaleFactor
+				if m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "2":
 				m.tui.mu.Lock()
-				m.tui.settings = SettingsModerate
+				m.tui.settings = normalizeTUISettings(SettingsModerate)
 				m.tui.tradeFactor = SettingsModerate.TradeScaleFactor
+				if m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			case "3":
 				m.tui.mu.Lock()
-				m.tui.settings = SettingsAggressive
+				m.tui.settings = normalizeTUISettings(SettingsAggressive)
 				m.tui.tradeFactor = SettingsAggressive.TradeScaleFactor
+				if m.tui.onSettingsChange != nil {
+					m.tui.onSettingsChange(m.tui.settings)
+				}
 				m.tui.mu.Unlock()
 				return m, nil
 			}
@@ -2864,8 +2980,10 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 			effectiveSizingBalance = 0
 		}
 	}
-	if baseTradeCost, effectiveTradeCost := displayedTradeBudgets(s.mode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, s.maxTradeSize, multiplier); baseTradeCost > 0 {
-		if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
+	if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(s.mode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, s.settings.TradeSizeUSDC, s.maxTradeSize, multiplier, s.settings.TradeSizingMode); baseTradeCost > 0 {
+		if strings.EqualFold(s.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+			tradeLine = fmt.Sprintf("  Trade $%.2f fixed  ·  ", baseTradeCost)
+		} else if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
 		} else {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f/trade)  ·  ", s.tradeFactor*100, baseTradeCost)
@@ -3032,33 +3150,7 @@ func resolutionPnLRangeFromPositions(positions map[string]Position) (best float6
 }
 
 func displayedTradeBudgets(mode string, cash, equity, startingBalance, sizingBalance, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
-	if tradeFactor <= 0 {
-		return 0, 0
-	}
-
-	sizingCapital := equity
-	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
-		sizingCapital = equity
-		if sizingCapital <= 0 {
-			sizingCapital = math.Max(cash, startingBalance)
-		}
-		if cash > sizingCapital {
-			sizingCapital = cash
-		}
-	}
-	base = sizingCapital * tradeFactor
-	if maxTradeSize > 0 && base > maxTradeSize {
-		base = maxTradeSize
-	}
-	if base < 1.0 {
-		base = 1.0
-	}
-
-	effective = base
-	if strings.EqualFold(mode, "Paper") && multiplier > 1.0 {
-		effective = base * multiplier
-	}
-	return base, effective
+	return displayedTradeBudgetsWithMode(mode, cash, equity, startingBalance, sizingBalance, tradeFactor, 0, maxTradeSize, multiplier, core.TradeSizingModePercent)
 }
 
 // renderPositions: bordered panel for in-flight and split inventory positions.
@@ -3615,6 +3707,13 @@ func (m tuiModel) renderSettings(w int) string {
 	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
 
 	makerMode := isMakerSettingsMode(cfg)
+	tradeSizeBarMax := 50.0
+	if cfg.MaxTradeSize > 0 {
+		tradeSizeBarMax = cfg.MaxTradeSize
+	}
+	if tradeSizeBarMax < 0.1 {
+		tradeSizeBarMax = 0.1
+	}
 	rows := []row{
 		{
 			label: "Market",
@@ -3632,12 +3731,32 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   "",
 		},
 		{
-			label: "Trade Scale Factor",
-			value: fmtPct(cfg.TradeScaleFactor),
-			bar:   renderBar(cfg.TradeScaleFactor/1.0, 20),
+			label: settingsRowLabel(cfg, settingsRowTradeSizingMode),
+			value: func() string {
+				if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+					return styleGreen.Render(" USDC ")
+				}
+				return styleYellow.Render("   %  ")
+			}(),
+			bar: "",
 		},
 		{
-			label: settingsRowLabel(cfg, 4),
+			label: settingsRowLabel(cfg, settingsRowTradeSizingValue),
+			value: func() string {
+				if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+					return fmt.Sprintf(" $%.2f ", cfg.TradeSizeUSDC)
+				}
+				return fmtPct(cfg.TradeScaleFactor)
+			}(),
+			bar: func() string {
+				if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+					return renderBar(cfg.TradeSizeUSDC/tradeSizeBarMax, 20)
+				}
+				return renderBar(cfg.TradeScaleFactor, 20)
+			}(),
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowMinMargin),
 			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
@@ -3652,17 +3771,17 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
-			label: settingsRowLabel(cfg, 6),
+			label: settingsRowLabel(cfg, settingsRowExecutionSlip),
 			value: fmt.Sprintf(" %5.1f%% ", executionFloorDisplayPercent(cfg.BuyExecutionMarginFloorPercent)),
 			bar:   renderBar(math.Abs(normalizeExecutionFloorSetting(cfg.BuyExecutionMarginFloorPercent))/0.10, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 7),
+			label: settingsRowLabel(cfg, settingsRowSplitMinMargin),
 			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
 			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 8),
+			label: settingsRowLabel(cfg, settingsRowSplitStrategy),
 			value: func() string {
 				if cfg.SplitStrategyEnabled {
 					return styleGreen.Render("  ON ")
@@ -3672,17 +3791,17 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
-			label: settingsRowLabel(cfg, 9),
+			label: settingsRowLabel(cfg, settingsRowSplitInitialCap),
 			value: fmtPct(cfg.SplitInitialCapPct),
 			bar:   renderBar(cfg.SplitInitialCapPct, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 10),
+			label: settingsRowLabel(cfg, settingsRowSplitReplenishCap),
 			value: fmtPct(cfg.SplitReplenishCapPct),
 			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 11),
+			label: settingsRowLabel(cfg, settingsRowTakerCloseMarket),
 			value: func() string {
 				if cfg.TakerCloseMarket {
 					return styleGreen.Render("  ON ")
@@ -3692,42 +3811,42 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
-			label: settingsRowLabel(cfg, 12),
+			label: settingsRowLabel(cfg, settingsRowMinAskPrice),
 			value: fmt.Sprintf(" $%.2f ", cfg.MinAskPrice),
 			bar:   renderBar(cfg.MinAskPrice, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 13),
+			label: settingsRowLabel(cfg, settingsRowMaxAskPrice),
 			value: fmt.Sprintf(" $%.2f ", cfg.MaxAskPrice),
 			bar:   renderBar(cfg.MaxAskPrice, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 14),
+			label: settingsRowLabel(cfg, settingsRowMakerMergeBuffer),
 			value: fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds),
 			bar:   renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 15),
+			label: settingsRowLabel(cfg, settingsRowMakerQuoteGap),
 			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
 			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 16),
+			label: settingsRowLabel(cfg, settingsRowMakerTargetMult),
 			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryTargetMult),
 			bar:   renderBar(cfg.MakerInventoryTargetMult/10.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 17),
+			label: settingsRowLabel(cfg, settingsRowMakerCapMult),
 			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryCapMult),
 			bar:   renderBar(cfg.MakerInventoryCapMult/20.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 18),
+			label: settingsRowLabel(cfg, settingsRowMakerMinQuoteValue),
 			value: fmt.Sprintf(" $%.1f ", cfg.MakerMinQuoteValue),
 			bar:   renderBar(cfg.MakerMinQuoteValue/50.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 19),
+			label: settingsRowLabel(cfg, settingsRowMaxTradeSize),
 			value: func() string {
 				if cfg.MaxTradeSize <= 0 {
 					return styleMuted.Render(" disabled ")
@@ -3742,7 +3861,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}(),
 		},
 		{
-			label: settingsRowLabel(cfg, 20),
+			label: settingsRowLabel(cfg, settingsRowMaxDailyLoss),
 			value: func() string {
 				if cfg.MaxDailyLoss <= 0 {
 					return styleMuted.Render(" disabled ")
@@ -3757,7 +3876,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}(),
 		},
 		{
-			label: settingsRowLabel(cfg, 21),
+			label: settingsRowLabel(cfg, settingsRowExchange),
 			value: func() string {
 				if cfg.Exchange == "kalshi" {
 					return styleGreen.Render(" kalshi ")
@@ -3767,22 +3886,22 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
-			label: settingsRowLabel(cfg, 22),
+			label: settingsRowLabel(cfg, settingsRowTakerCloseTime),
 			value: fmt.Sprintf(" %ds ", cfg.TakerCloseMarketTime),
 			bar:   renderBar(float64(cfg.TakerCloseMarketTime)/60.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 23),
+			label: settingsRowLabel(cfg, settingsRowTakerCloseSlippage),
 			value: fmt.Sprintf(" $%.2f ", cfg.TakerCloseMarketSlippage),
 			bar:   renderBar(cfg.TakerCloseMarketSlippage, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 24),
+			label: settingsRowLabel(cfg, settingsRowTakerCloseMinPrice),
 			value: fmt.Sprintf(" $%.2f ", cfg.TakerCloseMarketMinPrice),
 			bar:   renderBar(cfg.TakerCloseMarketMinPrice, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, 25),
+			label: settingsRowLabel(cfg, settingsRowTradingHoursMode),
 			value: func() string {
 				if cfg.TradingHoursMode == "weekdays trade only" {
 					return styleGreen.Render(" WEEKDAYS ")
@@ -3870,6 +3989,12 @@ func (m tuiModel) renderSettings(w int) string {
 		100*cfg.TradeScaleFactor,
 		500*cfg.TradeScaleFactor,
 	))
+	if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+		balanceNote = styleDimmed.Render(fmt.Sprintf(
+			"  Fixed sizing active → $%.2f/trade  ·  balance changes do not rescale entries",
+			cfg.TradeSizeUSDC,
+		))
+	}
 	modeNote := ""
 	if makerMode {
 		modeNote = styleDimmed.Render("  Maker mode: split/taker-only rows are shown for reference and ignored live") + "\n"
