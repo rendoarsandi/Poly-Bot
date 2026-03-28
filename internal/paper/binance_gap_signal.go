@@ -1,4 +1,4 @@
-package main
+package paper
 
 import (
 	"fmt"
@@ -11,17 +11,22 @@ import (
 )
 
 const (
-	defaultBinanceSignalPolyMaxMoveCents     = 1.5
-	defaultBinanceSignalPolyAdverseMoveCents = 0.75
-	defaultBinanceSignalSpreadMaxCents       = 4.0
+	DefaultBinanceSignalPolyMaxMoveCents     = 1.5
+	DefaultBinanceSignalPolyAdverseMoveCents = 0.75
+	DefaultBinanceSignalSpreadMaxCents       = 4.0
 )
 
-type realbotMidSample struct {
+type DirectionalOutcomes struct {
+	Up   string
+	Down string
+}
+
+type MidSample struct {
 	Mid float64
 	At  time.Time
 }
 
-type realbotDirectionalSignalSnapshot struct {
+type DirectionalSignalSnapshot struct {
 	Outcome     string
 	Mid         float64
 	BaselineMid float64
@@ -31,15 +36,15 @@ type realbotDirectionalSignalSnapshot struct {
 	Ready       bool
 }
 
-type realbotDirectionalSignalTracker struct {
+type DirectionalSignalTracker struct {
 	lookback     time.Duration
 	maxBufferAge time.Duration
 
 	mu      sync.RWMutex
-	samples map[string][]realbotMidSample
+	samples map[string][]MidSample
 }
 
-type realbotBinanceGapSignal struct {
+type BinanceGapSignal struct {
 	TargetOutcome          string
 	OppositeOutcome        string
 	SignalLabel            string
@@ -51,7 +56,7 @@ type realbotBinanceGapSignal struct {
 	TargetSpreadCents      float64
 }
 
-func newRealbotDirectionalSignalTracker(lookback time.Duration, outcomes []string) *realbotDirectionalSignalTracker {
+func NewDirectionalSignalTracker(lookback time.Duration, outcomes []string) *DirectionalSignalTracker {
 	if lookback <= 0 {
 		lookback = 1500 * time.Millisecond
 	}
@@ -59,7 +64,7 @@ func newRealbotDirectionalSignalTracker(lookback time.Duration, outcomes []strin
 	if scaled := lookback * 6; scaled > maxBufferAge {
 		maxBufferAge = scaled
 	}
-	samples := make(map[string][]realbotMidSample, len(outcomes))
+	samples := make(map[string][]MidSample, len(outcomes))
 	for _, outcome := range outcomes {
 		key := strings.TrimSpace(outcome)
 		if key == "" {
@@ -67,14 +72,14 @@ func newRealbotDirectionalSignalTracker(lookback time.Duration, outcomes []strin
 		}
 		samples[key] = nil
 	}
-	return &realbotDirectionalSignalTracker{
+	return &DirectionalSignalTracker{
 		lookback:     lookback,
 		maxBufferAge: maxBufferAge,
 		samples:      samples,
 	}
 }
 
-func (t *realbotDirectionalSignalTracker) Record(outcome string, bid, ask float64, at time.Time) {
+func (t *DirectionalSignalTracker) Record(outcome string, bid, ask float64, at time.Time) {
 	if t == nil || outcome == "" || bid <= 0 || ask <= 0 || ask < bid {
 		return
 	}
@@ -95,20 +100,20 @@ func (t *realbotDirectionalSignalTracker) Record(outcome string, bid, ask float6
 		// Quote droughts should restart the lag window so stale pre-gap mids cannot drive a fresh signal.
 		series = nil
 	}
-	series = append(series, realbotMidSample{Mid: mid, At: at})
+	series = append(series, MidSample{Mid: mid, At: at})
 	cutoff := at.Add(-t.maxBufferAge)
 	trim := 0
 	for trim < len(series)-1 && series[trim].At.Before(cutoff) {
 		trim++
 	}
 	if trim > 0 {
-		series = append([]realbotMidSample(nil), series[trim:]...)
+		series = append([]MidSample(nil), series[trim:]...)
 	}
 	t.samples[key] = series
 }
 
-func (t *realbotDirectionalSignalTracker) Snapshot(outcome string, now time.Time) realbotDirectionalSignalSnapshot {
-	snap := realbotDirectionalSignalSnapshot{Outcome: strings.TrimSpace(outcome)}
+func (t *DirectionalSignalTracker) Snapshot(outcome string, now time.Time) DirectionalSignalSnapshot {
+	snap := DirectionalSignalSnapshot{Outcome: strings.TrimSpace(outcome)}
 	if t == nil || snap.Outcome == "" {
 		return snap
 	}
@@ -149,8 +154,8 @@ func (t *realbotDirectionalSignalTracker) Snapshot(outcome string, now time.Time
 	return snap
 }
 
-func realbotEvaluateBinanceGapSignal(now time.Time, mapping realbotDirectionalOutcomes, tokenBids, tokenAsks map[string]float64, binanceSnap api.BinanceFuturesSignalSnapshot, polyTracker *realbotDirectionalSignalTracker, maxAge time.Duration) (realbotBinanceGapSignal, string) {
-	signal := realbotBinanceGapSignal{BinanceDeltaPercent: binanceSnap.DeltaPercent}
+func EvaluateBinanceGapSignal(now time.Time, mapping DirectionalOutcomes, tokenBids, tokenAsks map[string]float64, binanceSnap api.BinanceFuturesSignalSnapshot, polyTracker *DirectionalSignalTracker, maxAge time.Duration) (BinanceGapSignal, string) {
+	signal := BinanceGapSignal{BinanceDeltaPercent: binanceSnap.DeltaPercent}
 	if now.IsZero() {
 		now = time.Now()
 	}

@@ -503,7 +503,7 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	copytrade := isCopytradeSettingsMode(cfg)
 	binanceGap := isBinanceGapSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
-	closeMarket := cfg.TakerCloseMarket
+	closeMarket := cfg.TakerCloseMarket && !maker && !copytrade && !binanceGap
 
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
