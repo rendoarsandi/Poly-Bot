@@ -119,6 +119,10 @@ type MarketTrader struct {
 	// On-chain resolution cache (shared across all traders)
 	ResolutionCache *api.ResolutionCache
 
+	BinanceFeed *api.BinanceFuturesPriceFeed
+	PolySignalTracker *paper.DirectionalSignalTracker
+	LastBinanceLog *time.Time
+
 	// State
 	LaddersPlaced bool
 	MarketEnded   bool
@@ -474,6 +478,15 @@ func paperExecutionQuoteGuardAge(localQuoteMaxAge time.Duration) time.Duration {
 func syncPaperPairUpdate(t *MarketTrader, now time.Time) {
 	if hasValidPaperPairQuotes(t.Outcomes, t.TokenBids, t.TokenAsks) {
 		t.LastPairUpdate = now
+	}
+	if t.PolySignalTracker != nil && len(t.Outcomes) == 2 {
+		for _, outcome := range t.Outcomes {
+			bid := t.TokenBids[outcome]
+			ask := t.TokenAsks[outcome]
+			if bid > 0 && ask > 0 {
+				t.PolySignalTracker.Record(outcome, bid, ask, now)
+			}
+		}
 	}
 }
 
@@ -1463,9 +1476,19 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 	monitor := paper.NewMarketMonitor(engine, orderBook, ladderMgr, riskMgr)
 	monitor.SetMarket(market.Slug, market.ConditionID, outcomes, endTime)
 
+
 	splitInv := paper.NewSplitInventory()
 	engine.RegisterSplitInventory(splitInv) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInv)    // Register for TUI display
+
+	// Binance Gap tracking components
+	polySignalTracker := paper.NewDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
+	var binanceFeed *api.BinanceFuturesPriceFeed
+	symbol := getPaperBinanceSymbol(id, cfg)
+	if symbol != "" {
+		binanceFeed = api.NewBinanceFuturesPriceFeed(symbol, core.ResolveBinanceSignalLookback(cfg))
+	}
+
 
 	return &MarketTrader{
 		ID:               id,
@@ -1474,6 +1497,8 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		OrderBook:        orderBook,
 		LadderMgr:        ladderMgr,
 		RiskMgr:          riskMgr,
+		BinanceFeed:     binanceFeed,
+		PolySignalTracker: polySignalTracker,
 		Monitor:          monitor,
 		TokenMap:         tokenMap,
 		Outcomes:         outcomes,
@@ -1551,7 +1576,14 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		return nil, fmt.Errorf("subscribe failed: %w", err)
 	}
 
-	// Start WebSocket streaming in background - REAL-TIME updates via channel
+
+	if t.BinanceFeed != nil {
+		t.BinanceFeed.Start(ctx)
+
+	}
+
+	// Start WebSocket streaming in background
+
 	wsMsgChan := wsMgr.StartStreaming(ctx)
 	t.TUI.LogEvent("[%s] 📡 WebSocket streaming started", t.ID)
 
@@ -2390,11 +2422,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 				continue
 			}
-			if arbMode == paperArbModeBinanceGap {
-				if t.lastCopytradeNoticeAt.IsZero() || now.Sub(t.lastCopytradeNoticeAt) >= 10*time.Second {
-					t.TUI.LogEvent("[%s] ℹ️ Binance gap mode is enabled for realbot; paperbot keeps the mode selection but does not run the old two-leg taker arb path", t.ID)
-					t.lastCopytradeNoticeAt = now
-				}
+						if arbMode == paperArbModeBinanceGap {
+				// Run Binance gap mode
+				paperbotHandleBinanceGapMarket(ctx, t, liveCfg, t.Config)
 				continue
 			}
 			if arbMode == paperArbModeMaker {
@@ -3292,4 +3322,23 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 		}
 	}
 	return false
+}
+
+
+func getPaperBinanceSymbol(marketID string, cfg *core.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	asset := strings.TrimSpace(marketID)
+	if idx := strings.Index(asset, "#"); idx >= 0 {
+		asset = asset[:idx]
+	}
+	if idx := strings.Index(asset, "-"); idx >= 0 {
+		asset = asset[:idx]
+	}
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "" || asset == "UNKNOWN" {
+		return ""
+	}
+	return asset + strings.ToUpper(strings.TrimSpace(cfg.BinanceQuoteAsset))
 }

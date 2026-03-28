@@ -1,4 +1,4 @@
-package main
+package paper
 
 import (
 	"math"
@@ -8,8 +8,8 @@ import (
 	"Market-bot/internal/api"
 )
 
-func TestRealbotDirectionalSignalTrackerSnapshotUsesLookbackMid(t *testing.T) {
-	tracker := newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes"})
+func TestPaperDirectionalSignalTrackerSnapshotUsesLookbackMid(t *testing.T) {
+	tracker := NewDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes"})
 	base := time.Unix(1700000000, 0)
 	tracker.Record("Yes", 0.44, 0.46, base)
 	tracker.Record("Yes", 0.445, 0.465, base.Add(800*time.Millisecond))
@@ -27,8 +27,8 @@ func TestRealbotDirectionalSignalTrackerSnapshotUsesLookbackMid(t *testing.T) {
 	}
 }
 
-func TestRealbotDirectionalSignalTrackerSnapshotResetsAfterGap(t *testing.T) {
-	tracker := newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes"})
+func TestPaperDirectionalSignalTrackerSnapshotResetsAfterGap(t *testing.T) {
+	tracker := NewDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes"})
 	base := time.Unix(1700000000, 0)
 	tracker.Record("Yes", 0.44, 0.46, base)
 	tracker.Record("Yes", 0.47, 0.49, base.Add(4*time.Second))
@@ -49,8 +49,8 @@ func TestRealbotDirectionalSignalTrackerSnapshotResetsAfterGap(t *testing.T) {
 	}
 }
 
-func TestRealbotEvaluateBinanceGapSignalUpDirection(t *testing.T) {
-	tracker := newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes", "No"})
+func TestPaperEvaluateBinanceGapSignalUpDirection(t *testing.T) {
+	tracker := NewDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes", "No"})
 	base := time.Unix(1700000000, 0)
 	end := base.Add(1700 * time.Millisecond)
 
@@ -61,7 +61,7 @@ func TestRealbotEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 	tracker.Record("Yes", 0.456, 0.460, end)
 	tracker.Record("No", 0.536, 0.540, end)
 
-	signal, reason := realbotEvaluateBinanceGapSignal(end, realbotDirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.456, "No": 0.536}, map[string]float64{"Yes": 0.460, "No": 0.540}, api.BinanceFuturesSignalSnapshot{
+	signal, reason := EvaluateBinanceGapSignal(end, DirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.456, "No": 0.536}, map[string]float64{"Yes": 0.460, "No": 0.540}, api.BinanceFuturesSignalSnapshot{
 		Symbol:       "BTCUSDT",
 		DeltaPercent: 0.65,
 		UpdatedAt:    end,
@@ -90,14 +90,14 @@ func TestRealbotEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 	}
 }
 
-func TestRealbotEvaluateBinanceGapSignalRequiresPolyHistory(t *testing.T) {
+func TestPaperEvaluateBinanceGapSignalRequiresPolyHistory(t *testing.T) {
 	base := time.Unix(1700000000, 0)
-	signal, reason := realbotEvaluateBinanceGapSignal(base, realbotDirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.45}, map[string]float64{"Yes": 0.46}, api.BinanceFuturesSignalSnapshot{
+	signal, reason := EvaluateBinanceGapSignal(base, DirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.45}, map[string]float64{"Yes": 0.46}, api.BinanceFuturesSignalSnapshot{
 		Symbol:       "BTCUSDT",
 		DeltaPercent: 0.4,
 		UpdatedAt:    base,
 		Ready:        true,
-	}, newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes", "No"}), 3*time.Second)
+	}, NewDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes", "No"}), 3*time.Second)
 	if reason == "" {
 		t.Fatalf("expected missing poly history to block signal: %#v", signal)
 	}

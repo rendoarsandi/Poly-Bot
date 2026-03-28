@@ -402,13 +402,9 @@ func realbotBinanceSymbolForMarket(marketID string, cfg *core.Config) string {
 	return asset + strings.ToUpper(strings.TrimSpace(cfg.BinanceQuoteAsset))
 }
 
-type realbotDirectionalOutcomes struct {
-	Up   string
-	Down string
-}
 
-func realbotResolveDirectionalOutcomes(outcomes []string) (realbotDirectionalOutcomes, bool) {
-	mapping := realbotDirectionalOutcomes{}
+func realbotResolveDirectionalOutcomes(outcomes []string) (paper.DirectionalOutcomes, bool) {
+	mapping := paper.DirectionalOutcomes{}
 	for _, outcome := range outcomes {
 		switch strings.ToLower(strings.TrimSpace(outcome)) {
 		case "up", "yes":
@@ -537,7 +533,7 @@ func realbotCanUseLocalDirectionalSellQuote(now time.Time, outcome string, token
 	return true, ""
 }
 
-func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *realbotDirectionalSignalTracker, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, currentBalance float64, binanceFeed *api.BinanceFuturesPriceFeed, getTokenID func(string) string, entryGate *realbotEntryGate, lastTrade *time.Time, lastBinanceLog *time.Time) {
+func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *paper.DirectionalSignalTracker, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, currentBalance float64, binanceFeed *api.BinanceFuturesPriceFeed, getTokenID func(string) string, entryGate *realbotEntryGate, lastTrade *time.Time, lastBinanceLog *time.Time) {
 	logThrottled := func(format string, args ...interface{}) {
 		if lastBinanceLog == nil {
 			tui.LogEvent(format, args...)
@@ -559,7 +555,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		status.Price = snap.Price
 		status.DeltaPercent = snap.DeltaPercent
 	}
-	setStatusSignal := func(signal realbotBinanceGapSignal) {
+	setStatusSignal := func(signal paper.BinanceGapSignal) {
 		status.TargetOutcome = signal.TargetOutcome
 		status.SignalLabel = signal.SignalLabel
 		status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
@@ -708,7 +704,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		return
 	}
 
-	signal, reason := realbotEvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, snap, polyTracker, maxSignalAge)
+	signal, reason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, snap, polyTracker, maxSignalAge)
 	setStatusSignal(signal)
 	if reason != "" {
 		status.Status = "waiting"
@@ -718,7 +714,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
 	if polyCatchupMax <= 0 {
-		polyCatchupMax = defaultBinanceSignalPolyMaxMoveCents
+		polyCatchupMax = paper.DefaultBinanceSignalPolyMaxMoveCents
 	}
 	if signal.PolyFavorableMoveCents > polyCatchupMax {
 		status.Status = "blocked"
@@ -728,7 +724,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
 	if polyAdverseMax <= 0 {
-		polyAdverseMax = defaultBinanceSignalPolyAdverseMoveCents
+		polyAdverseMax = paper.DefaultBinanceSignalPolyAdverseMoveCents
 	}
 	if signal.PolyAdverseMoveCents > polyAdverseMax {
 		status.Status = "blocked"
@@ -738,7 +734,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	spreadMax := cfg.BinanceSignalSpreadMaxCents
 	if spreadMax <= 0 {
-		spreadMax = defaultBinanceSignalSpreadMaxCents
+		spreadMax = paper.DefaultBinanceSignalSpreadMaxCents
 	}
 	if signal.TargetSpreadCents > spreadMax {
 		status.Status = "blocked"
@@ -2147,7 +2143,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	publishedBids := make(map[string]float64)
 	publishedAsks := make(map[string]float64)
 	quoteState := make(map[string]realbotQuoteState)
-	polySignalTracker := newRealbotDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
+	polySignalTracker := paper.NewDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
 	lastBinanceLog := time.Time{}
@@ -6028,7 +6024,7 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *realbotDirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *paper.DirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
 	success := false
 	staleSeconds := int(staleTime.Seconds())
 	restErrors := 0
