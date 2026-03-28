@@ -43,7 +43,7 @@
   "copytradePollIntervalMs": 2000,
   "startupWizardSeen": true,
   "binanceQuoteAsset": "USDT",
-  "binanceSignalThresholdPct": 0.2,
+  "binanceSignalThresholdPct": 0.02,
   "binanceSignalLookbackMs": 1500,
   "binanceSignalCooldownMs": 2500,
   "binanceSignalMaxAgeMs": 3000,

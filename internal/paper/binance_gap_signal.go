@@ -14,6 +14,7 @@ const (
 	DefaultBinanceSignalPolyMaxMoveCents     = 1.5
 	DefaultBinanceSignalPolyAdverseMoveCents = 0.75
 	DefaultBinanceSignalSpreadMaxCents       = 4.0
+	binanceGapBookScoreLevels                = 3
 )
 
 type DirectionalOutcomes struct {
@@ -54,6 +55,32 @@ type BinanceGapSignal struct {
 	PolyFavorableMoveCents float64
 	PolyAdverseMoveCents   float64
 	TargetSpreadCents      float64
+	TargetBookImbalance    float64
+	OppositeBookImbalance  float64
+	DirectionalBookScore   float64
+}
+
+func directionalBookImbalance(bids, asks []MarketLevel, levels int) float64 {
+	if levels <= 0 {
+		levels = binanceGapBookScoreLevels
+	}
+	bidVol := 0.0
+	for i := 0; i < len(bids) && i < levels; i++ {
+		if bids[i].Size > 0 {
+			bidVol += bids[i].Size
+		}
+	}
+	askVol := 0.0
+	for i := 0; i < len(asks) && i < levels; i++ {
+		if asks[i].Size > 0 {
+			askVol += asks[i].Size
+		}
+	}
+	total := bidVol + askVol
+	if total <= 0 {
+		return 0
+	}
+	return (bidVol - askVol) / total
 }
 
 func NewDirectionalSignalTracker(lookback time.Duration, outcomes []string) *DirectionalSignalTracker {
@@ -154,7 +181,7 @@ func (t *DirectionalSignalTracker) Snapshot(outcome string, now time.Time) Direc
 	return snap
 }
 
-func EvaluateBinanceGapSignal(now time.Time, mapping DirectionalOutcomes, tokenBids, tokenAsks map[string]float64, binanceSnap api.BinanceFuturesSignalSnapshot, polyTracker *DirectionalSignalTracker, maxAge time.Duration) (BinanceGapSignal, string) {
+func EvaluateBinanceGapSignal(now time.Time, mapping DirectionalOutcomes, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]MarketLevel, binanceSnap api.BinanceFuturesSignalSnapshot, polyTracker *DirectionalSignalTracker, maxAge time.Duration) (BinanceGapSignal, string) {
 	signal := BinanceGapSignal{BinanceDeltaPercent: binanceSnap.DeltaPercent}
 	if now.IsZero() {
 		now = time.Now()
@@ -187,6 +214,9 @@ func EvaluateBinanceGapSignal(now time.Time, mapping DirectionalOutcomes, tokenB
 		return signal, fmt.Sprintf("waiting for live %s top of book", signal.TargetOutcome)
 	}
 	signal.TargetSpreadCents = (ask - bid) * 100.0
+	signal.TargetBookImbalance = directionalBookImbalance(tokenFullBids[signal.TargetOutcome], tokenFullAsks[signal.TargetOutcome], binanceGapBookScoreLevels)
+	signal.OppositeBookImbalance = directionalBookImbalance(tokenFullBids[signal.OppositeOutcome], tokenFullAsks[signal.OppositeOutcome], binanceGapBookScoreLevels)
+	signal.DirectionalBookScore = (signal.TargetBookImbalance - signal.OppositeBookImbalance) / 2.0
 
 	targetSnap := polyTracker.Snapshot(signal.TargetOutcome, now)
 	if !targetSnap.Ready {

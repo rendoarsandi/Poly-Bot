@@ -256,7 +256,7 @@ func LoadConfig() (*Config, error) {
 		CopytradeTarget:                   strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
-		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.20)),
+		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
 		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(parseEnvInt("BINANCE_SIGNAL_LOOKBACK_MS", 1500)),
 		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(parseEnvInt("BINANCE_SIGNAL_COOLDOWN_MS", 2500)),
 		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(parseEnvInt("BINANCE_SIGNAL_MAX_AGE_MS", 3000)),
@@ -311,7 +311,7 @@ func normalizeBinanceQuoteAsset(raw string) string {
 
 func normalizeBinanceSignalThresholdPct(v float64) float64 {
 	if v <= 0 {
-		return 0.20
+		return 0.02
 	}
 	if v > 10 {
 		return 10

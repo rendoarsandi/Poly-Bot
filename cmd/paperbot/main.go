@@ -3430,7 +3430,7 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	}
 	threshold := cfg.BinanceSignalThresholdPct
 	if threshold <= 0 {
-		threshold = 0.20
+		threshold = 0.02
 	}
 	if math.Abs(snap.DeltaPercent) < threshold {
 		status.Status = "idle"
@@ -3438,16 +3438,24 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		return
 	}
 
-	signal, reason := paper.EvaluateBinanceGapSignal(now, mapping, t.TokenBids, t.TokenAsks, snap, t.PolySignalTracker, maxSignalAge)
+	signal, reason := paper.EvaluateBinanceGapSignal(now, mapping, t.TokenBids, t.TokenAsks, t.TokenFullBids, t.TokenFullAsks, snap, t.PolySignalTracker, maxSignalAge)
 	status.TargetOutcome = signal.TargetOutcome
 	status.SignalLabel = signal.SignalLabel
 	status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
 	status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
 	status.TargetSpreadCents = signal.TargetSpreadCents
+	status.TargetBookImbalance = signal.TargetBookImbalance
+	status.OppositeBookImbalance = signal.OppositeBookImbalance
+	status.DirectionalBookScore = signal.DirectionalBookScore
 
 	if reason != "" {
 		status.Status = "waiting"
 		status.Reason = reason
+		return
+	}
+	if signal.DirectionalBookScore <= -0.35 {
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("local book opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
 		return
 	}
 

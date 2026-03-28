@@ -376,6 +376,9 @@ type MarketBinanceSignal struct {
 	PolyFavorableMoveCents float64
 	PolyAdverseMoveCents   float64
 	TargetSpreadCents      float64
+	TargetBookImbalance    float64
+	OppositeBookImbalance  float64
+	DirectionalBookScore   float64
 	Ready                  bool
 	Status                 string
 	Reason                 string
@@ -1996,6 +1999,9 @@ func (t *TUI) SetMarketBinanceSignal(marketID string, signal MarketBinanceSignal
 			current.PolyFavorableMoveCents == signal.PolyFavorableMoveCents &&
 			current.PolyAdverseMoveCents == signal.PolyAdverseMoveCents &&
 			current.TargetSpreadCents == signal.TargetSpreadCents &&
+			current.TargetBookImbalance == signal.TargetBookImbalance &&
+			current.OppositeBookImbalance == signal.OppositeBookImbalance &&
+			current.DirectionalBookScore == signal.DirectionalBookScore &&
 			current.Ready == signal.Ready &&
 			current.Status == signal.Status &&
 			current.Reason == signal.Reason {
@@ -2963,11 +2969,12 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		}
 		priceLinesB.WriteString("\n" + truncateText(binLine, innerW))
 
-		if sig.TargetOutcome != "" || sig.PolyFavorableMoveCents != 0 || sig.PolyAdverseMoveCents != 0 || sig.TargetSpreadCents != 0 || sig.Ready {
-			detailLine := fmt.Sprintf("  Lag fav %.2fc  adv %.2fc  spr %.2fc",
+		if sig.TargetOutcome != "" || sig.PolyFavorableMoveCents != 0 || sig.PolyAdverseMoveCents != 0 || sig.TargetSpreadCents != 0 || sig.DirectionalBookScore != 0 || sig.Ready {
+			detailLine := fmt.Sprintf("  Lag %.2fc/%.2fc  spr %.2fc  book %.2f",
 				sig.PolyFavorableMoveCents,
 				sig.PolyAdverseMoveCents,
 				sig.TargetSpreadCents,
+				sig.DirectionalBookScore,
 			)
 			priceLinesB.WriteString("\n" + truncateText(detailLine, innerW-len(statusLabel)-2) + "  " + statusStyle.Render(statusLabel))
 		} else {

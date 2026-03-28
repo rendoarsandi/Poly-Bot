@@ -61,7 +61,13 @@ func TestPaperEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 	tracker.Record("Yes", 0.456, 0.460, end)
 	tracker.Record("No", 0.536, 0.540, end)
 
-	signal, reason := EvaluateBinanceGapSignal(end, DirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.456, "No": 0.536}, map[string]float64{"Yes": 0.460, "No": 0.540}, api.BinanceFuturesSignalSnapshot{
+	signal, reason := EvaluateBinanceGapSignal(end, DirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.456, "No": 0.536}, map[string]float64{"Yes": 0.460, "No": 0.540}, map[string][]MarketLevel{
+		"Yes": {{Price: 0.456, Size: 120}, {Price: 0.455, Size: 40}},
+		"No":  {{Price: 0.536, Size: 30}, {Price: 0.535, Size: 20}},
+	}, map[string][]MarketLevel{
+		"Yes": {{Price: 0.460, Size: 50}, {Price: 0.461, Size: 30}},
+		"No":  {{Price: 0.540, Size: 110}, {Price: 0.541, Size: 40}},
+	}, api.BinanceFuturesSignalSnapshot{
 		Symbol:       "BTCUSDT",
 		DeltaPercent: 0.65,
 		UpdatedAt:    end,
@@ -88,11 +94,14 @@ func TestPaperEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 	if math.Abs(signal.TargetSpreadCents-0.4) > 0.000001 {
 		t.Fatalf("expected spread 0.4c, got %.4f", signal.TargetSpreadCents)
 	}
+	if signal.DirectionalBookScore <= 0 {
+		t.Fatalf("expected positive directional book score, got %.4f", signal.DirectionalBookScore)
+	}
 }
 
 func TestPaperEvaluateBinanceGapSignalRequiresPolyHistory(t *testing.T) {
 	base := time.Unix(1700000000, 0)
-	signal, reason := EvaluateBinanceGapSignal(base, DirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.45}, map[string]float64{"Yes": 0.46}, api.BinanceFuturesSignalSnapshot{
+	signal, reason := EvaluateBinanceGapSignal(base, DirectionalOutcomes{Up: "Yes", Down: "No"}, map[string]float64{"Yes": 0.45}, map[string]float64{"Yes": 0.46}, nil, nil, api.BinanceFuturesSignalSnapshot{
 		Symbol:       "BTCUSDT",
 		DeltaPercent: 0.4,
 		UpdatedAt:    base,

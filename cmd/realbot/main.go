@@ -560,6 +560,9 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
 		status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
 		status.TargetSpreadCents = signal.TargetSpreadCents
+		status.TargetBookImbalance = signal.TargetBookImbalance
+		status.OppositeBookImbalance = signal.OppositeBookImbalance
+		status.DirectionalBookScore = signal.DirectionalBookScore
 	}
 	defer func() {
 		if tui != nil {
@@ -704,7 +707,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	threshold := cfg.BinanceSignalThresholdPct
 	if threshold <= 0 {
-		threshold = 0.20
+		threshold = 0.02
 	}
 	if math.Abs(snap.DeltaPercent) < threshold {
 		status.Status = "idle"
@@ -712,11 +715,16 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		return
 	}
 
-	signal, reason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, snap, polyTracker, maxSignalAge)
+	signal, reason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, snap, polyTracker, maxSignalAge)
 	setStatusSignal(signal)
 	if reason != "" {
 		status.Status = "waiting"
 		status.Reason = reason
+		return
+	}
+	if signal.DirectionalBookScore <= -0.35 {
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("local book opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
 		return
 	}
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
