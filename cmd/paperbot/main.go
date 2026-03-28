@@ -3407,16 +3407,25 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	status.DeltaPercent = snap.DeltaPercent
 
 	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
+	if errMsg := strings.TrimSpace(snap.LastError); errMsg != "" {
+		status.Status = "error"
+		status.Reason = "Binance WS error"
+		logThrottled("[%s] ⚠️ Binance gap feed error on %s: %s", t.ID, snap.Symbol, errMsg)
+		return
+	}
+	if !snap.Connected && snap.UpdatedAt.IsZero() {
+		status.Status = "connecting"
+		status.Reason = fmt.Sprintf("connecting to Binance on %s", snap.Symbol)
+		return
+	}
 	if !snap.Ready {
 		status.Status = "warmup"
-		status.Reason = fmt.Sprintf("waiting for full lookback window on %s", snap.Symbol)
-		logThrottled("[%s] ⏳ Binance gap mode waiting for full lookback window on %s", t.ID, snap.Symbol)
+		status.Reason = fmt.Sprintf("building lookback window on %s", snap.Symbol)
 		return
 	}
 	if snap.UpdatedAt.IsZero() || now.Sub(snap.UpdatedAt) > maxSignalAge {
 		status.Status = "waiting"
 		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
-		logThrottled("[%s] ⏳ Binance gap mode waiting for fresh WS signal on %s", t.ID, snap.Symbol)
 		return
 	}
 	threshold := cfg.BinanceSignalThresholdPct
@@ -3424,8 +3433,8 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		threshold = 0.20
 	}
 	if math.Abs(snap.DeltaPercent) < threshold {
-		status.Status = "quiet"
-		status.Reason = fmt.Sprintf("|Δ| %.3f%% < %.3f%% threshold", math.Abs(snap.DeltaPercent), threshold)
+		status.Status = "idle"
+		status.Reason = fmt.Sprintf("Binance move %.3f%% is below the %.3f%% trigger", math.Abs(snap.DeltaPercent), threshold)
 		return
 	}
 
@@ -3439,7 +3448,6 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	if reason != "" {
 		status.Status = "waiting"
 		status.Reason = reason
-		logThrottled("[%s] ⏳ Binance gap mode %s", t.ID, reason)
 		return
 	}
 

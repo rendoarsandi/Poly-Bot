@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,6 +21,38 @@ const (
 type binanceFuturesSample struct {
 	Price float64
 	At    time.Time
+}
+
+type binanceFlexibleInt64 int64
+
+func (v *binanceFlexibleInt64) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*v = 0
+		return nil
+	}
+
+	var asInt int64
+	if err := json.Unmarshal(data, &asInt); err == nil {
+		*v = binanceFlexibleInt64(asInt)
+		return nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		asString = strings.TrimSpace(asString)
+		if asString == "" {
+			*v = 0
+			return nil
+		}
+		parsed, err := strconv.ParseInt(asString, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse quoted int64 %q: %w", asString, err)
+		}
+		*v = binanceFlexibleInt64(parsed)
+		return nil
+	}
+
+	return fmt.Errorf("unsupported int64 JSON payload: %s", string(data))
 }
 
 type BinanceFuturesSignalSnapshot struct {
@@ -168,9 +201,10 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 	defer f.setConnected(false)
 
 	type aggTradeMessage struct {
-		Price     string `json:"p"`
-		EventTime int64  `json:"E"`
-		TradeTime int64  `json:"T"`
+		EventType string               `json:"e"`
+		Price     string               `json:"p"`
+		EventTime binanceFlexibleInt64 `json:"E"`
+		TradeTime binanceFlexibleInt64 `json:"T"`
 	}
 
 	for {
@@ -178,13 +212,16 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
 			return fmt.Errorf("binance websocket read failed: %w", err)
 		}
+		if msg.EventType != "" && msg.EventType != "aggTrade" {
+			continue
+		}
 		price, err := strconv.ParseFloat(msg.Price, 64)
 		if err != nil || price <= 0 {
 			continue
 		}
-		ts := msg.TradeTime
+		ts := int64(msg.TradeTime)
 		if ts <= 0 {
-			ts = msg.EventTime
+			ts = int64(msg.EventTime)
 		}
 		at := time.Now()
 		if ts > 0 {

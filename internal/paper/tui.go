@@ -193,6 +193,26 @@ func signedDollar(amount float64) string {
 	return fmt.Sprintf("%s$%.2f", sign, amount)
 }
 
+func formatBinanceSignalPrice(symbol string, price float64) string {
+	if price <= 0 {
+		return "--"
+	}
+
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	switch {
+	case strings.HasPrefix(symbol, "XRP"):
+		return fmt.Sprintf("%.4f", price)
+	case price >= 10:
+		return fmt.Sprintf("%.2f", price)
+	case price >= 1:
+		return fmt.Sprintf("%.4f", price)
+	case price >= 0.1:
+		return fmt.Sprintf("%.4f", price)
+	default:
+		return fmt.Sprintf("%.5f", price)
+	}
+}
+
 func renderTradingHoursStatus(mode string, now time.Time) string {
 	usNow := core.USTime(now)
 	usClock := usNow.Format("Mon 2006-01-02 15:04:05 MST")
@@ -2914,17 +2934,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 
 	if mkt.BinanceSignal.Enabled {
 		sig := mkt.BinanceSignal
-		priceText := "--"
-		switch {
-		case sig.Price >= 1000:
-			priceText = fmt.Sprintf("%.0f", sig.Price)
-		case sig.Price >= 100:
-			priceText = fmt.Sprintf("%.2f", sig.Price)
-		case sig.Price >= 1:
-			priceText = fmt.Sprintf("%.3f", sig.Price)
-		case sig.Price > 0:
-			priceText = fmt.Sprintf("%.5f", sig.Price)
-		}
+		priceText := formatBinanceSignalPrice(sig.Symbol, sig.Price)
 
 		statusLabel := strings.ToUpper(strings.TrimSpace(sig.Status))
 		if statusLabel == "" {

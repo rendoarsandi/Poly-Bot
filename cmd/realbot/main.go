@@ -680,17 +680,26 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 
 	snap := binanceFeed.Snapshot(time.Now())
 	setStatusSnapshot(snap)
+	if errMsg := strings.TrimSpace(snap.LastError); errMsg != "" {
+		status.Status = "error"
+		status.Reason = "Binance WS error"
+		logThrottled("[%s] ⚠️ Binance gap feed error on %s: %s", id, snap.Symbol, errMsg)
+		return
+	}
+	if !snap.Connected && snap.UpdatedAt.IsZero() {
+		status.Status = "connecting"
+		status.Reason = fmt.Sprintf("connecting to Binance on %s", snap.Symbol)
+		return
+	}
 	if !snap.Ready {
 		status.Status = "warmup"
-		status.Reason = fmt.Sprintf("waiting for full lookback window on %s", snap.Symbol)
-		logThrottled("[%s] ⏳ Binance gap mode waiting for full lookback window on %s", id, snap.Symbol)
+		status.Reason = fmt.Sprintf("building lookback window on %s", snap.Symbol)
 		return
 	}
 	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
 	if snap.UpdatedAt.IsZero() || time.Since(snap.UpdatedAt) > maxSignalAge {
 		status.Status = "waiting"
 		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
-		logThrottled("[%s] ⏳ Binance gap mode waiting for fresh WS signal on %s", id, snap.Symbol)
 		return
 	}
 	threshold := cfg.BinanceSignalThresholdPct
@@ -698,8 +707,8 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		threshold = 0.20
 	}
 	if math.Abs(snap.DeltaPercent) < threshold {
-		status.Status = "quiet"
-		status.Reason = fmt.Sprintf("|Δ| %.3f%% < %.3f%% threshold", math.Abs(snap.DeltaPercent), threshold)
+		status.Status = "idle"
+		status.Reason = fmt.Sprintf("Binance move %.3f%% is below the %.3f%% trigger", math.Abs(snap.DeltaPercent), threshold)
 		return
 	}
 
@@ -708,7 +717,6 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	if reason != "" {
 		status.Status = "waiting"
 		status.Reason = reason
-		logThrottled("[%s] ⏳ Binance gap mode %s", id, reason)
 		return
 	}
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents

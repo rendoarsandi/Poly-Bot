@@ -1,10 +1,29 @@
 package api
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
 )
+
+func TestBinanceFlexibleInt64SupportsQuotedAndNumericPayloads(t *testing.T) {
+	var quoted binanceFlexibleInt64
+	if err := json.Unmarshal([]byte(`"1743168154701"`), &quoted); err != nil {
+		t.Fatalf("quoted timestamp unmarshal failed: %v", err)
+	}
+	if got := int64(quoted); got != 1743168154701 {
+		t.Fatalf("quoted timestamp = %d, want 1743168154701", got)
+	}
+
+	var numeric binanceFlexibleInt64
+	if err := json.Unmarshal([]byte(`1743168154701`), &numeric); err != nil {
+		t.Fatalf("numeric timestamp unmarshal failed: %v", err)
+	}
+	if got := int64(numeric); got != 1743168154701 {
+		t.Fatalf("numeric timestamp = %d, want 1743168154701", got)
+	}
+}
 
 func TestBinanceFuturesPriceFeedSnapshotUsesLookbackBaseline(t *testing.T) {
 	feed := NewBinanceFuturesPriceFeed("BTCUSDT", 1500*time.Millisecond)
