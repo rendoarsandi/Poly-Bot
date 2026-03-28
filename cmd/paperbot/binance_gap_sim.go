@@ -12,24 +12,25 @@ import (
 )
 
 func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCfg paper.TUISettings, cfg *core.Config) {
+	now := time.Now()
 	logThrottled := func(format string, args ...interface{}) {
 		if t.LastBinanceLog == nil {
-			now := time.Now()
-			t.LastBinanceLog = &now
+			logAt := time.Now()
+			t.LastBinanceLog = &logAt
 			t.TUI.LogEvent(format, args...)
 			return
 		}
 		if time.Since(*t.LastBinanceLog) >= 5*time.Second {
 			t.TUI.LogEvent(format, args...)
-			now := time.Now()
-			t.LastBinanceLog = &now
+			logAt := time.Now()
+			t.LastBinanceLog = &logAt
 		}
 	}
 	status := paper.MarketBinanceSignal{
 		Enabled:   true,
 		Status:    "waiting",
 		Reason:    "awaiting Binance signal",
-		UpdatedAt: time.Now(),
+		UpdatedAt: now,
 	}
 	defer func() {
 		if t.TUI != nil {
@@ -60,13 +61,42 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		return
 	}
 
-	snap := t.BinanceFeed.Snapshot(time.Now())
+	cooldown := core.ResolveBinanceSignalCooldown(cfg)
+	if !t.LastBinanceTrigger.IsZero() && now.Sub(t.LastBinanceTrigger) < cooldown {
+		status.Status = "cooldown"
+		status.Reason = fmt.Sprintf("cooldown %s", cooldown.Round(time.Millisecond))
+		return
+	}
+
+	snap := t.BinanceFeed.Snapshot(now)
 	status.Symbol = snap.Symbol
 	status.Price = snap.Price
 	status.DeltaPercent = snap.DeltaPercent
 
 	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
-	signal, reason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, t.TokenBids, t.TokenAsks, snap, t.PolySignalTracker, maxSignalAge)
+	if !snap.Ready {
+		status.Status = "warmup"
+		status.Reason = fmt.Sprintf("waiting for full lookback window on %s", snap.Symbol)
+		logThrottled("[%s] ⏳ Binance gap mode waiting for full lookback window on %s", t.ID, snap.Symbol)
+		return
+	}
+	if snap.UpdatedAt.IsZero() || now.Sub(snap.UpdatedAt) > maxSignalAge {
+		status.Status = "waiting"
+		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
+		logThrottled("[%s] ⏳ Binance gap mode waiting for fresh WS signal on %s", t.ID, snap.Symbol)
+		return
+	}
+	threshold := cfg.BinanceSignalThresholdPct
+	if threshold <= 0 {
+		threshold = 0.20
+	}
+	if math.Abs(snap.DeltaPercent) < threshold {
+		status.Status = "quiet"
+		status.Reason = fmt.Sprintf("|Δ| %.3f%% < %.3f%% threshold", math.Abs(snap.DeltaPercent), threshold)
+		return
+	}
+
+	signal, reason := paper.EvaluateBinanceGapSignal(now, mapping, t.TokenBids, t.TokenAsks, snap, t.PolySignalTracker, maxSignalAge)
 
 	status.TargetOutcome = signal.TargetOutcome
 	status.SignalLabel = signal.SignalLabel
@@ -129,7 +159,15 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	status.Status = "triggered"
 	status.Reason = "Simulated Buy Triggered"
 	tradeBudget := cfg.CalculateTradeSize(t.Engine.GetSizingBalance())
-	buyQty := math.Max(1, math.Floor(tradeBudget/ask))
+	buyQty := math.Floor(tradeBudget / ask)
+	if buyQty < 1 {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("actionable size below 1 share for %s", targetOutcome)
+		logThrottled("[%s] ⚠️ Binance entry skipped: actionable size below 1 share for %s", t.ID, targetOutcome)
+		return
+	}
+	t.LastBinanceTrigger = now
 
 	// Prevent duplicate rapid-fire logging of triggers by checking a cooldown in paperbot
 	// A simple approach is relying on actual execution preventing re-entry, but since paperbot

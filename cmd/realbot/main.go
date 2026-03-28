@@ -138,7 +138,7 @@ func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, 
 }
 
 func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
-	return cfg.TakerCloseMarket
+	return paper.TakerCloseModeActive(cfg)
 }
 
 func realbotHasEnginePositionsForMarket(engine *paper.Engine, marketID string) bool {
@@ -401,7 +401,6 @@ func realbotBinanceSymbolForMarket(marketID string, cfg *core.Config) string {
 	}
 	return asset + strings.ToUpper(strings.TrimSpace(cfg.BinanceQuoteAsset))
 }
-
 
 func realbotResolveDirectionalOutcomes(outcomes []string) (paper.DirectionalOutcomes, bool) {
 	mapping := paper.DirectionalOutcomes{}
@@ -2709,7 +2708,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		// React only after we have drained the current WS queue so the decision
 		// follows the latest local WS book state.
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-		if weekdayTradingAllowed && liveCfg.TakerCloseMarket && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+		if weekdayTradingAllowed && realbotTakerCloseHoldMode(liveCfg) && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
 			if !takerCloseAttempted {
 				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
@@ -2899,6 +2898,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg = tui.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
+		takerCloseMode := paper.TakerCloseModeActive(liveCfg)
 		weekdayTradingAllowed = true
 		if liveCfg.TradingHoursMode == "weekdays trade only" {
 			weekdayTradingAllowed = core.IsUSWeekday(core.USTime(time.Now()))
@@ -2913,7 +2913,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			continue
 		}
 
-		if arbMode != paperArbModeCopytrade && !liveCfg.TakerCloseMarket && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
+		if arbMode != paperArbModeCopytrade && !takerCloseMode && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
 			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
 			cancelRecoveryCheck()
@@ -2957,7 +2957,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		// Skip normal trading completely if TakerCloseMarket is enabled
-		if liveCfg.TakerCloseMarket {
+		if takerCloseMode {
 			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "taker close market enabled", trader, engine, tui, makerQuotes)
 			cancelMaker()

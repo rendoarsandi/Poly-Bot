@@ -222,6 +222,22 @@ func TestDisplayedTradeBudgetsUsesCurrentEquityInRealModeAfterDrawdown(t *testin
 	}
 }
 
+func TestTakerCloseModeActiveOnlyInTakerMode(t *testing.T) {
+	if !TakerCloseModeActive(TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}) {
+		t.Fatal("expected taker-close to be active in taker mode")
+	}
+
+	for _, mode := range []string{"maker", "copytrade", "binance-gap"} {
+		if TakerCloseModeActive(TUISettings{PaperArbMode: mode, TakerCloseMarket: true}) {
+			t.Fatalf("expected taker-close to be inactive in %s mode", mode)
+		}
+	}
+
+	if TakerCloseModeActive(TUISettings{PaperArbMode: "taker", TakerCloseMarket: false}) {
+		t.Fatal("expected taker-close to stay inactive when disabled")
+	}
+}
+
 func TestDisplayedTradeBudgetsUsesEquityInsteadOfCashOnlyInRealMode(t *testing.T) {
 	base, effective := displayedTradeBudgets("Real", 90, 100, 100, 90, 0.10, 0, 1.50)
 	if base != 10 {

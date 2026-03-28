@@ -494,6 +494,10 @@ func isBinanceGapSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "binance-gap")
 }
 
+func TakerCloseModeActive(cfg TUISettings) bool {
+	return cfg.TakerCloseMarket && !isMakerSettingsMode(cfg) && !isCopytradeSettingsMode(cfg) && !isBinanceGapSettingsMode(cfg)
+}
+
 func settingsArbModes() []string {
 	return []string{"taker", "binance-gap", "copytrade", "maker"}
 }
@@ -503,7 +507,7 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	copytrade := isCopytradeSettingsMode(cfg)
 	binanceGap := isBinanceGapSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
-	closeMarket := cfg.TakerCloseMarket && !maker && !copytrade && !binanceGap
+	closeMarket := TakerCloseModeActive(cfg)
 
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
@@ -3243,7 +3247,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	tradeBudgetEquity := sizingEquity
 	effectiveSizingBalance := sizingBalance
 	if isRealMode {
-		useCurrentEquityBudget := s.settings.TakerCloseMarket && !isMakerSettingsMode(s.settings)
+		useCurrentEquityBudget := TakerCloseModeActive(s.settings)
 		if useCurrentEquityBudget {
 			if tradeBudgetEquity <= 0 {
 				tradeBudgetEquity = math.Max(stats.StartingBalance, stats.CurrentBalance)
@@ -3442,7 +3446,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	splitPositions := s.splitPositions
 	walletTruthPositions := s.walletTruth
 	showInFlightPositions := len(positionsWithPnL) > 0
-	if m.tui != nil && m.tui.settings.TakerCloseMarket && !isMakerSettingsMode(m.tui.settings) {
+	if m.tui != nil && TakerCloseModeActive(m.tui.settings) {
 		showInFlightPositions = false
 	}
 	hasSplitInventory := len(splitPositions) > 0

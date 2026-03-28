@@ -119,9 +119,10 @@ type MarketTrader struct {
 	// On-chain resolution cache (shared across all traders)
 	ResolutionCache *api.ResolutionCache
 
-	BinanceFeed *api.BinanceFuturesPriceFeed
-	PolySignalTracker *paper.DirectionalSignalTracker
-	LastBinanceLog *time.Time
+	BinanceFeed        *api.BinanceFuturesPriceFeed
+	PolySignalTracker  *paper.DirectionalSignalTracker
+	LastBinanceLog     *time.Time
+	LastBinanceTrigger time.Time
 
 	// State
 	LaddersPlaced bool
@@ -1476,7 +1477,6 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 	monitor := paper.NewMarketMonitor(engine, orderBook, ladderMgr, riskMgr)
 	monitor.SetMarket(market.Slug, market.ConditionID, outcomes, endTime)
 
-
 	splitInv := paper.NewSplitInventory()
 	engine.RegisterSplitInventory(splitInv) // Register for equity calculation
 	tui.RegisterSplitInventory(splitInv)    // Register for TUI display
@@ -1489,38 +1489,37 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		binanceFeed = api.NewBinanceFuturesPriceFeed(symbol, core.ResolveBinanceSignalLookback(cfg))
 	}
 
-
 	return &MarketTrader{
-		ID:               id,
-		Market:           market,
-		Engine:           engine,
-		OrderBook:        orderBook,
-		LadderMgr:        ladderMgr,
-		RiskMgr:          riskMgr,
-		BinanceFeed:     binanceFeed,
+		ID:                id,
+		Market:            market,
+		Engine:            engine,
+		OrderBook:         orderBook,
+		LadderMgr:         ladderMgr,
+		RiskMgr:           riskMgr,
+		BinanceFeed:       binanceFeed,
 		PolySignalTracker: polySignalTracker,
-		Monitor:          monitor,
-		TokenMap:         tokenMap,
-		Outcomes:         outcomes,
-		EndTime:          endTime,
-		RestClient:       restClient,
-		TUI:              tui,
-		CSVLogger:        csvLogger,
-		Config:           cfg,
-		TokenBids:        make(map[string]float64),
-		TokenAsks:        make(map[string]float64),
-		TokenFullBids:    make(map[string][]paper.MarketLevel),
-		TokenFullAsks:    make(map[string][]paper.MarketLevel),
-		FloatPrices:      make(map[string]float64),
-		LastUpdate:       time.Now(),
-		LastPairUpdate:   time.Now(),
-		LastRestPoll:     time.Now(),
-		SplitInventory:   splitInv,
-		ReplenishCtrl:    paper.NewReplenishController(),
-		SplitInitialized: false,
-		LastSplitSell:    time.Time{},
-		MakerQuotes:      make(map[string]*paper.LimitOrder),
-		ResolutionCache:  resCache,
+		Monitor:           monitor,
+		TokenMap:          tokenMap,
+		Outcomes:          outcomes,
+		EndTime:           endTime,
+		RestClient:        restClient,
+		TUI:               tui,
+		CSVLogger:         csvLogger,
+		Config:            cfg,
+		TokenBids:         make(map[string]float64),
+		TokenAsks:         make(map[string]float64),
+		TokenFullBids:     make(map[string][]paper.MarketLevel),
+		TokenFullAsks:     make(map[string][]paper.MarketLevel),
+		FloatPrices:       make(map[string]float64),
+		LastUpdate:        time.Now(),
+		LastPairUpdate:    time.Now(),
+		LastRestPoll:      time.Now(),
+		SplitInventory:    splitInv,
+		ReplenishCtrl:     paper.NewReplenishController(),
+		SplitInitialized:  false,
+		LastSplitSell:     time.Time{},
+		MakerQuotes:       make(map[string]*paper.LimitOrder),
+		ResolutionCache:   resCache,
 	}
 }
 
@@ -1575,7 +1574,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	if err := wsMgr.Subscribe(ctx, sub); err != nil {
 		return nil, fmt.Errorf("subscribe failed: %w", err)
 	}
-
 
 	if t.BinanceFeed != nil {
 		t.BinanceFeed.Start(ctx)
@@ -1801,9 +1799,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			usWeekdayGateClosedLogged = false
 		}
 
+		takerCloseMode := paper.TakerCloseModeActive(liveCfg)
+
 		// --- TAKER CLOSE MARKET LOGIC ---
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-		if weekdayTradingAllowed && liveCfg.TakerCloseMarket && timeToEnd > 0 && timeToEnd <= takerCloseTime {
+		if weekdayTradingAllowed && takerCloseMode && timeToEnd > 0 && timeToEnd <= takerCloseTime {
 			if !takerCloseAttempted {
 				t.mu.Lock()
 				bestOutcome := ""
@@ -2385,6 +2385,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		// Trading logic - check every tick for arbitrage opportunities
 		liveCfg = t.TUI.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
+		takerCloseMode = paper.TakerCloseModeActive(liveCfg)
 		localQuoteMaxAge = core.ResolveExecutionLocalQuoteMaxAge(t.Config)
 		executionQuoteMaxAge = paperExecutionQuoteGuardAge(localQuoteMaxAge)
 		now = time.Now()
@@ -2392,7 +2393,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		executionPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
 		if !weekdayTradingAllowed {
 			cancelAllPaperMakerQuotes(t, "trading gate closed")
-		} else if liveCfg.TakerCloseMarket {
+		} else if takerCloseMode {
 			cancelAllPaperMakerQuotes(t, "taker close market enabled")
 		} else if arbMode != paperArbModeMaker {
 			cancelAllPaperMakerQuotes(t, "maker mode disabled")
@@ -2405,7 +2406,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			}
 
 			// Skip normal trading completely if TakerCloseMarket is enabled
-			if liveCfg.TakerCloseMarket {
+			if takerCloseMode {
 				continue
 			}
 
@@ -2422,7 +2423,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				}
 				continue
 			}
-						if arbMode == paperArbModeBinanceGap {
+			if arbMode == paperArbModeBinanceGap {
 				// Run Binance gap mode
 				paperbotHandleBinanceGapMarket(ctx, t, liveCfg, t.Config)
 				continue
@@ -3323,7 +3324,6 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 	}
 	return false
 }
-
 
 func getPaperBinanceSymbol(marketID string, cfg *core.Config) string {
 	if cfg == nil {
