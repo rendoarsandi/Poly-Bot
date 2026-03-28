@@ -63,7 +63,6 @@ const (
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
-	paperbotBinanceDelay           = 250 * time.Millisecond
 	paperbotMinActionShares        = 0.01
 )
 
@@ -1146,33 +1145,34 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
-		Exchange:                  cfg.Exchange,
-		MarketSlug:                cfg.MarketSlug,
-		MaxMarkets:                cfg.MaxMarkets,
-		Timeframe:                 cfg.Timeframe,
-		TradeSizingMode:           cfg.TradeSizingMode,
-		TradeScaleFactor:          cfg.TradeScaleFactor,
-		TradeSizeUSDC:             cfg.TradeSizeUSDC,
-		MinMarginPercent:          cfg.MinMarginPercent,
-		BinanceSignalThresholdPct: cfg.BinanceSignalThresholdPct,
-		PaperArbMode:              normalizePaperArbMode(cfg.PaperArbMode),
-		CopytradeTarget:           cfg.CopytradeTarget,
-		CopytradePollIntervalMs:   cfg.CopytradePollIntervalMs,
-		SplitMinMarginSell:        cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:      cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:        cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:      cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds:   cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:             cfg.MakerQuoteGap,
-		MinAskPrice:               cfg.MinAskPrice,
-		MaxAskPrice:               cfg.MaxAskPrice,
-		MaxTradeSize:              cfg.MaxTradeSize,
-		MaxDailyLoss:              cfg.MaxDailyLoss,
-		TakerCloseMarket:          cfg.TakerCloseMarket,
-		TakerCloseMarketTime:      cfg.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:  cfg.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:  cfg.TakerCloseMarketMinPrice,
-		TradingHoursMode:          cfg.TradingHoursMode,
+		Exchange:                     cfg.Exchange,
+		MarketSlug:                   cfg.MarketSlug,
+		MaxMarkets:                   cfg.MaxMarkets,
+		Timeframe:                    cfg.Timeframe,
+		TradeSizingMode:              cfg.TradeSizingMode,
+		TradeScaleFactor:             cfg.TradeScaleFactor,
+		TradeSizeUSDC:                cfg.TradeSizeUSDC,
+		MinMarginPercent:             cfg.MinMarginPercent,
+		BinanceSignalThresholdPct:    cfg.BinanceSignalThresholdPct,
+		PaperBinanceExecutionDelayMs: cfg.PaperBinanceExecutionDelayMs,
+		PaperArbMode:                 normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:              cfg.CopytradeTarget,
+		CopytradePollIntervalMs:      cfg.CopytradePollIntervalMs,
+		SplitMinMarginSell:           cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:         cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:           cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:         cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:      cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:                cfg.MakerQuoteGap,
+		MinAskPrice:                  cfg.MinAskPrice,
+		MaxAskPrice:                  cfg.MaxAskPrice,
+		MaxTradeSize:                 cfg.MaxTradeSize,
+		MaxDailyLoss:                 cfg.MaxDailyLoss,
+		TakerCloseMarket:             cfg.TakerCloseMarket,
+		TakerCloseMarketTime:         cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:     cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:     cfg.TakerCloseMarketMinPrice,
+		TradingHoursMode:             cfg.TradingHoursMode,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -1183,6 +1183,7 @@ func run() error {
 		cfg.TradeSizeUSDC = s.TradeSizeUSDC
 		cfg.MinMarginPercent = s.MinMarginPercent
 		cfg.BinanceSignalThresholdPct = s.BinanceSignalThresholdPct
+		cfg.PaperBinanceExecutionDelayMs = s.PaperBinanceExecutionDelayMs
 		cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 		cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 		cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
@@ -3436,6 +3437,7 @@ func paperbotNormalizedAsks(levels []paper.MarketLevel, bestAsk, minSize float64
 func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCfg paper.TUISettings, cfg *core.Config) {
 	_ = ctx
 	now := time.Now()
+	paperExecutionDelay := core.ResolvePaperBinanceExecutionDelay(cfg)
 	logThrottled := func(format string, args ...interface{}) {
 		if t.LastBinanceLog == nil {
 			logAt := time.Now()
@@ -3525,7 +3527,9 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 			marketID:    t.ID,
 			shares:      sellQty,
 		}
-		time.Sleep(paperbotBinanceDelay)
+		if paperExecutionDelay > 0 {
+			time.Sleep(paperExecutionDelay)
+		}
 		trade, err := t.Engine.SellForMarket(t.ID, heldOutcome, bid, sellQty)
 		if err != nil {
 			status.Status = "blocked"
@@ -3668,7 +3672,9 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		marginPct:   signal.EffectiveGapPercent,
 		expectedPnL: tradeBudget - (buyQty * ask),
 	}
-	time.Sleep(paperbotBinanceDelay)
+	if paperExecutionDelay > 0 {
+		time.Sleep(paperExecutionDelay)
+	}
 	trade, avgPrice, err := t.Engine.MarketBuy(t.ID, targetOutcome, buyQty, asks)
 	if err != nil {
 		status.Ready = false

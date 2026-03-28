@@ -802,12 +802,12 @@ func TestTUI_getSplitPositions_MultipleInventories(t *testing.T) {
 func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "maker"}
 	for _, idx := range []int{settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
-		if settingsRowEditable(cfg, idx) {
+		if settingsRowEditable(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to be read-only in maker mode", idx)
 		}
 	}
 	for _, idx := range []int{settingsRowMinMargin, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice} {
-		if !settingsRowEditable(cfg, idx) {
+		if !settingsRowEditable(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to remain editable in maker mode", idx)
 		}
 	}
@@ -816,7 +816,7 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {
-		if !isRowVisible(cfg, idx) {
+		if !isRowVisible(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
 		}
 	}
@@ -825,7 +825,7 @@ func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 func TestIsRowVisibleHidesUnrelatedRowsWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowMinAskPrice, settingsRowMaxAskPrice} {
-		if isRowVisible(cfg, idx) {
+		if isRowVisible(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to be hidden with taker close enabled", idx)
 		}
 	}
@@ -833,8 +833,18 @@ func TestIsRowVisibleHidesUnrelatedRowsWhenTakerCloseEnabled(t *testing.T) {
 
 func TestIsRowVisibleShowsMaxAskPriceInTakerMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker"}
-	if !isRowVisible(cfg, settingsRowMaxAskPrice) {
+	if !isRowVisible(cfg, "Paper", settingsRowMaxAskPrice) {
 		t.Fatalf("expected Max Ask Price row to remain visible in taker mode")
+	}
+}
+
+func TestIsRowVisibleShowsPaperBinanceDelayOnlyInPaperMode(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "binance-gap"}
+	if !isRowVisible(cfg, "Paper", settingsRowBinanceExecutionDelay) {
+		t.Fatalf("expected paper Binance execution delay row to be visible in Paper mode")
+	}
+	if isRowVisible(cfg, "Real", settingsRowBinanceExecutionDelay) {
+		t.Fatalf("expected paper Binance execution delay row to be hidden in Real mode")
 	}
 }
 

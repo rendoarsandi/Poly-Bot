@@ -122,6 +122,7 @@ type Config struct {
 	CopytradePollIntervalMs           int     // Copytrade public-wallet poll interval in milliseconds
 	BinanceQuoteAsset                 string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct         float64 // Percent move over the lookback window required to trigger entry
+	PaperBinanceExecutionDelayMs      int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
 	BinanceSignalLookbackMs           int     // Lookback window for Binance directional signal in milliseconds
 	BinanceSignalCooldownMs           int     // Cooldown between Binance-triggered entries in milliseconds
 	BinanceSignalMaxAgeMs             int     // Max allowed Binance signal staleness in milliseconds
@@ -181,6 +182,7 @@ type RuntimeSettings struct {
 	CopytradePollIntervalMs           int     `json:"copytradePollIntervalMs"`
 	BinanceQuoteAsset                 string  `json:"binanceQuoteAsset"`
 	BinanceSignalThresholdPct         float64 `json:"binanceSignalThresholdPct"`
+	PaperBinanceExecutionDelayMs      int     `json:"paperBinanceExecutionDelayMs"`
 	BinanceSignalLookbackMs           int     `json:"binanceSignalLookbackMs"`
 	BinanceSignalCooldownMs           int     `json:"binanceSignalCooldownMs"`
 	BinanceSignalMaxAgeMs             int     `json:"binanceSignalMaxAgeMs"`
@@ -257,6 +259,7 @@ func LoadConfig() (*Config, error) {
 		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
+		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
 		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(parseEnvInt("BINANCE_SIGNAL_LOOKBACK_MS", 1500)),
 		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(parseEnvInt("BINANCE_SIGNAL_COOLDOWN_MS", 2500)),
 		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(parseEnvInt("BINANCE_SIGNAL_MAX_AGE_MS", 3000)),
@@ -317,6 +320,16 @@ func normalizeBinanceSignalThresholdPct(v float64) float64 {
 		return 10
 	}
 	return v
+}
+
+func normalizePaperBinanceExecutionDelayMs(v int) int {
+	switch {
+	case v < 0:
+		return 0
+	case v > 5000:
+		v = 5000
+	}
+	return int(math.Round(float64(v)/10.0) * 10.0)
 }
 
 func normalizeBinanceSignalLookbackMs(v int) int {
@@ -554,6 +567,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
+		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
 		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(c.BinanceSignalLookbackMs),
 		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(c.BinanceSignalCooldownMs),
 		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(c.BinanceSignalMaxAgeMs),
@@ -613,6 +627,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.CopytradePollIntervalMs = normalizeCopytradePollIntervalMs(s.CopytradePollIntervalMs)
 	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
 	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
+	c.PaperBinanceExecutionDelayMs = normalizePaperBinanceExecutionDelayMs(s.PaperBinanceExecutionDelayMs)
 	c.BinanceSignalLookbackMs = normalizeBinanceSignalLookbackMs(s.BinanceSignalLookbackMs)
 	c.BinanceSignalCooldownMs = normalizeBinanceSignalCooldownMs(s.BinanceSignalCooldownMs)
 	c.BinanceSignalMaxAgeMs = normalizeBinanceSignalMaxAgeMs(s.BinanceSignalMaxAgeMs)
@@ -664,6 +679,7 @@ func (c *Config) SaveSettings() error {
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
 	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
+	envMap["PAPER_BINANCE_EXECUTION_DELAY_MS"] = strconv.Itoa(normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs))
 	envMap["BINANCE_SIGNAL_LOOKBACK_MS"] = strconv.Itoa(normalizeBinanceSignalLookbackMs(c.BinanceSignalLookbackMs))
 	envMap["BINANCE_SIGNAL_COOLDOWN_MS"] = strconv.Itoa(normalizeBinanceSignalCooldownMs(c.BinanceSignalCooldownMs))
 	envMap["BINANCE_SIGNAL_MAX_AGE_MS"] = strconv.Itoa(normalizeBinanceSignalMaxAgeMs(c.BinanceSignalMaxAgeMs))
@@ -812,4 +828,11 @@ func ResolveBinanceSignalMaxAge(cfg *Config) time.Duration {
 		return time.Duration(normalizeBinanceSignalMaxAgeMs(cfg.BinanceSignalMaxAgeMs)) * time.Millisecond
 	}
 	return time.Duration(normalizeBinanceSignalMaxAgeMs(0)) * time.Millisecond
+}
+
+func ResolvePaperBinanceExecutionDelay(cfg *Config) time.Duration {
+	if cfg != nil {
+		return time.Duration(normalizePaperBinanceExecutionDelayMs(cfg.PaperBinanceExecutionDelayMs)) * time.Millisecond
+	}
+	return time.Duration(normalizePaperBinanceExecutionDelayMs(250)) * time.Millisecond
 }

@@ -427,6 +427,7 @@ type TUISettings struct {
 	TradeSizeUSDC                  float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
 	BinanceSignalThresholdPct      float64 // e.g. 0.02 = require 0.02% Binance move in binance-gap mode
+	PaperBinanceExecutionDelayMs   int     // Paper-only execution delay after Binance-gap signal is detected
 	PaperArbMode                   string  // taker, binance-gap, copytrade, or maker
 	CopytradeTarget                string  // wallet address, profile handle, or profile URL
 	CopytradePollIntervalMs        int     // public-wallet poll interval for copytrade mode
@@ -453,9 +454,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.02, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.02, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.02, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 const (
@@ -466,6 +467,7 @@ const (
 	settingsRowTradeSizingValue
 	settingsRowMinMargin
 	settingsRowBinanceThreshold
+	settingsRowBinanceExecutionDelay
 	settingsRowPaperArbMode
 	settingsRowCopytradeTarget
 	settingsRowCopytradePoll
@@ -528,12 +530,13 @@ func settingsArbModes() []string {
 	return []string{"taker", "binance-gap", "copytrade", "maker"}
 }
 
-func isRowVisible(cfg TUISettings, idx int) bool {
+func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	maker := isMakerSettingsMode(cfg)
 	copytrade := isCopytradeSettingsMode(cfg)
 	binanceGap := isBinanceGapSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
 	closeMarket := TakerCloseModeActive(cfg)
+	paperMode := strings.EqualFold(mode, "Paper")
 
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
@@ -571,6 +574,8 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 		return copytrade
 	case settingsRowBinanceThreshold:
 		return binanceGap
+	case settingsRowBinanceExecutionDelay:
+		return binanceGap && paperMode
 	case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
 		return !maker && !binanceGap && !copytrade
 	case settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue:
@@ -582,8 +587,8 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	}
 }
 
-func settingsRowEditable(cfg TUISettings, idx int) bool {
-	if !isRowVisible(cfg, idx) {
+func settingsRowEditable(cfg TUISettings, mode string, idx int) bool {
+	if !isRowVisible(cfg, mode, idx) {
 		return false
 	}
 	return true
@@ -614,6 +619,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Buy Min Margin %"
 	case settingsRowBinanceThreshold:
 		return "Binance Trigger %"
+	case settingsRowBinanceExecutionDelay:
+		return "Paper Exec Delay"
 	case settingsRowExecutionSlip:
 		return "Max Exec Slip %"
 	case settingsRowCopytradeTarget:
@@ -758,6 +765,13 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	}
 	if s.BinanceSignalThresholdPct > 5.0 {
 		s.BinanceSignalThresholdPct = 5.0
+	}
+	s.PaperBinanceExecutionDelayMs = int(math.Round(float64(s.PaperBinanceExecutionDelayMs)/10.0) * 10.0)
+	if s.PaperBinanceExecutionDelayMs < 0 {
+		s.PaperBinanceExecutionDelayMs = 0
+	}
+	if s.PaperBinanceExecutionDelayMs > 5000 {
+		s.PaperBinanceExecutionDelayMs = 5000
 	}
 	if s.TakerCloseMarketSlippage < s.TakerCloseMarketMinPrice {
 		s.TakerCloseMarketSlippage = s.TakerCloseMarketMinPrice
@@ -1369,7 +1383,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.settingsCursor < 0 {
 						m.settingsCursor = settingsRowCount - 1
 					}
-					if isRowVisible(m.tui.settings, m.settingsCursor) {
+					if isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 						break
 					}
 				}
@@ -1377,7 +1391,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "down", "j":
 				for {
 					m.settingsCursor = (m.settingsCursor + 1) % settingsRowCount
-					if isRowVisible(m.tui.settings, m.settingsCursor) {
+					if isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 						break
 					}
 				}
@@ -1385,7 +1399,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "left", "-", "h":
 				m.tui.mu.Lock()
 				changed := false
-				if !settingsRowEditable(m.tui.settings, m.settingsCursor) {
+				if !settingsRowEditable(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Unlock()
 					return m, nil
 				}
@@ -1448,6 +1462,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.BinanceSignalThresholdPct -= 0.005
 					if m.tui.settings.BinanceSignalThresholdPct < 0.005 {
 						m.tui.settings.BinanceSignalThresholdPct = 0.005
+					}
+					changed = true
+				case settingsRowBinanceExecutionDelay:
+					m.tui.settings.PaperBinanceExecutionDelayMs -= 10
+					if m.tui.settings.PaperBinanceExecutionDelayMs < 0 {
+						m.tui.settings.PaperBinanceExecutionDelayMs = 0
 					}
 					changed = true
 				case settingsRowPaperArbMode:
@@ -1592,7 +1612,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
-				if !settingsRowEditable(m.tui.settings, m.settingsCursor) {
+				if !settingsRowEditable(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Unlock()
 					return m, nil
 				}
@@ -1649,6 +1669,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.BinanceSignalThresholdPct += 0.005
 					if m.tui.settings.BinanceSignalThresholdPct > 5.0 {
 						m.tui.settings.BinanceSignalThresholdPct = 5.0
+					}
+					changed = true
+				case settingsRowBinanceExecutionDelay:
+					m.tui.settings.PaperBinanceExecutionDelayMs += 10
+					if m.tui.settings.PaperBinanceExecutionDelayMs > 5000 {
+						m.tui.settings.PaperBinanceExecutionDelayMs = 5000
 					}
 					changed = true
 				case settingsRowPaperArbMode:
@@ -1840,9 +1866,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showSettings = true
 			m.settingsEdit = false
 			m.settingsInput = ""
-			if !isRowVisible(m.tui.settings, m.settingsCursor) {
+			if !isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 				m.settingsCursor = 0
-				for m.settingsCursor < settingsRowCount-1 && !isRowVisible(m.tui.settings, m.settingsCursor) {
+				for m.settingsCursor < settingsRowCount-1 && !isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.settingsCursor++
 				}
 			}
@@ -4022,6 +4048,7 @@ func (m tuiModel) renderSettings(w int) string {
 	// Read current settings (under lock for safety)
 	m.tui.mu.Lock()
 	cfg := m.tui.settings
+	mode := m.tui.mode
 	m.tui.mu.Unlock()
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
@@ -4104,6 +4131,11 @@ func (m tuiModel) renderSettings(w int) string {
 			label: settingsRowLabel(cfg, settingsRowBinanceThreshold),
 			value: fmt.Sprintf(" %0.3f%% ", cfg.BinanceSignalThresholdPct),
 			bar:   renderBar(cfg.BinanceSignalThresholdPct/0.25, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowBinanceExecutionDelay),
+			value: fmt.Sprintf(" %dms ", cfg.PaperBinanceExecutionDelayMs),
+			bar:   renderBar(float64(cfg.PaperBinanceExecutionDelayMs)/1000.0, 20),
 		},
 		{
 			label: "Paper Arb Mode",
@@ -4285,7 +4317,7 @@ func (m tuiModel) renderSettings(w int) string {
 
 	var rowLines []string
 	for i, r := range rows {
-		if !isRowVisible(cfg, i) {
+		if !isRowVisible(cfg, mode, i) {
 			continue
 		}
 		cursor := "  "
