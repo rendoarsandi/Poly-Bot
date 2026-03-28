@@ -127,7 +127,11 @@ func (t *realbotDirectionalSignalTracker) Snapshot(outcome string, now time.Time
 	snap.Mid = latest.Mid
 	snap.UpdatedAt = latest.At
 
-	target := latest.At.Add(-t.lookback)
+	// When evaluating Polymarket's move, we must anchor the lookback strictly to 'now'
+	// to properly capture true latency and delays. If we anchor to 'latest.At', a stale
+	// or highly delayed Polymarket feed could result in false positives or evaluate
+	// moves over arbitrary historical windows rather than the live lookback period.
+	target := now.Add(-t.lookback)
 	baseline := series[0]
 	for i := len(series) - 1; i >= 0; i-- {
 		if !series[i].At.After(target) {
@@ -138,7 +142,10 @@ func (t *realbotDirectionalSignalTracker) Snapshot(outcome string, now time.Time
 	snap.BaselineMid = baseline.Mid
 	snap.BaselineAt = baseline.At
 	snap.DeltaCents = (latest.Mid - baseline.Mid) * 100.0
-	snap.Ready = !baseline.At.IsZero() && latest.At.Sub(baseline.At) >= t.lookback
+
+	// Consider the tracker ready if our baseline quote is at least as old as the lookback window.
+	// Since we anchor target to 'now', the readiness check should measure from 'now'.
+	snap.Ready = !baseline.At.IsZero() && now.Sub(baseline.At) >= t.lookback
 	return snap
 }
 
