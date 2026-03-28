@@ -360,7 +360,7 @@ func normalizeBinanceSignalMaxAgeMs(v int) int {
 
 func normalizeBinanceSignalPolyMaxMoveCents(v float64) float64 {
 	if v <= 0 {
-		return 1.5
+		return 0
 	}
 	if v > 25 {
 		return 25

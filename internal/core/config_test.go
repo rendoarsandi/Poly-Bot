@@ -273,3 +273,12 @@ func TestCalculateTradeSizeForModeHonorsMaxTradeCap(t *testing.T) {
 		t.Fatalf("expected max trade cap 5.0, got %.1f", got)
 	}
 }
+
+func TestNormalizeBinanceSignalPolyMaxMoveCentsAllowsDisable(t *testing.T) {
+	if got := normalizeBinanceSignalPolyMaxMoveCents(0); got != 0 {
+		t.Fatalf("expected zero catch-up limit to stay disabled, got %.2f", got)
+	}
+	if got := normalizeBinanceSignalPolyMaxMoveCents(-1); got != 0 {
+		t.Fatalf("expected negative catch-up limit to normalize to disabled, got %.2f", got)
+	}
+}

@@ -64,7 +64,7 @@ func TestBinanceFuturesPriceFeedSnapshotResetsAfterGap(t *testing.T) {
 
 	snap := feed.Snapshot(base.Add(4 * time.Second))
 	if snap.Ready {
-		t.Fatal("expected snapshot to stay unready after a stream gap until fresh lookback history rebuilds")
+		t.Fatal("expected snapshot to stay unready when the lookback baseline is too stale after a stream gap")
 	}
 
 	feed.recordSample(101.3, base.Add(4800*time.Millisecond), "ws")
@@ -75,5 +75,21 @@ func TestBinanceFuturesPriceFeedSnapshotResetsAfterGap(t *testing.T) {
 	}
 	if snap.BaselinePrice != 101 {
 		t.Fatalf("expected post-gap baseline price 101, got %.4f", snap.BaselinePrice)
+	}
+}
+
+func TestBinanceFuturesPriceFeedSnapshotStaysReadyWithHeartbeatSamples(t *testing.T) {
+	feed := NewBinanceFuturesPriceFeed("BTCUSDT", 1500*time.Millisecond)
+	base := time.Unix(1700000000, 0)
+	feed.recordSample(100.0, base, "ws-trade")
+	feed.recordSample(100.1, base.Add(1*time.Second), "ws-mark")
+	feed.recordSample(100.3, base.Add(2*time.Second), "ws-mark")
+
+	snap := feed.Snapshot(base.Add(2 * time.Second))
+	if !snap.Ready {
+		t.Fatal("expected heartbeat samples to keep the feed ready across a quiet trade period")
+	}
+	if snap.Source != "ws-mark" {
+		t.Fatalf("expected last source ws-mark, got %q", snap.Source)
 	}
 }

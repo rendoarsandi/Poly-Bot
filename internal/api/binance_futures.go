@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultBinanceSignalLookback = 1500 * time.Millisecond
-	binanceFuturesWSBaseURL      = "wss://fstream.binance.com/ws"
+	binanceFuturesWSBaseURL      = "wss://fstream.binance.com/stream?streams="
 )
 
 type binanceFuturesSample struct {
@@ -72,6 +72,7 @@ type BinanceFuturesPriceFeed struct {
 	symbol       string
 	lookback     time.Duration
 	maxBufferAge time.Duration
+	gapResetAge  time.Duration
 	wsURL        string
 
 	mu         sync.RWMutex
@@ -92,12 +93,18 @@ func NewBinanceFuturesPriceFeed(symbol string, lookback time.Duration) *BinanceF
 	if scaled := lookback * 4; scaled > maxBufferAge {
 		maxBufferAge = scaled
 	}
+	gapResetAge := 5 * time.Second
+	if scaled := lookback * 4; scaled > gapResetAge {
+		gapResetAge = scaled
+	}
+	streams := strings.ToLower(symbol) + "@aggTrade/" + strings.ToLower(symbol) + "@markPrice@1s"
 
 	return &BinanceFuturesPriceFeed{
 		symbol:       symbol,
 		lookback:     lookback,
 		maxBufferAge: maxBufferAge,
-		wsURL:        binanceFuturesWSBaseURL + "/" + strings.ToLower(symbol) + "@aggTrade",
+		gapResetAge:  gapResetAge,
+		wsURL:        binanceFuturesWSBaseURL + streams,
 	}
 }
 
@@ -145,7 +152,8 @@ func (f *BinanceFuturesPriceFeed) Snapshot(now time.Time) BinanceFuturesSignalSn
 	if baseline.Price > 0 {
 		snap.DeltaPercent = ((f.lastPrice / baseline.Price) - 1.0) * 100.0
 	}
-	snap.Ready = !baseline.At.IsZero() && f.lastUpdate.Sub(baseline.At) >= f.lookback
+	baselineMinAt := target.Add(-f.lookback)
+	snap.Ready = !baseline.At.IsZero() && !baseline.At.Before(baselineMinAt) && f.lastUpdate.Sub(baseline.At) >= f.lookback
 	return snap
 }
 
@@ -185,7 +193,10 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 		return fmt.Errorf("binance symbol is empty")
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	sessionCtx, endSession := context.WithTimeout(ctx, 23*time.Hour)
+	defer endSession()
+
+	dialCtx, cancel := context.WithTimeout(sessionCtx, 10*time.Second)
 	defer cancel()
 
 	conn, _, err := websocket.Dial(dialCtx, f.wsURL, &websocket.DialOptions{
@@ -200,34 +211,76 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 	f.setConnected(true)
 	defer f.setConnected(false)
 
+	type eventEnvelope struct {
+		Stream string          `json:"stream"`
+		Data   json.RawMessage `json:"data"`
+	}
+	type eventHeader struct {
+		EventType string `json:"e"`
+	}
 	type aggTradeMessage struct {
 		EventType string               `json:"e"`
 		Price     string               `json:"p"`
 		EventTime binanceFlexibleInt64 `json:"E"`
 		TradeTime binanceFlexibleInt64 `json:"T"`
 	}
+	type markPriceMessage struct {
+		EventType string               `json:"e"`
+		Price     string               `json:"p"`
+		EventTime binanceFlexibleInt64 `json:"E"`
+	}
 
 	for {
-		var msg aggTradeMessage
-		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+		var raw json.RawMessage
+		if err := wsjson.Read(sessionCtx, conn, &raw); err != nil {
 			return fmt.Errorf("binance websocket read failed: %w", err)
 		}
-		if msg.EventType != "" && msg.EventType != "aggTrade" {
+
+		payload := raw
+		var envelope eventEnvelope
+		if err := json.Unmarshal(raw, &envelope); err == nil && len(envelope.Data) > 0 {
+			payload = envelope.Data
+		}
+
+		var header eventHeader
+		if err := json.Unmarshal(payload, &header); err != nil {
 			continue
 		}
-		price, err := strconv.ParseFloat(msg.Price, 64)
-		if err != nil || price <= 0 {
-			continue
+
+		switch header.EventType {
+		case "aggTrade":
+			var msg aggTradeMessage
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				continue
+			}
+			price, err := strconv.ParseFloat(msg.Price, 64)
+			if err != nil || price <= 0 {
+				continue
+			}
+			ts := int64(msg.TradeTime)
+			if ts <= 0 {
+				ts = int64(msg.EventTime)
+			}
+			at := time.Now()
+			if ts > 0 {
+				at = time.UnixMilli(ts)
+			}
+			f.recordSample(price, at, "ws-trade")
+		case "markPriceUpdate":
+			var msg markPriceMessage
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				continue
+			}
+			price, err := strconv.ParseFloat(msg.Price, 64)
+			if err != nil || price <= 0 {
+				continue
+			}
+			at := time.Now()
+			if ts := int64(msg.EventTime); ts > 0 {
+				at = time.UnixMilli(ts)
+			}
+			f.recordSample(price, at, "ws-mark")
 		}
-		ts := int64(msg.TradeTime)
-		if ts <= 0 {
-			ts = int64(msg.EventTime)
-		}
-		at := time.Now()
-		if ts > 0 {
-			at = time.UnixMilli(ts)
-		}
-		f.recordSample(price, at, "ws")
 	}
 }
 
@@ -247,8 +300,8 @@ func (f *BinanceFuturesPriceFeed) recordSample(price float64, at time.Time, sour
 	f.lastSource = source
 	f.lastError = ""
 	series := f.samples
-	if n := len(series); n > 0 && !at.Before(series[n-1].At) && at.Sub(series[n-1].At) >= f.lookback {
-		// A stream gap invalidates the old baseline; rebuild the lookback window from fresh samples only.
+	if n := len(series); n > 0 && !at.Before(series[n-1].At) && at.Sub(series[n-1].At) >= f.gapResetAge {
+		// Only reset after a real quote drought; short exchange quiet periods should not constantly re-warm the feed.
 		series = nil
 	}
 	series = append(series, binanceFuturesSample{Price: price, At: at})

@@ -47,7 +47,7 @@
   "binanceSignalLookbackMs": 1500,
   "binanceSignalCooldownMs": 2500,
   "binanceSignalMaxAgeMs": 3000,
-  "binanceSignalPolyMaxMoveCents": 1.5,
+  "binanceSignalPolyMaxMoveCents": 0,
   "binanceSignalPolyAdverseMoveCents": 0.75,
   "binanceSignalSpreadMaxCents": 4.0
 }

@@ -728,10 +728,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		return
 	}
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
-	if polyCatchupMax <= 0 {
-		polyCatchupMax = paper.DefaultBinanceSignalPolyMaxMoveCents
-	}
-	if signal.PolyFavorableMoveCents > polyCatchupMax {
+	if polyCatchupMax > 0 && signal.PolyFavorableMoveCents > polyCatchupMax {
 		status.Status = "blocked"
 		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", id, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
@@ -878,6 +875,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		TradeScaleFactor:               cfg.TradeScaleFactor,
 		TradeSizeUSDC:                  cfg.TradeSizeUSDC,
 		MinMarginPercent:               cfg.MinMarginPercent,
+		BinanceSignalThresholdPct:      cfg.BinanceSignalThresholdPct,
 		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
 		CopytradeTarget:                cfg.CopytradeTarget,
 		CopytradePollIntervalMs:        cfg.CopytradePollIntervalMs,
@@ -912,6 +910,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TradeScaleFactor = s.TradeScaleFactor
 	cfg.TradeSizeUSDC = s.TradeSizeUSDC
 	cfg.MinMarginPercent = s.MinMarginPercent
+	cfg.BinanceSignalThresholdPct = s.BinanceSignalThresholdPct
 	cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 	cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs

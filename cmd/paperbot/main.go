@@ -1117,32 +1117,33 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
-		Exchange:                 cfg.Exchange,
-		MarketSlug:               cfg.MarketSlug,
-		MaxMarkets:               cfg.MaxMarkets,
-		Timeframe:                cfg.Timeframe,
-		TradeSizingMode:          cfg.TradeSizingMode,
-		TradeScaleFactor:         cfg.TradeScaleFactor,
-		TradeSizeUSDC:            cfg.TradeSizeUSDC,
-		MinMarginPercent:         cfg.MinMarginPercent,
-		PaperArbMode:             normalizePaperArbMode(cfg.PaperArbMode),
-		CopytradeTarget:          cfg.CopytradeTarget,
-		CopytradePollIntervalMs:  cfg.CopytradePollIntervalMs,
-		SplitMinMarginSell:       cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:     cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:       cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:     cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds:  cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:            cfg.MakerQuoteGap,
-		MinAskPrice:              cfg.MinAskPrice,
-		MaxAskPrice:              cfg.MaxAskPrice,
-		MaxTradeSize:             cfg.MaxTradeSize,
-		MaxDailyLoss:             cfg.MaxDailyLoss,
-		TakerCloseMarket:         cfg.TakerCloseMarket,
-		TakerCloseMarketTime:     cfg.TakerCloseMarketTime,
-		TakerCloseMarketSlippage: cfg.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice: cfg.TakerCloseMarketMinPrice,
-		TradingHoursMode:         cfg.TradingHoursMode,
+		Exchange:                  cfg.Exchange,
+		MarketSlug:                cfg.MarketSlug,
+		MaxMarkets:                cfg.MaxMarkets,
+		Timeframe:                 cfg.Timeframe,
+		TradeSizingMode:           cfg.TradeSizingMode,
+		TradeScaleFactor:          cfg.TradeScaleFactor,
+		TradeSizeUSDC:             cfg.TradeSizeUSDC,
+		MinMarginPercent:          cfg.MinMarginPercent,
+		BinanceSignalThresholdPct: cfg.BinanceSignalThresholdPct,
+		PaperArbMode:              normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:           cfg.CopytradeTarget,
+		CopytradePollIntervalMs:   cfg.CopytradePollIntervalMs,
+		SplitMinMarginSell:        cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:      cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:        cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:      cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:   cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:             cfg.MakerQuoteGap,
+		MinAskPrice:               cfg.MinAskPrice,
+		MaxAskPrice:               cfg.MaxAskPrice,
+		MaxTradeSize:              cfg.MaxTradeSize,
+		MaxDailyLoss:              cfg.MaxDailyLoss,
+		TakerCloseMarket:          cfg.TakerCloseMarket,
+		TakerCloseMarketTime:      cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:  cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:  cfg.TakerCloseMarketMinPrice,
+		TradingHoursMode:          cfg.TradingHoursMode,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -1152,6 +1153,7 @@ func run() error {
 		cfg.TradeScaleFactor = s.TradeScaleFactor
 		cfg.TradeSizeUSDC = s.TradeSizeUSDC
 		cfg.MinMarginPercent = s.MinMarginPercent
+		cfg.BinanceSignalThresholdPct = s.BinanceSignalThresholdPct
 		cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 		cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 		cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
@@ -3343,6 +3345,65 @@ func getPaperBinanceSymbol(marketID string, cfg *core.Config) string {
 	return asset + strings.ToUpper(strings.TrimSpace(cfg.BinanceQuoteAsset))
 }
 
+func paperbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) float64 {
+	if avgPrice <= 0 {
+		return 0
+	}
+	if profitTargetPct <= 0 {
+		return avgPrice
+	}
+	target := avgPrice * (1.0 + profitTargetPct/100.0)
+	if target > 0.99 {
+		return 0.99
+	}
+	return target
+}
+
+func paperbotAskLiquidityAtOrBelow(levels []paper.MarketLevel, maxPrice float64) float64 {
+	total := 0.0
+	for _, level := range levels {
+		if level.Size <= 0 {
+			continue
+		}
+		if maxPrice > 0 && level.Price > maxPrice+1e-9 {
+			break
+		}
+		total += level.Size
+	}
+	return total
+}
+
+func paperbotBidLiquidityAtOrAbove(levels []paper.MarketLevel, minPrice float64) float64 {
+	total := 0.0
+	for _, level := range levels {
+		if level.Size <= 0 {
+			continue
+		}
+		if level.Price+1e-9 < minPrice {
+			break
+		}
+		total += level.Size
+	}
+	return total
+}
+
+func paperbotNormalizedAsks(levels []paper.MarketLevel, bestAsk, minSize float64) []paper.MarketLevel {
+	result := make([]paper.MarketLevel, len(levels))
+	copy(result, levels)
+	hasBest := false
+	for _, level := range result {
+		if math.Abs(level.Price-bestAsk) <= 1e-6 || level.Price < bestAsk+1e-6 {
+			hasBest = true
+			break
+		}
+	}
+	if !hasBest && bestAsk > 0 {
+		result = append(result, paper.MarketLevel{Price: bestAsk, Size: math.Max(minSize, 1)})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Price < result[j].Price })
+	return result
+}
+
 func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCfg paper.TUISettings, cfg *core.Config) {
 	_ = ctx
 	now := time.Now()
@@ -3391,6 +3452,55 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Status = "inactive"
 		status.Reason = "no Binance futures feed configured"
 		logThrottled("[%s] ℹ️ Binance gap mode skipped: no Binance futures feed configured", t.ID)
+		return
+	}
+	positions := t.Engine.GetPositions()
+	upPos, hasUpPos := getPaperMarketPosition(positions, t.ID, mapping.Up)
+	downPos, hasDownPos := getPaperMarketPosition(positions, t.ID, mapping.Down)
+	if hasUpPos && upPos.Quantity > 0 && hasDownPos && downPos.Quantity > 0 {
+		status.Status = "exit"
+		status.Reason = "holding both outcomes; waiting for cleanup"
+		return
+	}
+	heldOutcome := ""
+	heldQty := 0.0
+	heldAvg := 0.0
+	if hasUpPos && upPos.Quantity > 0 {
+		heldOutcome = mapping.Up
+		heldQty = upPos.Quantity
+		heldAvg = upPos.AvgPrice
+	} else if hasDownPos && downPos.Quantity > 0 {
+		heldOutcome = mapping.Down
+		heldQty = downPos.Quantity
+		heldAvg = downPos.AvgPrice
+	}
+	if heldOutcome != "" {
+		status.TargetOutcome = heldOutcome
+		status.Status = "exit"
+		status.Reason = "managing existing position"
+		bid := t.TokenBids[heldOutcome]
+		targetBid := paperbotDirectionalProfitTargetPrice(heldAvg, liveCfg.MinMarginPercent)
+		if bid <= 0 || bid+1e-9 < targetBid {
+			return
+		}
+		liq := paperbotBidLiquidityAtOrAbove(t.TokenFullBids[heldOutcome], bid)
+		sellQty := math.Min(heldQty, liq)
+		if sellQty < 1 {
+			status.Reason = fmt.Sprintf("waiting for bid liquidity on %s", heldOutcome)
+			return
+		}
+		trade, err := t.Engine.SellForMarket(t.ID, heldOutcome, bid, sellQty)
+		if err != nil {
+			status.Status = "blocked"
+			status.Reason = err.Error()
+			logThrottled("[%s] ⚠️ Binance paper exit failed for %s: %v", t.ID, heldOutcome, err)
+			return
+		}
+		profit := trade.Value - (heldAvg * sellQty)
+		status.Status = "filled"
+		status.Reason = fmt.Sprintf("sold %.0f %s @ $%.3f", sellQty, heldOutcome, bid)
+		t.TUI.LogEvent("[%s] ✅ BINANCE PAPER EXIT %s %.0f @ $%.3f (target $%.3f, pnl $%.2f)", t.ID, heldOutcome, sellQty, bid, targetBid, profit)
+		t.TUI.RecordOrderWithMode(t.ID, heldOutcome, "SELL", sellQty, bid, trade.Value, 0.0, profit, paperArbModeBinanceGap, "FILLED")
 		return
 	}
 
@@ -3460,10 +3570,7 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	}
 
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
-	if polyCatchupMax <= 0 {
-		polyCatchupMax = paper.DefaultBinanceSignalPolyMaxMoveCents
-	}
-	if signal.PolyFavorableMoveCents > polyCatchupMax {
+	if polyCatchupMax > 0 && signal.PolyFavorableMoveCents > polyCatchupMax {
 		status.Status = "blocked"
 		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", t.ID, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
@@ -3503,10 +3610,12 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	}
 
 	status.Ready = true
-	status.Status = "triggered"
-	status.Reason = "Simulated Buy Triggered"
+	status.Status = "ready"
+	status.Reason = "signal ready"
 	tradeBudget := cfg.CalculateTradeSize(t.Engine.GetSizingBalance())
-	buyQty := math.Floor(tradeBudget / ask)
+	asks := paperbotNormalizedAsks(t.TokenFullAsks[targetOutcome], ask, tradeBudget/ask)
+	liq := paperbotAskLiquidityAtOrBelow(asks, ask)
+	buyQty := math.Min(math.Floor(tradeBudget/ask), liq)
 	if buyQty < 1 {
 		status.Ready = false
 		status.Status = "blocked"
@@ -3514,6 +3623,17 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		logThrottled("[%s] ⚠️ Binance entry skipped: actionable size below 1 share for %s", t.ID, targetOutcome)
 		return
 	}
+	trade, avgPrice, err := t.Engine.MarketBuy(t.ID, targetOutcome, buyQty, asks)
+	if err != nil {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = err.Error()
+		logThrottled("[%s] ⚠️ Binance paper entry failed for %s: %v", t.ID, targetOutcome, err)
+		return
+	}
 	t.LastBinanceTrigger = now
-	logThrottled("[%s] 🚀 BINANCE SIMULATED TRIGGER: %s Move %.2f%%. Buy %.0f %s at $%.3f", t.ID, signal.SignalLabel, snap.DeltaPercent, buyQty, targetOutcome, ask)
+	status.Status = "filled"
+	status.Reason = fmt.Sprintf("bought %.0f %s @ $%.3f", trade.Quantity, targetOutcome, avgPrice)
+	t.TUI.LogEvent("[%s] ✅ BINANCE PAPER ENTRY %s Move %.2f%%. Bought %.0f %s @ avg $%.3f (top $%.3f)", t.ID, signal.SignalLabel, snap.DeltaPercent, trade.Quantity, targetOutcome, avgPrice, ask)
+	t.TUI.RecordOrderWithMode(t.ID, targetOutcome, "BUY", trade.Quantity, avgPrice, trade.Value, snap.DeltaPercent, 0.0, paperArbModeBinanceGap, "FILLED")
 }
