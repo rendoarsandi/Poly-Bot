@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -100,77 +101,93 @@ type Config struct {
 	// Strategy: SPLIT USDC → YES+NO shares, SELL when bid_sum > $1.03
 	// This is the INVERSE of the panic buy strategy (buy when ask_sum < $0.98)
 	// ═══════════════════════════════════════════════════════════════════════════
-	SplitStrategyEnabled     bool    // Enable split strategy (default: false)
-	SplitMinMarginSell       float64 // Minimum margin to trigger sell (default: 3%)
-	SplitTargetMarginReserve float64 // Maintain inventory for this margin level (default: 6%)
-	SplitReplenishThreshold  float64 // Trigger new split when shares fall below this (default: 50)
-	SplitMergeBufferSeconds  int     // Seconds before expiry to merge unsold shares (default: 30)
-	MakerMergeBufferSeconds  int     // Seconds before expiry to merge paired maker inventory (default: 30)
-	MakerQuoteGap            float64 // Distance from mid for maker quotes (default: 0.008)
-	MakerInventoryTargetMult float64 // Target multiplier for inventory skew (default: 3.0)
-	MakerInventoryCapMult    float64 // Cap multiplier for inventory skew (default: 5.0)
-	MakerMinQuoteValue       float64 // Minimum shares to quote (default: 10.0)
-	SplitInitialCapPct       float64 // Initial Split Cap (default: 0.25)
-	SplitReplenishCapPct     float64 // Replenishment Cap (default: 0.50)
-	TradingHoursMode         string  // "off", "weekdays trade only", "us open only"
-	TakerCloseMarket         bool    // Force GTC buy right before market closes
-	TakerCloseMarketTime     int     // Seconds before close to trigger (default: 5)
-	TakerCloseMarketSlippage float64 // Limit price for taker close (default: 0.99)
-	TakerCloseMarketMinPrice float64 // Min price to trigger close buy (default: 0.60)
-	CopytradeTarget          string  // Wallet address, profile handle, or profile URL to follow
-	CopytradePollIntervalMs  int     // Copytrade public-wallet poll interval in milliseconds
-	StartupWizardSeen        bool    // Whether the themed startup wizard has been completed
+	SplitStrategyEnabled              bool    // Enable split strategy (default: false)
+	SplitMinMarginSell                float64 // Minimum margin to trigger sell (default: 3%)
+	SplitTargetMarginReserve          float64 // Maintain inventory for this margin level (default: 6%)
+	SplitReplenishThreshold           float64 // Trigger new split when shares fall below this (default: 50)
+	SplitMergeBufferSeconds           int     // Seconds before expiry to merge unsold shares (default: 30)
+	MakerMergeBufferSeconds           int     // Seconds before expiry to merge paired maker inventory (default: 30)
+	MakerQuoteGap                     float64 // Distance from mid for maker quotes (default: 0.008)
+	MakerInventoryTargetMult          float64 // Target multiplier for inventory skew (default: 3.0)
+	MakerInventoryCapMult             float64 // Cap multiplier for inventory skew (default: 5.0)
+	MakerMinQuoteValue                float64 // Minimum shares to quote (default: 10.0)
+	SplitInitialCapPct                float64 // Initial Split Cap (default: 0.25)
+	SplitReplenishCapPct              float64 // Replenishment Cap (default: 0.50)
+	TradingHoursMode                  string  // "off", "weekdays trade only", "us open only"
+	TakerCloseMarket                  bool    // Force GTC buy right before market closes
+	TakerCloseMarketTime              int     // Seconds before close to trigger (default: 5)
+	TakerCloseMarketSlippage          float64 // Limit price for taker close (default: 0.99)
+	TakerCloseMarketMinPrice          float64 // Min price to trigger close buy (default: 0.60)
+	CopytradeTarget                   string  // Wallet address, profile handle, or profile URL to follow
+	CopytradePollIntervalMs           int     // Copytrade public-wallet poll interval in milliseconds
+	BinanceQuoteAsset                 string  // Futures quote asset suffix used to build symbols, e.g. USDT
+	BinanceSignalThresholdPct         float64 // Percent move over the lookback window required to trigger entry
+	BinanceSignalLookbackMs           int     // Lookback window for Binance directional signal in milliseconds
+	BinanceSignalCooldownMs           int     // Cooldown between Binance-triggered entries in milliseconds
+	BinanceSignalMaxAgeMs             int     // Max allowed Binance signal staleness in milliseconds
+	BinanceSignalPolyMaxMoveCents     float64 // Max Polymarket catch-up on the signaled side before entry is skipped
+	BinanceSignalPolyAdverseMoveCents float64 // Max Polymarket wrong-way move allowed before entry is skipped
+	BinanceSignalSpreadMaxCents       float64 // Max Polymarket target-side spread allowed for Binance gap entries
+	StartupWizardSeen                 bool    // Whether the themed startup wizard has been completed
 
 	settingsProfile string
 	settingsPath    string
 }
 
 type RuntimeSettings struct {
-	Exchange                       string  `json:"exchange"`
-	MarketSlug                     string  `json:"marketSlug"`
-	Timeframe                      string  `json:"timeframe"`
-	MaxMarkets                     int     `json:"maxMarkets"`
-	BaseBalance                    float64 `json:"baseBalance"`
-	BaseTradeSize                  float64 `json:"baseTradeSize"`
-	MinMarginPercent               float64 `json:"minMarginPercent"`
-	TradeScaleFactor               float64 `json:"tradeScaleFactor"`
-	TradeSizingMode                string  `json:"tradeSizingMode"`
-	TradeSizeUSDC                  float64 `json:"tradeSizeUsdc"`
-	FeeRateBps                     int     `json:"feeRateBps"`
-	MaxTradeSize                   float64 `json:"maxTradeSize"`
-	MaxDailyLoss                   float64 `json:"maxDailyLoss"`
-	RequireConfirm                 bool    `json:"requireConfirm"`
-	EnableCSVLogger                bool    `json:"enableCsvLogger"`
-	EnableRawAPILog                bool    `json:"enableRawApiLog"`
-	ExecutionLocalQuoteMaxAgeMs    int     `json:"executionLocalQuoteMaxAgeMs"`
-	RestFallbackQuoteAgeMs         int     `json:"restFallbackQuoteAgeMs"`
-	RestFallbackPollIntervalMs     int     `json:"restFallbackPollIntervalMs"`
-	EnableMarginAggression         bool    `json:"enableMarginAggression"`
-	MaxAggressionMultiplier        float64 `json:"maxAggressionMultiplier"`
-	MinAskPrice                    float64 `json:"minAskPrice"`
-	MaxAskPrice                    float64 `json:"maxAskPrice"`
-	PaperArbMode                   string  `json:"paperArbMode"`
-	BuyExecutionMarginFloorPercent float64 `json:"buyExecutionMarginFloorPercent"`
-	SplitStrategyEnabled           bool    `json:"splitStrategyEnabled"`
-	SplitMinMarginSell             float64 `json:"splitMinMarginSell"`
-	SplitTargetMarginReserve       float64 `json:"splitTargetMarginReserve"`
-	SplitReplenishThreshold        float64 `json:"splitReplenishThreshold"`
-	SplitMergeBufferSeconds        int     `json:"splitMergeBufferSeconds"`
-	MakerMergeBufferSeconds        int     `json:"makerMergeBufferSeconds"`
-	MakerQuoteGap                  float64 `json:"makerQuoteGap"`
-	MakerInventoryTargetMult       float64 `json:"makerInventoryTargetMult"`
-	MakerInventoryCapMult          float64 `json:"makerInventoryCapMult"`
-	MakerMinQuoteValue             float64 `json:"makerMinQuoteValue"`
-	SplitInitialCapPct             float64 `json:"splitInitialCapPct"`
-	SplitReplenishCapPct           float64 `json:"splitReplenishCapPct"`
-	TradingHoursMode               string  `json:"tradingHoursMode"`
-	TakerCloseMarket               bool    `json:"takerCloseMarket"`
-	TakerCloseMarketTime           int     `json:"takerCloseMarketTime"`
-	TakerCloseMarketSlippage       float64 `json:"takerCloseMarketSlippage"`
-	TakerCloseMarketMinPrice       float64 `json:"takerCloseMarketMinPrice"`
-	CopytradeTarget                string  `json:"copytradeTarget"`
-	CopytradePollIntervalMs        int     `json:"copytradePollIntervalMs"`
-	StartupWizardSeen              bool    `json:"startupWizardSeen"`
+	Exchange                          string  `json:"exchange"`
+	MarketSlug                        string  `json:"marketSlug"`
+	Timeframe                         string  `json:"timeframe"`
+	MaxMarkets                        int     `json:"maxMarkets"`
+	BaseBalance                       float64 `json:"baseBalance"`
+	BaseTradeSize                     float64 `json:"baseTradeSize"`
+	MinMarginPercent                  float64 `json:"minMarginPercent"`
+	TradeScaleFactor                  float64 `json:"tradeScaleFactor"`
+	TradeSizingMode                   string  `json:"tradeSizingMode"`
+	TradeSizeUSDC                     float64 `json:"tradeSizeUsdc"`
+	FeeRateBps                        int     `json:"feeRateBps"`
+	MaxTradeSize                      float64 `json:"maxTradeSize"`
+	MaxDailyLoss                      float64 `json:"maxDailyLoss"`
+	RequireConfirm                    bool    `json:"requireConfirm"`
+	EnableCSVLogger                   bool    `json:"enableCsvLogger"`
+	EnableRawAPILog                   bool    `json:"enableRawApiLog"`
+	ExecutionLocalQuoteMaxAgeMs       int     `json:"executionLocalQuoteMaxAgeMs"`
+	RestFallbackQuoteAgeMs            int     `json:"restFallbackQuoteAgeMs"`
+	RestFallbackPollIntervalMs        int     `json:"restFallbackPollIntervalMs"`
+	EnableMarginAggression            bool    `json:"enableMarginAggression"`
+	MaxAggressionMultiplier           float64 `json:"maxAggressionMultiplier"`
+	MinAskPrice                       float64 `json:"minAskPrice"`
+	MaxAskPrice                       float64 `json:"maxAskPrice"`
+	PaperArbMode                      string  `json:"paperArbMode"`
+	BuyExecutionMarginFloorPercent    float64 `json:"buyExecutionMarginFloorPercent"`
+	SplitStrategyEnabled              bool    `json:"splitStrategyEnabled"`
+	SplitMinMarginSell                float64 `json:"splitMinMarginSell"`
+	SplitTargetMarginReserve          float64 `json:"splitTargetMarginReserve"`
+	SplitReplenishThreshold           float64 `json:"splitReplenishThreshold"`
+	SplitMergeBufferSeconds           int     `json:"splitMergeBufferSeconds"`
+	MakerMergeBufferSeconds           int     `json:"makerMergeBufferSeconds"`
+	MakerQuoteGap                     float64 `json:"makerQuoteGap"`
+	MakerInventoryTargetMult          float64 `json:"makerInventoryTargetMult"`
+	MakerInventoryCapMult             float64 `json:"makerInventoryCapMult"`
+	MakerMinQuoteValue                float64 `json:"makerMinQuoteValue"`
+	SplitInitialCapPct                float64 `json:"splitInitialCapPct"`
+	SplitReplenishCapPct              float64 `json:"splitReplenishCapPct"`
+	TradingHoursMode                  string  `json:"tradingHoursMode"`
+	TakerCloseMarket                  bool    `json:"takerCloseMarket"`
+	TakerCloseMarketTime              int     `json:"takerCloseMarketTime"`
+	TakerCloseMarketSlippage          float64 `json:"takerCloseMarketSlippage"`
+	TakerCloseMarketMinPrice          float64 `json:"takerCloseMarketMinPrice"`
+	CopytradeTarget                   string  `json:"copytradeTarget"`
+	CopytradePollIntervalMs           int     `json:"copytradePollIntervalMs"`
+	BinanceQuoteAsset                 string  `json:"binanceQuoteAsset"`
+	BinanceSignalThresholdPct         float64 `json:"binanceSignalThresholdPct"`
+	BinanceSignalLookbackMs           int     `json:"binanceSignalLookbackMs"`
+	BinanceSignalCooldownMs           int     `json:"binanceSignalCooldownMs"`
+	BinanceSignalMaxAgeMs             int     `json:"binanceSignalMaxAgeMs"`
+	BinanceSignalPolyMaxMoveCents     float64 `json:"binanceSignalPolyMaxMoveCents"`
+	BinanceSignalPolyAdverseMoveCents float64 `json:"binanceSignalPolyAdverseMoveCents"`
+	BinanceSignalSpreadMaxCents       float64 `json:"binanceSignalSpreadMaxCents"`
+	StartupWizardSeen                 bool    `json:"startupWizardSeen"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -223,21 +240,29 @@ func LoadConfig() (*Config, error) {
 		}(),
 		BuyExecutionMarginFloorPercent: parseEnvFloat("BUY_EXECUTION_MARGIN_FLOOR_PERCENT", -1.0),
 		// Split strategy settings (panic sell)
-		SplitStrategyEnabled:     os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
-		SplitMinMarginSell:       parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
-		SplitTargetMarginReserve: parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
-		SplitReplenishThreshold:  parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
-		SplitMergeBufferSeconds:  parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
-		MakerMergeBufferSeconds:  parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
-		MakerQuoteGap:            parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
-		MakerInventoryTargetMult: parseEnvFloat("MAKER_INVENTORY_TARGET_MULT", 3.0),
-		MakerInventoryCapMult:    parseEnvFloat("MAKER_INVENTORY_CAP_MULT", 5.0),
-		MakerMinQuoteValue:       parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
-		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
-		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
-		TradingHoursMode:         parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
-		CopytradeTarget:          strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
-		CopytradePollIntervalMs:  normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
+		SplitStrategyEnabled:              os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
+		SplitMinMarginSell:                parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
+		SplitTargetMarginReserve:          parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
+		SplitReplenishThreshold:           parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
+		SplitMergeBufferSeconds:           parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
+		MakerMergeBufferSeconds:           parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
+		MakerQuoteGap:                     parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
+		MakerInventoryTargetMult:          parseEnvFloat("MAKER_INVENTORY_TARGET_MULT", 3.0),
+		MakerInventoryCapMult:             parseEnvFloat("MAKER_INVENTORY_CAP_MULT", 5.0),
+		MakerMinQuoteValue:                parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
+		SplitInitialCapPct:                parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
+		SplitReplenishCapPct:              parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
+		TradingHoursMode:                  parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
+		CopytradeTarget:                   strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
+		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
+		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
+		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.20)),
+		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(parseEnvInt("BINANCE_SIGNAL_LOOKBACK_MS", 1500)),
+		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(parseEnvInt("BINANCE_SIGNAL_COOLDOWN_MS", 2500)),
+		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(parseEnvInt("BINANCE_SIGNAL_MAX_AGE_MS", 3000)),
+		BinanceSignalPolyMaxMoveCents:     normalizeBinanceSignalPolyMaxMoveCents(parseEnvFloat("BINANCE_SIGNAL_POLY_MAX_MOVE_CENTS", 1.5)),
+		BinanceSignalPolyAdverseMoveCents: normalizeBinanceSignalPolyAdverseMoveCents(parseEnvFloat("BINANCE_SIGNAL_POLY_ADVERSE_MOVE_CENTS", 0.75)),
+		BinanceSignalSpreadMaxCents:       normalizeBinanceSignalSpreadMaxCents(parseEnvFloat("BINANCE_SIGNAL_SPREAD_MAX_CENTS", 4.0)),
 	}
 
 	return cfg, nil
@@ -276,77 +301,91 @@ func normalizeCopytradePollIntervalMs(v int) int {
 	}
 }
 
-func CalculateTradeSizeForMode(currentBalance, tradeScaleFactor, tradeSizeUSDC, maxTradeSize float64, tradeSizingMode string) float64 {
-	var tradeSize float64
-	switch normalizeTradeSizingMode(tradeSizingMode) {
-	case TradeSizingModeUSDC:
-		tradeSize = normalizeFixedTradeSizeUSDC(tradeSizeUSDC)
+func normalizeBinanceQuoteAsset(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if raw == "" {
+		return "USDT"
+	}
+	return raw
+}
+
+func normalizeBinanceSignalThresholdPct(v float64) float64 {
+	if v <= 0 {
+		return 0.20
+	}
+	if v > 10 {
+		return 10
+	}
+	return v
+}
+
+func normalizeBinanceSignalLookbackMs(v int) int {
+	switch {
+	case v <= 0:
+		return 1500
+	case v < 250:
+		return 250
+	case v > 15000:
+		return 15000
 	default:
-		if tradeScaleFactor <= 0 {
-			tradeScaleFactor = 0.01
-		}
-		tradeSize = currentBalance * tradeScaleFactor
+		return v
 	}
-
-	if maxTradeSize > 0 && tradeSize > maxTradeSize {
-		tradeSize = maxTradeSize
-	}
-	if tradeSize < 0.1 {
-		tradeSize = 0.1
-	}
-	return tradeSize
 }
 
-func LoadBotConfig(profile string) (*Config, error) {
-	return loadBotConfigWithPath(profile, settingsPathForProfile(profile))
+func normalizeBinanceSignalCooldownMs(v int) int {
+	switch {
+	case v <= 0:
+		return 2500
+	case v < 250:
+		return 250
+	case v > 60000:
+		return 60000
+	default:
+		return v
+	}
 }
 
-func loadBotConfigWithPath(profile, path string) (*Config, error) {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return nil, err
+func normalizeBinanceSignalMaxAgeMs(v int) int {
+	switch {
+	case v <= 0:
+		return 3000
+	case v < 250:
+		return 250
+	case v > 60000:
+		return 60000
+	default:
+		return v
 	}
-	cfg.settingsProfile = strings.ToLower(strings.TrimSpace(profile))
-	cfg.settingsPath = path
-	switch cfg.settingsProfile {
-	case "paperbot":
-		cfg.TradingMode = ModePaper
-	case "realbot":
-		cfg.TradingMode = ModeReal
-	}
-	if cfg.settingsPath == "" {
-		return cfg, nil
-	}
-	runtime, err := readRuntimeSettings(cfg.settingsPath, cfg.runtimeSettings())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return nil, err
-	}
-	cfg.applyRuntimeSettings(runtime)
-	return cfg, nil
 }
 
-func ResolveExecutionLocalQuoteMaxAge(cfg *Config) time.Duration {
-	if cfg != nil && cfg.ExecutionLocalQuoteMaxAgeMs > 0 {
-		return time.Duration(cfg.ExecutionLocalQuoteMaxAgeMs) * time.Millisecond
+func normalizeBinanceSignalPolyMaxMoveCents(v float64) float64 {
+	if v <= 0 {
+		return 1.5
 	}
-	return defaultExecutionLocalQuoteMaxAge
+	if v > 25 {
+		return 25
+	}
+	return v
 }
 
-func ResolveRestFallbackQuoteAge(cfg *Config) time.Duration {
-	if cfg != nil && cfg.RestFallbackQuoteAgeMs > 0 {
-		return time.Duration(cfg.RestFallbackQuoteAgeMs) * time.Millisecond
+func normalizeBinanceSignalPolyAdverseMoveCents(v float64) float64 {
+	if v <= 0 {
+		return 0.75
 	}
-	return defaultRestFallbackQuoteAge
+	if v > 25 {
+		return 25
+	}
+	return v
 }
 
-func ResolveRestFallbackPollInterval(cfg *Config) time.Duration {
-	if cfg != nil && cfg.RestFallbackPollIntervalMs > 0 {
-		return time.Duration(cfg.RestFallbackPollIntervalMs) * time.Millisecond
+func normalizeBinanceSignalSpreadMaxCents(v float64) float64 {
+	if v <= 0 {
+		return 4.0
 	}
-	return defaultRestFallbackPollInterval
+	if v > 50 {
+		return 50
+	}
+	return v
 }
 
 // UseRealTrading marks the config as intended for real trading. Bot entrypoints infer
@@ -401,7 +440,6 @@ func (c *Config) ValidateForRealTrading() error {
 		return errors.New("missing required credentials for real trading: " + strings.Join(missing, ", "))
 	}
 
-	// Validate private key format
 	pk := strings.TrimPrefix(c.PK, "0x")
 	if len(pk) != 64 {
 		return errors.New("POLY_PK must be a 64-character hex string (with or without 0x prefix)")
@@ -414,35 +452,6 @@ func (c *Config) ValidateForRealTrading() error {
 func (c *Config) IsPaperMode() bool {
 	return c.TradingMode != ModeReal
 }
-
-// CalculateTradeSize returns the trade size (in $) based on current balance and margin
-// Formula: tradeSize = balance * scaleFactor
-// Example: $1000 balance * 0.10 = $100 trade size
-// For $100 balance: $100 * 0.10 = $10 trade size
-func (c *Config) CalculateTradeSize(currentBalance float64) float64 {
-	return CalculateTradeSizeForMode(currentBalance, c.TradeScaleFactor, c.TradeSizeUSDC, c.MaxTradeSize, c.TradeSizingMode)
-}
-
-// CalculateShares returns the number of shares to buy based on balance, margin, and price sum
-// Example: $1000 balance, 2% margin, sum=$0.98 → shares = $100 / $0.98 ≈ 102 shares
-func (c *Config) CalculateShares(currentBalance, priceSum float64) float64 {
-	if priceSum <= 0 || priceSum >= 1.0 {
-		return 0
-	}
-
-	tradeSize := c.CalculateTradeSize(currentBalance)
-	shares := tradeSize / priceSum
-
-	return shares
-}
-
-// String returns a redacted string representation of the config
-func (c *Config) String() string {
-	return "Config{TradingMode: " + string(c.TradingMode) +
-		", MarketSlug: " + c.MarketSlug +
-		", PK: [REDACTED], APIKey: [REDACTED], APISecret: [REDACTED], APIPassphrase: [REDACTED]}"
-}
-
 func getEnvWithFallback(primary, fallback string) string {
 	if val := os.Getenv(primary); val != "" {
 		return val
@@ -497,91 +506,61 @@ func parseEnvString(key string, defaultVal string) string {
 	return val
 }
 
-func settingsPathForProfile(profile string) string {
-	switch strings.ToLower(strings.TrimSpace(profile)) {
-	case "paperbot":
-		return filepath.Join("config", "paperbot.settings.json")
-	case "realbot":
-		return filepath.Join("config", "realbot.settings.json")
-	default:
-		return ""
-	}
-}
-
-func readRuntimeSettings(path string, base RuntimeSettings) (RuntimeSettings, error) {
-	settings := base
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return settings, err
-	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return settings, err
-	}
-	return settings, nil
-}
-
-func writeRuntimeSettings(path string, settings RuntimeSettings) error {
-	if path == "" {
-		return errors.New("settings path is empty")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
-}
-
 func (c *Config) runtimeSettings() RuntimeSettings {
 	return RuntimeSettings{
-		Exchange:                       c.Exchange,
-		MarketSlug:                     c.MarketSlug,
-		Timeframe:                      c.Timeframe,
-		MaxMarkets:                     c.MaxMarkets,
-		BaseBalance:                    c.BaseBalance,
-		BaseTradeSize:                  c.BaseTradeSize,
-		MinMarginPercent:               c.MinMarginPercent,
-		TradeScaleFactor:               c.TradeScaleFactor,
-		TradeSizingMode:                normalizeTradeSizingMode(c.TradeSizingMode),
-		TradeSizeUSDC:                  normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC),
-		FeeRateBps:                     c.FeeRateBps,
-		MaxTradeSize:                   c.MaxTradeSize,
-		MaxDailyLoss:                   c.MaxDailyLoss,
-		RequireConfirm:                 c.RequireConfirm,
-		EnableCSVLogger:                c.EnableCSVLogger,
-		EnableRawAPILog:                c.EnableRawAPILog,
-		ExecutionLocalQuoteMaxAgeMs:    c.ExecutionLocalQuoteMaxAgeMs,
-		RestFallbackQuoteAgeMs:         c.RestFallbackQuoteAgeMs,
-		RestFallbackPollIntervalMs:     c.RestFallbackPollIntervalMs,
-		EnableMarginAggression:         c.EnableMarginAggression,
-		MaxAggressionMultiplier:        c.MaxAggressionMultiplier,
-		MinAskPrice:                    c.MinAskPrice,
-		MaxAskPrice:                    c.MaxAskPrice,
-		PaperArbMode:                   c.PaperArbMode,
-		BuyExecutionMarginFloorPercent: c.BuyExecutionMarginFloorPercent,
-		SplitStrategyEnabled:           c.SplitStrategyEnabled,
-		SplitMinMarginSell:             c.SplitMinMarginSell,
-		SplitTargetMarginReserve:       c.SplitTargetMarginReserve,
-		SplitReplenishThreshold:        c.SplitReplenishThreshold,
-		SplitMergeBufferSeconds:        c.SplitMergeBufferSeconds,
-		MakerMergeBufferSeconds:        c.MakerMergeBufferSeconds,
-		MakerQuoteGap:                  c.MakerQuoteGap,
-		MakerInventoryTargetMult:       c.MakerInventoryTargetMult,
-		MakerInventoryCapMult:          c.MakerInventoryCapMult,
-		MakerMinQuoteValue:             c.MakerMinQuoteValue,
-		SplitInitialCapPct:             c.SplitInitialCapPct,
-		SplitReplenishCapPct:           c.SplitReplenishCapPct,
-		TradingHoursMode:               c.TradingHoursMode,
-		TakerCloseMarket:               c.TakerCloseMarket,
-		TakerCloseMarketTime:           c.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:       c.TakerCloseMarketMinPrice,
-		CopytradeTarget:                strings.TrimSpace(c.CopytradeTarget),
-		CopytradePollIntervalMs:        normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
-		StartupWizardSeen:              c.StartupWizardSeen,
+		Exchange:                          c.Exchange,
+		MarketSlug:                        c.MarketSlug,
+		Timeframe:                         c.Timeframe,
+		MaxMarkets:                        c.MaxMarkets,
+		BaseBalance:                       c.BaseBalance,
+		BaseTradeSize:                     c.BaseTradeSize,
+		MinMarginPercent:                  c.MinMarginPercent,
+		TradeScaleFactor:                  c.TradeScaleFactor,
+		TradeSizingMode:                   normalizeTradeSizingMode(c.TradeSizingMode),
+		TradeSizeUSDC:                     normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC),
+		FeeRateBps:                        c.FeeRateBps,
+		MaxTradeSize:                      c.MaxTradeSize,
+		MaxDailyLoss:                      c.MaxDailyLoss,
+		RequireConfirm:                    c.RequireConfirm,
+		EnableCSVLogger:                   c.EnableCSVLogger,
+		EnableRawAPILog:                   c.EnableRawAPILog,
+		ExecutionLocalQuoteMaxAgeMs:       c.ExecutionLocalQuoteMaxAgeMs,
+		RestFallbackQuoteAgeMs:            c.RestFallbackQuoteAgeMs,
+		RestFallbackPollIntervalMs:        c.RestFallbackPollIntervalMs,
+		EnableMarginAggression:            c.EnableMarginAggression,
+		MaxAggressionMultiplier:           c.MaxAggressionMultiplier,
+		MinAskPrice:                       c.MinAskPrice,
+		MaxAskPrice:                       c.MaxAskPrice,
+		PaperArbMode:                      c.PaperArbMode,
+		BuyExecutionMarginFloorPercent:    c.BuyExecutionMarginFloorPercent,
+		SplitStrategyEnabled:              c.SplitStrategyEnabled,
+		SplitMinMarginSell:                c.SplitMinMarginSell,
+		SplitTargetMarginReserve:          c.SplitTargetMarginReserve,
+		SplitReplenishThreshold:           c.SplitReplenishThreshold,
+		SplitMergeBufferSeconds:           c.SplitMergeBufferSeconds,
+		MakerMergeBufferSeconds:           c.MakerMergeBufferSeconds,
+		MakerQuoteGap:                     c.MakerQuoteGap,
+		MakerInventoryTargetMult:          c.MakerInventoryTargetMult,
+		MakerInventoryCapMult:             c.MakerInventoryCapMult,
+		MakerMinQuoteValue:                c.MakerMinQuoteValue,
+		SplitInitialCapPct:                c.SplitInitialCapPct,
+		SplitReplenishCapPct:              c.SplitReplenishCapPct,
+		TradingHoursMode:                  c.TradingHoursMode,
+		TakerCloseMarket:                  c.TakerCloseMarket,
+		TakerCloseMarketTime:              c.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:          c.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:          c.TakerCloseMarketMinPrice,
+		CopytradeTarget:                   strings.TrimSpace(c.CopytradeTarget),
+		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
+		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
+		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
+		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(c.BinanceSignalLookbackMs),
+		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(c.BinanceSignalCooldownMs),
+		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(c.BinanceSignalMaxAgeMs),
+		BinanceSignalPolyMaxMoveCents:     normalizeBinanceSignalPolyMaxMoveCents(c.BinanceSignalPolyMaxMoveCents),
+		BinanceSignalPolyAdverseMoveCents: normalizeBinanceSignalPolyAdverseMoveCents(c.BinanceSignalPolyAdverseMoveCents),
+		BinanceSignalSpreadMaxCents:       normalizeBinanceSignalSpreadMaxCents(c.BinanceSignalSpreadMaxCents),
+		StartupWizardSeen:                 c.StartupWizardSeen,
 	}
 }
 
@@ -632,6 +611,14 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
 	c.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	c.CopytradePollIntervalMs = normalizeCopytradePollIntervalMs(s.CopytradePollIntervalMs)
+	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
+	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
+	c.BinanceSignalLookbackMs = normalizeBinanceSignalLookbackMs(s.BinanceSignalLookbackMs)
+	c.BinanceSignalCooldownMs = normalizeBinanceSignalCooldownMs(s.BinanceSignalCooldownMs)
+	c.BinanceSignalMaxAgeMs = normalizeBinanceSignalMaxAgeMs(s.BinanceSignalMaxAgeMs)
+	c.BinanceSignalPolyMaxMoveCents = normalizeBinanceSignalPolyMaxMoveCents(s.BinanceSignalPolyMaxMoveCents)
+	c.BinanceSignalPolyAdverseMoveCents = normalizeBinanceSignalPolyAdverseMoveCents(s.BinanceSignalPolyAdverseMoveCents)
+	c.BinanceSignalSpreadMaxCents = normalizeBinanceSignalSpreadMaxCents(s.BinanceSignalSpreadMaxCents)
 	c.StartupWizardSeen = s.StartupWizardSeen
 
 	// Force disable split/merge for Kalshi
@@ -675,6 +662,154 @@ func (c *Config) SaveSettings() error {
 	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
+	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
+	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
+	envMap["BINANCE_SIGNAL_LOOKBACK_MS"] = strconv.Itoa(normalizeBinanceSignalLookbackMs(c.BinanceSignalLookbackMs))
+	envMap["BINANCE_SIGNAL_COOLDOWN_MS"] = strconv.Itoa(normalizeBinanceSignalCooldownMs(c.BinanceSignalCooldownMs))
+	envMap["BINANCE_SIGNAL_MAX_AGE_MS"] = strconv.Itoa(normalizeBinanceSignalMaxAgeMs(c.BinanceSignalMaxAgeMs))
+	envMap["BINANCE_SIGNAL_POLY_MAX_MOVE_CENTS"] = strconv.FormatFloat(normalizeBinanceSignalPolyMaxMoveCents(c.BinanceSignalPolyMaxMoveCents), 'f', -1, 64)
+	envMap["BINANCE_SIGNAL_POLY_ADVERSE_MOVE_CENTS"] = strconv.FormatFloat(normalizeBinanceSignalPolyAdverseMoveCents(c.BinanceSignalPolyAdverseMoveCents), 'f', -1, 64)
+	envMap["BINANCE_SIGNAL_SPREAD_MAX_CENTS"] = strconv.FormatFloat(normalizeBinanceSignalSpreadMaxCents(c.BinanceSignalSpreadMaxCents), 'f', -1, 64)
 
 	return godotenv.Write(envMap, ".env")
+}
+
+func (c *Config) CalculateTradeSize(currentBalance float64) float64 {
+	if c == nil {
+		return CalculateTradeSizeForMode(currentBalance, 0.05, 1.0, 0, TradeSizingModePercent)
+	}
+	return CalculateTradeSizeForMode(currentBalance, c.TradeScaleFactor, c.TradeSizeUSDC, c.MaxTradeSize, c.TradeSizingMode)
+}
+
+func CalculateTradeSizeForMode(currentBalance, tradeScaleFactor, tradeSizeUSDC, maxTradeSize float64, tradeSizingMode string) float64 {
+	var tradeSize float64
+	switch normalizeTradeSizingMode(tradeSizingMode) {
+	case TradeSizingModeUSDC:
+		tradeSize = normalizeFixedTradeSizeUSDC(tradeSizeUSDC)
+	default:
+		if tradeScaleFactor <= 0 {
+			tradeScaleFactor = 0.01
+		}
+		tradeSize = currentBalance * tradeScaleFactor
+	}
+	if maxTradeSize > 0 && tradeSize > maxTradeSize {
+		tradeSize = maxTradeSize
+	}
+	if tradeSize < 0.1 {
+		tradeSize = 0.1
+	}
+	return tradeSize
+}
+
+func LoadBotConfig(profile string) (*Config, error) {
+	return loadBotConfigWithPath(profile, settingsPathForProfile(profile))
+}
+
+func loadBotConfigWithPath(profile, path string) (*Config, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.settingsProfile = strings.ToLower(strings.TrimSpace(profile))
+	cfg.settingsPath = path
+	switch cfg.settingsProfile {
+	case "paperbot":
+		cfg.TradingMode = ModePaper
+	case "realbot":
+		cfg.TradingMode = ModeReal
+	default:
+		return nil, fmt.Errorf("unknown bot profile: %s", profile)
+	}
+	if path == "" {
+		return cfg, nil
+	}
+	settings, err := readRuntimeSettings(path, cfg.runtimeSettings())
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return cfg, nil
+	}
+	cfg.applyRuntimeSettings(settings)
+	return cfg, nil
+}
+
+func settingsPathForProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "paperbot":
+		return filepath.Join("config", "paperbot.settings.json")
+	case "realbot":
+		return filepath.Join("config", "realbot.settings.json")
+	default:
+		return ""
+	}
+}
+
+func readRuntimeSettings(path string, base RuntimeSettings) (RuntimeSettings, error) {
+	settings := base
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return settings, err
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return settings, err
+	}
+	return settings, nil
+}
+
+func writeRuntimeSettings(path string, settings RuntimeSettings) error {
+	if path == "" {
+		return errors.New("settings path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+func ResolveExecutionLocalQuoteMaxAge(cfg *Config) time.Duration {
+	if cfg != nil && cfg.ExecutionLocalQuoteMaxAgeMs > 0 {
+		return time.Duration(cfg.ExecutionLocalQuoteMaxAgeMs) * time.Millisecond
+	}
+	return defaultExecutionLocalQuoteMaxAge
+}
+
+func ResolveRestFallbackQuoteAge(cfg *Config) time.Duration {
+	if cfg != nil && cfg.RestFallbackQuoteAgeMs > 0 {
+		return time.Duration(cfg.RestFallbackQuoteAgeMs) * time.Millisecond
+	}
+	return defaultRestFallbackQuoteAge
+}
+
+func ResolveRestFallbackPollInterval(cfg *Config) time.Duration {
+	if cfg != nil && cfg.RestFallbackPollIntervalMs > 0 {
+		return time.Duration(cfg.RestFallbackPollIntervalMs) * time.Millisecond
+	}
+	return defaultRestFallbackPollInterval
+}
+
+func ResolveBinanceSignalLookback(cfg *Config) time.Duration {
+	if cfg != nil {
+		return time.Duration(normalizeBinanceSignalLookbackMs(cfg.BinanceSignalLookbackMs)) * time.Millisecond
+	}
+	return time.Duration(normalizeBinanceSignalLookbackMs(0)) * time.Millisecond
+}
+
+func ResolveBinanceSignalCooldown(cfg *Config) time.Duration {
+	if cfg != nil {
+		return time.Duration(normalizeBinanceSignalCooldownMs(cfg.BinanceSignalCooldownMs)) * time.Millisecond
+	}
+	return time.Duration(normalizeBinanceSignalCooldownMs(0)) * time.Millisecond
+}
+
+func ResolveBinanceSignalMaxAge(cfg *Config) time.Duration {
+	if cfg != nil {
+		return time.Duration(normalizeBinanceSignalMaxAgeMs(cfg.BinanceSignalMaxAgeMs)) * time.Millisecond
+	}
+	return time.Duration(normalizeBinanceSignalMaxAgeMs(0)) * time.Millisecond
 }

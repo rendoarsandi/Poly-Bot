@@ -375,7 +375,7 @@ type TUISettings struct {
 	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
 	TradeSizeUSDC                  float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
-	PaperArbMode                   string  // taker, copytrade, or maker
+	PaperArbMode                   string  // taker, binance-gap, copytrade, or maker
 	CopytradeTarget                string  // wallet address, profile handle, or profile URL
 	CopytradePollIntervalMs        int     // public-wallet poll interval for copytrade mode
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
@@ -463,13 +463,18 @@ func isCopytradeSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "copytrade")
 }
 
+func isBinanceGapSettingsMode(cfg TUISettings) bool {
+	return strings.EqualFold(cfg.PaperArbMode, "binance-gap")
+}
+
 func settingsArbModes() []string {
-	return []string{"taker", "copytrade", "maker"}
+	return []string{"taker", "binance-gap", "copytrade", "maker"}
 }
 
 func isRowVisible(cfg TUISettings, idx int) bool {
 	maker := isMakerSettingsMode(cfg)
 	copytrade := isCopytradeSettingsMode(cfg)
+	binanceGap := isBinanceGapSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
 	closeMarket := cfg.TakerCloseMarket
 
@@ -484,6 +489,13 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	if copytrade {
 		switch idx {
 		case settingsRowMarket, settingsRowTimeframe, settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
+			return false
+		}
+	}
+
+	if binanceGap {
+		switch idx {
+		case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
 			return false
 		}
 	}
@@ -519,6 +531,7 @@ func settingsRowEditable(cfg TUISettings, idx int) bool {
 func settingsRowLabel(cfg TUISettings, idx int) string {
 	maker := isMakerSettingsMode(cfg)
 	copytrade := isCopytradeSettingsMode(cfg)
+	binanceGap := isBinanceGapSettingsMode(cfg)
 	switch idx {
 	case settingsRowTradeSizingMode:
 		return "Trade Size Mode"
@@ -533,6 +546,9 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		}
 		if copytrade {
 			return "Copy Margin"
+		}
+		if binanceGap {
+			return "Profit Target %"
 		}
 		return "Buy Min Margin %"
 	case settingsRowExecutionSlip:
@@ -625,6 +641,8 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		s.PaperArbMode = "maker"
 	case "copytrade":
 		s.PaperArbMode = "copytrade"
+	case "binance-gap":
+		s.PaperArbMode = "binance-gap"
 	default:
 		s.PaperArbMode = "taker"
 	}
@@ -3928,6 +3946,9 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				if strings.EqualFold(cfg.PaperArbMode, "copytrade") {
 					return styleCyan.Render(" copytrade ")
+				}
+				if strings.EqualFold(cfg.PaperArbMode, "binance-gap") {
+					return styleCyan.Render(" binance ")
 				}
 				return styleYellow.Render(" taker ")
 			}(),

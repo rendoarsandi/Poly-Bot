@@ -26,13 +26,14 @@ import (
 )
 
 const (
-	StartingBalance       = 100.0 // $100 paper trading balance
-	UseLiveUI             = true  // Set to false for traditional logging
-	paperArbModeTaker     = "taker"
-	paperArbModeCopytrade = "copytrade"
-	paperArbModeMaker     = "maker"
-	terminalBidFloor      = 0.985
-	terminalAskCeil       = 0.015
+	StartingBalance        = 100.0 // $100 paper trading balance
+	UseLiveUI              = true  // Set to false for traditional logging
+	paperArbModeTaker      = "taker"
+	paperArbModeBinanceGap = "binance-gap"
+	paperArbModeCopytrade  = "copytrade"
+	paperArbModeMaker      = "maker"
+	terminalBidFloor       = 0.985
+	terminalAskCeil        = 0.015
 	// Price threshold used for post-expiry winner fallback when authoritative
 	// resolution is still unavailable.
 	terminalWinnerFloor = 0.99
@@ -210,6 +211,8 @@ func logPaperExecutionLatency(t *MarketTrader, latency paperExecutionLatency) {
 
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case paperArbModeBinanceGap:
+		return paperArbModeBinanceGap
 	case paperArbModeCopytrade:
 		return paperArbModeCopytrade
 	case paperArbModeMaker:
@@ -2383,6 +2386,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			if arbMode == paperArbModeCopytrade {
 				if t.lastCopytradeNoticeAt.IsZero() || now.Sub(t.lastCopytradeNoticeAt) >= 10*time.Second {
 					t.TUI.LogEvent("[%s] ℹ️ Copytrade mode executes in realbot; paperbot only exposes the shared settings UI", t.ID)
+					t.lastCopytradeNoticeAt = now
+				}
+				continue
+			}
+			if arbMode == paperArbModeBinanceGap {
+				if t.lastCopytradeNoticeAt.IsZero() || now.Sub(t.lastCopytradeNoticeAt) >= 10*time.Second {
+					t.TUI.LogEvent("[%s] ℹ️ Binance gap mode is enabled for realbot; paperbot keeps the mode selection but does not run the old two-leg taker arb path", t.ID)
 					t.lastCopytradeNoticeAt = now
 				}
 				continue

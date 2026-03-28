@@ -57,6 +57,14 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"restFallbackPollIntervalMs": 700,
 		"copytradeTarget": "@json-profile",
 		"copytradePollIntervalMs": 1500,
+		"binanceQuoteAsset": "USDT",
+		"binanceSignalThresholdPct": 0.35,
+		"binanceSignalLookbackMs": 1800,
+		"binanceSignalCooldownMs": 3200,
+		"binanceSignalMaxAgeMs": 4500,
+		"binanceSignalPolyMaxMoveCents": 1.2,
+		"binanceSignalPolyAdverseMoveCents": 0.4,
+		"binanceSignalSpreadMaxCents": 3.5,
 		"paperArbMode": "maker",
 		"makerQuoteGap": 0.004
 	}`)
@@ -101,6 +109,30 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.CopytradePollIntervalMs != 1500 {
 		t.Fatalf("expected JSON CopytradePollIntervalMs 1500, got %d", cfg.CopytradePollIntervalMs)
 	}
+	if cfg.BinanceQuoteAsset != "USDT" {
+		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
+	}
+	if cfg.BinanceSignalThresholdPct != 0.35 {
+		t.Fatalf("expected JSON BinanceSignalThresholdPct 0.35, got %.2f", cfg.BinanceSignalThresholdPct)
+	}
+	if cfg.BinanceSignalLookbackMs != 1800 {
+		t.Fatalf("expected JSON BinanceSignalLookbackMs 1800, got %d", cfg.BinanceSignalLookbackMs)
+	}
+	if cfg.BinanceSignalCooldownMs != 3200 {
+		t.Fatalf("expected JSON BinanceSignalCooldownMs 3200, got %d", cfg.BinanceSignalCooldownMs)
+	}
+	if cfg.BinanceSignalMaxAgeMs != 4500 {
+		t.Fatalf("expected JSON BinanceSignalMaxAgeMs 4500, got %d", cfg.BinanceSignalMaxAgeMs)
+	}
+	if cfg.BinanceSignalPolyMaxMoveCents != 1.2 {
+		t.Fatalf("expected JSON BinanceSignalPolyMaxMoveCents 1.2, got %.2f", cfg.BinanceSignalPolyMaxMoveCents)
+	}
+	if cfg.BinanceSignalPolyAdverseMoveCents != 0.4 {
+		t.Fatalf("expected JSON BinanceSignalPolyAdverseMoveCents 0.4, got %.2f", cfg.BinanceSignalPolyAdverseMoveCents)
+	}
+	if cfg.BinanceSignalSpreadMaxCents != 3.5 {
+		t.Fatalf("expected JSON BinanceSignalSpreadMaxCents 3.5, got %.2f", cfg.BinanceSignalSpreadMaxCents)
+	}
 	if cfg.PaperArbMode != "maker" {
 		t.Fatalf("expected JSON PaperArbMode maker, got %q", cfg.PaperArbMode)
 	}
@@ -132,6 +164,14 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.RestFallbackPollIntervalMs = 900
 	cfg.CopytradeTarget = "0x1234567890abcdef1234567890abcdef12345678"
 	cfg.CopytradePollIntervalMs = 1750
+	cfg.BinanceQuoteAsset = "USDT"
+	cfg.BinanceSignalThresholdPct = 0.45
+	cfg.BinanceSignalLookbackMs = 2100
+	cfg.BinanceSignalCooldownMs = 2800
+	cfg.BinanceSignalMaxAgeMs = 4200
+	cfg.BinanceSignalPolyMaxMoveCents = 1.4
+	cfg.BinanceSignalPolyAdverseMoveCents = 0.5
+	cfg.BinanceSignalSpreadMaxCents = 3.0
 	cfg.PaperArbMode = "maker"
 	cfg.MakerQuoteGap = 0.005
 	cfg.TradingHoursMode = "off"
@@ -177,6 +217,30 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.CopytradePollIntervalMs != 1750 {
 		t.Fatalf("expected saved CopytradePollIntervalMs 1750, got %d", settings.CopytradePollIntervalMs)
+	}
+	if settings.BinanceQuoteAsset != "USDT" {
+		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
+	}
+	if settings.BinanceSignalThresholdPct != 0.45 {
+		t.Fatalf("expected saved BinanceSignalThresholdPct 0.45, got %.2f", settings.BinanceSignalThresholdPct)
+	}
+	if settings.BinanceSignalLookbackMs != 2100 {
+		t.Fatalf("expected saved BinanceSignalLookbackMs 2100, got %d", settings.BinanceSignalLookbackMs)
+	}
+	if settings.BinanceSignalCooldownMs != 2800 {
+		t.Fatalf("expected saved BinanceSignalCooldownMs 2800, got %d", settings.BinanceSignalCooldownMs)
+	}
+	if settings.BinanceSignalMaxAgeMs != 4200 {
+		t.Fatalf("expected saved BinanceSignalMaxAgeMs 4200, got %d", settings.BinanceSignalMaxAgeMs)
+	}
+	if settings.BinanceSignalPolyMaxMoveCents != 1.4 {
+		t.Fatalf("expected saved BinanceSignalPolyMaxMoveCents 1.4, got %.2f", settings.BinanceSignalPolyMaxMoveCents)
+	}
+	if settings.BinanceSignalPolyAdverseMoveCents != 0.5 {
+		t.Fatalf("expected saved BinanceSignalPolyAdverseMoveCents 0.5, got %.2f", settings.BinanceSignalPolyAdverseMoveCents)
+	}
+	if settings.BinanceSignalSpreadMaxCents != 3.0 {
+		t.Fatalf("expected saved BinanceSignalSpreadMaxCents 3.0, got %.2f", settings.BinanceSignalSpreadMaxCents)
 	}
 	if settings.PaperArbMode != "maker" {
 		t.Fatalf("expected saved PaperArbMode maker, got %q", settings.PaperArbMode)

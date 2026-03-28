@@ -54,6 +54,9 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	if got := normalizePaperArbMode("maker"); got != paperArbModeMaker {
 		t.Fatalf("normalizePaperArbMode(maker) = %q, want %q", got, paperArbModeMaker)
 	}
+	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
+		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)
+	}
 	if got := normalizePaperArbMode("copytrade"); got != paperArbModeCopytrade {
 		t.Fatalf("normalizePaperArbMode(copytrade) = %q, want %q", got, paperArbModeCopytrade)
 	}

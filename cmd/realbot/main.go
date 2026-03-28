@@ -29,6 +29,7 @@ import (
 const (
 	UseLiveUI                        = true // Set to false for traditional logging
 	paperArbModeTaker                = "taker"
+	paperArbModeBinanceGap           = "binance-gap"
 	paperArbModeCopytrade            = "copytrade"
 	paperArbModeMaker                = "maker"
 	terminalBidFloor                 = 0.985
@@ -368,12 +369,405 @@ func normalizedRealbotExecutionPriceCap(liveCfg paper.TUISettings) float64 {
 
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case paperArbModeBinanceGap:
+		return paperArbModeBinanceGap
 	case paperArbModeCopytrade:
 		return paperArbModeCopytrade
 	case paperArbModeMaker:
 		return paperArbModeMaker
 	default:
 		return paperArbModeTaker
+	}
+}
+
+func realbotAssetPrefix(marketID string) string {
+	marketID = strings.TrimSpace(marketID)
+	if idx := strings.Index(marketID, "#"); idx >= 0 {
+		marketID = marketID[:idx]
+	}
+	return strings.ToUpper(strings.TrimSpace(marketID))
+}
+
+func realbotBinanceSymbolForMarket(marketID string, cfg *core.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	asset := realbotAssetPrefix(marketID)
+	if asset == "" || asset == "UNKNOWN" {
+		return ""
+	}
+	return asset + strings.ToUpper(strings.TrimSpace(cfg.BinanceQuoteAsset))
+}
+
+type realbotDirectionalOutcomes struct {
+	Up   string
+	Down string
+}
+
+func realbotResolveDirectionalOutcomes(outcomes []string) (realbotDirectionalOutcomes, bool) {
+	mapping := realbotDirectionalOutcomes{}
+	for _, outcome := range outcomes {
+		switch strings.ToLower(strings.TrimSpace(outcome)) {
+		case "up", "yes":
+			mapping.Up = outcome
+		case "down", "no":
+			mapping.Down = outcome
+		}
+	}
+	return mapping, mapping.Up != "" && mapping.Down != ""
+}
+
+func realbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) float64 {
+	target := avgPrice * (1.0 + (profitTargetPct / 100.0))
+	if target < 0.01 {
+		return 0.01
+	}
+	if target > 0.99 {
+		return 0.99
+	}
+	return target
+}
+
+func realbotDirectionalBuyLimitPrice(ask, maxAskPrice float64) float64 {
+	if ask <= 0 {
+		return 0
+	}
+	limit := ask + 0.01
+	if maxAskPrice > 0 && maxAskPrice < limit {
+		limit = maxAskPrice
+	}
+	if limit < ask {
+		limit = ask
+	}
+	if limit > 0.99 {
+		limit = 0.99
+	}
+	return limit
+}
+
+func realbotAskLiquidityAtOrBelow(levels []paper.MarketLevel, maxPrice float64) float64 {
+	total := 0.0
+	for _, lvl := range levels {
+		if lvl.Size <= 0 {
+			continue
+		}
+		if lvl.Price <= maxPrice+1e-9 {
+			total += lvl.Size
+		}
+	}
+	return total
+}
+
+func realbotBidLiquidityAtOrAbove(levels []paper.MarketLevel, minPrice float64) float64 {
+	total := 0.0
+	for _, lvl := range levels {
+		if lvl.Size <= 0 {
+			continue
+		}
+		if lvl.Price+1e-9 >= minPrice {
+			total += lvl.Size
+		}
+	}
+	return total
+}
+
+func realbotClampSingleBuySharesToBudget(requestedShares, budget, limitPrice float64) float64 {
+	qty := normalizeMarketBuyShares(requestedShares)
+	if qty <= 0 || budget <= 0 || limitPrice <= 0 {
+		return 0
+	}
+	if affordable := normalizeMarketBuyShares(budget / limitPrice); affordable < qty {
+		qty = affordable
+	}
+	for qty >= 0.0001 {
+		if cost := realbotRoundedLimitBuyCost(limitPrice, qty); cost > 0 && cost <= budget+1e-9 {
+			return qty
+		}
+		qty = normalizeMarketBuyShares(qty - 0.0001)
+	}
+	return 0
+}
+
+func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, string) {
+	ask := tokenAsks[outcome]
+	if ask <= 0 || ask >= 1.0 {
+		return false, fmt.Sprintf("missing local ask for %s", outcome)
+	}
+	if len(tokenFullAsks[outcome]) == 0 {
+		return false, fmt.Sprintf("missing local ask depth for %s", outcome)
+	}
+	state, ok := quoteState[outcome]
+	if !ok || state.UpdatedAt.IsZero() {
+		return false, fmt.Sprintf("missing quote timestamp for %s", outcome)
+	}
+	age := now.Sub(state.UpdatedAt)
+	if age > maxAge {
+		return false, fmt.Sprintf("%s buy quote age %s > %s", outcome, age.Round(time.Millisecond), maxAge)
+	}
+	bid := tokenBids[outcome]
+	if bid > 0 && !realbotHasSaneTopOfBook(bid, ask) {
+		return false, fmt.Sprintf("crossed local quote for %s (bid %.3f >= ask %.3f)", outcome, bid, ask)
+	}
+	return true, ""
+}
+
+func realbotCanUseLocalDirectionalSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, string) {
+	bid := tokenBids[outcome]
+	if bid <= 0 || bid >= 1.0 {
+		return false, fmt.Sprintf("missing local bid for %s", outcome)
+	}
+	if len(tokenFullBids[outcome]) == 0 {
+		return false, fmt.Sprintf("missing local bid depth for %s", outcome)
+	}
+	state, ok := quoteState[outcome]
+	if !ok || state.UpdatedAt.IsZero() {
+		return false, fmt.Sprintf("missing quote timestamp for %s", outcome)
+	}
+	age := now.Sub(state.UpdatedAt)
+	if age > maxAge {
+		return false, fmt.Sprintf("%s sell quote age %s > %s", outcome, age.Round(time.Millisecond), maxAge)
+	}
+	ask := tokenAsks[outcome]
+	if ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
+		return false, fmt.Sprintf("crossed local quote for %s (bid %.3f >= ask %.3f)", outcome, bid, ask)
+	}
+	return true, ""
+}
+
+func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *realbotDirectionalSignalTracker, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, currentBalance float64, binanceFeed *api.BinanceFuturesPriceFeed, getTokenID func(string) string, entryGate *realbotEntryGate, lastTrade *time.Time, lastBinanceLog *time.Time) {
+	logThrottled := func(format string, args ...interface{}) {
+		if lastBinanceLog == nil {
+			tui.LogEvent(format, args...)
+			return
+		}
+		if lastBinanceLog.IsZero() || time.Since(*lastBinanceLog) >= 5*time.Second {
+			tui.LogEvent(format, args...)
+			*lastBinanceLog = time.Now()
+		}
+	}
+
+	mapping, ok := realbotResolveDirectionalOutcomes(outcomes)
+	if !ok {
+		logThrottled("[%s] ℹ️ Binance gap mode skipped: outcomes are not Up/Down or Yes/No", id)
+		return
+	}
+	if binanceFeed == nil {
+		logThrottled("[%s] ℹ️ Binance gap mode skipped: no Binance futures feed configured", id)
+		return
+	}
+
+	maxQuoteAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
+	profitTargetPct := liveCfg.MinMarginPercent
+	if profitTargetPct < 0 {
+		profitTargetPct = 0
+	}
+
+	upQty, upAvg := localBoughtPositionAvg(engine, id, mapping.Up)
+	downQty, downAvg := localBoughtPositionAvg(engine, id, mapping.Down)
+	if upQty > 0 && downQty > 0 {
+		logThrottled("[%s] ⚠️ Binance gap mode holding both sides locally; waiting for existing recovery/cleanup before new entries", id)
+		return
+	}
+
+	heldOutcome := ""
+	heldQty := 0.0
+	heldAvg := 0.0
+	if upQty > 0 {
+		heldOutcome, heldQty, heldAvg = mapping.Up, upQty, upAvg
+	} else if downQty > 0 {
+		heldOutcome, heldQty, heldAvg = mapping.Down, downQty, downAvg
+	}
+	if heldOutcome != "" {
+		if ok, reason := realbotCanUseLocalDirectionalSellQuote(time.Now(), heldOutcome, tokenBids, tokenAsks, tokenFullBids, quoteState, maxQuoteAge); !ok {
+			logThrottled("[%s] ⏳ Binance exit waiting for fresh %s quote (%s)", id, heldOutcome, reason)
+			return
+		}
+		bid := tokenBids[heldOutcome]
+		targetBid := realbotDirectionalProfitTargetPrice(heldAvg, profitTargetPct)
+		if bid+1e-9 < targetBid {
+			return
+		}
+		tokenID := getTokenID(heldOutcome)
+		if tokenID == "" {
+			logThrottled("[%s] ⚠️ Binance exit skipped: missing token id for %s", id, heldOutcome)
+			return
+		}
+		liq := realbotBidLiquidityAtOrAbove(tokenFullBids[heldOutcome], bid)
+		qtyToSell := normalizeMarketSellShares(math.Min(heldQty, liq))
+		if qtyToSell < minOnChainActionShares {
+			logThrottled("[%s] ⏳ Binance exit waiting for bid liquidity on %s at $%.3f", id, heldOutcome, bid)
+			return
+		}
+		initialPosition := trader.GetLivePositionSize(tokenID)
+		rate := tokenFeeRates[heldOutcome]
+		if rate == 0 {
+			rate = 1000
+		}
+		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, tokenID, heldOutcome, bid, qtyToSell, rate, initialPosition, 2*time.Second)
+		if !exec.Success {
+			if exec.Err != nil {
+				logThrottled("[%s] ⚠️ Binance exit failed for %s: %v", id, heldOutcome, exec.Err)
+			} else if exec.Result != nil && exec.Result.Message != "" {
+				logThrottled("[%s] ⚠️ Binance exit failed for %s: %s", id, heldOutcome, exec.Result.Message)
+			}
+			return
+		}
+		soldQty := exec.ExecutedQty
+		if soldQty <= 0 {
+			soldQty = exec.AcknowledgedQty
+		}
+		soldQty = math.Min(soldQty, heldQty)
+		if soldQty < minOnChainActionShares {
+			logThrottled("[%s] ⚠️ Binance exit confirmation too small for %s", id, heldOutcome)
+			return
+		}
+		sellPrice := venueExecutionEffectivePrice(exec)
+		if sellPrice <= 0 {
+			sellPrice = bid
+		}
+		trade, err := engine.SellForMarket(id, heldOutcome, sellPrice, soldQty)
+		if err != nil {
+			logThrottled("[%s] ⚠️ Binance exit engine sync failed for %s: %v", id, heldOutcome, err)
+			return
+		}
+		profit := trade.Value - (heldAvg * soldQty)
+		tui.LogEvent("[%s] ✅ BINANCE EXIT %s %.2f @ $%.3f (target $%.3f, pnl $%.2f)", id, heldOutcome, soldQty, sellPrice, targetBid, profit)
+		tui.RecordOrderWithMode(id, heldOutcome, "SELL", soldQty, sellPrice, trade.Value, 0.0, profit, paperArbModeBinanceGap, "FILLED")
+		if lastTrade != nil {
+			*lastTrade = time.Now()
+		}
+		return
+	}
+
+	cooldown := core.ResolveBinanceSignalCooldown(cfg)
+	if lastTrade != nil && !lastTrade.IsZero() && time.Since(*lastTrade) < cooldown {
+		return
+	}
+
+	snap := binanceFeed.Snapshot(time.Now())
+	if !snap.Ready {
+		logThrottled("[%s] ⏳ Binance gap mode waiting for full lookback window on %s", id, snap.Symbol)
+		return
+	}
+	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
+	if snap.UpdatedAt.IsZero() || time.Since(snap.UpdatedAt) > maxSignalAge {
+		logThrottled("[%s] ⏳ Binance gap mode waiting for fresh WS signal on %s", id, snap.Symbol)
+		return
+	}
+	threshold := cfg.BinanceSignalThresholdPct
+	if threshold <= 0 {
+		threshold = 0.20
+	}
+	if math.Abs(snap.DeltaPercent) < threshold {
+		return
+	}
+
+	signal, reason := realbotEvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, snap, polyTracker, maxSignalAge)
+	if reason != "" {
+		logThrottled("[%s] ⏳ Binance gap mode %s", id, reason)
+		return
+	}
+	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
+	if polyCatchupMax <= 0 {
+		polyCatchupMax = defaultBinanceSignalPolyMaxMoveCents
+	}
+	if signal.PolyFavorableMoveCents > polyCatchupMax {
+		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", id, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
+		return
+	}
+	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
+	if polyAdverseMax <= 0 {
+		polyAdverseMax = defaultBinanceSignalPolyAdverseMoveCents
+	}
+	if signal.PolyAdverseMoveCents > polyAdverseMax {
+		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", id, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
+		return
+	}
+	spreadMax := cfg.BinanceSignalSpreadMaxCents
+	if spreadMax <= 0 {
+		spreadMax = defaultBinanceSignalSpreadMaxCents
+	}
+	if signal.TargetSpreadCents > spreadMax {
+		logThrottled("[%s] ⚠️ Binance entry skipped: %s spread %.2fc > %.2fc", id, signal.TargetOutcome, signal.TargetSpreadCents, spreadMax)
+		return
+	}
+	targetOutcome := signal.TargetOutcome
+	signalLabel := signal.SignalLabel
+	if ok, reason := realbotCanUseLocalDirectionalBuyQuote(time.Now(), targetOutcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, maxQuoteAge); !ok {
+		logThrottled("[%s] ⏳ Binance entry waiting for fresh %s quote (%s)", id, targetOutcome, reason)
+		return
+	}
+	ask := tokenAsks[targetOutcome]
+	if ask < liveCfg.MinAskPrice || ask > liveCfg.MaxAskPrice {
+		logThrottled("[%s] ⚠️ Binance entry skipped: %s ask $%.3f outside configured range %.3f-%.3f", id, targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
+		return
+	}
+	limitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice)
+	if limitPrice <= 0 {
+		return
+	}
+	tradeBudget := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, liveCfg))
+	liq := realbotAskLiquidityAtOrBelow(tokenFullAsks[targetOutcome], limitPrice)
+	shares := normalizeMarketBuyShares(math.Min(tradeBudget/limitPrice, liq))
+	shares = realbotClampSingleBuySharesToBudget(shares, tradeBudget, limitPrice)
+	balanceBudget := currentBalance
+	if balanceBudget <= 0 {
+		balanceBudget = tradeBudget
+	}
+	if safeShares := realbotClampSingleBuySharesToBudget(shares, balanceBudget, limitPrice); safeShares < shares {
+		shares = safeShares
+	}
+	if shares < 1 {
+		logThrottled("[%s] ⚠️ Binance entry skipped: actionable size below 1 share for %s", id, targetOutcome)
+		return
+	}
+	if entryGate != nil && !entryGate.TryAcquire() {
+		logThrottled("[%s] ⏳ Binance entry waiting: another market is executing a live entry", id)
+		return
+	}
+	defer entryGate.Release()
+
+	tokenID := getTokenID(targetOutcome)
+	if tokenID == "" {
+		logThrottled("[%s] ⚠️ Binance entry skipped: missing token id for %s", id, targetOutcome)
+		return
+	}
+	initialPosition := trader.GetLivePositionSize(tokenID)
+	rate := tokenFeeRates[targetOutcome]
+	if rate == 0 {
+		rate = 1000
+	}
+	exec := executeMarketOrderWithSignals(ctx, trader, api.SideBuy, tokenID, targetOutcome, limitPrice, shares, rate, initialPosition, 2500*time.Millisecond)
+	if !exec.Success {
+		if exec.Err != nil {
+			logThrottled("[%s] ⚠️ Binance entry failed for %s: %v", id, targetOutcome, exec.Err)
+		} else if exec.Result != nil && exec.Result.Message != "" {
+			logThrottled("[%s] ⚠️ Binance entry failed for %s: %s", id, targetOutcome, exec.Result.Message)
+		}
+		return
+	}
+	buyQty := exec.ExecutedQty
+	if buyQty <= 0 {
+		buyQty = exec.AcknowledgedQty
+	}
+	buyQty = clampRequestedExecutionQty(buyQty, shares)
+	if buyQty < minOnChainActionShares {
+		logThrottled("[%s] ⚠️ Binance entry confirmation too small for %s", id, targetOutcome)
+		return
+	}
+	buyPrice := venueExecutionEffectivePrice(exec)
+	if buyPrice <= 0 {
+		buyPrice = limitPrice
+	}
+	cost := reportedBuyCost(exec, buyPrice, buyQty, shares)
+	if _, err := engine.BuyForMarket(id, targetOutcome, buyPrice, buyQty); err != nil {
+		logThrottled("[%s] ⚠️ Binance entry engine sync failed for %s: %v", id, targetOutcome, err)
+		return
+	}
+	tui.LogEvent("[%s] ⚡ BINANCE %s SIGNAL %s %.2f @ $%.3f | Δ %.3f%% over %s (%s) | poly catch-up %.2fc adverse %.2fc spread %.2fc", id, signalLabel, targetOutcome, buyQty, buyPrice, snap.DeltaPercent, core.ResolveBinanceSignalLookback(cfg), snap.Symbol, signal.PolyFavorableMoveCents, signal.PolyAdverseMoveCents, signal.TargetSpreadCents)
+	tui.RecordOrderWithMode(id, targetOutcome, "BUY", buyQty, buyPrice, cost, snap.DeltaPercent, 0.0, paperArbModeBinanceGap, "FILLED")
+	if lastTrade != nil {
+		*lastTrade = time.Now()
 	}
 }
 
@@ -1667,8 +2061,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	publishedBids := make(map[string]float64)
 	publishedAsks := make(map[string]float64)
 	quoteState := make(map[string]realbotQuoteState)
+	polySignalTracker := newRealbotDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
+	lastBinanceLog := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
@@ -1693,6 +2089,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			}
 		}
 		return ""
+	}
+
+	var binanceFeed *api.BinanceFuturesPriceFeed
+	if symbol := realbotBinanceSymbolForMarket(id, cfg); symbol != "" {
+		binanceFeed = api.NewBinanceFuturesPriceFeed(symbol, core.ResolveBinanceSignalLookback(cfg))
+		binanceFeed.Start(ctx)
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -1959,6 +2361,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
 							engine.UpdateMarketData(id, outcome, mid, bid, ask)
+							polySignalTracker.Record(outcome, bid, ask, updatedAt)
 						}
 					}
 				} else if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
@@ -2032,6 +2435,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
 							engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
+							polySignalTracker.Record(outcome, tokenBids[outcome], tokenAsks[outcome], time.Now())
 						}
 					}
 
@@ -2063,6 +2467,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					if tokenBids[outcome] > 0 && tokenAsks[outcome] > 0 {
 						mid := (tokenBids[outcome] + tokenAsks[outcome]) / 2
 						engine.UpdateMarketData(id, outcome, mid, tokenBids[outcome], tokenAsks[outcome])
+						polySignalTracker.Record(outcome, tokenBids[outcome], tokenAsks[outcome], updatedAt)
 					}
 					quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws-bbo"}
 				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
@@ -2101,6 +2506,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
 							engine.UpdateMarketData(id, outcome, mid, bid, ask)
+							polySignalTracker.Record(outcome, bid, ask, updatedAt)
 						}
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
@@ -2167,7 +2573,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if shouldRestFallback {
 			wasFallbackActive := restFallbackActive
 			restFallbackActive = true
-			recovered := handleRestFallbackWithDepth(ctx, id, pairQuoteAge, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, engine, restClient, tui, wasFallbackActive && !restRecoveryLogged)
+			recovered := handleRestFallbackWithDepth(ctx, id, pairQuoteAge, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, polySignalTracker, engine, restClient, tui, wasFallbackActive && !restRecoveryLogged)
 			lastRestFallbackPoll = time.Now()
 			if recovered {
 				restFallbackActive = false
@@ -2489,6 +2895,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		cancelMaker()
 		if arbMode == paperArbModeCopytrade {
 			realbotHandleCopytradeMarket(ctx, id, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates, trader, engine, tui, restClient, liveCfg, copytradeWallet, copytradeState, entryGate, refreshWalletTruth)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if arbMode == paperArbModeBinanceGap {
+			realbotHandleBinanceGapMarket(ctx, id, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, polySignalTracker, tokenFeeRates, trader, engine, tui, liveCfg, cfg, currentBalance, binanceFeed, getTokenID, entryGate, &lastTrade, &lastBinanceLog)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -5531,7 +5942,7 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *realbotDirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
 	success := false
 	staleSeconds := int(staleTime.Seconds())
 	restErrors := 0
@@ -5616,6 +6027,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		if bid > 0 && ask > 0 {
 			mid := (bid + ask) / 2
 			engine.UpdateMarketData(id, outcome, mid, bid, ask)
+			polyTracker.Record(outcome, bid, ask, updatedAt)
 		}
 		// ALWAYS update full depth (liquidity) if newer, as REST is our primary source
 		// for recovering from stale or dropped WS states.

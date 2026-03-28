@@ -38,6 +38,21 @@ func TestPairBalancesFromPositionsMissingTokenDefaultsToZero(t *testing.T) {
 	}
 }
 
+func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
+	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
+		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)
+	}
+}
+
+func TestRealbotResolveDirectionalOutcomesSupportsUpDownAndYesNo(t *testing.T) {
+	if mapping, ok := realbotResolveDirectionalOutcomes([]string{"Up", "Down"}); !ok || mapping.Up != "Up" || mapping.Down != "Down" {
+		t.Fatalf("unexpected Up/Down mapping: %#v ok=%v", mapping, ok)
+	}
+	if mapping, ok := realbotResolveDirectionalOutcomes([]string{"Yes", "No"}); !ok || mapping.Up != "Yes" || mapping.Down != "No" {
+		t.Fatalf("unexpected Yes/No mapping: %#v ok=%v", mapping, ok)
+	}
+}
+
 func TestCombineCleanupVerificationBalancesPrefersOnChainTruth(t *testing.T) {
 	bal0, bal1, source, err := combineCleanupVerificationBalances(
 		4.9183, 0,
@@ -835,7 +850,7 @@ func TestHandleRestFallbackWithDepthSkipsOlderBooksWhenCurrentQuoteIsFresh(t *te
 	ok := handleRestFallbackWithDepth(context.Background(), "SOL", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
-	}, bids, asks, map[string]float64{}, map[string]float64{}, fullBids, fullAsks, quoteState, engine, client, tui, false)
+	}, bids, asks, map[string]float64{}, map[string]float64{}, fullBids, fullAsks, quoteState, nil, engine, client, tui, false)
 	if !ok {
 		t.Fatal("expected fallback call to complete")
 	}
@@ -875,7 +890,7 @@ func TestHandleRestFallbackWithDepthPreservesDisplayForOneSidedBooks(t *testing.
 	ok := handleRestFallbackWithDepth(context.Background(), "BTC", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
-	}, bids, asks, displayBids, displayAsks, fullBids, fullAsks, quoteState, engine, client, tui, false)
+	}, bids, asks, displayBids, displayAsks, fullBids, fullAsks, quoteState, nil, engine, client, tui, false)
 	if !ok {
 		t.Fatal("expected fallback call to complete")
 	}
