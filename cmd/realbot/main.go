@@ -4616,6 +4616,14 @@ func computeRealbotMakerSkewedQuote(side api.Side, bid, ask, skew, quoteGap floa
 	return strategy.ComputeMakerSkewedQuote(side == api.SideBuy, bid, ask, skew, quoteGap, params)
 }
 
+func computeRealbotMakerPairBuyPrices(bid0, ask0, bid1, ask1, maxPairCost, inventoryDelta float64, params strategy.MakerParams) (float64, float64, bool) {
+	return strategy.ComputeMakerPairBuyPrices(bid0, ask0, bid1, ask1, maxPairCost, inventoryDelta, params)
+}
+
+func computeRealbotMakerPairQuoteQty(baseTradeValue, pairedShares, maxInventoryValue, cash, price0, price1 float64, params strategy.MakerParams) float64 {
+	return strategy.ComputeMakerPairQuoteQty(baseTradeValue, pairedShares, maxInventoryValue, cash, price0, price1, params, normalizeMarketSellShares)
+}
+
 func computeRealbotMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price float64, params strategy.MakerParams) float64 {
 	return strategy.ComputeMakerBuyQty(baseShares, positionShares, skew, maxInventory, cash, price, params, normalizeMarketSellShares)
 }
@@ -4682,14 +4690,14 @@ func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, eng
 		delta := confirmed - quote.AccountedFill
 		if delta > 1e-6 {
 			if quote.Side == api.SideBuy {
-				if _, err := engine.BuyForMarket(marketID, quote.Outcome, quote.Price, delta); err != nil {
+				if _, err := engine.MakerBuyForMarket(marketID, quote.Outcome, quote.Price, delta); err != nil {
 					tui.LogEvent("[%s] ⚠️ Maker buy fill sync failed for %s %.4f @ $%.3f: %v", marketID, quote.Outcome, delta, quote.Price, err)
 				} else {
 					tui.LogEvent("[%s] ✅ Maker BUY fill: %s %.2f @ $%.3f", marketID, quote.Outcome, delta, quote.Price)
 					tui.RecordOrderWithMode(marketID, quote.Outcome, "BUY", delta, quote.Price, delta*quote.Price, 0.0, 0.0, "maker", "FILLED")
 				}
 			} else {
-				if _, err := engine.SellForMarket(marketID, quote.Outcome, quote.Price, delta); err != nil {
+				if _, err := engine.MakerSellForMarket(marketID, quote.Outcome, quote.Price, delta); err != nil {
 					tui.LogEvent("[%s] ⚠️ Maker sell fill sync failed for %s %.4f @ $%.3f: %v", marketID, quote.Outcome, delta, quote.Price, err)
 				} else {
 					tui.LogEvent("[%s] ✅ Maker SELL fill: %s %.2f @ $%.3f", marketID, quote.Outcome, delta, quote.Price)
@@ -4902,58 +4910,47 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 
 	targetValue := math.Max(minQuoteValue, baseTradeValue*targetMult)
 	maxInventoryValue := math.Max(targetValue, baseTradeValue*capMult)
-	minSellEdge := liveCfg.MinMarginPercent / 100.0
-	quoteGap := resolveRealbotMakerQuoteGap(liveCfg, cfg)
+	minPairEdge := liveCfg.MinMarginPercent / 100.0
+	maxPairCost := 1.0 - minPairEdge
 
 	makerParams := realbotMakerStrategyParams
 	makerParams.MinQuoteValue = minQuoteValue
 
-	targetShares0 := 0.0
-	if bid0 > 0 {
-		targetShares0 = targetValue / bid0
-	}
-	targetShares1 := 0.0
-	if bid1 > 0 {
-		targetShares1 = targetValue / bid1
-	}
-
-	skew0 := computeRealbotMakerInventorySkew(shares0, shares1, targetShares0)
-	skew1 := computeRealbotMakerInventorySkew(shares1, shares0, targetShares1)
-
-	buyPrice0, buyOK0 := computeRealbotMakerSkewedQuote(api.SideBuy, bid0, ask0, skew0, quoteGap, makerParams)
-	buyPrice1, buyOK1 := computeRealbotMakerSkewedQuote(api.SideBuy, bid1, ask1, skew1, quoteGap, makerParams)
+	pairedShares := math.Min(shares0, shares1)
+	inventoryDelta := shares0 - shares1
+	buyPrice0, buyPrice1, buyOK := computeRealbotMakerPairBuyPrices(bid0, ask0, bid1, ask1, maxPairCost, inventoryDelta, makerParams)
 	maxMakerBuyPrice := liveCfg.MaxAskPrice
 	if maxMakerBuyPrice <= 0 || maxMakerBuyPrice > 0.99 {
 		maxMakerBuyPrice = 0.99
 	}
 	minMakerBuyPrice := liveCfg.MinAskPrice
-	if !buyOK0 || buyPrice0 > maxMakerBuyPrice || buyPrice0 < minMakerBuyPrice {
-		buyOK0 = false
+	if !buyOK || buyPrice0 > maxMakerBuyPrice || buyPrice0 < minMakerBuyPrice || buyPrice1 > maxMakerBuyPrice || buyPrice1 < minMakerBuyPrice {
+		buyOK = false
 	}
-	if !buyOK1 || buyPrice1 > maxMakerBuyPrice || buyPrice1 < minMakerBuyPrice {
-		buyOK1 = false
-	}
-
-	sellFee0 := tokenFeeRates[outcomes[0]]
-	sellFee1 := tokenFeeRates[outcomes[1]]
-	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minSellEdge, skew0, quoteGap, sellFee0, timeToEnd, makerParams)
-	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minSellEdge, skew1, quoteGap, sellFee1, timeToEnd, makerParams)
-	sellQty0 := computeRealbotMakerSellQty(baseTradeValue, shares0, skew0, sellPrice0, makerParams)
-	sellQty1 := computeRealbotMakerSellQty(baseTradeValue, shares1, skew1, sellPrice1, makerParams)
-	if !sellOK0 {
-		sellQty0 = 0
-	}
-	if !sellOK1 {
-		sellQty1 = 0
-	}
-
 	buyQty0 := 0.0
 	buyQty1 := 0.0
-	if buyOK0 && !shouldRealbotMakerBlockBuy(shares0, sellOK0, shares1, avg1, buyPrice0, minSellEdge) {
-		buyQty0 = computeRealbotMakerBuyQty(baseTradeValue, shares0, skew0, maxInventoryValue, quoteCash, buyPrice0, makerParams)
-	}
-	if buyOK1 && !shouldRealbotMakerBlockBuy(shares1, sellOK1, shares0, avg0, buyPrice1, minSellEdge) {
-		buyQty1 = computeRealbotMakerBuyQty(baseTradeValue, shares1, skew1, maxInventoryValue, quoteCash, buyPrice1, makerParams)
+	if buyOK {
+		pairQuoteQty := computeRealbotMakerPairQuoteQty(baseTradeValue, pairedShares, maxInventoryValue, quoteCash, buyPrice0, buyPrice1, makerParams)
+		maxImbalanceShares := normalizeMarketSellShares(math.Max(1.0, baseTradeValue/math.Max(maxPairCost, realbotMakerQuoteStep)))
+		if pairQuoteQty > maxImbalanceShares {
+			maxImbalanceShares = pairQuoteQty
+		}
+
+		buyQty0 = pairQuoteQty
+		buyQty1 = pairQuoteQty
+		if inventoryDelta > 0 {
+			heavyScale := math.Min(1.0, inventoryDelta/math.Max(maxImbalanceShares, 1.0))
+			buyQty0 = normalizeMarketSellShares(pairQuoteQty * (1.0 - heavyScale))
+			if avg0 > 0 && buyPrice1+avg0 > maxPairCost+1e-9 {
+				buyQty1 = 0
+			}
+		} else if inventoryDelta < 0 {
+			heavyScale := math.Min(1.0, (-inventoryDelta)/math.Max(maxImbalanceShares, 1.0))
+			buyQty1 = normalizeMarketSellShares(pairQuoteQty * (1.0 - heavyScale))
+			if avg1 > 0 && buyPrice0+avg1 > maxPairCost+1e-9 {
+				buyQty0 = 0
+			}
+		}
 	}
 
 	changed := false
@@ -4963,10 +4960,10 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideBuy, outcomes[1], getTokenID(outcomes[1]), buyPrice1, buyQty1, tokenFeeRates[outcomes[1]]) {
 		changed = true
 	}
-	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[0], getTokenID(outcomes[0]), sellPrice0, sellQty0, tokenFeeRates[outcomes[0]]) {
+	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[0], getTokenID(outcomes[0]), 0, 0, tokenFeeRates[outcomes[0]]) {
 		changed = true
 	}
-	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[1], getTokenID(outcomes[1]), sellPrice1, sellQty1, tokenFeeRates[outcomes[1]]) {
+	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[1], getTokenID(outcomes[1]), 0, 0, tokenFeeRates[outcomes[1]]) {
 		changed = true
 	}
 
@@ -4974,10 +4971,11 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		*lastMakerSync = time.Now()
 	}
 	if changed {
-		tui.LogEvent("[%s] 🧾 Live maker quotes refreshed: %s buy@$%.3f/ sell@$%.3f | %s buy@$%.3f/ sell@$%.3f",
+		tui.LogEvent("[%s] 🧾 Live maker pair bids refreshed: %s buy@$%.3f x %.0f | %s buy@$%.3f x %.0f | pair=$%.3f",
 			marketID,
-			outcomes[0], buyPrice0, sellPrice0,
-			outcomes[1], buyPrice1, sellPrice1,
+			outcomes[0], buyPrice0, buyQty0,
+			outcomes[1], buyPrice1, buyQty1,
+			buyPrice0+buyPrice1,
 		)
 	}
 	realbotUpdateMakerPendingOrders(marketID, makerQuotes, tui)
@@ -6288,14 +6286,16 @@ type realbotCopytradeTarget struct {
 }
 
 type realbotCopytradeState struct {
-	lastPoll  time.Time
-	lastError string
-	mirrored  map[string]bool
+	lastPoll     time.Time
+	lastError    string
+	managed      map[string]bool
+	targetShares map[string]float64
 }
 
 func newRealbotCopytradeState() *realbotCopytradeState {
 	return &realbotCopytradeState{
-		mirrored: make(map[string]bool),
+		managed:      make(map[string]bool),
+		targetShares: make(map[string]float64),
 	}
 }
 
@@ -6482,6 +6482,18 @@ func realbotCopytradeHeldOutcomes(positions []api.Position) map[string]api.Posit
 	return held
 }
 
+func realbotCopytradeTargetShares(positions []api.Position) map[string]float64 {
+	shares := make(map[string]float64, len(positions))
+	for _, pos := range positions {
+		outcome := core.SanitizeString(pos.Outcome)
+		if outcome == "" || pos.Size <= 0.01 {
+			continue
+		}
+		shares[outcome] += pos.Size
+	}
+	return shares
+}
+
 func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (float64, string, bool) {
 	bid := tokenBids[outcome]
 	if bid <= 0 || bid >= 1.0 {
@@ -6539,27 +6551,26 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	state.lastError = ""
 
 	held := realbotCopytradeHeldOutcomes(positions)
-	if len(state.mirrored) == 0 {
-		for _, outcome := range outcomes {
-			if _, ok := held[outcome]; ok {
-				localQty, _ := localBoughtPositionAvg(engine, marketID, outcome)
-				if localQty > 0.01 {
-					state.mirrored[outcome] = true
-				}
-			}
-		}
+	targetShares := realbotCopytradeTargetShares(positions)
+	for outcome, shares := range targetShares {
+		state.targetShares[outcome] = shares
 	}
 
 	for _, outcome := range outcomes {
 		targetPos, targetHeld := held[outcome]
+		targetQty := targetShares[outcome]
 		localQty, avgPrice := localBoughtPositionAvg(engine, marketID, outcome)
-		mirrored := state.mirrored[outcome]
+		managed := state.managed[outcome]
+		if localQty > 0.01 || targetQty > 0.01 {
+			managed = true
+			state.managed[outcome] = true
+		}
 		tokenID := mkt.GetTokenIDForOutcome(market, outcome)
 		if tokenID == "" {
 			continue
 		}
 
-		if targetHeld && localQty <= 0.01 {
+		if targetHeld && targetQty > localQty+0.01 {
 			feeRate := tokenFeeRates[outcome]
 			if feeRate == 0 {
 				feeRate = 1000
@@ -6601,7 +6612,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			budget := core.CalculateTradeSizeForMode(realbotSizingCapitalForTrade(engine, liveCfg), liveCfg.TradeScaleFactor, liveCfg.TradeSizeUSDC, liveCfg.MaxTradeSize, liveCfg.TradeSizingMode)
-			requestedQty := normalizeMarketBuyShares(budget / submitPrice)
+			requestedQty := normalizeMarketBuyShares(math.Min(targetQty-localQty, budget/submitPrice))
 			requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, submitPrice)
 			if requestedQty < 1 {
 				tui.LogEvent("[%s] ⚠️ Copytrade buy skipped for %s: trade budget $%.2f is too small at cap $%.3f", marketID, outcome, budget, submitPrice)
@@ -6644,7 +6655,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			if _, buyErr := engine.BuyForMarket(marketID, outcome, execPrice, execQty); buyErr != nil {
 				tui.LogEvent("[%s] ⚠️ Copytrade local buy sync failed for %s: %v", marketID, outcome, buyErr)
 			}
-			state.mirrored[outcome] = true
+			state.managed[outcome] = true
 			tui.RecordOrderWithMode(marketID, outcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "copytrade", "FILLED")
 			tui.LogEvent("[%s] ✅ Copytrade bought %s %s at $%.3f", marketID, formatShareQty(execQty), outcome, execPrice)
 			if refreshWalletTruth != nil {
@@ -6653,7 +6664,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			continue
 		}
 
-		if !targetHeld && mirrored && localQty > 0.01 {
+		if managed && localQty > targetQty+0.01 {
 			feeRate := tokenFeeRates[outcome]
 			if feeRate == 0 {
 				feeRate = 1000
@@ -6690,15 +6701,17 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				submitPrice = bid
 			}
 
-			requestedQty := normalizeMarketSellShares(localQty)
+			requestedQty := normalizeMarketSellShares(localQty - targetQty)
 			if requestedQty < minOnChainActionShares {
-				state.mirrored[outcome] = false
+				if targetQty <= 0.01 {
+					state.managed[outcome] = false
+				}
 				continue
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target exited, sell %s @ floor $%.3f (%s bid $%.3f)",
-				marketID, outcome, formatShareQty(requestedQty), submitPrice, quoteSource, bid)
+			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target now holds %.2f shares, sell %s @ floor $%.3f (%s bid $%.3f)",
+				marketID, outcome, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, bid)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideSell, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
@@ -6728,8 +6741,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			profit := (execPrice - avgPrice) * execQty
 			tui.RecordOrderWithMode(marketID, outcome, "SELL", execQty, execPrice, execQty*execPrice, 0.0, profit, "copytrade", "FILLED")
 			tui.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", marketID, formatShareQty(execQty), outcome, execPrice)
-			if remainingQty, _ := localBoughtPositionAvg(engine, marketID, outcome); remainingQty <= 0.01 {
-				state.mirrored[outcome] = false
+			if remainingQty, _ := localBoughtPositionAvg(engine, marketID, outcome); remainingQty <= targetQty+0.01 && targetQty <= 0.01 {
+				state.managed[outcome] = false
 			}
 			if refreshWalletTruth != nil {
 				refreshWalletTruth(5 * time.Second)

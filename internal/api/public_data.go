@@ -277,5 +277,5 @@ func (c *RestClient) ResolvePublicProfileTarget(ctx context.Context, raw string)
 	if fallback == nil {
 		return "", nil, fmt.Errorf("no searchable profile wallet matched %q", raw)
 	}
-	return NormalizeWalletAddress(fallback.ProxyWallet), fallback, nil
+	return "", nil, fmt.Errorf("copytrade target %q is ambiguous; use the wallet address or exact profile handle", raw)
 }

@@ -68,6 +68,112 @@ func ComputeMakerSkewedQuote(isBuy bool, bid, ask, skew, quoteGap float64, param
 	return price, true
 }
 
+func ComputeMakerPairBuyPrices(bid1, ask1, bid2, ask2, maxPairCost, inventoryDelta float64, params MakerParams) (float64, float64, bool) {
+	if params.QuoteStep <= 0 || ask1 <= 0 || ask2 <= 0 || maxPairCost <= 0 {
+		return 0, 0, false
+	}
+
+	minPrice1 := params.QuoteStep
+	if bid1 > 0 {
+		minPrice1 = roundToStep(bid1+params.QuoteStep, params.QuoteStep)
+	}
+	minPrice2 := params.QuoteStep
+	if bid2 > 0 {
+		minPrice2 = roundToStep(bid2+params.QuoteStep, params.QuoteStep)
+	}
+	maxPrice1 := roundToStep(ask1-params.QuoteStep, params.QuoteStep)
+	maxPrice2 := roundToStep(ask2-params.QuoteStep, params.QuoteStep)
+	if maxPrice1 < minPrice1 || maxPrice2 < minPrice2 {
+		return 0, 0, false
+	}
+	if minPrice1+minPrice2 > maxPairCost+1e-9 {
+		return 0, 0, false
+	}
+
+	price1 := maxPrice1
+	price2 := maxPrice2
+	for price1+price2 > maxPairCost+1e-9 {
+		reduceFirst := 0
+		switch {
+		case inventoryDelta > 1e-9:
+			reduceFirst = 1
+		case inventoryDelta < -1e-9:
+			reduceFirst = 2
+		case price1-minPrice1 >= price2-minPrice2:
+			reduceFirst = 1
+		default:
+			reduceFirst = 2
+		}
+
+		if reduceFirst == 1 {
+			if next := roundToStep(price1-params.QuoteStep, params.QuoteStep); next >= minPrice1-1e-9 {
+				price1 = next
+				continue
+			}
+			if next := roundToStep(price2-params.QuoteStep, params.QuoteStep); next >= minPrice2-1e-9 {
+				price2 = next
+				continue
+			}
+			return 0, 0, false
+		}
+		if next := roundToStep(price2-params.QuoteStep, params.QuoteStep); next >= minPrice2-1e-9 {
+			price2 = next
+			continue
+		}
+		if next := roundToStep(price1-params.QuoteStep, params.QuoteStep); next >= minPrice1-1e-9 {
+			price1 = next
+			continue
+		}
+		return 0, 0, false
+	}
+
+	return price1, price2, true
+}
+
+func ComputeMakerPairQuoteQty(baseTradeValue, pairedShares, maxInventoryValue, cash, price1, price2 float64, params MakerParams, normalizeQty func(float64) float64) float64 {
+	pairCost := price1 + price2
+	if pairCost <= 0 || cash <= 0 {
+		return 0
+	}
+
+	maxPairShares := maxInventoryValue / pairCost
+	if pairedShares >= maxPairShares {
+		return 0
+	}
+
+	qty := baseTradeValue / pairCost
+	remainingPairs := maxPairShares - pairedShares
+	if qty > remainingPairs {
+		qty = remainingPairs
+	}
+
+	cashUsage := params.CashUsagePerOutcome * 2
+	if cashUsage <= 0 {
+		cashUsage = 1.0
+	} else if cashUsage > 1.0 {
+		cashUsage = 1.0
+	}
+	affordable := (cash * cashUsage) / pairCost
+	if qty > affordable {
+		qty = affordable
+	}
+	if normalizeQty != nil {
+		qty = normalizeQty(qty)
+	}
+
+	minShares := 0.0
+	if price1 > 0 {
+		minShares = params.MinQuoteValue / price1
+	}
+	if price2 > 0 {
+		minShares = math.Max(minShares, params.MinQuoteValue/price2)
+	}
+	if qty < minShares {
+		return 0
+	}
+	return qty
+}
+
 func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventoryValue, cash, price float64, params MakerParams, normalizeQty func(float64) float64) float64 {
 	if price <= 0 || cash <= 0 {
 		return 0
@@ -87,7 +193,7 @@ func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventoryValue,
 	// Convert our target dollar amount into shares based on the quoted price
 	baseShares := baseTradeValue / price
 	qty := baseShares * (1.0 - math.Max(0, skew)*params.QuoteSizeSkewFactor)
-	
+
 	remainingInventory := maxInventoryShares - positionShares
 	if qty > remainingInventory {
 		qty = remainingInventory
@@ -99,7 +205,7 @@ func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventoryValue,
 	if normalizeQty != nil {
 		qty = normalizeQty(qty)
 	}
-	
+
 	minShares := 0.0
 	if price > 0 {
 		minShares = params.MinQuoteValue / price
@@ -115,18 +221,18 @@ func ComputeMakerSellQty(baseTradeValue, positionShares, skew, price float64, pa
 	if positionShares <= 0 || price <= 0 {
 		return 0
 	}
-	
+
 	// Convert our target dollar amount into shares based on the quoted price
 	baseShares := baseTradeValue / price
 	qty := baseShares * (1.0 + math.Max(0, skew)*params.QuoteSizeSkewFactor)
-	
+
 	if qty > positionShares {
 		qty = positionShares
 	}
 	if normalizeQty != nil {
 		qty = normalizeQty(qty)
 	}
-	
+
 	minShares := 0.0
 	if price > 0 {
 		minShares = params.MinQuoteValue / price
@@ -149,7 +255,7 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 		minPrice = roundToStep(bid+params.QuoteStep, params.QuoteStep)
 	}
 
-	// Time-Decayed Stop Loss: 
+	// Time-Decayed Stop Loss:
 	// If the market has less than 3 minutes remaining, drop the protection
 	// threshold severely so we dump toxic bags before the market expires.
 	skewThreshold := 0.75

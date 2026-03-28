@@ -12,7 +12,7 @@ var testMakerParams = MakerParams{
 	InventorySkewStep:   0.020,
 	QuoteSizeSkewFactor: 0.75,
 	CashUsagePerOutcome: 0.35,
-	MinQuoteValue:      1.0,
+	MinQuoteValue:       1.0,
 }
 
 func TestComputeMakerInventorySkewClampsToRange(t *testing.T) {
@@ -38,6 +38,37 @@ func TestComputeMakerSkewedQuoteRespectsConfiguredGap(t *testing.T) {
 	}
 	if tight <= wide {
 		t.Fatalf("expected tighter gap to quote closer to ask: tight=%.3f wide=%.3f", tight, wide)
+	}
+}
+
+func TestComputeMakerPairBuyPricesRespectsPairCostAndBias(t *testing.T) {
+	price1, price2, ok := ComputeMakerPairBuyPrices(0.92, 0.95, 0.03, 0.06, 0.98, 10, testMakerParams)
+	if !ok {
+		t.Fatal("expected complementary maker buy prices")
+	}
+	if price1+price2 > 0.98+1e-9 {
+		t.Fatalf("pair cost %.3f exceeds cap", price1+price2)
+	}
+	if price1 >= 0.95 {
+		t.Fatalf("expected heavy side quote to be reduced below max aggression, got %.3f", price1)
+	}
+	if math.Abs(price2-0.059) > 0.000001 {
+		t.Fatalf("expected lighter side to stay near the ask guard, got %.3f", price2)
+	}
+}
+
+func TestComputeMakerPairQuoteQtyRespectsCashAndMinValue(t *testing.T) {
+	normalize := func(q float64) float64 { return math.Floor(q) }
+	qty := ComputeMakerPairQuoteQty(20, 0, 200, 100, 0.92, 0.05, testMakerParams, normalize)
+	if qty <= 0 {
+		t.Fatal("expected pair quote qty")
+	}
+	if qty != 20 {
+		t.Fatalf("expected 20 shares from pair notional sizing, got %.0f", qty)
+	}
+	tooSmall := ComputeMakerPairQuoteQty(0.2, 0, 200, 100, 0.92, 0.05, testMakerParams, normalize)
+	if tooSmall != 0 {
+		t.Fatalf("expected tiny pair quote to be blocked by min quote value, got %.2f", tooSmall)
 	}
 }
 

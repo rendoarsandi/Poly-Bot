@@ -557,6 +557,21 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	}
 }
 
+func TestRealbotCopytradeTargetSharesAggregatesByOutcome(t *testing.T) {
+	shares := realbotCopytradeTargetShares([]api.Position{
+		{Outcome: "Up", Size: 3.5},
+		{Outcome: "Up", Size: 1.25},
+		{Outcome: "Down", Size: 2.0},
+		{Outcome: "Down", Size: 0.009},
+	})
+	if math.Abs(shares["Up"]-4.75) > 0.000001 {
+		t.Fatalf("expected Up shares 4.75, got %.4f", shares["Up"])
+	}
+	if math.Abs(shares["Down"]-2.0) > 0.000001 {
+		t.Fatalf("expected Down shares 2.0, got %.4f", shares["Down"])
+	}
+}
+
 func TestShouldRealbotMakerBlockBuyBlocksHeavyLegWithoutProtectedSell(t *testing.T) {
 	if !shouldRealbotMakerBlockBuy(12, false, 8, 0.44, 0.43, 0.02) {
 		t.Fatal("expected heavy leg without protected sell to block maker buy")

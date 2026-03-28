@@ -338,6 +338,80 @@ func (ob *OrderBook) ProcessPriceUpdate(outcome string, bids, asks []MarketLevel
 	return filledOrders
 }
 
+// ProcessComplementaryBuyUpdate simulates Polymarket full-set matching where a resting
+// buy on one outcome can fill against opposing buy interest on the complementary
+// outcome when the combined bids reach $1.
+func (ob *OrderBook) ProcessComplementaryBuyUpdate(outcome string, oppositeBids []MarketLevel) []*LimitOrder {
+	ob.mu.Lock()
+
+	var filledOrders []*LimitOrder
+
+	type fillRecord struct {
+		order     *LimitOrder
+		fillQty   float64
+		fillPrice float64
+	}
+	var fills []fillRecord
+
+	var activeOrders []*LimitOrder
+	for _, order := range ob.orders {
+		if order.Outcome == outcome && order.Side == "buy" && (order.Status == OrderStatusOpen || order.Status == OrderStatusPartial) {
+			activeOrders = append(activeOrders, order)
+		}
+	}
+
+	sort.Slice(activeOrders, func(i, j int) bool {
+		return activeOrders[i].CreatedAt.Before(activeOrders[j].CreatedAt)
+	})
+
+	for _, order := range activeOrders {
+		remaining := order.RemainingQty()
+		if remaining <= 0 {
+			continue
+		}
+		for i := range oppositeBids {
+			bid := &oppositeBids[i]
+			if bid.Size <= 0 || order.Price+bid.Price < 1.0-1e-9 {
+				continue
+			}
+
+			fillQty := math.Min(remaining, bid.Size)
+			if fillQty <= 0 {
+				continue
+			}
+
+			order.FilledQty += fillQty
+			order.FillPrice = order.Price
+			bid.Size -= fillQty
+			remaining -= fillQty
+
+			if order.FilledQty >= order.Quantity-0.0001 {
+				order.Status = OrderStatusFilled
+			} else {
+				order.Status = OrderStatusPartial
+			}
+
+			filledOrders = append(filledOrders, order)
+			fills = append(fills, fillRecord{order: order, fillQty: fillQty, fillPrice: order.Price})
+
+			if order.Status == OrderStatusFilled {
+				break
+			}
+		}
+	}
+
+	onFill := ob.onFill
+	ob.mu.Unlock()
+
+	if onFill != nil {
+		for _, f := range fills {
+			onFill(f.order, f.fillQty, f.fillPrice)
+		}
+	}
+
+	return filledOrders
+}
+
 // GetOpenOrders returns all open orders
 func (ob *OrderBook) GetOpenOrders() []*LimitOrder {
 	ob.mu.RLock()
