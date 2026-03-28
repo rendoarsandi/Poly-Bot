@@ -209,16 +209,22 @@ func (f *BinanceFuturesPriceFeed) recordSample(price float64, at time.Time, sour
 	f.lastUpdate = at
 	f.lastSource = source
 	f.lastError = ""
-	f.samples = append(f.samples, binanceFuturesSample{Price: price, At: at})
+	series := f.samples
+	if n := len(series); n > 0 && !at.Before(series[n-1].At) && at.Sub(series[n-1].At) >= f.lookback {
+		// A stream gap invalidates the old baseline; rebuild the lookback window from fresh samples only.
+		series = nil
+	}
+	series = append(series, binanceFuturesSample{Price: price, At: at})
 
 	cutoff := at.Add(-f.maxBufferAge)
 	trim := 0
-	for trim < len(f.samples)-1 && f.samples[trim].At.Before(cutoff) {
+	for trim < len(series)-1 && series[trim].At.Before(cutoff) {
 		trim++
 	}
 	if trim > 0 {
-		f.samples = append([]binanceFuturesSample(nil), f.samples[trim:]...)
+		series = append([]binanceFuturesSample(nil), series[trim:]...)
 	}
+	f.samples = series
 }
 
 func (f *BinanceFuturesPriceFeed) setConnected(connected bool) {

@@ -385,6 +385,9 @@ func realbotAssetPrefix(marketID string) string {
 	if idx := strings.Index(marketID, "#"); idx >= 0 {
 		marketID = marketID[:idx]
 	}
+	if idx := strings.Index(marketID, "-"); idx >= 0 {
+		marketID = marketID[:idx]
+	}
 	return strings.ToUpper(strings.TrimSpace(marketID))
 }
 
@@ -545,13 +548,41 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 			*lastBinanceLog = time.Now()
 		}
 	}
+	status := paper.MarketBinanceSignal{
+		Enabled:   true,
+		Status:    "waiting",
+		Reason:    "awaiting Binance signal",
+		UpdatedAt: time.Now(),
+	}
+	setStatusSnapshot := func(snap api.BinanceFuturesSignalSnapshot) {
+		status.Symbol = snap.Symbol
+		status.Price = snap.Price
+		status.DeltaPercent = snap.DeltaPercent
+	}
+	setStatusSignal := func(signal realbotBinanceGapSignal) {
+		status.TargetOutcome = signal.TargetOutcome
+		status.SignalLabel = signal.SignalLabel
+		status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
+		status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
+		status.TargetSpreadCents = signal.TargetSpreadCents
+	}
+	defer func() {
+		if tui != nil {
+			status.UpdatedAt = time.Now()
+			tui.SetMarketBinanceSignal(id, status)
+		}
+	}()
 
 	mapping, ok := realbotResolveDirectionalOutcomes(outcomes)
 	if !ok {
+		status.Status = "inactive"
+		status.Reason = "outcomes are not Up/Down or Yes/No"
 		logThrottled("[%s] ℹ️ Binance gap mode skipped: outcomes are not Up/Down or Yes/No", id)
 		return
 	}
 	if binanceFeed == nil {
+		status.Status = "inactive"
+		status.Reason = "no Binance futures feed configured"
 		logThrottled("[%s] ℹ️ Binance gap mode skipped: no Binance futures feed configured", id)
 		return
 	}
@@ -565,6 +596,8 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	upQty, upAvg := localBoughtPositionAvg(engine, id, mapping.Up)
 	downQty, downAvg := localBoughtPositionAvg(engine, id, mapping.Down)
 	if upQty > 0 && downQty > 0 {
+		status.Status = "exit"
+		status.Reason = "holding both outcomes; waiting for cleanup"
 		logThrottled("[%s] ⚠️ Binance gap mode holding both sides locally; waiting for existing recovery/cleanup before new entries", id)
 		return
 	}
@@ -578,7 +611,11 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		heldOutcome, heldQty, heldAvg = mapping.Down, downQty, downAvg
 	}
 	if heldOutcome != "" {
+		status.TargetOutcome = heldOutcome
+		status.Status = "exit"
+		status.Reason = "managing existing position"
 		if ok, reason := realbotCanUseLocalDirectionalSellQuote(time.Now(), heldOutcome, tokenBids, tokenAsks, tokenFullBids, quoteState, maxQuoteAge); !ok {
+			status.Reason = reason
 			logThrottled("[%s] ⏳ Binance exit waiting for fresh %s quote (%s)", id, heldOutcome, reason)
 			return
 		}
@@ -641,16 +678,23 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 
 	cooldown := core.ResolveBinanceSignalCooldown(cfg)
 	if lastTrade != nil && !lastTrade.IsZero() && time.Since(*lastTrade) < cooldown {
+		status.Status = "cooldown"
+		status.Reason = fmt.Sprintf("cooldown %s", cooldown.Round(time.Millisecond))
 		return
 	}
 
 	snap := binanceFeed.Snapshot(time.Now())
+	setStatusSnapshot(snap)
 	if !snap.Ready {
+		status.Status = "warmup"
+		status.Reason = fmt.Sprintf("waiting for full lookback window on %s", snap.Symbol)
 		logThrottled("[%s] ⏳ Binance gap mode waiting for full lookback window on %s", id, snap.Symbol)
 		return
 	}
 	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
 	if snap.UpdatedAt.IsZero() || time.Since(snap.UpdatedAt) > maxSignalAge {
+		status.Status = "waiting"
+		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
 		logThrottled("[%s] ⏳ Binance gap mode waiting for fresh WS signal on %s", id, snap.Symbol)
 		return
 	}
@@ -659,11 +703,16 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		threshold = 0.20
 	}
 	if math.Abs(snap.DeltaPercent) < threshold {
+		status.Status = "quiet"
+		status.Reason = fmt.Sprintf("|Δ| %.3f%% < %.3f%% threshold", math.Abs(snap.DeltaPercent), threshold)
 		return
 	}
 
 	signal, reason := realbotEvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, snap, polyTracker, maxSignalAge)
+	setStatusSignal(signal)
 	if reason != "" {
+		status.Status = "waiting"
+		status.Reason = reason
 		logThrottled("[%s] ⏳ Binance gap mode %s", id, reason)
 		return
 	}
@@ -672,6 +721,8 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		polyCatchupMax = defaultBinanceSignalPolyMaxMoveCents
 	}
 	if signal.PolyFavorableMoveCents > polyCatchupMax {
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", id, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
 		return
 	}
@@ -680,6 +731,8 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		polyAdverseMax = defaultBinanceSignalPolyAdverseMoveCents
 	}
 	if signal.PolyAdverseMoveCents > polyAdverseMax {
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", id, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
 		return
 	}
@@ -688,17 +741,28 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		spreadMax = defaultBinanceSignalSpreadMaxCents
 	}
 	if signal.TargetSpreadCents > spreadMax {
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("%s spread %.2fc > %.2fc", signal.TargetOutcome, signal.TargetSpreadCents, spreadMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: %s spread %.2fc > %.2fc", id, signal.TargetOutcome, signal.TargetSpreadCents, spreadMax)
 		return
 	}
 	targetOutcome := signal.TargetOutcome
 	signalLabel := signal.SignalLabel
+	status.Ready = true
+	status.Status = "ready"
+	status.Reason = "signal ready"
 	if ok, reason := realbotCanUseLocalDirectionalBuyQuote(time.Now(), targetOutcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, maxQuoteAge); !ok {
+		status.Ready = false
+		status.Status = "waiting"
+		status.Reason = reason
 		logThrottled("[%s] ⏳ Binance entry waiting for fresh %s quote (%s)", id, targetOutcome, reason)
 		return
 	}
 	ask := tokenAsks[targetOutcome]
 	if ask < liveCfg.MinAskPrice || ask > liveCfg.MaxAskPrice {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("%s ask $%.3f outside %.3f-%.3f", targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
 		logThrottled("[%s] ⚠️ Binance entry skipped: %s ask $%.3f outside configured range %.3f-%.3f", id, targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
 		return
 	}
@@ -718,10 +782,16 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		shares = safeShares
 	}
 	if shares < 1 {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("actionable size below 1 share for %s", targetOutcome)
 		logThrottled("[%s] ⚠️ Binance entry skipped: actionable size below 1 share for %s", id, targetOutcome)
 		return
 	}
 	if entryGate != nil && !entryGate.TryAcquire() {
+		status.Ready = false
+		status.Status = "waiting"
+		status.Reason = "another market is executing a live entry"
 		logThrottled("[%s] ⏳ Binance entry waiting: another market is executing a live entry", id)
 		return
 	}
@@ -729,6 +799,9 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 
 	tokenID := getTokenID(targetOutcome)
 	if tokenID == "" {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("missing token id for %s", targetOutcome)
 		logThrottled("[%s] ⚠️ Binance entry skipped: missing token id for %s", id, targetOutcome)
 		return
 	}
@@ -739,9 +812,14 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	exec := executeMarketOrderWithSignals(ctx, trader, api.SideBuy, tokenID, targetOutcome, limitPrice, shares, rate, initialPosition, 2500*time.Millisecond)
 	if !exec.Success {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("entry failed for %s", targetOutcome)
 		if exec.Err != nil {
+			status.Reason = exec.Err.Error()
 			logThrottled("[%s] ⚠️ Binance entry failed for %s: %v", id, targetOutcome, exec.Err)
 		} else if exec.Result != nil && exec.Result.Message != "" {
+			status.Reason = exec.Result.Message
 			logThrottled("[%s] ⚠️ Binance entry failed for %s: %s", id, targetOutcome, exec.Result.Message)
 		}
 		return
@@ -752,6 +830,9 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	buyQty = clampRequestedExecutionQty(buyQty, shares)
 	if buyQty < minOnChainActionShares {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = fmt.Sprintf("entry confirmation too small for %s", targetOutcome)
 		logThrottled("[%s] ⚠️ Binance entry confirmation too small for %s", id, targetOutcome)
 		return
 	}
@@ -761,9 +842,14 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	cost := reportedBuyCost(exec, buyPrice, buyQty, shares)
 	if _, err := engine.BuyForMarket(id, targetOutcome, buyPrice, buyQty); err != nil {
+		status.Ready = false
+		status.Status = "blocked"
+		status.Reason = err.Error()
 		logThrottled("[%s] ⚠️ Binance entry engine sync failed for %s: %v", id, targetOutcome, err)
 		return
 	}
+	status.Status = "triggered"
+	status.Reason = fmt.Sprintf("bought %.2f %s @ $%.3f", buyQty, targetOutcome, buyPrice)
 	tui.LogEvent("[%s] ⚡ BINANCE %s SIGNAL %s %.2f @ $%.3f | Δ %.3f%% over %s (%s) | poly catch-up %.2fc adverse %.2fc spread %.2fc", id, signalLabel, targetOutcome, buyQty, buyPrice, snap.DeltaPercent, core.ResolveBinanceSignalLookback(cfg), snap.Symbol, signal.PolyFavorableMoveCents, signal.PolyAdverseMoveCents, signal.TargetSpreadCents)
 	tui.RecordOrderWithMode(id, targetOutcome, "BUY", buyQty, buyPrice, cost, snap.DeltaPercent, 0.0, paperArbModeBinanceGap, "FILLED")
 	if lastTrade != nil {

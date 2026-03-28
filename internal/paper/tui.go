@@ -148,6 +148,16 @@ func truncateMarketLabel(id string, maxLen int) string {
 	return label
 }
 
+func truncateText(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	if maxLen == 1 {
+		return s[:1]
+	}
+	return s[:maxLen-1] + "…"
+}
+
 func marginStyle(pct float64) lipgloss.Style {
 	switch {
 	case pct >= 3:
@@ -333,6 +343,23 @@ type MarketData struct {
 	LastUpdate      time.Time
 	LastDepthUpdate time.Time
 	DataSource      string // "WS" or "REST"
+	BinanceSignal   MarketBinanceSignal
+}
+
+type MarketBinanceSignal struct {
+	Enabled                bool
+	Symbol                 string
+	Price                  float64
+	DeltaPercent           float64
+	TargetOutcome          string
+	SignalLabel            string
+	PolyFavorableMoveCents float64
+	PolyAdverseMoveCents   float64
+	TargetSpreadCents      float64
+	Ready                  bool
+	Status                 string
+	Reason                 string
+	UpdatedAt              time.Time
 }
 
 // PendingOrder represents an order the bot intends to place.
@@ -1118,6 +1145,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					LastUpdate:      v.LastUpdate,
 					LastDepthUpdate: v.LastDepthUpdate,
 					DataSource:      v.DataSource,
+					BinanceSignal:   v.BinanceSignal,
 				}
 				for outcome, price := range v.Bids {
 					md.Bids[outcome] = price
@@ -1926,6 +1954,30 @@ func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.
 		RealAsks:    make(map[string]float64),
 	}
 	t.markDirtyLocked()
+}
+
+func (t *TUI) SetMarketBinanceSignal(marketID string, signal MarketBinanceSignal) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if market, ok := t.markets[marketID]; ok {
+		current := market.BinanceSignal
+		if current.Enabled == signal.Enabled &&
+			current.Symbol == signal.Symbol &&
+			current.Price == signal.Price &&
+			current.DeltaPercent == signal.DeltaPercent &&
+			current.TargetOutcome == signal.TargetOutcome &&
+			current.SignalLabel == signal.SignalLabel &&
+			current.PolyFavorableMoveCents == signal.PolyFavorableMoveCents &&
+			current.PolyAdverseMoveCents == signal.PolyAdverseMoveCents &&
+			current.TargetSpreadCents == signal.TargetSpreadCents &&
+			current.Ready == signal.Ready &&
+			current.Status == signal.Status &&
+			current.Reason == signal.Reason {
+			return
+		}
+		market.BinanceSignal = signal
+		t.markDirtyLocked()
+	}
 }
 
 func (t *TUI) ClearMarkets() {
@@ -2852,6 +2904,63 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			priceLinesB.WriteString(styleDimmed.Render("  Waiting for liquidity…"))
 		}
 
+	}
+
+	if mkt.BinanceSignal.Enabled {
+		sig := mkt.BinanceSignal
+		priceText := "--"
+		switch {
+		case sig.Price >= 1000:
+			priceText = fmt.Sprintf("%.0f", sig.Price)
+		case sig.Price >= 100:
+			priceText = fmt.Sprintf("%.2f", sig.Price)
+		case sig.Price >= 1:
+			priceText = fmt.Sprintf("%.3f", sig.Price)
+		case sig.Price > 0:
+			priceText = fmt.Sprintf("%.5f", sig.Price)
+		}
+
+		statusLabel := strings.ToUpper(strings.TrimSpace(sig.Status))
+		if statusLabel == "" {
+			if sig.Ready {
+				statusLabel = "READY"
+			} else {
+				statusLabel = "WAIT"
+			}
+		}
+		statusStyle := styleYellow
+		switch strings.ToLower(strings.TrimSpace(sig.Status)) {
+		case "ready":
+			statusStyle = styleGreen
+		case "triggered":
+			statusStyle = styleCyan
+		case "blocked", "inactive":
+			statusStyle = styleRed
+		}
+
+		target := core.SanitizeString(sig.TargetOutcome)
+		binLine := fmt.Sprintf("  Bin %s $%s  Δ%+.3f%%", strings.ToUpper(strings.TrimSpace(sig.Symbol)), priceText, sig.DeltaPercent)
+		if target != "" {
+			binLine += " → " + target
+		} else if label := strings.TrimSpace(sig.SignalLabel); label != "" {
+			binLine += " " + strings.ToUpper(label)
+		}
+		priceLinesB.WriteString("\n" + truncateText(binLine, innerW))
+
+		if sig.TargetOutcome != "" || sig.PolyFavorableMoveCents != 0 || sig.PolyAdverseMoveCents != 0 || sig.TargetSpreadCents != 0 || sig.Ready {
+			detailLine := fmt.Sprintf("  Lag fav %.2fc  adv %.2fc  spr %.2fc",
+				sig.PolyFavorableMoveCents,
+				sig.PolyAdverseMoveCents,
+				sig.TargetSpreadCents,
+			)
+			priceLinesB.WriteString("\n" + truncateText(detailLine, innerW-len(statusLabel)-2) + "  " + statusStyle.Render(statusLabel))
+		} else {
+			priceLinesB.WriteString("\n" + truncateText("  Status", innerW-len(statusLabel)-2) + "  " + statusStyle.Render(statusLabel))
+		}
+
+		if reason := strings.TrimSpace(sig.Reason); reason != "" {
+			priceLinesB.WriteString("\n" + styleDimmed.Render(truncateText("  "+reason, innerW)))
+		}
 	}
 
 	content := header + "\n" +

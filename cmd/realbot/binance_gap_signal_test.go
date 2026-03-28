@@ -12,6 +12,7 @@ func TestRealbotDirectionalSignalTrackerSnapshotUsesLookbackMid(t *testing.T) {
 	tracker := newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes"})
 	base := time.Unix(1700000000, 0)
 	tracker.Record("Yes", 0.44, 0.46, base)
+	tracker.Record("Yes", 0.445, 0.465, base.Add(800*time.Millisecond))
 	tracker.Record("Yes", 0.45, 0.47, base.Add(1700*time.Millisecond))
 
 	snap := tracker.Snapshot("Yes", base.Add(1700*time.Millisecond))
@@ -26,6 +27,28 @@ func TestRealbotDirectionalSignalTrackerSnapshotUsesLookbackMid(t *testing.T) {
 	}
 }
 
+func TestRealbotDirectionalSignalTrackerSnapshotResetsAfterGap(t *testing.T) {
+	tracker := newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes"})
+	base := time.Unix(1700000000, 0)
+	tracker.Record("Yes", 0.44, 0.46, base)
+	tracker.Record("Yes", 0.47, 0.49, base.Add(4*time.Second))
+
+	snap := tracker.Snapshot("Yes", base.Add(4*time.Second))
+	if snap.Ready {
+		t.Fatal("expected quote tracker to stay unready after a quote gap until new history is collected")
+	}
+
+	tracker.Record("Yes", 0.475, 0.495, base.Add(4800*time.Millisecond))
+	tracker.Record("Yes", 0.48, 0.50, base.Add(5600*time.Millisecond))
+	snap = tracker.Snapshot("Yes", base.Add(5600*time.Millisecond))
+	if !snap.Ready {
+		t.Fatal("expected quote tracker to become ready after a full fresh post-gap window")
+	}
+	if math.Abs(snap.BaselineMid-0.48) > 0.000001 {
+		t.Fatalf("expected post-gap baseline mid 0.48, got %.4f", snap.BaselineMid)
+	}
+}
+
 func TestRealbotEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 	tracker := newRealbotDirectionalSignalTracker(1500*time.Millisecond, []string{"Yes", "No"})
 	base := time.Unix(1700000000, 0)
@@ -33,6 +56,8 @@ func TestRealbotEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 
 	tracker.Record("Yes", 0.44, 0.46, base)
 	tracker.Record("No", 0.54, 0.56, base)
+	tracker.Record("Yes", 0.448, 0.452, base.Add(800*time.Millisecond))
+	tracker.Record("No", 0.548, 0.552, base.Add(800*time.Millisecond))
 	tracker.Record("Yes", 0.456, 0.460, end)
 	tracker.Record("No", 0.536, 0.540, end)
 

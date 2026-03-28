@@ -44,6 +44,14 @@ func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	}
 }
 
+func TestRealbotBinanceSymbolForExactSlugMarket(t *testing.T) {
+	cfg := &core.Config{BinanceQuoteAsset: "usdt"}
+	got := realbotBinanceSymbolForMarket("btc-updown-15m-1767358800#deadbeef", cfg)
+	if got != "BTCUSDT" {
+		t.Fatalf("expected exact slug market to map to BTCUSDT, got %q", got)
+	}
+}
+
 func TestRealbotResolveDirectionalOutcomesSupportsUpDownAndYesNo(t *testing.T) {
 	if mapping, ok := realbotResolveDirectionalOutcomes([]string{"Up", "Down"}); !ok || mapping.Up != "Up" || mapping.Down != "Down" {
 		t.Fatalf("unexpected Up/Down mapping: %#v ok=%v", mapping, ok)

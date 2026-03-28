@@ -90,16 +90,21 @@ func (t *realbotDirectionalSignalTracker) Record(outcome string, bid, ask float6
 	defer t.mu.Unlock()
 
 	key := strings.TrimSpace(outcome)
-	t.samples[key] = append(t.samples[key], realbotMidSample{Mid: mid, At: at})
-	cutoff := at.Add(-t.maxBufferAge)
 	series := t.samples[key]
+	if n := len(series); n > 0 && !at.Before(series[n-1].At) && at.Sub(series[n-1].At) >= t.lookback {
+		// Quote droughts should restart the lag window so stale pre-gap mids cannot drive a fresh signal.
+		series = nil
+	}
+	series = append(series, realbotMidSample{Mid: mid, At: at})
+	cutoff := at.Add(-t.maxBufferAge)
 	trim := 0
 	for trim < len(series)-1 && series[trim].At.Before(cutoff) {
 		trim++
 	}
 	if trim > 0 {
-		t.samples[key] = append([]realbotMidSample(nil), series[trim:]...)
+		series = append([]realbotMidSample(nil), series[trim:]...)
 	}
+	t.samples[key] = series
 }
 
 func (t *realbotDirectionalSignalTracker) Snapshot(outcome string, now time.Time) realbotDirectionalSignalSnapshot {

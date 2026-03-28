@@ -395,6 +395,41 @@ func TestRenderMarketPanelShowsAwaitingWhenGapIsStale(t *testing.T) {
 	}
 }
 
+func TestRenderMarketPanelShowsBinanceSignalStatus(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "btc-market",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now(),
+		Bids:       map[string]float64{"Yes": 0.41, "No": 0.57},
+		Asks:       map[string]float64{"Yes": 0.43, "No": 0.59},
+		RealBids:   map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:   map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource: "WS",
+		BinanceSignal: MarketBinanceSignal{
+			Enabled:                true,
+			Symbol:                 "BTCUSDT",
+			Price:                  84250.5,
+			DeltaPercent:           0.642,
+			TargetOutcome:          "Yes",
+			PolyFavorableMoveCents: 0.8,
+			PolyAdverseMoveCents:   0.1,
+			TargetSpreadCents:      0.4,
+			Ready:                  true,
+			Status:                 "ready",
+			Reason:                 "signal ready",
+		},
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	for _, want := range []string{"BTCUSDT", "0.642%", "Yes", "0.80c", "READY", "signal ready"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected Binance status %q in panel, got %q", want, rendered)
+		}
+	}
+}
+
 func TestRenderMarketPanelHidesGapWhenCurrentPairQuotesAreStale(t *testing.T) {
 	model := tuiModel{}
 	mkt := &MarketData{
