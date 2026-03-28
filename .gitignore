@@ -12,6 +12,8 @@ logs/
 # IDEs
 .vscode/
 .idea/
+*.tmp
+*.bak
 
 # Binaries
 /bot
@@ -34,12 +36,6 @@ bot_activity.csv
 /derivekey
 
 # Built binaries
-manual
-manualbot
-util
-utilbot
-paperbot
-realbot
-measure_clob_ping
+/measure_clob_ping
 codex_login*.log
 codex_login.pid

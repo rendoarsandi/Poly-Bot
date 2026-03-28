@@ -375,7 +375,9 @@ type TUISettings struct {
 	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
 	TradeSizeUSDC                  float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
-	PaperArbMode                   string  // taker or maker
+	PaperArbMode                   string  // taker, copytrade, or maker
+	CopytradeTarget                string  // wallet address, profile handle, or profile URL
+	CopytradePollIntervalMs        int     // public-wallet poll interval for copytrade mode
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
@@ -399,9 +401,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, PaperArbMode: "taker", BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 const (
@@ -412,6 +414,8 @@ const (
 	settingsRowTradeSizingValue
 	settingsRowMinMargin
 	settingsRowPaperArbMode
+	settingsRowCopytradeTarget
+	settingsRowCopytradePoll
 	settingsRowExecutionSlip
 	settingsRowSplitMinMargin
 	settingsRowSplitStrategy
@@ -455,15 +459,31 @@ func isMakerSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "maker")
 }
 
+func isCopytradeSettingsMode(cfg TUISettings) bool {
+	return strings.EqualFold(cfg.PaperArbMode, "copytrade")
+}
+
+func settingsArbModes() []string {
+	return []string{"taker", "copytrade", "maker"}
+}
+
 func isRowVisible(cfg TUISettings, idx int) bool {
 	maker := isMakerSettingsMode(cfg)
+	copytrade := isCopytradeSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
 	closeMarket := cfg.TakerCloseMarket
 
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
 		switch idx {
-		case settingsRowTimeframe, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
+		case settingsRowTimeframe, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowCopytradeTarget, settingsRowCopytradePoll:
+			return false
+		}
+	}
+
+	if copytrade {
+		switch idx {
+		case settingsRowMarket, settingsRowTimeframe, settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
 			return false
 		}
 	}
@@ -498,6 +518,7 @@ func settingsRowEditable(cfg TUISettings, idx int) bool {
 
 func settingsRowLabel(cfg TUISettings, idx int) string {
 	maker := isMakerSettingsMode(cfg)
+	copytrade := isCopytradeSettingsMode(cfg)
 	switch idx {
 	case settingsRowTradeSizingMode:
 		return "Trade Size Mode"
@@ -510,9 +531,16 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		if maker {
 			return "Maker Min Sell Edge %"
 		}
+		if copytrade {
+			return "Copy Margin"
+		}
 		return "Buy Min Margin %"
 	case settingsRowExecutionSlip:
 		return "Max Exec Slip %"
+	case settingsRowCopytradeTarget:
+		return "Copytrade Target"
+	case settingsRowCopytradePoll:
+		return "Copytrade Poll"
 	case settingsRowSplitMinMargin:
 		return "Split Min Margin"
 	case settingsRowSplitStrategy:
@@ -527,10 +555,16 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		if maker {
 			return "Maker Min Buy Price"
 		}
+		if copytrade {
+			return "Copy Min Sell Price"
+		}
 		return "Min Ask Price"
 	case settingsRowMaxAskPrice:
 		if maker {
 			return "Maker Max Buy Price"
+		}
+		if copytrade {
+			return "Copy Max Buy Price"
 		}
 		return "Max Ask Price"
 	case settingsRowMakerMergeBuffer:
@@ -586,6 +620,14 @@ func normalizeMarketSelection(slug string) string {
 
 func normalizeTUISettings(s TUISettings) TUISettings {
 	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	switch strings.ToLower(strings.TrimSpace(s.PaperArbMode)) {
+	case "maker":
+		s.PaperArbMode = "maker"
+	case "copytrade":
+		s.PaperArbMode = "copytrade"
+	default:
+		s.PaperArbMode = "taker"
+	}
 	if strings.EqualFold(strings.TrimSpace(s.TradeSizingMode), core.TradeSizingModeUSDC) {
 		s.TradeSizingMode = core.TradeSizingModeUSDC
 	} else {
@@ -616,6 +658,16 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	s.BuyExecutionMarginFloorPercent = normalizeExecutionFloorSetting(s.BuyExecutionMarginFloorPercent)
 	s.TakerCloseMarketSlippage = normalizeTakerClosePriceSetting(s.TakerCloseMarketSlippage, 0.99)
 	s.TakerCloseMarketMinPrice = normalizeTakerClosePriceSetting(s.TakerCloseMarketMinPrice, 0.60)
+	s.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
+	if s.CopytradePollIntervalMs <= 0 {
+		s.CopytradePollIntervalMs = 2000
+	}
+	if s.CopytradePollIntervalMs < 250 {
+		s.CopytradePollIntervalMs = 250
+	}
+	if s.CopytradePollIntervalMs > 30000 {
+		s.CopytradePollIntervalMs = 30000
+	}
 	if s.TakerCloseMarketSlippage < s.TakerCloseMarketMinPrice {
 		s.TakerCloseMarketSlippage = s.TakerCloseMarketMinPrice
 	}
@@ -653,6 +705,32 @@ func normalizeExecutionFloorSetting(v float64) float64 {
 
 func executionFloorDisplayPercent(v float64) float64 {
 	return normalizeExecutionFloorSetting(v) * 100.0
+}
+
+func normalizeCopytradeTargetInput(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	return raw
+}
+
+func renderCopytradeTargetValue(raw string, editing bool, buffer string) string {
+	target := normalizeCopytradeTargetInput(raw)
+	if editing {
+		value := normalizeCopytradeTargetInput(buffer)
+		if value == "" {
+			value = "paste wallet / @handle / profile URL"
+		}
+		return styleCyan.Render(" " + value + " _ ")
+	}
+	if target == "" {
+		return styleMuted.Render(" paste target ")
+	}
+	if len(target) > 28 {
+		target = target[:25] + "..."
+	}
+	return styleCyan.Render(" " + target + " ")
 }
 
 func displayedTradeBudgetsWithMode(mode string, cash, equity, startingBalance, sizingBalance, tradeFactor, tradeSizeUSDC, maxTradeSize, multiplier float64, tradeSizingMode string) (base, effective float64) {
@@ -804,6 +882,8 @@ type tuiModel struct {
 	// Settings overlay state (immediate, not snapshotted)
 	showSettings   bool
 	settingsCursor int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
+	settingsEdit   bool
+	settingsInput  string
 	scrollOffset   int
 	contentLines   int
 }
@@ -1131,8 +1211,56 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Settings overlay key handling ────────────────────────────────────
 		if m.showSettings {
+			if m.settingsEdit {
+				switch key {
+				case "esc":
+					m.settingsEdit = false
+					m.settingsInput = ""
+					return m, nil
+				case "enter":
+					m.tui.mu.Lock()
+					changed := normalizeCopytradeTargetInput(m.tui.settings.CopytradeTarget) != normalizeCopytradeTargetInput(m.settingsInput)
+					m.tui.settings.CopytradeTarget = normalizeCopytradeTargetInput(m.settingsInput)
+					m.tui.settings = normalizeTUISettings(m.tui.settings)
+					if changed && m.tui.onSettingsChange != nil {
+						m.tui.onSettingsChange(m.tui.settings)
+					}
+					m.tui.mu.Unlock()
+					m.settingsEdit = false
+					m.settingsInput = ""
+					return m, nil
+				case "backspace", "ctrl+h":
+					runes := []rune(m.settingsInput)
+					if len(runes) > 0 {
+						m.settingsInput = string(runes[:len(runes)-1])
+					}
+					return m, nil
+				case "ctrl+u":
+					m.settingsInput = ""
+					return m, nil
+				}
+				if len(msg.Runes) > 0 {
+					m.settingsInput += string(msg.Runes)
+				}
+				return m, nil
+			}
+
 			switch key {
-			case "s", "S", "enter":
+			case "s", "S":
+				m.tui.mu.Lock()
+				m.tui.restartReq = true
+				m.tui.mu.Unlock()
+				m.showSettings = false
+				m.refreshScrollMetrics()
+				return m, nil
+			case "enter":
+				if m.settingsCursor == settingsRowCopytradeTarget && isCopytradeSettingsMode(m.tui.settings) {
+					m.tui.mu.Lock()
+					m.settingsInput = m.tui.settings.CopytradeTarget
+					m.tui.mu.Unlock()
+					m.settingsEdit = true
+					return m, nil
+				}
 				m.tui.mu.Lock()
 				m.tui.restartReq = true
 				m.tui.mu.Unlock()
@@ -1225,7 +1353,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowPaperArbMode:
-					m.tui.settings.PaperArbMode = "taker"
+					m.tui.settings.PaperArbMode = cycleString(settingsArbModes(), m.tui.settings.PaperArbMode, -1)
+					changed = true
+				case settingsRowCopytradeTarget:
+					// Use Enter to edit this free-form field.
+				case settingsRowCopytradePoll:
+					m.tui.settings.CopytradePollIntervalMs -= 250
+					if m.tui.settings.CopytradePollIntervalMs < 250 {
+						m.tui.settings.CopytradePollIntervalMs = 250
+					}
 					changed = true
 				case settingsRowExecutionSlip:
 					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.01
@@ -1412,7 +1548,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowPaperArbMode:
-					m.tui.settings.PaperArbMode = "maker"
+					m.tui.settings.PaperArbMode = cycleString(settingsArbModes(), m.tui.settings.PaperArbMode, 1)
+					changed = true
+				case settingsRowCopytradeTarget:
+					// Use Enter to edit this free-form field.
+				case settingsRowCopytradePoll:
+					m.tui.settings.CopytradePollIntervalMs += 250
+					if m.tui.settings.CopytradePollIntervalMs > 30000 {
+						m.tui.settings.CopytradePollIntervalMs = 30000
+					}
 					changed = true
 				case settingsRowExecutionSlip:
 					m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
@@ -1590,6 +1734,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "s", "S":
 			m.showSettings = true
+			m.settingsEdit = false
+			m.settingsInput = ""
+			if !isRowVisible(m.tui.settings, m.settingsCursor) {
+				m.settingsCursor = 0
+				for m.settingsCursor < settingsRowCount-1 && !isRowVisible(m.tui.settings, m.settingsCursor) {
+					m.settingsCursor++
+				}
+			}
 			m.refreshScrollMetrics()
 			return m, nil
 		case "c", "C":
@@ -3513,6 +3665,8 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		switch mode {
 		case "maker":
 			modeLabel = "maker"
+		case "copytrade":
+			modeLabel = "copy"
 		case "taker-close":
 			modeLabel = "close"
 		case "taker":
@@ -3694,6 +3848,11 @@ func (m tuiModel) renderSettings(w int) string {
 	title := titleStyle.Render("⚙  LIVE SETTINGS")
 
 	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [s/Esc] Close")
+	if m.settingsEdit {
+		keysLine = styleDimmed.Render("  Paste copytrade target  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
+	} else if isCopytradeSettingsMode(cfg) {
+		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [Enter] Paste Target  [1/2/3] Presets  [s/Esc] Close")
+	}
 
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
 
@@ -3707,6 +3866,7 @@ func (m tuiModel) renderSettings(w int) string {
 	fmtPct := func(v float64) string { return fmt.Sprintf("%5.1f%%", v*100) }
 
 	makerMode := isMakerSettingsMode(cfg)
+	copytradeMode := isCopytradeSettingsMode(cfg)
 	tradeSizeBarMax := 50.0
 	if cfg.MaxTradeSize > 0 {
 		tradeSizeBarMax = cfg.MaxTradeSize
@@ -3766,9 +3926,26 @@ func (m tuiModel) renderSettings(w int) string {
 				if strings.EqualFold(cfg.PaperArbMode, "maker") {
 					return styleGreen.Render(" maker ")
 				}
+				if strings.EqualFold(cfg.PaperArbMode, "copytrade") {
+					return styleCyan.Render(" copytrade ")
+				}
 				return styleYellow.Render(" taker ")
 			}(),
 			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowCopytradeTarget),
+			value: renderCopytradeTargetValue(
+				cfg.CopytradeTarget,
+				m.settingsEdit && m.settingsCursor == settingsRowCopytradeTarget,
+				m.settingsInput,
+			),
+			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowCopytradePoll),
+			value: fmt.Sprintf(" %4dms ", cfg.CopytradePollIntervalMs),
+			bar:   renderBar(float64(cfg.CopytradePollIntervalMs)/5000.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowExecutionSlip),
@@ -3998,6 +4175,8 @@ func (m tuiModel) renderSettings(w int) string {
 	modeNote := ""
 	if makerMode {
 		modeNote = styleDimmed.Render("  Maker mode: split/taker-only rows are shown for reference and ignored live") + "\n"
+	} else if copytradeMode {
+		modeNote = styleDimmed.Render("  Copytrade mode: buy when the target wallet/profile holds an outcome, sell when it exits. Enter a wallet, @handle, or profile URL on the target row.") + "\n"
 	}
 
 	content := title + "\n" +

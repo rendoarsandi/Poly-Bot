@@ -55,6 +55,8 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"executionLocalQuoteMaxAgeMs": 900,
 		"restFallbackQuoteAgeMs": 2500,
 		"restFallbackPollIntervalMs": 700,
+		"copytradeTarget": "@json-profile",
+		"copytradePollIntervalMs": 1500,
 		"paperArbMode": "maker",
 		"makerQuoteGap": 0.004
 	}`)
@@ -93,6 +95,12 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.RestFallbackPollIntervalMs != 700 {
 		t.Fatalf("expected JSON RestFallbackPollIntervalMs 700, got %d", cfg.RestFallbackPollIntervalMs)
 	}
+	if cfg.CopytradeTarget != "@json-profile" {
+		t.Fatalf("expected JSON CopytradeTarget @json-profile, got %q", cfg.CopytradeTarget)
+	}
+	if cfg.CopytradePollIntervalMs != 1500 {
+		t.Fatalf("expected JSON CopytradePollIntervalMs 1500, got %d", cfg.CopytradePollIntervalMs)
+	}
 	if cfg.PaperArbMode != "maker" {
 		t.Fatalf("expected JSON PaperArbMode maker, got %q", cfg.PaperArbMode)
 	}
@@ -122,6 +130,8 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.ExecutionLocalQuoteMaxAgeMs = 850
 	cfg.RestFallbackQuoteAgeMs = 2800
 	cfg.RestFallbackPollIntervalMs = 900
+	cfg.CopytradeTarget = "0x1234567890abcdef1234567890abcdef12345678"
+	cfg.CopytradePollIntervalMs = 1750
 	cfg.PaperArbMode = "maker"
 	cfg.MakerQuoteGap = 0.005
 	cfg.TradingHoursMode = "off"
@@ -161,6 +171,12 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.RestFallbackPollIntervalMs != 900 {
 		t.Fatalf("expected saved RestFallbackPollIntervalMs 900, got %d", settings.RestFallbackPollIntervalMs)
+	}
+	if settings.CopytradeTarget != "0x1234567890abcdef1234567890abcdef12345678" {
+		t.Fatalf("expected saved CopytradeTarget to persist, got %q", settings.CopytradeTarget)
+	}
+	if settings.CopytradePollIntervalMs != 1750 {
+		t.Fatalf("expected saved CopytradePollIntervalMs 1750, got %d", settings.CopytradePollIntervalMs)
 	}
 	if settings.PaperArbMode != "maker" {
 		t.Fatalf("expected saved PaperArbMode maker, got %q", settings.PaperArbMode)

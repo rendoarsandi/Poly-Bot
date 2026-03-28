@@ -117,6 +117,8 @@ type Config struct {
 	TakerCloseMarketTime     int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage float64 // Limit price for taker close (default: 0.99)
 	TakerCloseMarketMinPrice float64 // Min price to trigger close buy (default: 0.60)
+	CopytradeTarget          string  // Wallet address, profile handle, or profile URL to follow
+	CopytradePollIntervalMs  int     // Copytrade public-wallet poll interval in milliseconds
 	StartupWizardSeen        bool    // Whether the themed startup wizard has been completed
 
 	settingsProfile string
@@ -166,6 +168,8 @@ type RuntimeSettings struct {
 	TakerCloseMarketTime           int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage       float64 `json:"takerCloseMarketSlippage"`
 	TakerCloseMarketMinPrice       float64 `json:"takerCloseMarketMinPrice"`
+	CopytradeTarget                string  `json:"copytradeTarget"`
+	CopytradePollIntervalMs        int     `json:"copytradePollIntervalMs"`
 	StartupWizardSeen              bool    `json:"startupWizardSeen"`
 }
 
@@ -232,6 +236,8 @@ func LoadConfig() (*Config, error) {
 		SplitInitialCapPct:       parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:     parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
 		TradingHoursMode:         parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
+		CopytradeTarget:          strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
+		CopytradePollIntervalMs:  normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
 	}
 
 	return cfg, nil
@@ -255,6 +261,19 @@ func normalizeFixedTradeSizeUSDC(size float64) float64 {
 		return 0.1
 	}
 	return size
+}
+
+func normalizeCopytradePollIntervalMs(v int) int {
+	switch {
+	case v <= 0:
+		return 2000
+	case v < 250:
+		return 250
+	case v > 30000:
+		return 30000
+	default:
+		return v
+	}
 }
 
 func CalculateTradeSizeForMode(currentBalance, tradeScaleFactor, tradeSizeUSDC, maxTradeSize float64, tradeSizingMode string) float64 {
@@ -560,6 +579,8 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TakerCloseMarketTime:           c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:       c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       c.TakerCloseMarketMinPrice,
+		CopytradeTarget:                strings.TrimSpace(c.CopytradeTarget),
+		CopytradePollIntervalMs:        normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
 		StartupWizardSeen:              c.StartupWizardSeen,
 	}
 }
@@ -609,6 +630,8 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+	c.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
+	c.CopytradePollIntervalMs = normalizeCopytradePollIntervalMs(s.CopytradePollIntervalMs)
 	c.StartupWizardSeen = s.StartupWizardSeen
 
 	// Force disable split/merge for Kalshi
@@ -650,6 +673,8 @@ func (c *Config) SaveSettings() error {
 	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
 	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
 	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
+	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
+	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 
 	return godotenv.Write(envMap, ".env")
 }

@@ -65,7 +65,7 @@ func normalizeStartupWizardSettings(s TUISettings) TUISettings {
 		s.PaperArbMode = "taker"
 	}
 	s.PaperArbMode = strings.ToLower(strings.TrimSpace(s.PaperArbMode))
-	if s.PaperArbMode != "maker" {
+	if s.PaperArbMode != "maker" && s.PaperArbMode != "copytrade" {
 		s.PaperArbMode = "taker"
 	}
 	if s.MaxTradeSize < 0 {
@@ -87,6 +87,9 @@ func startupStrategyProfile(s TUISettings) string {
 	if s.TakerCloseMarket {
 		return "taker-close"
 	}
+	if isCopytradeSettingsMode(s) {
+		return "copytrade"
+	}
 	if isMakerSettingsMode(s) {
 		return "maker"
 	}
@@ -97,6 +100,9 @@ func setStartupStrategyProfile(s *TUISettings, profile string) {
 	switch profile {
 	case "maker":
 		s.PaperArbMode = "maker"
+		s.TakerCloseMarket = false
+	case "copytrade":
+		s.PaperArbMode = "copytrade"
 		s.TakerCloseMarket = false
 	case "taker-close":
 		s.PaperArbMode = "taker"
@@ -233,6 +239,8 @@ func startupStrategyValue(profile string) string {
 	switch profile {
 	case "maker":
 		return styleGreen.Render(" maker ")
+	case "copytrade":
+		return styleCyan.Render(" copytrade ")
 	case "taker-close":
 		return styleRed.Render(" taker-close ")
 	default:
@@ -281,7 +289,7 @@ func (m *startupWizardModel) adjustCurrent(delta int) {
 	case "timeframe":
 		m.settings.Timeframe = cycleString([]string{"15m", "5m"}, m.settings.Timeframe, delta)
 	case "profile":
-		profile := cycleString([]string{"maker", "taker", "taker-close"}, startupStrategyProfile(m.settings), delta)
+		profile := cycleString([]string{"maker", "taker", "copytrade", "taker-close"}, startupStrategyProfile(m.settings), delta)
 		setStartupStrategyProfile(&m.settings, profile)
 	case "split":
 		m.settings.SplitStrategyEnabled = !m.settings.SplitStrategyEnabled
@@ -423,6 +431,8 @@ func (m startupWizardModel) View() string {
 	switch startupStrategyProfile(m.settings) {
 	case "maker":
 		notes = append(notes, "Maker mode keeps quoting logic clean by not mixing in startup taker-close or split toggles.")
+	case "copytrade":
+		notes = append(notes, "Copytrade mode follows a public Polymarket wallet/profile using aggressive single-leg orders. Paste the target later in the live settings panel.")
 	case "taker-close":
 		notes = append(notes, "Taker-close starts the dedicated close-market path instead of normal maker quoting.")
 	default:

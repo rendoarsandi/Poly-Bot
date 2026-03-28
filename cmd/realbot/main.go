@@ -29,6 +29,7 @@ import (
 const (
 	UseLiveUI                        = true // Set to false for traditional logging
 	paperArbModeTaker                = "taker"
+	paperArbModeCopytrade            = "copytrade"
 	paperArbModeMaker                = "maker"
 	terminalBidFloor                 = 0.985
 	terminalAskCeil                  = 0.015
@@ -239,7 +240,7 @@ func refreshWalletTruthForRedemption(ctx context.Context, marketID, conditionID 
 }
 
 func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, mergeBuffer time.Duration) bool {
-	if realbotTakerCloseHoldMode(cfg) {
+	if realbotTakerCloseHoldMode(cfg) || strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeCopytrade) {
 		return false
 	}
 	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
@@ -367,6 +368,8 @@ func normalizedRealbotExecutionPriceCap(liveCfg paper.TUISettings) float64 {
 
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case paperArbModeCopytrade:
+		return paperArbModeCopytrade
 	case paperArbModeMaker:
 		return paperArbModeMaker
 	default:
@@ -385,6 +388,8 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		TradeSizeUSDC:                  cfg.TradeSizeUSDC,
 		MinMarginPercent:               cfg.MinMarginPercent,
 		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:                cfg.CopytradeTarget,
+		CopytradePollIntervalMs:        cfg.CopytradePollIntervalMs,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
@@ -417,6 +422,8 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TradeSizeUSDC = s.TradeSizeUSDC
 	cfg.MinMarginPercent = s.MinMarginPercent
 	cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
+	cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
+	cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -1356,11 +1363,40 @@ func run() error {
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		tui.LogEvent("📊 Balance $%.2f | %.2fx", currentBalance, compoundMultiplier)
 
+		liveSettings := tui.GetSettings()
+		arbMode := normalizePaperArbMode(liveSettings.PaperArbMode)
+		copytradeTarget := realbotCopytradeTarget{}
+
 		// Find markets
 		tui.LogEvent("🔍 Scanning markets...")
-		markets := mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
-			tui.LogEvent(format, args...)
-		})
+		var markets map[string]*api.Market
+		if arbMode == paperArbModeCopytrade {
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 5*time.Second)
+			target, targetErr := realbotResolveCopytradeTarget(resolveCtx, restClient, liveSettings)
+			resolveCancel()
+			if targetErr != nil {
+				tui.LogEvent("⚠️ Copytrade target unavailable: %v", targetErr)
+				select {
+				case <-time.After(10 * time.Second):
+					continue
+				case <-ctx.Done():
+					goto shutdown
+				}
+			}
+			copytradeTarget = target
+			tui.LogEvent("🪞 Copytrade target %s → %s", target.Raw, target.Wallet)
+			scanCtx, scanCancel := context.WithTimeout(ctx, 10*time.Second)
+			var scanErr error
+			markets, scanErr = realbotFindCopytradeMarkets(scanCtx, restClient, target.Wallet, liveSettings.MaxMarkets)
+			scanCancel()
+			if scanErr != nil {
+				tui.LogEvent("⚠️ Copytrade market scan failed: %v", scanErr)
+			}
+		} else {
+			markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
+				tui.LogEvent(format, args...)
+			})
+		}
 		if len(markets) == 0 {
 			tui.LogEvent("⏳ No active markets found, waiting 30s before retry...")
 			select {
@@ -1419,7 +1455,7 @@ func run() error {
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
 			wg.Add(1)
-			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64) {
+			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64, copyWallet string) {
 				defer wg.Done()
 				// Create a sub-context for this specific trader to prevent goroutine leaks
 				tCtx, tCancel := context.WithCancel(roundCtx)
@@ -1434,8 +1470,8 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, resolutionCache)
-			}(marketID, market, endTime, marketRiskMgr, currentBalance)
+				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, copyWallet, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, resolutionCache)
+			}(marketID, market, endTime, marketRiskMgr, currentBalance, copytradeTarget.Wallet)
 		}
 
 		// Goroutine to monitor for TUI restart requests
@@ -1546,7 +1582,7 @@ shutdown:
 
 func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
-	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
+	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64, copytradeWallet string,
 	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, resolutionCache *api.ResolutionCache) {
 
 	if market != nil && market.ConditionID != "" {
@@ -1704,6 +1740,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		_, _ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)
 	}
 	refreshWalletTruth(5 * time.Second)
+	copytradeState := newRealbotCopytradeState()
 
 	lastReconnectCount := int32(0)
 	lastWsWarnTime := time.Time{}
@@ -2388,7 +2425,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			continue
 		}
 
-		if !liveCfg.TakerCloseMarket && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
+		if arbMode != paperArbModeCopytrade && !liveCfg.TakerCloseMarket && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
 			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
 			cancelRecoveryCheck()
@@ -2450,6 +2487,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 		realbotCancelAllMakerQuotes(cancelMakerCtx, id, "maker mode disabled", trader, engine, tui, makerQuotes)
 		cancelMaker()
+		if arbMode == paperArbModeCopytrade {
+			realbotHandleCopytradeMarket(ctx, id, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates, trader, engine, tui, restClient, liveCfg, copytradeWallet, copytradeState, entryGate, refreshWalletTruth)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 
 		// ═══════════════════════════════════════════════════════════════════════════
 		// SPLIT STRATEGY: Sell to panic buyers when bid_sum > $1.03

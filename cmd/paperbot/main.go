@@ -26,12 +26,13 @@ import (
 )
 
 const (
-	StartingBalance   = 100.0 // $100 paper trading balance
-	UseLiveUI         = true  // Set to false for traditional logging
-	paperArbModeTaker = "taker"
-	paperArbModeMaker = "maker"
-	terminalBidFloor  = 0.985
-	terminalAskCeil   = 0.015
+	StartingBalance       = 100.0 // $100 paper trading balance
+	UseLiveUI             = true  // Set to false for traditional logging
+	paperArbModeTaker     = "taker"
+	paperArbModeCopytrade = "copytrade"
+	paperArbModeMaker     = "maker"
+	terminalBidFloor      = 0.985
+	terminalAskCeil       = 0.015
 	// Price threshold used for post-expiry winner fallback when authoritative
 	// resolution is still unavailable.
 	terminalWinnerFloor = 0.99
@@ -131,6 +132,7 @@ type MarketTrader struct {
 	nextHistoricalLookupAt         time.Time
 	lastHistoricalLookupErrorLogAt time.Time
 	lastHistoricalLookupError      string
+	lastCopytradeNoticeAt          time.Time
 }
 
 type marketResult struct {
@@ -208,6 +210,8 @@ func logPaperExecutionLatency(t *MarketTrader, latency paperExecutionLatency) {
 
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case paperArbModeCopytrade:
+		return paperArbModeCopytrade
 	case paperArbModeMaker:
 		return paperArbModeMaker
 	default:
@@ -1105,6 +1109,8 @@ func run() error {
 		TradeSizeUSDC:            cfg.TradeSizeUSDC,
 		MinMarginPercent:         cfg.MinMarginPercent,
 		PaperArbMode:             normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:          cfg.CopytradeTarget,
+		CopytradePollIntervalMs:  cfg.CopytradePollIntervalMs,
 		SplitMinMarginSell:       cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:     cfg.SplitStrategyEnabled,
 		SplitInitialCapPct:       cfg.SplitInitialCapPct,
@@ -1130,6 +1136,8 @@ func run() error {
 		cfg.TradeSizeUSDC = s.TradeSizeUSDC
 		cfg.MinMarginPercent = s.MinMarginPercent
 		cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
+		cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
+		cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
@@ -2369,6 +2377,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			if !executionPairFresh {
 				if arbMode == paperArbModeMaker {
 					cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
+				}
+				continue
+			}
+			if arbMode == paperArbModeCopytrade {
+				if t.lastCopytradeNoticeAt.IsZero() || now.Sub(t.lastCopytradeNoticeAt) >= 10*time.Second {
+					t.TUI.LogEvent("[%s] ℹ️ Copytrade mode executes in realbot; paperbot only exposes the shared settings UI", t.ID)
+					t.lastCopytradeNoticeAt = now
 				}
 				continue
 			}

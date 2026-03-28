@@ -54,6 +54,9 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	if got := normalizePaperArbMode("maker"); got != paperArbModeMaker {
 		t.Fatalf("normalizePaperArbMode(maker) = %q, want %q", got, paperArbModeMaker)
 	}
+	if got := normalizePaperArbMode("copytrade"); got != paperArbModeCopytrade {
+		t.Fatalf("normalizePaperArbMode(copytrade) = %q, want %q", got, paperArbModeCopytrade)
+	}
 	if got := normalizePaperArbMode("weird"); got != paperArbModeTaker {
 		t.Fatalf("normalizePaperArbMode(weird) = %q, want %q", got, paperArbModeTaker)
 	}

@@ -847,7 +847,11 @@ type Position struct {
 	AvgPrice        float64 `json:"avgPrice"`
 	Outcome         string  `json:"outcome"`
 	ConditionID     string  `json:"conditionId"`
+	Title           string  `json:"title"`
 	Slug            string  `json:"slug"`
+	EventSlug       string  `json:"eventSlug"`
+	Icon            string  `json:"icon"`
+	EndDate         string  `json:"endDate"`
 	OppositeOutcome string  `json:"oppositeOutcome"`
 	OppositeAsset   string  `json:"oppositeAsset"`
 }

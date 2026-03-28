@@ -529,6 +529,9 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	if got := normalizePaperArbMode("maker"); got != paperArbModeMaker {
 		t.Fatalf("expected maker to remain maker, got %q", got)
 	}
+	if got := normalizePaperArbMode("copytrade"); got != paperArbModeCopytrade {
+		t.Fatalf("expected copytrade to remain copytrade, got %q", got)
+	}
 }
 
 func TestShouldRealbotMakerBlockBuyBlocksHeavyLegWithoutProtectedSell(t *testing.T) {
