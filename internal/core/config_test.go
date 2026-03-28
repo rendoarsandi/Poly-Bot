@@ -282,3 +282,12 @@ func TestNormalizeBinanceSignalPolyMaxMoveCentsAllowsDisable(t *testing.T) {
 		t.Fatalf("expected negative catch-up limit to normalize to disabled, got %.2f", got)
 	}
 }
+
+func TestNormalizeBinanceSignalPolyAdverseMoveCentsAllowsDisable(t *testing.T) {
+	if got := normalizeBinanceSignalPolyAdverseMoveCents(0); got != 0 {
+		t.Fatalf("expected zero adverse-move limit to stay disabled, got %.2f", got)
+	}
+	if got := normalizeBinanceSignalPolyAdverseMoveCents(-1); got != 0 {
+		t.Fatalf("expected negative adverse-move limit to normalize to disabled, got %.2f", got)
+	}
+}

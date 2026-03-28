@@ -63,6 +63,8 @@ const (
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
+	paperbotBinanceDelay           = 250 * time.Millisecond
+	paperbotMinActionShares        = 0.01
 )
 
 var paperMakerStrategyParams = strategy.MakerParams{
@@ -211,6 +213,33 @@ func logPaperExecutionLatency(t *MarketTrader, latency paperExecutionLatency) {
 	t.TUI.LogEvent("%s", msg)
 	if t.CSVLogger != nil {
 		t.CSVLogger.Log("TRADE", t.ID, "LATENCY", msg, t.Engine.GetEquity())
+	}
+}
+
+func paperbotNormalizeMarketBuyShares(qty float64) float64 {
+	if qty <= 0 {
+		return 0
+	}
+	return math.Floor((qty*10000)+1e-9) / 10000
+}
+
+func paperbotNormalizeMarketSellShares(qty float64) float64 {
+	if qty <= 0 {
+		return 0
+	}
+	return math.Floor((qty*100)+1e-9) / 100
+}
+
+func paperbotFormatShareQty(qty float64) string {
+	switch {
+	case qty <= 0:
+		return "0"
+	case math.Abs(qty-math.Round(qty)) < 1e-9:
+		return fmt.Sprintf("%.0f", qty)
+	case math.Abs(qty*100-math.Round(qty*100)) < 1e-9:
+		return fmt.Sprintf("%.2f", qty)
+	default:
+		return fmt.Sprintf("%.4f", qty)
 	}
 }
 
@@ -3484,11 +3513,19 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 			return
 		}
 		liq := paperbotBidLiquidityAtOrAbove(t.TokenFullBids[heldOutcome], bid)
-		sellQty := math.Min(heldQty, liq)
-		if sellQty < 1 {
+		sellQty := paperbotNormalizeMarketSellShares(math.Min(heldQty, liq))
+		if sellQty < paperbotMinActionShares {
 			status.Reason = fmt.Sprintf("waiting for bid liquidity on %s", heldOutcome)
 			return
 		}
+		latency := paperExecutionLatency{
+			detectedAt:  now,
+			startedAt:   now,
+			opportunity: "paper binance-gap exit",
+			marketID:    t.ID,
+			shares:      sellQty,
+		}
+		time.Sleep(paperbotBinanceDelay)
 		trade, err := t.Engine.SellForMarket(t.ID, heldOutcome, bid, sellQty)
 		if err != nil {
 			status.Status = "blocked"
@@ -3496,11 +3533,13 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 			logThrottled("[%s] ⚠️ Binance paper exit failed for %s: %v", t.ID, heldOutcome, err)
 			return
 		}
+		latency.executedAt = time.Now()
 		profit := trade.Value - (heldAvg * sellQty)
 		status.Status = "filled"
-		status.Reason = fmt.Sprintf("sold %.0f %s @ $%.3f", sellQty, heldOutcome, bid)
-		t.TUI.LogEvent("[%s] ✅ BINANCE PAPER EXIT %s %.0f @ $%.3f (target $%.3f, pnl $%.2f)", t.ID, heldOutcome, sellQty, bid, targetBid, profit)
+		status.Reason = fmt.Sprintf("sold %s %s @ $%.3f", paperbotFormatShareQty(sellQty), heldOutcome, bid)
+		t.TUI.LogEvent("[%s] ✅ BINANCE PAPER EXIT %s %s @ $%.3f (target $%.3f, pnl $%.2f)", t.ID, heldOutcome, paperbotFormatShareQty(sellQty), bid, targetBid, profit)
 		t.TUI.RecordOrderWithMode(t.ID, heldOutcome, "SELL", sellQty, bid, trade.Value, 0.0, profit, paperArbModeBinanceGap, "FILLED")
+		logPaperExecutionLatency(t, latency)
 		return
 	}
 
@@ -3538,19 +3577,10 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
 		return
 	}
-	threshold := cfg.BinanceSignalThresholdPct
-	if threshold <= 0 {
-		threshold = 0.02
-	}
-	if math.Abs(snap.DeltaPercent) < threshold {
-		status.Status = "idle"
-		status.Reason = fmt.Sprintf("Binance move %.3f%% is below the %.3f%% trigger", math.Abs(snap.DeltaPercent), threshold)
-		return
-	}
-
 	signal, reason := paper.EvaluateBinanceGapSignal(now, mapping, t.TokenBids, t.TokenAsks, t.TokenFullBids, t.TokenFullAsks, snap, t.PolySignalTracker, maxSignalAge)
 	status.TargetOutcome = signal.TargetOutcome
 	status.SignalLabel = signal.SignalLabel
+	status.EffectiveGapPercent = signal.EffectiveGapPercent
 	status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
 	status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
 	status.TargetSpreadCents = signal.TargetSpreadCents
@@ -3561,6 +3591,15 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	if reason != "" {
 		status.Status = "waiting"
 		status.Reason = reason
+		return
+	}
+	threshold := cfg.BinanceSignalThresholdPct
+	if threshold <= 0 {
+		threshold = 0.02
+	}
+	if signal.EffectiveGapPercent < threshold {
+		status.Status = "idle"
+		status.Reason = fmt.Sprintf("cross-market gap %.3f%% is below the %.3f%% trigger", signal.EffectiveGapPercent, threshold)
 		return
 	}
 	if signal.DirectionalBookScore <= -0.35 {
@@ -3578,10 +3617,7 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	}
 
 	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
-	if polyAdverseMax <= 0 {
-		polyAdverseMax = paper.DefaultBinanceSignalPolyAdverseMoveCents
-	}
-	if signal.PolyAdverseMoveCents > polyAdverseMax {
+	if polyAdverseMax > 0 && signal.PolyAdverseMoveCents > polyAdverseMax {
 		status.Status = "blocked"
 		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", t.ID, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
@@ -3615,14 +3651,24 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 	tradeBudget := cfg.CalculateTradeSize(t.Engine.GetSizingBalance())
 	asks := paperbotNormalizedAsks(t.TokenFullAsks[targetOutcome], ask, tradeBudget/ask)
 	liq := paperbotAskLiquidityAtOrBelow(asks, ask)
-	buyQty := math.Min(math.Floor(tradeBudget/ask), liq)
-	if buyQty < 1 {
+	buyQty := paperbotNormalizeMarketBuyShares(math.Min(tradeBudget/ask, liq))
+	if buyQty < paperbotMinActionShares {
 		status.Ready = false
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("actionable size below 1 share for %s", targetOutcome)
-		logThrottled("[%s] ⚠️ Binance entry skipped: actionable size below 1 share for %s", t.ID, targetOutcome)
+		status.Reason = fmt.Sprintf("actionable size below %.2f share for %s", paperbotMinActionShares, targetOutcome)
+		logThrottled("[%s] ⚠️ Binance entry skipped: actionable size below %.2f share for %s", t.ID, paperbotMinActionShares, targetOutcome)
 		return
 	}
+	latency := paperExecutionLatency{
+		detectedAt:  now,
+		startedAt:   now,
+		opportunity: "paper binance-gap entry",
+		marketID:    t.ID,
+		shares:      buyQty,
+		marginPct:   signal.EffectiveGapPercent,
+		expectedPnL: tradeBudget - (buyQty * ask),
+	}
+	time.Sleep(paperbotBinanceDelay)
 	trade, avgPrice, err := t.Engine.MarketBuy(t.ID, targetOutcome, buyQty, asks)
 	if err != nil {
 		status.Ready = false
@@ -3631,9 +3677,11 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		logThrottled("[%s] ⚠️ Binance paper entry failed for %s: %v", t.ID, targetOutcome, err)
 		return
 	}
+	latency.executedAt = time.Now()
 	t.LastBinanceTrigger = now
 	status.Status = "filled"
-	status.Reason = fmt.Sprintf("bought %.0f %s @ $%.3f", trade.Quantity, targetOutcome, avgPrice)
-	t.TUI.LogEvent("[%s] ✅ BINANCE PAPER ENTRY %s Move %.2f%%. Bought %.0f %s @ avg $%.3f (top $%.3f)", t.ID, signal.SignalLabel, snap.DeltaPercent, trade.Quantity, targetOutcome, avgPrice, ask)
+	status.Reason = fmt.Sprintf("bought %s %s @ $%.3f", paperbotFormatShareQty(trade.Quantity), targetOutcome, avgPrice)
+	t.TUI.LogEvent("[%s] ✅ BINANCE PAPER ENTRY %s Move %.2f%%. Bought %s %s @ avg $%.3f (top $%.3f, budget $%.2f)", t.ID, signal.SignalLabel, snap.DeltaPercent, paperbotFormatShareQty(trade.Quantity), targetOutcome, avgPrice, ask, tradeBudget)
 	t.TUI.RecordOrderWithMode(t.ID, targetOutcome, "BUY", trade.Quantity, avgPrice, trade.Value, snap.DeltaPercent, 0.0, paperArbModeBinanceGap, "FILLED")
+	logPaperExecutionLatency(t, latency)
 }

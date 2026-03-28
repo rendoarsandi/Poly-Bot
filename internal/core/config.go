@@ -370,7 +370,7 @@ func normalizeBinanceSignalPolyMaxMoveCents(v float64) float64 {
 
 func normalizeBinanceSignalPolyAdverseMoveCents(v float64) float64 {
 	if v <= 0 {
-		return 0.75
+		return 0
 	}
 	if v > 25 {
 		return 25

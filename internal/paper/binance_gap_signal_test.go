@@ -88,6 +88,9 @@ func TestPaperEvaluateBinanceGapSignalUpDirection(t *testing.T) {
 	if math.Abs(signal.PolyFavorableMoveCents-1.2) > 0.000001 {
 		t.Fatalf("expected favorable move 1.2c, got %.4f", signal.PolyFavorableMoveCents)
 	}
+	if signal.EffectiveGapPercent != 0 {
+		t.Fatalf("expected effective gap to clamp at 0 when Polymarket already moved more, got %.4f%%", signal.EffectiveGapPercent)
+	}
 	if signal.PolyAdverseMoveCents != 0 {
 		t.Fatalf("expected no adverse move, got %.4f", signal.PolyAdverseMoveCents)
 	}

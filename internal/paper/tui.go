@@ -371,6 +371,7 @@ type MarketBinanceSignal struct {
 	Symbol                 string
 	Price                  float64
 	DeltaPercent           float64
+	EffectiveGapPercent    float64
 	TargetOutcome          string
 	SignalLabel            string
 	PolyFavorableMoveCents float64
@@ -2022,6 +2023,7 @@ func (t *TUI) SetMarketBinanceSignal(marketID string, signal MarketBinanceSignal
 			current.Symbol == signal.Symbol &&
 			current.Price == signal.Price &&
 			current.DeltaPercent == signal.DeltaPercent &&
+			current.EffectiveGapPercent == signal.EffectiveGapPercent &&
 			current.TargetOutcome == signal.TargetOutcome &&
 			current.SignalLabel == signal.SignalLabel &&
 			current.PolyFavorableMoveCents == signal.PolyFavorableMoveCents &&
@@ -2989,7 +2991,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		}
 
 		target := core.SanitizeString(sig.TargetOutcome)
-		binLine := fmt.Sprintf("  Bin %s $%s  Δ%+.3f%%", strings.ToUpper(strings.TrimSpace(sig.Symbol)), priceText, sig.DeltaPercent)
+		binLine := fmt.Sprintf("  Bin %s $%s  Δ%+.3f%%  gap %.3f%%", strings.ToUpper(strings.TrimSpace(sig.Symbol)), priceText, sig.DeltaPercent, sig.EffectiveGapPercent)
 		if target != "" {
 			binLine += " → " + target
 		} else if label := strings.TrimSpace(sig.SignalLabel); label != "" {

@@ -75,13 +75,15 @@ type BinanceFuturesPriceFeed struct {
 	gapResetAge  time.Duration
 	wsURL        string
 
-	mu         sync.RWMutex
-	samples    []binanceFuturesSample
-	lastPrice  float64
-	lastUpdate time.Time
-	lastSource string
-	lastError  string
-	connected  bool
+	mu             sync.RWMutex
+	samples        []binanceFuturesSample
+	lastTradePrice float64
+	lastTradeAt    time.Time
+	lastMarkPrice  float64
+	lastMarkAt     time.Time
+	lastSource     string
+	lastError      string
+	connected      bool
 }
 
 func NewBinanceFuturesPriceFeed(symbol string, lookback time.Duration) *BinanceFuturesPriceFeed {
@@ -128,17 +130,26 @@ func (f *BinanceFuturesPriceFeed) Snapshot(now time.Time) BinanceFuturesSignalSn
 
 	snap := BinanceFuturesSignalSnapshot{
 		Symbol:    f.symbol,
-		Price:     f.lastPrice,
-		UpdatedAt: f.lastUpdate,
+		UpdatedAt: f.lastTradeAt,
 		Source:    f.lastSource,
 		LastError: f.lastError,
 		Connected: f.connected,
 	}
-	if len(f.samples) == 0 || f.lastPrice <= 0 || f.lastUpdate.IsZero() {
+	switch {
+	case f.lastTradePrice > 0 && (!f.lastMarkAt.After(f.lastTradeAt) || now.Sub(f.lastTradeAt) <= 2*time.Second):
+		snap.Price = f.lastTradePrice
+		snap.Source = "ws-trade"
+	case f.lastMarkPrice > 0:
+		snap.Price = f.lastMarkPrice
+		snap.Source = "ws-mark"
+	default:
+		snap.Price = f.lastTradePrice
+	}
+	if len(f.samples) == 0 || f.lastTradePrice <= 0 || f.lastTradeAt.IsZero() {
 		return snap
 	}
 
-	target := f.lastUpdate.Add(-f.lookback)
+	target := f.lastTradeAt.Add(-f.lookback)
 	baseline := f.samples[0]
 	for i := len(f.samples) - 1; i >= 0; i-- {
 		if !f.samples[i].At.After(target) {
@@ -150,10 +161,10 @@ func (f *BinanceFuturesPriceFeed) Snapshot(now time.Time) BinanceFuturesSignalSn
 	snap.BaselinePrice = baseline.Price
 	snap.BaselineAt = baseline.At
 	if baseline.Price > 0 {
-		snap.DeltaPercent = ((f.lastPrice / baseline.Price) - 1.0) * 100.0
+		snap.DeltaPercent = ((f.lastTradePrice / baseline.Price) - 1.0) * 100.0
 	}
 	baselineMinAt := target.Add(-f.lookback)
-	snap.Ready = !baseline.At.IsZero() && !baseline.At.Before(baselineMinAt) && f.lastUpdate.Sub(baseline.At) >= f.lookback
+	snap.Ready = !baseline.At.IsZero() && !baseline.At.Before(baselineMinAt) && f.lastTradeAt.Sub(baseline.At) >= f.lookback
 	return snap
 }
 
@@ -216,7 +227,8 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 		Data   json.RawMessage `json:"data"`
 	}
 	type eventHeader struct {
-		EventType string `json:"e"`
+		EventType string               `json:"e"`
+		EventTime binanceFlexibleInt64 `json:"E"`
 	}
 	type aggTradeMessage struct {
 		EventType string               `json:"e"`
@@ -265,7 +277,7 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 			if ts > 0 {
 				at = time.UnixMilli(ts)
 			}
-			f.recordSample(price, at, "ws-trade")
+			f.recordTradeSample(price, at)
 		case "markPriceUpdate":
 			var msg markPriceMessage
 			if err := json.Unmarshal(payload, &msg); err != nil {
@@ -279,12 +291,12 @@ func (f *BinanceFuturesPriceFeed) runWebsocket(ctx context.Context) error {
 			if ts := int64(msg.EventTime); ts > 0 {
 				at = time.UnixMilli(ts)
 			}
-			f.recordSample(price, at, "ws-mark")
+			f.recordMarkPrice(price, at)
 		}
 	}
 }
 
-func (f *BinanceFuturesPriceFeed) recordSample(price float64, at time.Time, source string) {
+func (f *BinanceFuturesPriceFeed) recordTradeSample(price float64, at time.Time) {
 	if f == nil || price <= 0 {
 		return
 	}
@@ -295,9 +307,9 @@ func (f *BinanceFuturesPriceFeed) recordSample(price float64, at time.Time, sour
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.lastPrice = price
-	f.lastUpdate = at
-	f.lastSource = source
+	f.lastTradePrice = price
+	f.lastTradeAt = at
+	f.lastSource = "ws-trade"
 	f.lastError = ""
 	series := f.samples
 	if n := len(series); n > 0 && !at.Before(series[n-1].At) && at.Sub(series[n-1].At) >= f.gapResetAge {
@@ -315,6 +327,25 @@ func (f *BinanceFuturesPriceFeed) recordSample(price float64, at time.Time, sour
 		series = append([]binanceFuturesSample(nil), series[trim:]...)
 	}
 	f.samples = series
+}
+
+func (f *BinanceFuturesPriceFeed) recordMarkPrice(price float64, at time.Time) {
+	if f == nil || price <= 0 {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.lastMarkPrice = price
+	f.lastMarkAt = at
+	if f.lastTradePrice <= 0 {
+		f.lastSource = "ws-mark"
+	}
+	f.lastError = ""
 }
 
 func (f *BinanceFuturesPriceFeed) setConnected(connected bool) {

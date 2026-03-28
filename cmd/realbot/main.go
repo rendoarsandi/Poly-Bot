@@ -557,6 +557,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	setStatusSignal := func(signal paper.BinanceGapSignal) {
 		status.TargetOutcome = signal.TargetOutcome
 		status.SignalLabel = signal.SignalLabel
+		status.EffectiveGapPercent = signal.EffectiveGapPercent
 		status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
 		status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
 		status.TargetSpreadCents = signal.TargetSpreadCents
@@ -705,21 +706,20 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
 		return
 	}
-	threshold := cfg.BinanceSignalThresholdPct
-	if threshold <= 0 {
-		threshold = 0.02
-	}
-	if math.Abs(snap.DeltaPercent) < threshold {
-		status.Status = "idle"
-		status.Reason = fmt.Sprintf("Binance move %.3f%% is below the %.3f%% trigger", math.Abs(snap.DeltaPercent), threshold)
-		return
-	}
-
 	signal, reason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, snap, polyTracker, maxSignalAge)
 	setStatusSignal(signal)
 	if reason != "" {
 		status.Status = "waiting"
 		status.Reason = reason
+		return
+	}
+	threshold := cfg.BinanceSignalThresholdPct
+	if threshold <= 0 {
+		threshold = 0.02
+	}
+	if signal.EffectiveGapPercent < threshold {
+		status.Status = "idle"
+		status.Reason = fmt.Sprintf("cross-market gap %.3f%% is below the %.3f%% trigger", signal.EffectiveGapPercent, threshold)
 		return
 	}
 	if signal.DirectionalBookScore <= -0.35 {
@@ -735,10 +735,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		return
 	}
 	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
-	if polyAdverseMax <= 0 {
-		polyAdverseMax = paper.DefaultBinanceSignalPolyAdverseMoveCents
-	}
-	if signal.PolyAdverseMoveCents > polyAdverseMax {
+	if polyAdverseMax > 0 && signal.PolyAdverseMoveCents > polyAdverseMax {
 		status.Status = "blocked"
 		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
 		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", id, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)

@@ -50,6 +50,7 @@ type BinanceGapSignal struct {
 	OppositeOutcome        string
 	SignalLabel            string
 	BinanceDeltaPercent    float64
+	EffectiveGapPercent    float64
 	PolyTargetMoveCents    float64
 	PolyOppositeMoveCents  float64
 	PolyFavorableMoveCents float64
@@ -238,5 +239,6 @@ func EvaluateBinanceGapSignal(now time.Time, mapping DirectionalOutcomes, tokenB
 	signal.PolyOppositeMoveCents = -oppositeSnap.DeltaCents
 	signal.PolyFavorableMoveCents = math.Max(math.Max(signal.PolyTargetMoveCents, 0), math.Max(signal.PolyOppositeMoveCents, 0))
 	signal.PolyAdverseMoveCents = math.Max(-signal.PolyTargetMoveCents, 0) + math.Max(-signal.PolyOppositeMoveCents, 0)
+	signal.EffectiveGapPercent = math.Max(math.Abs(signal.BinanceDeltaPercent)-signal.PolyFavorableMoveCents, 0)
 	return signal, ""
 }
