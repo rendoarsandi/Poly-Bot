@@ -522,7 +522,7 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 
 	if binanceGap {
 		switch idx {
-		case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
+		case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowCopytradeTarget, settingsRowCopytradePoll:
 			return false
 		}
 	}
@@ -537,12 +537,14 @@ func isRowVisible(cfg TUISettings, idx int) bool {
 	}
 
 	switch idx {
+	case settingsRowCopytradeTarget, settingsRowCopytradePoll:
+		return copytrade
 	case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
-		return !maker
+		return !maker && !binanceGap && !copytrade
 	case settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue:
 		return maker
 	case settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
-		return closeMarket
+		return closeMarket && !copytrade && !binanceGap
 	default:
 		return true
 	}
