@@ -210,15 +210,19 @@ func TestPaperbotCopytradeSharesByConditionAggregatesPerMarket(t *testing.T) {
 
 func TestPaperbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *testing.T) {
 	state := newPaperbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
 
-	if delta, ready := paperbotCopytradeTargetDelta(state, "Up", 25); ready || delta != 0 {
-		t.Fatalf("initial snapshot should seed only, got delta=%.4f ready=%v", delta, ready)
+	if delta, ready, pending := paperbotCopytradeTargetDelta(state, "Up", 25, t0); ready || pending || delta != 0 {
+		t.Fatalf("initial snapshot should seed only, got delta=%.4f ready=%v pending=%v", delta, ready, pending)
 	}
-	if delta, ready := paperbotCopytradeTargetDelta(state, "Up", 28.5); !ready || delta != 3.5 {
-		t.Fatalf("expected +3.5 delta after increase, got delta=%.4f ready=%v", delta, ready)
+	if delta, ready, pending := paperbotCopytradeTargetDelta(state, "Up", 28.5, t0.Add(2*time.Second)); !ready || pending || delta != 3.5 {
+		t.Fatalf("expected +3.5 delta after increase, got delta=%.4f ready=%v pending=%v", delta, ready, pending)
 	}
-	if delta, ready := paperbotCopytradeTargetDelta(state, "Up", 26.0); !ready || delta != -2.5 {
-		t.Fatalf("expected -2.5 delta after decrease, got delta=%.4f ready=%v", delta, ready)
+	if delta, ready, pending := paperbotCopytradeTargetDelta(state, "Up", 26.0, t0.Add(4*time.Second)); ready || !pending || delta != 0 {
+		t.Fatalf("expected first lower snapshot to wait for confirmation, got delta=%.4f ready=%v pending=%v", delta, ready, pending)
+	}
+	if delta, ready, pending := paperbotCopytradeTargetDelta(state, "Up", 26.0, t0.Add(6*time.Second)); !ready || pending || delta != -2.5 {
+		t.Fatalf("expected -2.5 delta after second lower snapshot, got delta=%.4f ready=%v pending=%v", delta, ready, pending)
 	}
 }
 

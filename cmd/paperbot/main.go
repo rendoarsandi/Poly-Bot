@@ -179,12 +179,15 @@ type paperbotCopytradeTarget struct {
 }
 
 type paperbotCopytradeState struct {
-	lastError    string
-	managed      map[string]bool
-	targetShares map[string]float64
-	targetSeen   map[string]bool
-	lastLogAt    map[string]time.Time
-	lastLogMsg   map[string]string
+	lastError         string
+	managed           map[string]bool
+	targetShares      map[string]float64
+	targetSeen        map[string]bool
+	lastTargetPoll    map[string]time.Time
+	pendingSellTarget map[string]float64
+	pendingSellPoll   map[string]time.Time
+	lastLogAt         map[string]time.Time
+	lastLogMsg        map[string]string
 }
 
 type paperbotCopytradePoller struct {
@@ -199,11 +202,14 @@ type paperbotCopytradePoller struct {
 
 func newPaperbotCopytradeState() *paperbotCopytradeState {
 	return &paperbotCopytradeState{
-		managed:      make(map[string]bool),
-		targetShares: make(map[string]float64),
-		targetSeen:   make(map[string]bool),
-		lastLogAt:    make(map[string]time.Time),
-		lastLogMsg:   make(map[string]string),
+		managed:           make(map[string]bool),
+		targetShares:      make(map[string]float64),
+		targetSeen:        make(map[string]bool),
+		lastTargetPoll:    make(map[string]time.Time),
+		pendingSellTarget: make(map[string]float64),
+		pendingSellPoll:   make(map[string]time.Time),
+		lastLogAt:         make(map[string]time.Time),
+		lastLogMsg:        make(map[string]string),
 	}
 }
 
@@ -523,9 +529,9 @@ func cloneCopytradeOutcomeShares(shares map[string]float64) map[string]float64 {
 	return cloned
 }
 
-func (p *paperbotCopytradePoller) sharesForCondition(ctx context.Context, restClient *api.RestClient, pollEvery time.Duration, conditionID string) (map[string]float64, error) {
+func (p *paperbotCopytradePoller) sharesForCondition(ctx context.Context, restClient *api.RestClient, pollEvery time.Duration, conditionID string) (map[string]float64, time.Time, error) {
 	if p == nil || restClient == nil {
-		return nil, fmt.Errorf("copytrade poller unavailable")
+		return nil, time.Time{}, fmt.Errorf("copytrade poller unavailable")
 	}
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
@@ -536,15 +542,16 @@ func (p *paperbotCopytradePoller) sharesForCondition(ctx context.Context, restCl
 		p.mu.Lock()
 		if !p.lastPoll.IsZero() && time.Since(p.lastPoll) < pollEvery {
 			shares := cloneCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+			polledAt := p.lastPoll
 			p.mu.Unlock()
-			return shares, nil
+			return shares, polledAt, nil
 		}
 		if p.fetching {
 			waitCh := p.waitCh
 			p.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, time.Time{}, ctx.Err()
 			case <-waitCh:
 				continue
 			}
@@ -573,32 +580,64 @@ func (p *paperbotCopytradePoller) sharesForCondition(ctx context.Context, restCl
 		p.fetching = false
 		p.waitCh = nil
 		shares := cloneCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+		polledAt := p.lastPoll
 		p.mu.Unlock()
 		close(waitCh)
 
 		if err != nil {
-			return nil, err
+			return nil, time.Time{}, err
 		}
-		return shares, nil
+		return shares, polledAt, nil
 	}
 }
 
-func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string, targetQty float64) (float64, bool) {
+func paperbotClearPendingCopytradeSell(state *paperbotCopytradeState, outcome string) {
+	if state == nil || outcome == "" {
+		return
+	}
+	delete(state.pendingSellTarget, outcome)
+	delete(state.pendingSellPoll, outcome)
+}
+
+func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string, targetQty float64, pollTime time.Time) (float64, bool, bool) {
 	if state == nil {
-		return 0, false
+		return 0, false, false
 	}
 	outcome = core.SanitizeString(outcome)
 	if outcome == "" {
-		return 0, false
+		return 0, false, false
 	}
 	if !state.targetSeen[outcome] {
 		state.targetSeen[outcome] = true
 		state.targetShares[outcome] = targetQty
-		return 0, false
+		state.lastTargetPoll[outcome] = pollTime
+		paperbotClearPendingCopytradeSell(state, outcome)
+		return 0, false, false
 	}
+	if lastPoll := state.lastTargetPoll[outcome]; !lastPoll.IsZero() && lastPoll.Equal(pollTime) {
+		return 0, false, false
+	}
+	state.lastTargetPoll[outcome] = pollTime
+
 	prev := state.targetShares[outcome]
-	state.targetShares[outcome] = targetQty
-	return targetQty - prev, true
+	if targetQty > prev+0.01 {
+		state.targetShares[outcome] = targetQty
+		paperbotClearPendingCopytradeSell(state, outcome)
+		return targetQty - prev, true, false
+	}
+	if targetQty >= prev-0.01 {
+		state.targetShares[outcome] = targetQty
+		paperbotClearPendingCopytradeSell(state, outcome)
+		return 0, false, false
+	}
+	if _, waiting := state.pendingSellPoll[outcome]; waiting {
+		state.targetShares[outcome] = targetQty
+		paperbotClearPendingCopytradeSell(state, outcome)
+		return targetQty - prev, true, false
+	}
+	state.pendingSellTarget[outcome] = targetQty
+	state.pendingSellPoll[outcome] = pollTime
+	return 0, false, true
 }
 
 func paperbotLocalPositionAvg(engine *paper.Engine, marketID, outcome string) (float64, float64) {
@@ -4022,7 +4061,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		pollEvery = 2 * time.Second
 	}
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	targetShares, err := t.CopytradePoller.sharesForCondition(pollCtx, t.RestClient, pollEvery, t.Market.ConditionID)
+	targetShares, polledAt, err := t.CopytradePoller.sharesForCondition(pollCtx, t.RestClient, pollEvery, t.Market.ConditionID)
 	cancel()
 	if err != nil {
 		if err.Error() != state.lastError {
@@ -4039,7 +4078,14 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		if localQty > 0.01 {
 			state.managed[outcome] = true
 		}
-		targetDelta, ready := paperbotCopytradeTargetDelta(state, outcome, targetQty)
+		targetDelta, ready, pendingSell := paperbotCopytradeTargetDelta(state, outcome, targetQty, polledAt)
+		if pendingSell {
+			msg := fmt.Sprintf("[%s] ⏳ Copytrade exit pending second snapshot for %s: target now %.2f shares; waiting for another poll before selling", t.ID, outcome, targetQty)
+			if paperbotCopytradeShouldLog(state, "sell-confirm:"+outcome, msg, 10*time.Second) {
+				t.TUI.LogEvent("%s", msg)
+			}
+			continue
+		}
 		if !ready {
 			continue
 		}

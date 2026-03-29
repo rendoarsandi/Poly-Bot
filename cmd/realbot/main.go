@@ -6361,12 +6361,15 @@ type realbotCopytradeTarget struct {
 }
 
 type realbotCopytradeState struct {
-	lastError    string
-	managed      map[string]bool
-	targetShares map[string]float64
-	targetSeen   map[string]bool
-	lastLogAt    map[string]time.Time
-	lastLogMsg   map[string]string
+	lastError         string
+	managed           map[string]bool
+	targetShares      map[string]float64
+	targetSeen        map[string]bool
+	lastTargetPoll    map[string]time.Time
+	pendingSellTarget map[string]float64
+	pendingSellPoll   map[string]time.Time
+	lastLogAt         map[string]time.Time
+	lastLogMsg        map[string]string
 }
 
 type realbotCopytradePoller struct {
@@ -6381,11 +6384,14 @@ type realbotCopytradePoller struct {
 
 func newRealbotCopytradeState() *realbotCopytradeState {
 	return &realbotCopytradeState{
-		managed:      make(map[string]bool),
-		targetShares: make(map[string]float64),
-		targetSeen:   make(map[string]bool),
-		lastLogAt:    make(map[string]time.Time),
-		lastLogMsg:   make(map[string]string),
+		managed:           make(map[string]bool),
+		targetShares:      make(map[string]float64),
+		targetSeen:        make(map[string]bool),
+		lastTargetPoll:    make(map[string]time.Time),
+		pendingSellTarget: make(map[string]float64),
+		pendingSellPoll:   make(map[string]time.Time),
+		lastLogAt:         make(map[string]time.Time),
+		lastLogMsg:        make(map[string]string),
 	}
 }
 
@@ -6666,9 +6672,9 @@ func cloneRealbotCopytradeOutcomeShares(shares map[string]float64) map[string]fl
 	return cloned
 }
 
-func (p *realbotCopytradePoller) sharesForCondition(ctx context.Context, restClient *api.RestClient, pollEvery time.Duration, conditionID string) (map[string]float64, error) {
+func (p *realbotCopytradePoller) sharesForCondition(ctx context.Context, restClient *api.RestClient, pollEvery time.Duration, conditionID string) (map[string]float64, time.Time, error) {
 	if p == nil || restClient == nil {
-		return nil, fmt.Errorf("copytrade poller unavailable")
+		return nil, time.Time{}, fmt.Errorf("copytrade poller unavailable")
 	}
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
@@ -6679,15 +6685,16 @@ func (p *realbotCopytradePoller) sharesForCondition(ctx context.Context, restCli
 		p.mu.Lock()
 		if !p.lastPoll.IsZero() && time.Since(p.lastPoll) < pollEvery {
 			shares := cloneRealbotCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+			polledAt := p.lastPoll
 			p.mu.Unlock()
-			return shares, nil
+			return shares, polledAt, nil
 		}
 		if p.fetching {
 			waitCh := p.waitCh
 			p.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, time.Time{}, ctx.Err()
 			case <-waitCh:
 				continue
 			}
@@ -6716,32 +6723,64 @@ func (p *realbotCopytradePoller) sharesForCondition(ctx context.Context, restCli
 		p.fetching = false
 		p.waitCh = nil
 		shares := cloneRealbotCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+		polledAt := p.lastPoll
 		p.mu.Unlock()
 		close(waitCh)
 
 		if err != nil {
-			return nil, err
+			return nil, time.Time{}, err
 		}
-		return shares, nil
+		return shares, polledAt, nil
 	}
 }
 
-func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, targetQty float64) (float64, bool) {
+func realbotClearPendingCopytradeSell(state *realbotCopytradeState, outcome string) {
+	if state == nil || outcome == "" {
+		return
+	}
+	delete(state.pendingSellTarget, outcome)
+	delete(state.pendingSellPoll, outcome)
+}
+
+func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, targetQty float64, pollTime time.Time) (float64, bool, bool) {
 	if state == nil {
-		return 0, false
+		return 0, false, false
 	}
 	outcome = core.SanitizeString(outcome)
 	if outcome == "" {
-		return 0, false
+		return 0, false, false
 	}
 	if !state.targetSeen[outcome] {
 		state.targetSeen[outcome] = true
 		state.targetShares[outcome] = targetQty
-		return 0, false
+		state.lastTargetPoll[outcome] = pollTime
+		realbotClearPendingCopytradeSell(state, outcome)
+		return 0, false, false
 	}
+	if lastPoll := state.lastTargetPoll[outcome]; !lastPoll.IsZero() && lastPoll.Equal(pollTime) {
+		return 0, false, false
+	}
+	state.lastTargetPoll[outcome] = pollTime
+
 	prev := state.targetShares[outcome]
-	state.targetShares[outcome] = targetQty
-	return targetQty - prev, true
+	if targetQty > prev+0.01 {
+		state.targetShares[outcome] = targetQty
+		realbotClearPendingCopytradeSell(state, outcome)
+		return targetQty - prev, true, false
+	}
+	if targetQty >= prev-0.01 {
+		state.targetShares[outcome] = targetQty
+		realbotClearPendingCopytradeSell(state, outcome)
+		return 0, false, false
+	}
+	if _, waiting := state.pendingSellPoll[outcome]; waiting {
+		state.targetShares[outcome] = targetQty
+		realbotClearPendingCopytradeSell(state, outcome)
+		return targetQty - prev, true, false
+	}
+	state.pendingSellTarget[outcome] = targetQty
+	state.pendingSellPoll[outcome] = pollTime
+	return 0, false, true
 }
 
 func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (float64, string, bool) {
@@ -6784,7 +6823,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		pollEvery = 2 * time.Second
 	}
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	targetShares, err := poller.sharesForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
+	targetShares, polledAt, err := poller.sharesForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
 	cancel()
 	if err != nil {
 		if err.Error() != state.lastError {
@@ -6803,7 +6842,14 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			managed = true
 			state.managed[outcome] = true
 		}
-		targetDelta, ready := realbotCopytradeTargetDelta(state, outcome, targetQty)
+		targetDelta, ready, pendingSell := realbotCopytradeTargetDelta(state, outcome, targetQty, polledAt)
+		if pendingSell {
+			msg := fmt.Sprintf("[%s] ⏳ Copytrade exit pending second snapshot for %s: target now %.2f shares; waiting for another poll before selling", marketID, outcome, targetQty)
+			if realbotCopytradeShouldLog(state, "sell-confirm:"+outcome, msg, 10*time.Second) {
+				tui.LogEvent("%s", msg)
+			}
+			continue
+		}
 		if !ready {
 			continue
 		}
