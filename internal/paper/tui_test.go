@@ -532,7 +532,7 @@ func TestRenderPositionsHidesWalletTruthResolutionPanel(t *testing.T) {
 	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
 		t.Fatalf("expected on-chain inventory panel to stay visible, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Up: 10.0000") || !strings.Contains(rendered, "Down: 10.0000") {
+	if !strings.Contains(rendered, "Up: 10 ") || !strings.Contains(rendered, "Down: 10 ") {
 		t.Fatalf("expected on-chain inventory rows to be rendered, got %q", rendered)
 	}
 }
@@ -553,10 +553,10 @@ func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 	if strings.Contains(rendered, "WALLET TRUTH") {
 		t.Fatalf("expected wallet-truth detail panel to stay hidden, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Up: 3.5000") || !strings.Contains(rendered, "OPEN") {
+	if !strings.Contains(rendered, "Up: 3.5") || !strings.Contains(rendered, "OPEN") {
 		t.Fatalf("expected unresolved on-chain inventory row, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Down: 1.2500") || !strings.Contains(rendered, "REDEEMABLE") {
+	if !strings.Contains(rendered, "Down: 1.25") || !strings.Contains(rendered, "REDEEMABLE") {
 		t.Fatalf("expected redeemable on-chain inventory row, got %q", rendered)
 	}
 }
@@ -573,7 +573,7 @@ func TestRenderPositionsShowsSyncingInventoryUntilChainCatchesUp(t *testing.T) {
 	if !strings.Contains(rendered, "ON-CHAIN INVENTORY") {
 		t.Fatalf("expected syncing inventory section, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Up: 3.2100") || !strings.Contains(rendered, "SYNCING") {
+	if !strings.Contains(rendered, "Up: 3.21") || !strings.Contains(rendered, "SYNCING") {
 		t.Fatalf("expected syncing inventory row, got %q", rendered)
 	}
 }
@@ -845,6 +845,15 @@ func TestIsRowVisibleShowsPaperBinanceDelayOnlyInPaperMode(t *testing.T) {
 	}
 	if isRowVisible(cfg, "Real", settingsRowBinanceExecutionDelay) {
 		t.Fatalf("expected paper Binance execution delay row to be hidden in Real mode")
+	}
+}
+
+func TestFormatDisplayShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
+	if got := formatDisplayShareQty(1.234567); got != "1.23457" {
+		t.Fatalf("expected 5-decimal share precision, got %q", got)
+	}
+	if got := formatSignedDisplayShareQty(-0.123456); got != "-0.12346" {
+		t.Fatalf("expected signed 5-decimal share precision, got %q", got)
 	}
 }
 

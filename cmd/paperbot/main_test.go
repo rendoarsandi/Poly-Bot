@@ -172,6 +172,40 @@ func TestPaperbotCopytradeTargetSharesAggregatesByOutcome(t *testing.T) {
 	}
 }
 
+func TestPaperbotCopytradeTargetSharesForConditionFiltersOtherMarkets(t *testing.T) {
+	shares := paperbotCopytradeTargetSharesForCondition([]api.Position{
+		{ConditionID: "cond-1", Outcome: "Up", Size: 2.25},
+		{ConditionID: "cond-2", Outcome: "Up", Size: 9.0},
+		{ConditionID: "cond-1", Outcome: "Down", Size: 4.0},
+	}, "cond-1")
+	if shares["Up"] != 2.25 {
+		t.Fatalf("expected cond-1 Up shares 2.25, got %.4f", shares["Up"])
+	}
+	if shares["Down"] != 4.0 {
+		t.Fatalf("expected cond-1 Down shares 4.0, got %.4f", shares["Down"])
+	}
+}
+
+func TestPaperbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *testing.T) {
+	state := newPaperbotCopytradeState()
+
+	if delta, ready := paperbotCopytradeTargetDelta(state, "Up", 25); ready || delta != 0 {
+		t.Fatalf("initial snapshot should seed only, got delta=%.4f ready=%v", delta, ready)
+	}
+	if delta, ready := paperbotCopytradeTargetDelta(state, "Up", 28.5); !ready || delta != 3.5 {
+		t.Fatalf("expected +3.5 delta after increase, got delta=%.4f ready=%v", delta, ready)
+	}
+	if delta, ready := paperbotCopytradeTargetDelta(state, "Up", 26.0); !ready || delta != -2.5 {
+		t.Fatalf("expected -2.5 delta after decrease, got delta=%.4f ready=%v", delta, ready)
+	}
+}
+
+func TestPaperbotFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
+	if got := paperbotFormatShareQty(1.234567); got != "1.23457" {
+		t.Fatalf("expected 5-decimal share precision, got %q", got)
+	}
+}
+
 func TestShouldPaperReconnectWSOnlyForInvalidStaleBooks(t *testing.T) {
 	outcomes := []string{"Down", "Up"}
 	validBids := map[string]float64{"Down": 0.48, "Up": 0.49}

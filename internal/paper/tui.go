@@ -880,6 +880,24 @@ func fmtFloatTrim(v float64, decimals int) string {
 	return s
 }
 
+func formatDisplayShareQty(v float64) string {
+	if math.Abs(v-math.Round(v)) < 1e-9 {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmtFloatTrim(v, 5)
+}
+
+func formatSignedDisplayShareQty(v float64) string {
+	switch {
+	case v > 0:
+		return "+" + formatDisplayShareQty(v)
+	case v < 0:
+		return "-" + formatDisplayShareQty(math.Abs(v))
+	default:
+		return "0"
+	}
+}
+
 func displayedTradeBudgetsWithMode(mode string, cash, equity, startingBalance, sizingBalance, tradeFactor, tradeSizeUSDC, maxTradeSize, multiplier float64, tradeSizingMode string) (base, effective float64) {
 	sizingCapital := equity
 	if strings.EqualFold(mode, "Real") || strings.EqualFold(mode, "Live") {
@@ -3663,7 +3681,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 		strs := make([]string, 0, len(mps))
 		for _, pos := range mps {
-			ps := fmt.Sprintf("%s: %.0f@$%.2f", core.SanitizeString(pos.Outcome), pos.Quantity, pos.AvgPrice)
+			ps := fmt.Sprintf("%s: %s@$%.2f", core.SanitizeString(pos.Outcome), formatDisplayShareQty(pos.Quantity), pos.AvgPrice)
 			if pos.CurrentBid > 0 {
 				bidSt := styleGreen
 				if pos.CurrentBid < pos.AvgPrice {
@@ -3758,8 +3776,8 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			sort.Slice(sps, func(i, j int) bool { return sps[i].Outcome < sps[j].Outcome })
 			strs := make([]string, 0, len(sps))
 			for _, sp := range sps {
-				strs = append(strs, fmt.Sprintf("%s: %.2f@$%.4f",
-					core.SanitizeString(sp.Outcome), sp.Shares, sp.CostBasis))
+				strs = append(strs, fmt.Sprintf("%s: %s@$%.4f",
+					core.SanitizeString(sp.Outcome), formatDisplayShareQty(sp.Shares), sp.CostBasis))
 			}
 			sb.WriteString(strings.Join(strs, "  │  "))
 
@@ -3770,7 +3788,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 						minSh = sp.Shares
 					}
 				}
-				sb.WriteString("  →  " + styleGreen.Render(fmt.Sprintf("%.2f pairs sellable", minSh)))
+				sb.WriteString("  →  " + styleGreen.Render(fmt.Sprintf("%s pairs sellable", formatDisplayShareQty(minSh))))
 			}
 			sb.WriteString("\n")
 		}
@@ -3802,9 +3820,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				parts := make([]string, 0, len(positions))
 				for _, wt := range positions {
 					displayShares, _ := walletTruthInventoryDisplayShares(wt)
-					parts = append(parts, fmt.Sprintf("%s: %.4f %s",
+					parts = append(parts, fmt.Sprintf("%s: %s %s",
 						core.SanitizeString(wt.Outcome),
-						displayShares,
+						formatDisplayShareQty(displayShares),
 						walletTruthInventoryStatus(wt),
 					))
 				}
@@ -3858,12 +3876,12 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					redeemTag = styleYellow.Render(" [RESOLVING ⏳]")
 				}
 
-				parts = append(parts, fmt.Sprintf("%s %s L:%.4f C:%.4f Δ:%s%s",
+				parts = append(parts, fmt.Sprintf("%s %s L:%s C:%s Δ:%s%s",
 					marker,
 					core.SanitizeString(wt.Outcome),
-					wt.LocalShares,
-					wt.OnChainShares,
-					driftStyle.Render(fmt.Sprintf("%+.4f", wt.Drift)),
+					formatDisplayShareQty(wt.LocalShares),
+					formatDisplayShareQty(wt.OnChainShares),
+					driftStyle.Render(formatSignedDisplayShareQty(wt.Drift)),
 					redeemTag,
 				))
 			}

@@ -675,6 +675,40 @@ func TestRealbotBestBidFromLevels(t *testing.T) {
 	}
 }
 
+func TestRealbotCopytradeTargetSharesForConditionFiltersOtherMarkets(t *testing.T) {
+	shares := realbotCopytradeTargetSharesForCondition([]api.Position{
+		{ConditionID: "cond-1", Outcome: "Up", Size: 2.25},
+		{ConditionID: "cond-2", Outcome: "Up", Size: 9.0},
+		{ConditionID: "cond-1", Outcome: "Down", Size: 4.0},
+	}, "cond-1")
+	if shares["Up"] != 2.25 {
+		t.Fatalf("expected cond-1 Up shares 2.25, got %.4f", shares["Up"])
+	}
+	if shares["Down"] != 4.0 {
+		t.Fatalf("expected cond-1 Down shares 4.0, got %.4f", shares["Down"])
+	}
+}
+
+func TestRealbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *testing.T) {
+	state := newRealbotCopytradeState()
+
+	if delta, ready := realbotCopytradeTargetDelta(state, "Up", 25); ready || delta != 0 {
+		t.Fatalf("initial snapshot should seed only, got delta=%.4f ready=%v", delta, ready)
+	}
+	if delta, ready := realbotCopytradeTargetDelta(state, "Up", 28.5); !ready || delta != 3.5 {
+		t.Fatalf("expected +3.5 delta after increase, got delta=%.4f ready=%v", delta, ready)
+	}
+	if delta, ready := realbotCopytradeTargetDelta(state, "Up", 26.0); !ready || delta != -2.5 {
+		t.Fatalf("expected -2.5 delta after decrease, got delta=%.4f ready=%v", delta, ready)
+	}
+}
+
+func TestFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
+	if got := formatShareQty(1.234567); got != "1.23457" {
+		t.Fatalf("expected 5-decimal share precision, got %q", got)
+	}
+}
+
 func TestRealbotCanonicalizeMarketTokensPrefersCLOBMetadataByTokenID(t *testing.T) {
 	market := &api.Market{
 		ConditionID: "cond-1",
@@ -1156,7 +1190,7 @@ func TestCleanupRejectionMessageAvoidsHardcodedDollarMinimum(t *testing.T) {
 
 func TestCleanupRejectionMessagePreservesDustPrecision(t *testing.T) {
 	msg := cleanupRejectionMessage(0.000432, "YES", "venue said no")
-	if !strings.Contains(msg, "0.000432 YES shares") {
+	if !strings.Contains(msg, "0.00043 YES shares") {
 		t.Fatalf("expected dust precision in message, got %q", msg)
 	}
 }

@@ -194,8 +194,8 @@ func TestWaitForTransactionTimeoutReportsPendingState(t *testing.T) {
 func TestBumpGasPrice(t *testing.T) {
 	base := big.NewInt(100)
 	bumped := bumpGasPrice(base)
-	if bumped.String() != "120" {
-		t.Fatalf("expected 20%% gas bump from 100 to 120, got %s", bumped.String())
+	if bumped.String() != "150" {
+		t.Fatalf("expected 50%% gas bump from 100 to 150, got %s", bumped.String())
 	}
 	if base.String() != "100" {
 		t.Fatalf("expected original gas price to remain unchanged, got %s", base.String())

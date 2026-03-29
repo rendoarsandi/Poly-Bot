@@ -28,7 +28,7 @@ const (
 	polygonInitialReceiptPollInterval = 2 * time.Second
 	polygonMaxReceiptPollInterval     = 5 * time.Second
 	polygonTimeoutStatusProbeTimeout  = 3 * time.Second
-	polygonGasPriceBumpNumerator      = 12
+	polygonGasPriceBumpNumerator      = 15
 	polygonGasPriceBumpDenominator    = 10
 	payoutDenominatorSelector         = "0x1479831c"
 	payoutNumeratorsSelector          = "0x0504c814"
