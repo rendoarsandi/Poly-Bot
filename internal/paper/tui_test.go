@@ -631,6 +631,36 @@ func TestRenderPositionsHidesInFlightSectionWhenTakerCloseEnabled(t *testing.T) 
 	}
 }
 
+func TestRenderPositionsUsesNeutralHeaderInCopytradeMode(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), nil)
+	tui.InitSettings(TUISettings{
+		PaperArbMode: "copytrade",
+	}, nil)
+
+	positions := map[string]PositionPnL{
+		"BTC#copy:Down": {
+			Position: Position{
+				MarketID:  "BTC#copy",
+				Outcome:   "Down",
+				Quantity:  6,
+				AvgPrice:  0.93,
+				TotalCost: 5.58,
+			},
+			CurrentBid: 0.95,
+		},
+	}
+
+	model := tuiModel{tui: tui}
+	rendered := model.renderPositions(120, positions)
+
+	if strings.Contains(rendered, "IN-FLIGHT") || strings.Contains(rendered, "awaiting merge") {
+		t.Fatalf("expected copytrade positions to avoid merge-oriented header, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "POSITIONS") {
+		t.Fatalf("expected copytrade positions header, got %q", rendered)
+	}
+}
+
 func TestNormalizeTUISettingsNormalizesExecutionFloorToNonPositiveDecimal(t *testing.T) {
 	cfg := normalizeTUISettings(TUISettings{BuyExecutionMarginFloorPercent: -1.0})
 	if math.Abs(cfg.BuyExecutionMarginFloorPercent-(-0.01)) > 0.000001 {
@@ -838,6 +868,18 @@ func TestIsRowVisibleShowsMaxAskPriceInTakerMode(t *testing.T) {
 	}
 }
 
+func TestIsRowVisibleShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "copytrade"}
+	if !isRowVisible(cfg, "Paper", settingsRowExecutionSlip) {
+		t.Fatalf("expected copytrade slippage row to remain visible in copytrade mode")
+	}
+	for _, idx := range []int{settingsRowMinAskPrice, settingsRowMaxAskPrice} {
+		if isRowVisible(cfg, "Paper", idx) {
+			t.Fatalf("expected price row %d to be hidden in copytrade mode", idx)
+		}
+	}
+}
+
 func TestIsRowVisibleShowsPaperBinanceDelayOnlyInPaperMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "binance-gap"}
 	if !isRowVisible(cfg, "Paper", settingsRowBinanceExecutionDelay) {
@@ -905,6 +947,30 @@ func TestRenderSettingsHidesUnrelatedLabelsInTakerCloseMode(t *testing.T) {
 		if !strings.Contains(view, visible) {
 			t.Fatalf("renderSettings() missing %q\n%s", visible, view)
 		}
+	}
+}
+
+func TestRenderSettingsShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "copytrade",
+		CopytradeTarget:         "0xabc",
+		CopytradePollIntervalMs: 250,
+		CopytradeSizingMode:     core.CopytradeSizingModeShares,
+		CopytradeSizeShares:     5.5,
+		CopytradeMaxSlippagePct: 3.5,
+		MinAskPrice:             0.10,
+		MaxAskPrice:             0.90,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	if !strings.Contains(view, "Copy Max Slippage %") {
+		t.Fatalf("expected copytrade slippage row, got %q", view)
+	}
+	if strings.Contains(view, "Min Ask Price") || strings.Contains(view, "Max Ask Price") {
+		t.Fatalf("expected copytrade settings to hide generic price rows, got %q", view)
 	}
 }
 
@@ -1348,6 +1414,36 @@ func TestRenderAccountStatusShowsResolutionEstimateForUnresolvedInventory(t *tes
 
 	if !strings.Contains(rendered, "Resolve +$0.40/-$3.10") {
 		t.Fatalf("expected account status to show resolution estimate, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusHidesArbAndResolveInCopytradeMode(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode: "Real",
+			settings: TUISettings{
+				PaperArbMode:            "copytrade",
+				CopytradeSizingMode:     core.CopytradeSizingModeShares,
+				CopytradeSizeShares:     5.51,
+				CopytradeMaxSlippagePct: 5.0,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  93.92,
+		StartingBalance: 100.00,
+		RealizedPnL:     0,
+	}, 6.08, 99.70, 99.70, 1.0, 100.0, 0, 0, 0, map[string]Position{
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 2, AvgPrice: 0.25, TotalCost: 0.50},
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 6, AvgPrice: 0.93, TotalCost: 5.58},
+	})
+
+	if !strings.Contains(rendered, "Copy 5.51 shares") {
+		t.Fatalf("expected copytrade sizing label, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Arb ") || strings.Contains(rendered, "Resolve ") {
+		t.Fatalf("expected copytrade account status to hide arb/resolve metrics, got %q", rendered)
 	}
 }
 

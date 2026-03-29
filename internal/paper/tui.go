@@ -435,6 +435,7 @@ type TUISettings struct {
 	CopytradeSizingMode            string  // "usdc" or "shares" when PaperArbMode == copytrade
 	CopytradeSizeUSDC              float64 // fixed per-trade copytrade budget when sizing by USDC
 	CopytradeSizeShares            float64 // fixed per-trade copytrade share cap when sizing by shares
+	CopytradeMaxSlippagePct        float64 // maximum buy/sell slippage from observed quote in copytrade mode
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
@@ -458,9 +459,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeMaxSlippagePct: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeMaxSlippagePct: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeMaxSlippagePct: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 const (
@@ -552,7 +553,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 
 	if copytrade {
 		switch idx {
-		case settingsRowMarket, settingsRowTimeframe, settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
+		case settingsRowMarket, settingsRowTimeframe, settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
 			return false
 		}
 	}
@@ -580,7 +581,9 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 		return binanceGap
 	case settingsRowBinanceExecutionDelay:
 		return binanceGap && paperMode
-	case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
+	case settingsRowExecutionSlip:
+		return !maker && !binanceGap
+	case settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
 		return !maker && !binanceGap && !copytrade
 	case settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue:
 		return maker
@@ -635,6 +638,9 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case settingsRowBinanceExecutionDelay:
 		return "Paper Exec Delay"
 	case settingsRowExecutionSlip:
+		if copytrade {
+			return "Copy Max Slippage %"
+		}
 		return "Max Exec Slip %"
 	case settingsRowCopytradeTarget:
 		return "Copytrade Target"
@@ -654,16 +660,10 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		if maker {
 			return "Maker Min Buy Price"
 		}
-		if copytrade {
-			return "Copy Min Sell Price"
-		}
 		return "Min Ask Price"
 	case settingsRowMaxAskPrice:
 		if maker {
 			return "Maker Max Buy Price"
-		}
-		if copytrade {
-			return "Copy Max Buy Price"
 		}
 		return "Max Ask Price"
 	case settingsRowMakerMergeBuffer:
@@ -757,6 +757,13 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		}
 	}
 	s.BuyExecutionMarginFloorPercent = normalizeExecutionFloorSetting(s.BuyExecutionMarginFloorPercent)
+	if s.CopytradeMaxSlippagePct <= 0 {
+		s.CopytradeMaxSlippagePct = 5.0
+	}
+	if s.CopytradeMaxSlippagePct > 50.0 {
+		s.CopytradeMaxSlippagePct = 50.0
+	}
+	s.CopytradeMaxSlippagePct = math.Round(s.CopytradeMaxSlippagePct*10.0) / 10.0
 	s.TakerCloseMarketSlippage = normalizeTakerClosePriceSetting(s.TakerCloseMarketSlippage, 0.99)
 	s.TakerCloseMarketMinPrice = normalizeTakerClosePriceSetting(s.TakerCloseMarketMinPrice, 0.60)
 	s.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
@@ -1564,9 +1571,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowExecutionSlip:
-					m.tui.settings.BuyExecutionMarginFloorPercent -= 0.01
-					if m.tui.settings.BuyExecutionMarginFloorPercent < -0.10 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = -0.10
+					if isCopytradeSettingsMode(m.tui.settings) {
+						m.tui.settings.CopytradeMaxSlippagePct -= 0.5
+						if m.tui.settings.CopytradeMaxSlippagePct < 0 {
+							m.tui.settings.CopytradeMaxSlippagePct = 0
+						}
+					} else {
+						m.tui.settings.BuyExecutionMarginFloorPercent -= 0.01
+						if m.tui.settings.BuyExecutionMarginFloorPercent < -0.10 {
+							m.tui.settings.BuyExecutionMarginFloorPercent = -0.10
+						}
 					}
 					changed = true
 				case settingsRowSplitMinMargin:
@@ -1787,9 +1801,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowExecutionSlip:
-					m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
-					if m.tui.settings.BuyExecutionMarginFloorPercent > 0.0 {
-						m.tui.settings.BuyExecutionMarginFloorPercent = 0.0
+					if isCopytradeSettingsMode(m.tui.settings) {
+						m.tui.settings.CopytradeMaxSlippagePct += 0.5
+						if m.tui.settings.CopytradeMaxSlippagePct > 50.0 {
+							m.tui.settings.CopytradeMaxSlippagePct = 50.0
+						}
+					} else {
+						m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
+						if m.tui.settings.BuyExecutionMarginFloorPercent > 0.0 {
+							m.tui.settings.BuyExecutionMarginFloorPercent = 0.0
+						}
 					}
 					changed = true
 				case settingsRowSplitMinMargin:
@@ -3323,6 +3344,11 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity, bookEquity, multiplier, sizingBalance float64, rounds, profitable, losingRounds int, positions map[string]Position) string {
 	s := m.snap
 	inner := w - 4
+	settings := s.settings
+	if m.tui != nil && strings.TrimSpace(settings.PaperArbMode) == "" {
+		settings = m.tui.settings
+	}
+	copytradeMode := isCopytradeSettingsMode(settings)
 
 	displayEquity := equity
 	if strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live") {
@@ -3418,7 +3444,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	tradeBudgetEquity := sizingEquity
 	effectiveSizingBalance := sizingBalance
 	if isRealMode {
-		useCurrentEquityBudget := TakerCloseModeActive(s.settings)
+		useCurrentEquityBudget := TakerCloseModeActive(settings)
 		if useCurrentEquityBudget {
 			if tradeBudgetEquity <= 0 {
 				tradeBudgetEquity = math.Max(stats.StartingBalance, stats.CurrentBalance)
@@ -3436,8 +3462,14 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 			effectiveSizingBalance = 0
 		}
 	}
-	if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(s.mode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, s.settings.TradeSizeUSDC, s.maxTradeSize, multiplier, s.settings.TradeSizingMode); baseTradeCost > 0 {
-		if strings.EqualFold(s.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+	if copytradeMode {
+		if strings.EqualFold(settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+			tradeLine = fmt.Sprintf("  Copy %.5g shares  ·  ", settings.CopytradeSizeShares)
+		} else {
+			tradeLine = fmt.Sprintf("  Copy $%.2f cap  ·  ", settings.CopytradeSizeUSDC)
+		}
+	} else if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(s.mode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, settings.TradeSizeUSDC, s.maxTradeSize, multiplier, settings.TradeSizingMode); baseTradeCost > 0 {
+		if strings.EqualFold(settings.TradeSizingMode, core.TradeSizingModeUSDC) {
 			tradeLine = fmt.Sprintf("  Trade $%.2f fixed  ·  ", baseTradeCost)
 		} else if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
@@ -3447,11 +3479,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	} else {
 		tradeLine = "  "
 	}
-	tradeLine += fmt.Sprintf("Realized %s  ·  Arb %s",
-		realizedSt.Render(signedDollar(displayRealized)),
-		arbSt.Render(signedDollar(guaranteedProfit)),
-	)
-	if len(positions) > 0 && (math.Abs(bestResolvePnL) >= 0.005 || math.Abs(worstResolvePnL) >= 0.005) {
+	tradeLine += fmt.Sprintf("Realized %s", realizedSt.Render(signedDollar(displayRealized)))
+	if !copytradeMode {
+		tradeLine += fmt.Sprintf("  ·  Arb %s", arbSt.Render(signedDollar(guaranteedProfit)))
+	}
+	if !copytradeMode && len(positions) > 0 && (math.Abs(bestResolvePnL) >= 0.005 || math.Abs(worstResolvePnL) >= 0.005) {
 		resolveBestSt := styleGreen
 		if bestResolvePnL < 0 {
 			resolveBestSt = styleRed
@@ -3613,11 +3645,15 @@ func displayedTradeBudgets(mode string, cash, equity, startingBalance, sizingBal
 func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL) string {
 	s := m.snap
 	inner := w - 4
+	settings := s.settings
+	if m.tui != nil && strings.TrimSpace(settings.PaperArbMode) == "" {
+		settings = m.tui.settings
+	}
 
 	splitPositions := s.splitPositions
 	walletTruthPositions := s.walletTruth
 	showInFlightPositions := len(positionsWithPnL) > 0
-	if m.tui != nil && TakerCloseModeActive(m.tui.settings) {
+	if TakerCloseModeActive(settings) {
 		showInFlightPositions = false
 	}
 	hasSplitInventory := len(splitPositions) > 0
@@ -3643,7 +3679,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	var sb strings.Builder
 
 	// ── In-flight positions ──
-	if showInFlightPositions {
+	if showInFlightPositions && !isCopytradeSettingsMode(settings) {
 		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%d) %s",
 			len(positionsWithPnL), styleYellow.Render("⏳ awaiting merge")), clrTeal) + "\n")
 	} else {
@@ -4285,8 +4321,18 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowExecutionSlip),
-			value: fmt.Sprintf(" %5.1f%% ", executionFloorDisplayPercent(cfg.BuyExecutionMarginFloorPercent)),
-			bar:   renderBar(math.Abs(normalizeExecutionFloorSetting(cfg.BuyExecutionMarginFloorPercent))/0.10, 20),
+			value: func() string {
+				if isCopytradeSettingsMode(cfg) {
+					return fmt.Sprintf(" %5.1f%% ", cfg.CopytradeMaxSlippagePct)
+				}
+				return fmt.Sprintf(" %5.1f%% ", executionFloorDisplayPercent(cfg.BuyExecutionMarginFloorPercent))
+			}(),
+			bar: func() string {
+				if isCopytradeSettingsMode(cfg) {
+					return renderBar(cfg.CopytradeMaxSlippagePct/50.0, 20)
+				}
+				return renderBar(math.Abs(normalizeExecutionFloorSetting(cfg.BuyExecutionMarginFloorPercent))/0.10, 20)
+			}(),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowSplitMinMargin),

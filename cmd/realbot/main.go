@@ -144,6 +144,10 @@ func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
 	return paper.TakerCloseModeActive(cfg)
 }
 
+func realbotCopytradeHoldMode(cfg paper.TUISettings) bool {
+	return strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeCopytrade)
+}
+
 func realbotHasEnginePositionsForMarket(engine *paper.Engine, marketID string) bool {
 	if engine == nil || marketID == "" {
 		return false
@@ -882,6 +886,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		CopytradeSizingMode:            cfg.CopytradeSizingMode,
 		CopytradeSizeUSDC:              cfg.CopytradeSizeUSDC,
 		CopytradeSizeShares:            cfg.CopytradeSizeShares,
+		CopytradeMaxSlippagePct:        cfg.CopytradeMaxSlippagePct,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
@@ -920,6 +925,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.CopytradeSizingMode = s.CopytradeSizingMode
 	cfg.CopytradeSizeUSDC = s.CopytradeSizeUSDC
 	cfg.CopytradeSizeShares = s.CopytradeSizeShares
+	cfg.CopytradeMaxSlippagePct = s.CopytradeMaxSlippagePct
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -2269,6 +2275,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 				return
 			}
+			if realbotCopytradeHoldMode(liveCfg) {
+				if realbotHasEnginePositionsForMarket(engine, id) {
+					preserveWalletTruth = true
+					refreshWalletTruth(5 * time.Second)
+					tui.LogEvent("[%s] ⏳ Trader stopping: preserving copytrade inventory for target-led exit or redemption", id)
+				}
+				return
+			}
 
 			// TUI Restart logic: Preserve inventory if active
 			if !isShutdown && timeToExpiry > 30*time.Second {
@@ -2297,6 +2311,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					preserveWalletTruth = true
 					refreshWalletTruth(5 * time.Second)
 					tui.LogEvent("[%s] ⏳ Taker-close inventory locked in; waiting for market resolution and redemption", id)
+				}
+				go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
+					checkRedemption(context.Background(), marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
+				}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
+				return
+			}
+			if realbotCopytradeHoldMode(liveCfg) {
+				if realbotHasEnginePositionsForMarket(engine, id) {
+					preserveWalletTruth = true
+					refreshWalletTruth(5 * time.Second)
+					tui.LogEvent("[%s] ⏳ Copytrade inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", id)
 				}
 				go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
 					checkRedemption(context.Background(), marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
@@ -2336,7 +2361,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			usWeekdayGateClosedLogged = false
 		}
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
-		if weekdayTradingAllowed && realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
+		if weekdayTradingAllowed && !realbotCopytradeHoldMode(liveCfg) && realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
 			// If taker close just fired, suppress sell actions for 15s to prevent racing
 			// against the just-placed GTC buy order. The merge buffer cleanup would
 			// otherwise sell the shares we just bought before the order fully fills.
@@ -6653,13 +6678,6 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				}
 				continue
 			}
-			if ask < liveCfg.MinAskPrice || ask > liveCfg.MaxAskPrice {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: ask $%.3f outside %.3f-%.3f", marketID, outcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
-				if realbotCopytradeShouldLog(state, "buy-range:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
-				continue
-			}
 			if entryGate != nil && !entryGate.TryAcquire() {
 				msg := fmt.Sprintf("[%s] ⏳ Copytrade buy paused for %s: another market is executing a live entry", marketID, outcome)
 				if realbotCopytradeShouldLog(state, "buy-pause:"+outcome, msg, 10*time.Second) {
@@ -6668,12 +6686,16 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			submitPrice := liveCfg.MaxAskPrice
+			submitPrice := core.CopytradeBuyLimitPrice(ask, liveCfg.CopytradeMaxSlippagePct)
 			if submitPrice <= 0 || submitPrice >= 1.0 {
-				submitPrice = ask
-			}
-			if submitPrice < ask {
-				submitPrice = ask
+				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: invalid slippage cap from ask $%.3f", marketID, outcome, ask)
+				if realbotCopytradeShouldLog(state, "buy-cap:"+outcome, msg, 10*time.Second) {
+					tui.LogEvent("%s", msg)
+				}
+				if entryGate != nil {
+					entryGate.Release()
+				}
+				continue
 			}
 
 			budgetShares := core.CalculateCopytradeSharesForMode(targetDelta, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
@@ -6697,8 +6719,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target +%.2f shares (now %.2f), submit %s @ cap $%.3f (%s ask $%.3f)",
-				marketID, outcome, targetDelta, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, ask)
+			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target +%.2f shares (now %.2f), submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+				marketID, outcome, targetDelta, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
@@ -6778,20 +6800,13 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				}
 				continue
 			}
-			if bid < liveCfg.MinAskPrice {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: bid $%.3f below configured floor $%.3f", marketID, outcome, bid, liveCfg.MinAskPrice)
-				if realbotCopytradeShouldLog(state, "sell-range:"+outcome, msg, 10*time.Second) {
+			submitPrice := core.CopytradeSellFloorPrice(bid, liveCfg.CopytradeMaxSlippagePct)
+			if submitPrice <= 0 || submitPrice >= 1.0 {
+				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: invalid slippage floor from bid $%.3f", marketID, outcome, bid)
+				if realbotCopytradeShouldLog(state, "sell-floor:"+outcome, msg, 10*time.Second) {
 					tui.LogEvent("%s", msg)
 				}
 				continue
-			}
-
-			submitPrice := liveCfg.MinAskPrice
-			if submitPrice <= 0 || submitPrice >= 1.0 {
-				submitPrice = bid
-			}
-			if submitPrice > bid {
-				submitPrice = bid
 			}
 
 			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(sellDelta, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
@@ -6803,8 +6818,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %.2f -> %.2f shares, sell %s @ floor $%.3f (%s bid $%.3f)",
-				marketID, outcome, targetQty-targetDelta, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, bid)
+			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %.2f -> %.2f shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
+				marketID, outcome, targetQty-targetDelta, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideSell, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
