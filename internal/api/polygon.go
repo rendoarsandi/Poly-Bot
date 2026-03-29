@@ -30,6 +30,7 @@ const (
 	polygonTimeoutStatusProbeTimeout  = 3 * time.Second
 	polygonGasPriceBumpNumerator      = 15
 	polygonGasPriceBumpDenominator    = 10
+	polygonBaseFeeMultiplier          = 2
 	payoutDenominatorSelector         = "0x1479831c"
 	payoutNumeratorsSelector          = "0x0504c814"
 )
@@ -179,26 +180,7 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
 	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-
-	// Get nonce and gas price
-	nonce, err := c.GetNonce(ctx, signer.Address())
-	if err != nil {
-		return "", err
-	}
-
-	gasPrice, err := c.gasPriceForWriteTx(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Sign transaction
-	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 350000, gasPrice, data)
-	if err != nil {
-		return "", err
-	}
-
-	// Send raw transaction
-	return c.SendRawTransaction(ctx, signedTx)
+	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
 }
 
 // SplitPositions converts USDC into YES+NO tokens via CTF contract (PAID WRITE)
@@ -227,26 +209,7 @@ func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, cond
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
 	data := "0x72ce4275" + collateral + parent + cond + offset + amtHex + indexSetsData
-
-	// Get nonce and gas price
-	nonce, err := c.GetNonce(ctx, signer.Address())
-	if err != nil {
-		return "", err
-	}
-
-	gasPrice, err := c.gasPriceForWriteTx(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Sign transaction (200k gas limit should be plenty for split)
-	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 200000, gasPrice, data)
-	if err != nil {
-		return "", err
-	}
-
-	// Send raw transaction
-	return c.SendRawTransaction(ctx, signedTx)
+	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 200000, data)
 }
 
 // MergePositions burns equal YES+NO tokens to get USDC back instantly (PAID WRITE)
@@ -274,26 +237,7 @@ func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, cond
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
 	data := "0x9e7212ad" + collateral + parent + cond + offset + amtHex + indexSetsData
-
-	// Get nonce and gas price
-	nonce, err := c.GetNonce(ctx, signer.Address())
-	if err != nil {
-		return "", err
-	}
-
-	gasPrice, err := c.gasPriceForWriteTx(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Sign transaction (200k gas limit should be plenty for merge)
-	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 200000, gasPrice, data)
-	if err != nil {
-		return "", err
-	}
-
-	// Send raw transaction
-	return c.SendRawTransaction(ctx, signedTx)
+	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 200000, data)
 }
 
 func (c *PolygonClient) GetNonce(ctx context.Context, address string) (uint64, error) {
@@ -317,12 +261,79 @@ func (c *PolygonClient) GetGasPrice(ctx context.Context) (*big.Int, error) {
 	return parseHexBigInt(hexResult)
 }
 
-func (c *PolygonClient) gasPriceForWriteTx(ctx context.Context) (*big.Int, error) {
-	gasPrice, err := c.GetGasPrice(ctx)
+func (c *PolygonClient) GetMaxPriorityFeePerGas(ctx context.Context) (*big.Int, error) {
+	result, err := c.call(ctx, "eth_maxPriorityFeePerGas", []interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	return bumpGasPrice(gasPrice), nil
+	var hexResult string
+	_ = json.Unmarshal(result, &hexResult)
+	return parseHexBigInt(hexResult)
+}
+
+type writeTxFees struct {
+	LegacyGasPrice       *big.Int
+	MaxFeePerGas         *big.Int
+	MaxPriorityFeePerGas *big.Int
+}
+
+func (f writeTxFees) UseDynamic() bool {
+	return f.MaxFeePerGas != nil && f.MaxPriorityFeePerGas != nil && f.MaxFeePerGas.Sign() > 0 && f.MaxPriorityFeePerGas.Sign() > 0
+}
+
+func (c *PolygonClient) gasFeesForWriteTx(ctx context.Context) (writeTxFees, error) {
+	gasPrice, err := c.GetGasPrice(ctx)
+	if err != nil {
+		return writeTxFees{}, err
+	}
+	fees := writeTxFees{
+		LegacyGasPrice: bumpGasPrice(gasPrice),
+	}
+
+	priorityFee, err := c.GetMaxPriorityFeePerGas(ctx)
+	if err != nil || priorityFee == nil || priorityFee.Sign() <= 0 {
+		return fees, nil
+	}
+
+	baseFee, err := c.GetBlockBaseFee(ctx)
+	if err != nil || baseFee == nil || baseFee.Sign() <= 0 {
+		return fees, nil
+	}
+
+	bumpedPriority := bumpGasPrice(priorityFee)
+	maxFee := new(big.Int).Mul(baseFee, big.NewInt(polygonBaseFeeMultiplier))
+	maxFee.Add(maxFee, bumpedPriority)
+	if fees.LegacyGasPrice != nil && maxFee.Cmp(fees.LegacyGasPrice) < 0 {
+		maxFee = new(big.Int).Set(fees.LegacyGasPrice)
+	}
+
+	fees.MaxPriorityFeePerGas = bumpedPriority
+	fees.MaxFeePerGas = maxFee
+	return fees, nil
+}
+
+func (c *PolygonClient) signAndSendWriteTransaction(ctx context.Context, signer *Signer, to string, value *big.Int, gasLimit uint64, data string) (string, error) {
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	fees, err := c.gasFeesForWriteTx(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	var signedTx string
+	if fees.UseDynamic() {
+		signedTx, err = signer.SignDynamicFeeTransaction(nonce, to, value, gasLimit, fees.MaxFeePerGas, fees.MaxPriorityFeePerGas, data)
+	} else {
+		signedTx, err = signer.SignTransaction(nonce, to, value, gasLimit, fees.LegacyGasPrice, data)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	return c.SendRawTransaction(ctx, signedTx)
 }
 
 func (c *PolygonClient) SendRawTransaction(ctx context.Context, signedTx string) (string, error) {
@@ -353,6 +364,35 @@ type TransactionReceipt struct {
 type Transaction struct {
 	Hash        string `json:"hash"`
 	BlockNumber string `json:"blockNumber"`
+}
+
+type Block struct {
+	BaseFeePerGas string `json:"baseFeePerGas"`
+}
+
+func (c *PolygonClient) GetBlockBaseFee(ctx context.Context) (*big.Int, error) {
+	for _, blockTag := range []string{"pending", "latest"} {
+		result, err := c.call(ctx, "eth_getBlockByNumber", []interface{}{blockTag, false})
+		if err != nil {
+			if blockTag == "latest" {
+				return nil, err
+			}
+			continue
+		}
+		if string(result) == "null" {
+			continue
+		}
+
+		var block Block
+		if err := json.Unmarshal(result, &block); err != nil {
+			return nil, fmt.Errorf("failed to parse block: %w", err)
+		}
+		if strings.TrimSpace(block.BaseFeePerGas) == "" || block.BaseFeePerGas == "0x" {
+			continue
+		}
+		return parseHexBigInt(block.BaseFeePerGas)
+	}
+	return nil, fmt.Errorf("base fee unavailable from RPC")
 }
 
 // GetTransactionReceipt fetches the receipt for a mined transaction
@@ -590,26 +630,7 @@ func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender
 	amtHex := fmt.Sprintf("%064x", amount)
 
 	data := "0x095ea7b3" + spenderAddr + amtHex
-
-	// Get nonce and gas price
-	nonce, err := c.GetNonce(ctx, signer.Address())
-	if err != nil {
-		return "", err
-	}
-
-	gasPrice, err := c.gasPriceForWriteTx(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Sign transaction
-	signedTx, err := signer.SignTransaction(nonce, USDCContract, big.NewInt(0), 100000, gasPrice, data)
-	if err != nil {
-		return "", err
-	}
-
-	// Send raw transaction
-	return c.SendRawTransaction(ctx, signedTx)
+	return c.signAndSendWriteTransaction(ctx, signer, USDCContract, big.NewInt(0), 100000, data)
 }
 
 // ApproveCTF grants allowance for Conditional Tokens (ERC1155) (PAID WRITE)
@@ -628,26 +649,7 @@ func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender 
 
 	// Correct selector for setApprovalForAll is 0xa22cb465
 	data := "0xa22cb465" + operator + val
-
-	// Get nonce and gas price
-	nonce, err := c.GetNonce(ctx, signer.Address())
-	if err != nil {
-		return "", err
-	}
-
-	gasPrice, err := c.gasPriceForWriteTx(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Sign transaction
-	signedTx, err := signer.SignTransaction(nonce, CTFContract, big.NewInt(0), 100000, gasPrice, data)
-	if err != nil {
-		return "", err
-	}
-
-	// Send raw transaction
-	return c.SendRawTransaction(ctx, signedTx)
+	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 100000, data)
 }
 
 // GetCTFBalance returns the balance of a specific Conditional Token (ERC1155)

@@ -45,6 +45,42 @@ func (s *Signer) SignTransaction(nonce uint64, to string, value *big.Int, gasLim
 	return "0x" + hex.EncodeToString(rawTxBytes), nil
 }
 
+// SignDynamicFeeTransaction signs an EIP-1559 dynamic-fee transaction for the Polygon network.
+func (s *Signer) SignDynamicFeeTransaction(nonce uint64, to string, value *big.Int, gasLimit uint64, maxFeePerGas, maxPriorityFeePerGas *big.Int, data string) (string, error) {
+	toAddr := common.HexToAddress(to)
+	dataBytes, err := hex.DecodeString(strings.TrimPrefix(data, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("invalid data hex: %w", err)
+	}
+	if maxFeePerGas == nil || maxPriorityFeePerGas == nil {
+		return "", fmt.Errorf("dynamic fee parameters are required")
+	}
+
+	chainID := big.NewInt(137)
+	tx := types.NewTx(&types.DynamicFeeTx{
+		ChainID:   chainID,
+		Nonce:     nonce,
+		GasTipCap: maxPriorityFeePerGas,
+		GasFeeCap: maxFeePerGas,
+		Gas:       gasLimit,
+		To:        &toAddr,
+		Value:     value,
+		Data:      dataBytes,
+	})
+
+	signer := types.NewLondonSigner(chainID)
+	signedTx, err := types.SignTx(tx, signer, s.privateKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign dynamic-fee transaction: %w", err)
+	}
+
+	rawTxBytes, err := signedTx.MarshalBinary()
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal signed transaction: %w", err)
+	}
+	return "0x" + hex.EncodeToString(rawTxBytes), nil
+}
+
 // Signer handles EIP-712 signing for Polymarket CLOB API
 type Signer struct {
 	privateKey *ecdsa.PrivateKey
