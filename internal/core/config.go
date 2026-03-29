@@ -831,6 +831,21 @@ func CalculateCopytradeSharesForMode(targetShares, price, sizeUSDC, sizeShares, 
 	}
 }
 
+func CalculateCopytradeSellSharesForMode(localShares, targetShares, targetDelta, price, sizeUSDC, sizeShares, maxTradeSize float64, mode string) float64 {
+	if localShares <= 0 || price <= 0 {
+		return 0
+	}
+
+	// When the target is fully flat, keep unwinding until our managed inventory
+	// is fully flat too. Otherwise a capped first sell can strand a remainder
+	// once the target delta goes back to zero on the next poll.
+	if targetShares <= 0.01 {
+		return localShares
+	}
+	sellShares := math.Min(localShares, math.Max(0, -targetDelta))
+	return CalculateCopytradeSharesForMode(sellShares, price, sizeUSDC, sizeShares, maxTradeSize, mode)
+}
+
 func LoadBotConfig(profile string) (*Config, error) {
 	return loadBotConfigWithPath(profile, settingsPathForProfile(profile))
 }

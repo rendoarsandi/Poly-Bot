@@ -4123,10 +4123,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			continue
 		}
 
-		if state.managed[outcome] && targetDelta < -0.01 && localQty > 0.01 {
+		if state.managed[outcome] && localQty > 0.01 && (targetDelta < -0.01 || targetQty <= 0.01) {
 			bid := t.TokenBids[outcome]
 			quoteSource := "WS"
-			sellDelta := math.Min(localQty, -targetDelta)
+			sellDelta := math.Min(localQty, math.Max(0, -targetDelta))
+			if targetQty <= 0.01 {
+				sellDelta = localQty
+			}
 			bids := paperbotNormalizeBids(t.TokenFullBids[outcome], bid, math.Max(sellDelta, 1))
 			if bid <= 0 || bid >= 1.0 {
 				quoteSource = "REST"
@@ -4160,7 +4163,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketSellShares(paperbotCopytradeRequestedQty(sellDelta, submitFloor, liveCfg))
+			requestedQty := paperbotNormalizeMarketSellShares(core.CalculateCopytradeSellSharesForMode(localQty, targetQty, targetDelta, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			liq := paperbotBidLiquidityAtOrAbove(bids, submitFloor)
 			if liq > 0 && requestedQty > liq {
 				requestedQty = paperbotNormalizeMarketSellShares(liq)

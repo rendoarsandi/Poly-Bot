@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -286,6 +287,20 @@ func TestCalculateCopytradeSharesForMode(t *testing.T) {
 	}
 	if got := CalculateCopytradeSharesForMode(5, 0.4, 10.0, 8.0, 0, CopytradeSizingModeShares); got != 5.0 {
 		t.Fatalf("expected share copytrade sizing not to exceed target delta, got %.4f", got)
+	}
+}
+
+func TestCalculateCopytradeSellSharesForModeLiquidatesFullFlatTarget(t *testing.T) {
+	got := CalculateCopytradeSellSharesForMode(5.51, 0, -5.51, 0.23, 1.0, 1.0, 0, CopytradeSizingModeUSDC)
+	if got != 5.51 {
+		t.Fatalf("expected flat target to liquidate the full 5.51-share remainder, got %.4f", got)
+	}
+}
+
+func TestCalculateCopytradeSellSharesForModeKeepsDeltaCapWhileTargetStillHolds(t *testing.T) {
+	got := CalculateCopytradeSellSharesForMode(5.51, 2.51, -3.0, 0.23, 1.0, 1.0, 0, CopytradeSizingModeUSDC)
+	if math.Abs(got-3.0) > 0.000001 {
+		t.Fatalf("expected non-flat target sell to stay bounded by actionable delta, got %.4f", got)
 	}
 }
 

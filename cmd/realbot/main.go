@@ -6933,12 +6933,11 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			continue
 		}
 
-		if managed && targetDelta < -0.01 && localQty > 0.01 {
+		if managed && localQty > 0.01 && (targetDelta < -0.01 || targetQty <= 0.01) {
 			feeRate := tokenFeeRates[outcome]
 			if feeRate == 0 {
 				feeRate = 1000
 			}
-			sellDelta := math.Min(localQty, -targetDelta)
 			bid := 0.0
 			quoteSource := "WS"
 			if localBid, _, ok := realbotCanUseLocalCopytradeSellQuote(time.Now(), outcome, tokenBids, tokenAsks, tokenFullBids, quoteState, realbotTakerCloseLocalMaxAge); ok {
@@ -6973,7 +6972,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(sellDelta, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSellSharesForMode(localQty, targetQty, targetDelta, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			if requestedQty < minOnChainActionShares {
 				if targetQty <= 0.01 {
 					state.managed[outcome] = false
