@@ -55,7 +55,10 @@ const (
 	paperExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 	paperUIRefreshInterval         = 100 * time.Millisecond
 	paperMainLoopInterval          = 10 * time.Millisecond
-	paperCopytradeLoopInterval     = 50 * time.Millisecond
+	paperCopytradeLoopIntervalMin  = 100 * time.Millisecond
+	paperCopytradeLoopIntervalMax  = 250 * time.Millisecond
+	paperCopytradeUIRefreshMin     = 250 * time.Millisecond
+	paperCopytradeUIRefreshMax     = 500 * time.Millisecond
 	paperFillPollInterval          = 50 * time.Millisecond
 	paperResolutionRefreshInterval = 2 * time.Second
 	paperHistoricalLookupInterval  = 2 * time.Second
@@ -634,11 +637,40 @@ func paperbotFormatShareQty(qty float64) string {
 	}
 }
 
+func paperbotCopytradePollEvery(settings paper.TUISettings) time.Duration {
+	pollEvery := time.Duration(settings.CopytradePollIntervalMs) * time.Millisecond
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	return pollEvery
+}
+
 func paperbotTraderLoopInterval(settings paper.TUISettings) time.Duration {
 	if normalizePaperArbMode(settings.PaperArbMode) == paperArbModeCopytrade {
-		return paperCopytradeLoopInterval
+		interval := paperbotCopytradePollEvery(settings) / 2
+		if interval < paperCopytradeLoopIntervalMin {
+			interval = paperCopytradeLoopIntervalMin
+		}
+		if interval > paperCopytradeLoopIntervalMax {
+			interval = paperCopytradeLoopIntervalMax
+		}
+		return interval
 	}
 	return paperMainLoopInterval
+}
+
+func paperbotUIInterval(settings paper.TUISettings) time.Duration {
+	if normalizePaperArbMode(settings.PaperArbMode) == paperArbModeCopytrade {
+		interval := paperbotCopytradePollEvery(settings) / 2
+		if interval < paperCopytradeUIRefreshMin {
+			interval = paperCopytradeUIRefreshMin
+		}
+		if interval > paperCopytradeUIRefreshMax {
+			interval = paperCopytradeUIRefreshMax
+		}
+		return interval
+	}
+	return paperUIRefreshInterval
 }
 
 func normalizePaperArbMode(mode string) string {
@@ -1631,7 +1663,7 @@ func run() error {
 
 	// Start TUI render loop — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
-		tui.StartRenderLoop(paperUIRefreshInterval, stop)
+		tui.StartRenderLoop(paperbotUIInterval(tui.GetSettings()), stop)
 		defer tui.Stop()
 	}
 

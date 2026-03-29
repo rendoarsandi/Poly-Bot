@@ -229,11 +229,20 @@ func TestPaperbotFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) 
 }
 
 func TestPaperbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
-	if got := paperbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "copytrade"}); got != paperCopytradeLoopInterval {
-		t.Fatalf("expected copytrade loop interval %s, got %s", paperCopytradeLoopInterval, got)
+	if got := paperbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 125*time.Millisecond {
+		t.Fatalf("expected copytrade loop interval 125ms, got %s", got)
 	}
 	if got := paperbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "maker"}); got != paperMainLoopInterval {
 		t.Fatalf("expected default loop interval %s, got %s", paperMainLoopInterval, got)
+	}
+}
+
+func TestPaperbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
+	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 250*time.Millisecond {
+		t.Fatalf("expected copytrade UI interval 250ms, got %s", got)
+	}
+	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "maker"}); got != paperUIRefreshInterval {
+		t.Fatalf("expected default UI interval %s, got %s", paperUIRefreshInterval, got)
 	}
 }
 

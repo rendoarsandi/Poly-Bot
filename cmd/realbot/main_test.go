@@ -725,6 +725,24 @@ func TestRealbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *t
 	}
 }
 
+func TestRealbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
+	if got := realbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 125*time.Millisecond {
+		t.Fatalf("expected copytrade loop interval 125ms, got %s", got)
+	}
+	if got := realbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "maker"}); got != realbotMainLoopInterval {
+		t.Fatalf("expected default loop interval %s, got %s", realbotMainLoopInterval, got)
+	}
+}
+
+func TestRealbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
+	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 500*time.Millisecond {
+		t.Fatalf("expected copytrade UI interval 500ms, got %s", got)
+	}
+	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "maker"}); got != realbotUIRefreshInterval {
+		t.Fatalf("expected default UI interval %s, got %s", realbotUIRefreshInterval, got)
+	}
+}
+
 func TestFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := formatShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)

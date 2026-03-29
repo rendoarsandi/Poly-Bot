@@ -46,6 +46,10 @@ const (
 	minOnChainActionShares           = 0.01
 	realbotUIRefreshInterval         = 500 * time.Millisecond
 	realbotMainLoopInterval          = 10 * time.Millisecond
+	realbotCopytradeLoopIntervalMin  = 100 * time.Millisecond
+	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
+	realbotCopytradeUIRefreshMin     = 500 * time.Millisecond
+	realbotCopytradeUIRefreshMax     = 1 * time.Second
 	realbotFillPollInterval          = 50 * time.Millisecond
 	realbotTakerCloseQuoteRefresh    = 500 * time.Millisecond
 	realbotTakerCloseLogInterval     = 5 * time.Second
@@ -385,6 +389,42 @@ func normalizePaperArbMode(mode string) string {
 	default:
 		return paperArbModeTaker
 	}
+}
+
+func realbotCopytradePollEvery(settings paper.TUISettings) time.Duration {
+	pollEvery := time.Duration(settings.CopytradePollIntervalMs) * time.Millisecond
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	return pollEvery
+}
+
+func realbotTraderLoopInterval(settings paper.TUISettings) time.Duration {
+	if normalizePaperArbMode(settings.PaperArbMode) == paperArbModeCopytrade {
+		interval := realbotCopytradePollEvery(settings) / 2
+		if interval < realbotCopytradeLoopIntervalMin {
+			interval = realbotCopytradeLoopIntervalMin
+		}
+		if interval > realbotCopytradeLoopIntervalMax {
+			interval = realbotCopytradeLoopIntervalMax
+		}
+		return interval
+	}
+	return realbotMainLoopInterval
+}
+
+func realbotUIInterval(settings paper.TUISettings) time.Duration {
+	if normalizePaperArbMode(settings.PaperArbMode) == paperArbModeCopytrade {
+		interval := realbotCopytradePollEvery(settings) / 2
+		if interval < realbotCopytradeUIRefreshMin {
+			interval = realbotCopytradeUIRefreshMin
+		}
+		if interval > realbotCopytradeUIRefreshMax {
+			interval = realbotCopytradeUIRefreshMax
+		}
+		return interval
+	}
+	return realbotUIRefreshInterval
 }
 
 func realbotAssetPrefix(marketID string) string {
@@ -1779,7 +1819,7 @@ func run() error {
 
 	// Start TUI — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
-		tui.StartRenderLoop(realbotUIRefreshInterval, stop)
+		tui.StartRenderLoop(realbotUIInterval(tui.GetSettings()), stop)
 		defer tui.Stop()
 	}
 
@@ -2939,7 +2979,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			pauseMakerCtx, pauseMakerCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			realbotCancelAllMakerQuotes(pauseMakerCtx, id, "risk pause active", trader, engine, tui, makerQuotes)
 			pauseMakerCancel()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(realbotTraderLoopInterval(tui.GetSettings()))
 			continue
 		}
 
@@ -2956,7 +2996,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			pauseMakerCtx, pauseMakerCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			realbotCancelAllMakerQuotes(pauseMakerCtx, id, "trading gate closed", trader, engine, tui, makerQuotes)
 			pauseMakerCancel()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
 
@@ -3008,7 +3048,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "taker close market enabled", trader, engine, tui, makerQuotes)
 			cancelMaker()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
 
@@ -3016,7 +3056,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			makerCtx, makerCancel := context.WithTimeout(ctx, 5*time.Second)
 			maintainRealbotMakerQuotes(makerCtx, id, endTime, outcomes, getTokenID, tokenBids, tokenAsks, tokenFeeRates, trader, engine, riskMgr, tui, liveCfg, cfg, makerQuotes, &lastMakerSync)
 			makerCancel()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
 		cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3024,12 +3064,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		cancelMaker()
 		if arbMode == paperArbModeCopytrade {
 			realbotHandleCopytradeMarket(ctx, id, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates, trader, engine, tui, restClient, liveCfg, copytradePoller, copytradeState, entryGate, refreshWalletTruth)
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
 		if arbMode == paperArbModeBinanceGap {
 			realbotHandleBinanceGapMarket(ctx, id, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, polySignalTracker, tokenFeeRates, trader, engine, tui, liveCfg, cfg, currentBalance, binanceFeed, getTokenID, entryGate, &lastTrade, &lastBinanceLog)
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
 
@@ -4056,7 +4096,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			}
 		}
 
-		time.Sleep(realbotMainLoopInterval)
+		time.Sleep(realbotTraderLoopInterval(liveCfg))
 	}
 }
 
