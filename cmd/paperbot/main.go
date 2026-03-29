@@ -124,6 +124,9 @@ type MarketTrader struct {
 	PolySignalTracker  *paper.DirectionalSignalTracker
 	LastBinanceLog     *time.Time
 	LastBinanceTrigger time.Time
+	CopytradeWallet    string
+	CopytradeLabel     string
+	CopytradeState     *paperbotCopytradeState
 
 	// State
 	LaddersPlaced bool
@@ -162,6 +165,26 @@ type paperExecutionLatency struct {
 	shares      float64
 	marginPct   float64
 	expectedPnL float64
+}
+
+type paperbotCopytradeTarget struct {
+	Raw    string
+	Wallet string
+	Label  string
+}
+
+type paperbotCopytradeState struct {
+	lastPoll     time.Time
+	lastError    string
+	managed      map[string]bool
+	targetShares map[string]float64
+}
+
+func newPaperbotCopytradeState() *paperbotCopytradeState {
+	return &paperbotCopytradeState{
+		managed:      make(map[string]bool),
+		targetShares: make(map[string]float64),
+	}
 }
 
 func (l paperExecutionLatency) detectToStart() time.Duration {
@@ -213,6 +236,200 @@ func logPaperExecutionLatency(t *MarketTrader, latency paperExecutionLatency) {
 	if t.CSVLogger != nil {
 		t.CSVLogger.Log("TRADE", t.ID, "LATENCY", msg, t.Engine.GetEquity())
 	}
+}
+
+func paperbotResolveCopytradeTarget(ctx context.Context, restClient *api.RestClient, liveCfg paper.TUISettings) (paperbotCopytradeTarget, error) {
+	raw := strings.TrimSpace(liveCfg.CopytradeTarget)
+	if raw == "" {
+		return paperbotCopytradeTarget{}, fmt.Errorf("copytrade target is empty")
+	}
+	wallet, profile, err := restClient.ResolvePublicProfileTarget(ctx, raw)
+	if err != nil {
+		return paperbotCopytradeTarget{}, err
+	}
+
+	label := wallet
+	if profile != nil {
+		switch {
+		case strings.TrimSpace(profile.Name) != "":
+			label = profile.Name
+		case strings.TrimSpace(profile.Pseudonym) != "":
+			label = profile.Pseudonym
+		case strings.TrimSpace(profile.Referral) != "":
+			label = "@" + strings.TrimPrefix(profile.Referral, "@")
+		}
+	}
+	return paperbotCopytradeTarget{
+		Raw:    raw,
+		Wallet: wallet,
+		Label:  label,
+	}, nil
+}
+
+func paperbotCopytradeLabelFromHint(slug, title string) string {
+	if slug = core.SanitizeString(slug); slug != "" {
+		parts := strings.Split(slug, "-")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			return strings.ToUpper(strings.TrimSpace(parts[0]))
+		}
+		return strings.ToUpper(slug)
+	}
+	title = core.SanitizeString(title)
+	if title == "" {
+		return "COPY"
+	}
+	title = strings.ToUpper(title)
+	if len(title) > 12 {
+		title = title[:12]
+	}
+	return title
+}
+
+func parsePaperbotCopytradeEndTime(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed
+	}
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		return parsed
+	}
+	return time.Time{}
+}
+
+func buildPaperbotCopytradeMarketFromPosition(pos api.Position) *api.Market {
+	if pos.ConditionID == "" || pos.TokenID == "" || pos.Outcome == "" {
+		return nil
+	}
+	market := &api.Market{
+		ConditionID: pos.ConditionID,
+		Slug:        core.SanitizeString(pos.Slug),
+		EndTime:     parsePaperbotCopytradeEndTime(pos.EndDate),
+		Tokens: []api.Token{
+			{TokenID: pos.TokenID, Outcome: core.SanitizeString(pos.Outcome)},
+		},
+	}
+	if pos.OppositeAsset != "" && pos.OppositeOutcome != "" {
+		market.Tokens = append(market.Tokens, api.Token{
+			TokenID: pos.OppositeAsset,
+			Outcome: core.SanitizeString(pos.OppositeOutcome),
+		})
+	}
+	return market
+}
+
+func buildPaperbotCopytradeMarketFromTrade(ctx context.Context, restClient *api.RestClient, trade api.PublicTrade) *api.Market {
+	if restClient == nil || trade.ConditionID == "" {
+		return nil
+	}
+	market, err := restClient.GetMarket(ctx, trade.ConditionID)
+	if err == nil && market != nil {
+		return market
+	}
+	return nil
+}
+
+func paperbotFindCopytradeMarkets(ctx context.Context, restClient *api.RestClient, wallet string, maxMarkets int) (map[string]*api.Market, error) {
+	if restClient == nil {
+		return nil, fmt.Errorf("rest client is nil")
+	}
+	if maxMarkets <= 0 {
+		maxMarkets = 4
+	}
+
+	found := make(map[string]*api.Market)
+	seen := make(map[string]struct{})
+
+	addMarket := func(label string, market *api.Market) bool {
+		if market == nil || market.ConditionID == "" {
+			return false
+		}
+		if _, ok := seen[market.ConditionID]; ok {
+			return false
+		}
+		if !market.EndTime.IsZero() {
+			if time.Now().After(market.EndTime) || time.Until(market.EndTime) < 30*time.Second {
+				return false
+			}
+		}
+		if label == "" {
+			label = paperbotCopytradeLabelFromHint(market.Slug, "")
+		}
+		if _, exists := found[label]; exists {
+			fingerprint := strings.TrimPrefix(strings.TrimPrefix(market.ConditionID, "0x"), "0X")
+			if len(fingerprint) > 6 {
+				fingerprint = fingerprint[:6]
+			}
+			if fingerprint == "" {
+				fingerprint = "mkt"
+			}
+			label = label + "-" + strings.ToUpper(fingerprint)
+		}
+		seen[market.ConditionID] = struct{}{}
+		found[label] = market
+		return len(found) >= maxMarkets
+	}
+
+	positions, posErr := restClient.GetPublicPositions(ctx, wallet, nil, 0.01, maxMarkets*8)
+	if posErr == nil {
+		for _, pos := range positions {
+			if pos.Size <= 0.01 {
+				continue
+			}
+			if addMarket(paperbotCopytradeLabelFromHint(pos.Slug, pos.Title), buildPaperbotCopytradeMarketFromPosition(pos)) {
+				return found, nil
+			}
+		}
+	}
+
+	trades, tradeErr := restClient.GetPublicTrades(ctx, wallet, nil, maxMarkets*8)
+	if tradeErr == nil {
+		sort.Slice(trades, func(i, j int) bool {
+			return trades[i].Timestamp > trades[j].Timestamp
+		})
+		for _, trade := range trades {
+			if addMarket(paperbotCopytradeLabelFromHint(trade.Slug, trade.Title), buildPaperbotCopytradeMarketFromTrade(ctx, restClient, trade)) {
+				return found, nil
+			}
+		}
+	}
+
+	if len(found) == 0 {
+		switch {
+		case posErr != nil && tradeErr != nil:
+			return nil, fmt.Errorf("positions: %v | trades: %v", posErr, tradeErr)
+		case posErr != nil:
+			return nil, posErr
+		case tradeErr != nil:
+			return nil, tradeErr
+		}
+	}
+	return found, nil
+}
+
+func paperbotCopytradeTargetShares(positions []api.Position) map[string]float64 {
+	shares := make(map[string]float64, len(positions))
+	for _, pos := range positions {
+		outcome := core.SanitizeString(pos.Outcome)
+		if outcome == "" || pos.Size <= 0.01 {
+			continue
+		}
+		shares[outcome] += pos.Size
+	}
+	return shares
+}
+
+func paperbotLocalPositionAvg(engine *paper.Engine, marketID, outcome string) (float64, float64) {
+	if engine == nil {
+		return 0, 0
+	}
+	pos, ok := getPaperMarketPosition(engine.GetPositions(), marketID, outcome)
+	if !ok {
+		return 0, 0
+	}
+	return pos.Quantity, pos.AvgPrice
 }
 
 func paperbotNormalizeMarketBuyShares(qty float64) float64 {
@@ -1157,6 +1374,9 @@ func run() error {
 		PaperArbMode:                 normalizePaperArbMode(cfg.PaperArbMode),
 		CopytradeTarget:              cfg.CopytradeTarget,
 		CopytradePollIntervalMs:      cfg.CopytradePollIntervalMs,
+		CopytradeSizingMode:          cfg.CopytradeSizingMode,
+		CopytradeSizeUSDC:            cfg.CopytradeSizeUSDC,
+		CopytradeSizeShares:          cfg.CopytradeSizeShares,
 		SplitMinMarginSell:           cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:         cfg.SplitStrategyEnabled,
 		SplitInitialCapPct:           cfg.SplitInitialCapPct,
@@ -1186,6 +1406,9 @@ func run() error {
 		cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 		cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 		cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
+		cfg.CopytradeSizingMode = s.CopytradeSizingMode
+		cfg.CopytradeSizeUSDC = s.CopytradeSizeUSDC
+		cfg.CopytradeSizeShares = s.CopytradeSizeShares
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
@@ -1292,11 +1515,40 @@ func run() error {
 		default:
 		}
 
+		liveSettings := tui.GetSettings()
+		arbMode := normalizePaperArbMode(liveSettings.PaperArbMode)
+		copytradeTarget := paperbotCopytradeTarget{}
+
 		// Find all available markets (BTC, ETH, SOL, XRP)
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active markets based on live settings...")
-		markets := mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
-			tui.LogEvent(format, args...)
-		})
+		var markets map[string]*api.Market
+		if arbMode == paperArbModeCopytrade {
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 5*time.Second)
+			target, targetErr := paperbotResolveCopytradeTarget(resolveCtx, restClient, liveSettings)
+			resolveCancel()
+			if targetErr != nil {
+				logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "COPYTRADE_TARGET", "Copytrade target unavailable: %v", targetErr)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(5 * time.Second):
+				}
+				continue
+			}
+			copytradeTarget = target
+			tui.LogEvent("🪞 Copytrade target %s → %s", target.Raw, target.Wallet)
+			scanCtx, scanCancel := context.WithTimeout(ctx, 10*time.Second)
+			var scanErr error
+			markets, scanErr = paperbotFindCopytradeMarkets(scanCtx, restClient, target.Wallet, liveSettings.MaxMarkets)
+			scanCancel()
+			if scanErr != nil {
+				logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "COPYTRADE_SCAN", "Copytrade market scan failed: %v", scanErr)
+			}
+		} else {
+			markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
+				tui.LogEvent(format, args...)
+			})
+		}
 		if len(markets) == 0 {
 			logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "NO_MARKETS", "No active markets found, retrying...")
 			select {
@@ -1333,14 +1585,18 @@ func run() error {
 			// Parse end time and outcomes
 			endTime, err := paper.ParseEndTimeFromSlug(market.Slug)
 			if err != nil {
-				endTime = time.Now().Add(15 * time.Minute)
+				if !market.EndTime.IsZero() {
+					endTime = market.EndTime
+				} else {
+					endTime = time.Now().Add(15 * time.Minute)
+				}
 			}
 			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(marketID, market.Slug, outcomes, endTime)
 			// Reduced logging: Only TUI for startup info
 			tui.LogEvent("🚀 Trading %s: %s", marketID, market.Slug)
 
-			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache)
+			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache, copytradeTarget)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
@@ -1478,7 +1734,7 @@ func run() error {
 	}
 }
 
-func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache) *MarketTrader {
+func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache, copytradeTarget paperbotCopytradeTarget) *MarketTrader {
 	tokenMap := make(map[string]string)
 	for _, token := range market.Tokens {
 		tokenMap[token.TokenID] = token.Outcome
@@ -1551,6 +1807,9 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		LastSplitSell:     time.Time{},
 		MakerQuotes:       make(map[string]*paper.LimitOrder),
 		ResolutionCache:   resCache,
+		CopytradeWallet:   copytradeTarget.Wallet,
+		CopytradeLabel:    copytradeTarget.Label,
+		CopytradeState:    newPaperbotCopytradeState(),
 	}
 }
 
@@ -2437,6 +2696,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
 			cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 		}
+		if arbMode == paperArbModeCopytrade && marketState == paper.MarketStateActive && len(t.Outcomes) > 0 {
+			if !weekdayTradingAllowed || takerCloseMode {
+				continue
+			}
+			paperbotHandleCopytradeMarket(ctx, t, liveCfg)
+			continue
+		}
 		if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
 			if !weekdayTradingAllowed {
 				continue
@@ -2451,9 +2717,6 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				if arbMode == paperArbModeMaker {
 					cancelAllPaperMakerQuotes(t, "waiting for fresh pair quotes")
 				}
-				continue
-			}
-			if arbMode == paperArbModeCopytrade {
 				continue
 			}
 			if arbMode == paperArbModeBinanceGap {
@@ -3433,6 +3696,210 @@ func paperbotNormalizedAsks(levels []paper.MarketLevel, bestAsk, minSize float64
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Price < result[j].Price })
 	return result
+}
+
+func paperbotNormalizeBids(levels []paper.MarketLevel, bestBid, minSize float64) []paper.MarketLevel {
+	result := make([]paper.MarketLevel, len(levels))
+	copy(result, levels)
+	hasBest := false
+	for _, level := range result {
+		if math.Abs(level.Price-bestBid) <= 1e-6 || level.Price > bestBid-1e-6 {
+			hasBest = true
+			break
+		}
+	}
+	if !hasBest && bestBid > 0 {
+		result = append(result, paper.MarketLevel{Price: bestBid, Size: math.Max(minSize, 1)})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Price > result[j].Price })
+	return result
+}
+
+func paperbotBuyCostForShares(qty float64, asks []paper.MarketLevel) float64 {
+	remaining := qty
+	cost := 0.0
+	for _, level := range asks {
+		if remaining <= 0 || level.Size <= 0 {
+			continue
+		}
+		take := math.Min(remaining, level.Size)
+		cost += take * level.Price
+		remaining -= take
+	}
+	return cost
+}
+
+func paperbotCopytradeRequestedQty(targetDelta, price float64, liveCfg paper.TUISettings) float64 {
+	return core.CalculateCopytradeSharesForMode(
+		targetDelta,
+		price,
+		liveCfg.CopytradeSizeUSDC,
+		liveCfg.CopytradeSizeShares,
+		liveCfg.MaxTradeSize,
+		liveCfg.CopytradeSizingMode,
+	)
+}
+
+func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg paper.TUISettings) {
+	if t == nil || t.RestClient == nil || t.Engine == nil || t.Market == nil || t.CopytradeState == nil {
+		return
+	}
+	if strings.TrimSpace(t.CopytradeWallet) == "" {
+		if time.Since(t.lastCopytradeNoticeAt) > 10*time.Second {
+			t.TUI.LogEvent("[%s] ⚠️ Copytrade target wallet is empty", t.ID)
+			t.lastCopytradeNoticeAt = time.Now()
+		}
+		return
+	}
+
+	state := t.CopytradeState
+	pollEvery := time.Duration(liveCfg.CopytradePollIntervalMs) * time.Millisecond
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	if !state.lastPoll.IsZero() && time.Since(state.lastPoll) < pollEvery {
+		return
+	}
+	state.lastPoll = time.Now()
+
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	positions, err := t.RestClient.GetPublicPositions(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 0.01, len(t.Outcomes)+4)
+	cancel()
+	if err != nil {
+		if err.Error() != state.lastError {
+			t.TUI.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", t.ID, err)
+			state.lastError = err.Error()
+		}
+		return
+	}
+	state.lastError = ""
+
+	targetShares := paperbotCopytradeTargetShares(positions)
+	for outcome, shares := range targetShares {
+		state.targetShares[outcome] = shares
+	}
+
+	for _, outcome := range t.Outcomes {
+		targetQty := targetShares[outcome]
+		localQty, avgPrice := paperbotLocalPositionAvg(t.Engine, t.ID, outcome)
+		if localQty > 0.01 || targetQty > 0.01 {
+			state.managed[outcome] = true
+		}
+
+		tokenID := mkt.GetTokenIDForOutcome(t.Market, outcome)
+		if tokenID == "" {
+			continue
+		}
+
+		if targetQty > localQty+0.01 {
+			ask := t.TokenAsks[outcome]
+			quoteSource := "WS"
+			asks := paperbotNormalizedAsks(t.TokenFullAsks[outcome], ask, math.Max(targetQty-localQty, 1))
+			if ask <= 0 || ask >= 1.0 {
+				quoteSource = "REST"
+				restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
+				_, restAsk, restErr := t.RestClient.GetBestBidAsk(restCtx, tokenID)
+				restCancel()
+				if restErr != nil {
+					t.TUI.LogEvent("[%s] ⚠️ Copytrade buy skipped for %s: quote refresh failed: %v", t.ID, outcome, restErr)
+					continue
+				}
+				ask = restAsk
+				asks = paperbotNormalizedAsks(nil, ask, math.Max(targetQty-localQty, 1))
+			}
+			if ask <= 0 || ask >= 1.0 {
+				t.TUI.LogEvent("[%s] ⚠️ Copytrade buy skipped for %s: missing valid ask", t.ID, outcome)
+				continue
+			}
+			if ask < liveCfg.MinAskPrice || ask > liveCfg.MaxAskPrice {
+				t.TUI.LogEvent("[%s] ⚠️ Copytrade buy skipped for %s: ask $%.3f outside %.3f-%.3f", t.ID, outcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
+				continue
+			}
+
+			requestedQty := paperbotNormalizeMarketBuyShares(paperbotCopytradeRequestedQty(targetQty-localQty, ask, liveCfg))
+			liq := paperbotAskLiquidityAtOrBelow(asks, ask)
+			if liq > 0 && requestedQty > liq {
+				requestedQty = paperbotNormalizeMarketBuyShares(liq)
+			}
+			if balance := t.Engine.GetBalance(); balance > 0 {
+				for requestedQty >= paperbotMinActionShares && paperbotBuyCostForShares(requestedQty, asks) > balance+1e-9 {
+					cost := paperbotBuyCostForShares(requestedQty, asks)
+					if cost <= 0 {
+						break
+					}
+					requestedQty = paperbotNormalizeMarketBuyShares(requestedQty * balance / cost)
+				}
+			}
+			if requestedQty < paperbotMinActionShares {
+				t.TUI.LogEvent("[%s] ⚠️ Copytrade buy skipped for %s: actionable size below %.2f share", t.ID, outcome, paperbotMinActionShares)
+				continue
+			}
+
+			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target %.2f shares, submit %s (%s ask $%.3f)",
+				t.ID, outcome, targetQty, paperbotFormatShareQty(requestedQty), quoteSource, ask)
+			trade, avgFill, buyErr := t.Engine.MarketBuy(t.ID, outcome, requestedQty, asks)
+			if buyErr != nil {
+				t.TUI.LogEvent("[%s] ❌ Copytrade buy failed for %s: %v", t.ID, outcome, buyErr)
+				continue
+			}
+			state.managed[outcome] = true
+			t.TUI.RecordOrderWithMode(t.ID, outcome, "BUY", trade.Quantity, avgFill, trade.Value, 0.0, 0.0, paperArbModeCopytrade, "FILLED")
+			t.TUI.LogEvent("[%s] ✅ Copytrade bought %s %s at $%.3f", t.ID, paperbotFormatShareQty(trade.Quantity), outcome, avgFill)
+			continue
+		}
+
+		if state.managed[outcome] && localQty > targetQty+0.01 {
+			bid := t.TokenBids[outcome]
+			quoteSource := "WS"
+			bids := paperbotNormalizeBids(t.TokenFullBids[outcome], bid, math.Max(localQty-targetQty, 1))
+			if bid <= 0 || bid >= 1.0 {
+				quoteSource = "REST"
+				restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
+				restBid, _, restErr := t.RestClient.GetBestBidAsk(restCtx, tokenID)
+				restCancel()
+				if restErr != nil {
+					t.TUI.LogEvent("[%s] ⚠️ Copytrade sell skipped for %s: quote refresh failed: %v", t.ID, outcome, restErr)
+					continue
+				}
+				bid = restBid
+				bids = paperbotNormalizeBids(nil, bid, math.Max(localQty-targetQty, 1))
+			}
+			if bid <= 0 || bid >= 1.0 {
+				t.TUI.LogEvent("[%s] ⚠️ Copytrade sell skipped for %s: missing valid bid", t.ID, outcome)
+				continue
+			}
+			if bid < liveCfg.MinAskPrice {
+				t.TUI.LogEvent("[%s] ⚠️ Copytrade sell skipped for %s: bid $%.3f below configured floor $%.3f", t.ID, outcome, bid, liveCfg.MinAskPrice)
+				continue
+			}
+
+			requestedQty := paperbotNormalizeMarketSellShares(paperbotCopytradeRequestedQty(localQty-targetQty, bid, liveCfg))
+			liq := paperbotBidLiquidityAtOrAbove(bids, bid)
+			if liq > 0 && requestedQty > liq {
+				requestedQty = paperbotNormalizeMarketSellShares(liq)
+			}
+			if requestedQty < paperbotMinActionShares {
+				if targetQty <= 0.01 && localQty <= 0.01 {
+					state.managed[outcome] = false
+				}
+				continue
+			}
+
+			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target %.2f shares, sell %s (%s bid $%.3f)",
+				t.ID, outcome, targetQty, paperbotFormatShareQty(requestedQty), quoteSource, bid)
+			trade, sellErr := t.Engine.SellForMarket(t.ID, outcome, bid, requestedQty)
+			if sellErr != nil {
+				t.TUI.LogEvent("[%s] ❌ Copytrade sell failed for %s: %v", t.ID, outcome, sellErr)
+				continue
+			}
+			profit := trade.Value - (avgPrice * trade.Quantity)
+			t.TUI.RecordOrderWithMode(t.ID, outcome, "SELL", trade.Quantity, bid, trade.Value, 0.0, profit, paperArbModeCopytrade, "FILLED")
+			t.TUI.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", t.ID, paperbotFormatShareQty(trade.Quantity), outcome, bid)
+			if remainingQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome); remainingQty <= targetQty+0.01 && targetQty <= 0.01 {
+				state.managed[outcome] = false
+			}
+		}
+	}
 }
 
 func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCfg paper.TUISettings, cfg *core.Config) {

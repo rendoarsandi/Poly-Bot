@@ -876,6 +876,9 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
 		CopytradeTarget:                cfg.CopytradeTarget,
 		CopytradePollIntervalMs:        cfg.CopytradePollIntervalMs,
+		CopytradeSizingMode:            cfg.CopytradeSizingMode,
+		CopytradeSizeUSDC:              cfg.CopytradeSizeUSDC,
+		CopytradeSizeShares:            cfg.CopytradeSizeShares,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
@@ -911,6 +914,9 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 	cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
+	cfg.CopytradeSizingMode = s.CopytradeSizingMode
+	cfg.CopytradeSizeUSDC = s.CopytradeSizeUSDC
+	cfg.CopytradeSizeShares = s.CopytradeSizeShares
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -6611,9 +6617,15 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				submitPrice = ask
 			}
 
-			budget := core.CalculateTradeSizeForMode(realbotSizingCapitalForTrade(engine, liveCfg), liveCfg.TradeScaleFactor, liveCfg.TradeSizeUSDC, liveCfg.MaxTradeSize, liveCfg.TradeSizingMode)
-			requestedQty := normalizeMarketBuyShares(math.Min(targetQty-localQty, budget/submitPrice))
-			requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, submitPrice)
+			budgetShares := core.CalculateCopytradeSharesForMode(targetQty-localQty, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
+			budget := liveCfg.CopytradeSizeUSDC
+			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+				budget = budgetShares * submitPrice
+			}
+			requestedQty := normalizeMarketBuyShares(budgetShares)
+			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
+				requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, submitPrice)
+			}
 			if requestedQty < 1 {
 				tui.LogEvent("[%s] ⚠️ Copytrade buy skipped for %s: trade budget $%.2f is too small at cap $%.3f", marketID, outcome, budget, submitPrice)
 				if entryGate != nil {
@@ -6701,7 +6713,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				submitPrice = bid
 			}
 
-			requestedQty := normalizeMarketSellShares(localQty - targetQty)
+			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(localQty-targetQty, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			if requestedQty < minOnChainActionShares {
 				if targetQty <= 0.01 {
 					state.managed[outcome] = false

@@ -57,6 +57,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"restFallbackPollIntervalMs": 700,
 		"copytradeTarget": "@json-profile",
 		"copytradePollIntervalMs": 1500,
+		"copytradeSizingMode": "shares",
+		"copytradeSizeUsdc": 3.4,
+		"copytradeSizeShares": 7.5,
 		"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
@@ -108,6 +111,15 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.CopytradePollIntervalMs != 1500 {
 		t.Fatalf("expected JSON CopytradePollIntervalMs 1500, got %d", cfg.CopytradePollIntervalMs)
+	}
+	if cfg.CopytradeSizingMode != CopytradeSizingModeShares {
+		t.Fatalf("expected JSON CopytradeSizingMode shares, got %q", cfg.CopytradeSizingMode)
+	}
+	if cfg.CopytradeSizeUSDC != 3.4 {
+		t.Fatalf("expected JSON CopytradeSizeUSDC 3.4, got %.1f", cfg.CopytradeSizeUSDC)
+	}
+	if cfg.CopytradeSizeShares != 7.5 {
+		t.Fatalf("expected JSON CopytradeSizeShares 7.5, got %.1f", cfg.CopytradeSizeShares)
 	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
@@ -164,6 +176,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.RestFallbackPollIntervalMs = 900
 	cfg.CopytradeTarget = "0x1234567890abcdef1234567890abcdef12345678"
 	cfg.CopytradePollIntervalMs = 1750
+	cfg.CopytradeSizingMode = CopytradeSizingModeShares
+	cfg.CopytradeSizeUSDC = 4.2
+	cfg.CopytradeSizeShares = 6.5
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -218,6 +233,15 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.CopytradePollIntervalMs != 1750 {
 		t.Fatalf("expected saved CopytradePollIntervalMs 1750, got %d", settings.CopytradePollIntervalMs)
 	}
+	if settings.CopytradeSizingMode != CopytradeSizingModeShares {
+		t.Fatalf("expected saved CopytradeSizingMode shares, got %q", settings.CopytradeSizingMode)
+	}
+	if settings.CopytradeSizeUSDC != 4.2 {
+		t.Fatalf("expected saved CopytradeSizeUSDC 4.2, got %.1f", settings.CopytradeSizeUSDC)
+	}
+	if settings.CopytradeSizeShares != 6.5 {
+		t.Fatalf("expected saved CopytradeSizeShares 6.5, got %.1f", settings.CopytradeSizeShares)
+	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
 	}
@@ -250,6 +274,18 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.TradingHoursMode != "off" {
 		t.Fatal("expected saved TradingHoursMode off")
+	}
+}
+
+func TestCalculateCopytradeSharesForMode(t *testing.T) {
+	if got := CalculateCopytradeSharesForMode(12, 0.4, 3.0, 8.0, 0, CopytradeSizingModeUSDC); got != 7.5 {
+		t.Fatalf("expected USDC copytrade sizing to buy 7.5 shares, got %.4f", got)
+	}
+	if got := CalculateCopytradeSharesForMode(12, 0.4, 3.0, 8.0, 0, CopytradeSizingModeShares); got != 8.0 {
+		t.Fatalf("expected share copytrade sizing to cap at 8 shares, got %.4f", got)
+	}
+	if got := CalculateCopytradeSharesForMode(5, 0.4, 10.0, 8.0, 0, CopytradeSizingModeShares); got != 5.0 {
+		t.Fatalf("expected share copytrade sizing not to exceed target delta, got %.4f", got)
 	}
 }
 

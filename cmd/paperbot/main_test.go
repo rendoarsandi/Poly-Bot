@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"Market-bot/internal/api"
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 )
@@ -153,6 +154,21 @@ func TestComputePaperMakerSkewedQuoteChangesAggressiveness(t *testing.T) {
 	}
 	if sellLong >= sellShort {
 		t.Fatalf("sell quote should be more aggressive when inventory is heavy: long=%.3f short=%.3f", sellLong, sellShort)
+	}
+}
+
+func TestPaperbotCopytradeTargetSharesAggregatesByOutcome(t *testing.T) {
+	shares := paperbotCopytradeTargetShares([]api.Position{
+		{Outcome: "Up", Size: 2.25},
+		{Outcome: "Up", Size: 0.75},
+		{Outcome: "Down", Size: 4.0},
+		{Outcome: "Down", Size: 0.009},
+	})
+	if shares["Up"] != 3.0 {
+		t.Fatalf("expected Up shares 3.0, got %.4f", shares["Up"])
+	}
+	if shares["Down"] != 4.0 {
+		t.Fatalf("expected Down shares 4.0, got %.4f", shares["Down"])
 	}
 }
 

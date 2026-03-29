@@ -20,8 +20,10 @@ const (
 	ModePaper TradingMode = "paper"
 	ModeReal  TradingMode = "real"
 
-	TradeSizingModePercent = "percent"
-	TradeSizingModeUSDC    = "usdc"
+	TradeSizingModePercent    = "percent"
+	TradeSizingModeUSDC       = "usdc"
+	CopytradeSizingModeUSDC   = "usdc"
+	CopytradeSizingModeShares = "shares"
 
 	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
@@ -120,6 +122,9 @@ type Config struct {
 	TakerCloseMarketMinPrice          float64 // Min price to trigger close buy (default: 0.60)
 	CopytradeTarget                   string  // Wallet address, profile handle, or profile URL to follow
 	CopytradePollIntervalMs           int     // Copytrade public-wallet poll interval in milliseconds
+	CopytradeSizingMode               string  // "usdc" or "shares" for copytrade entries
+	CopytradeSizeUSDC                 float64 // Fixed per-trade USDC budget when copytrade mode uses USDC sizing
+	CopytradeSizeShares               float64 // Fixed share cap per trade when copytrade mode uses share sizing
 	BinanceQuoteAsset                 string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct         float64 // Percent move over the lookback window required to trigger entry
 	PaperBinanceExecutionDelayMs      int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
@@ -180,6 +185,9 @@ type RuntimeSettings struct {
 	TakerCloseMarketMinPrice          float64 `json:"takerCloseMarketMinPrice"`
 	CopytradeTarget                   string  `json:"copytradeTarget"`
 	CopytradePollIntervalMs           int     `json:"copytradePollIntervalMs"`
+	CopytradeSizingMode               string  `json:"copytradeSizingMode"`
+	CopytradeSizeUSDC                 float64 `json:"copytradeSizeUsdc"`
+	CopytradeSizeShares               float64 `json:"copytradeSizeShares"`
 	BinanceQuoteAsset                 string  `json:"binanceQuoteAsset"`
 	BinanceSignalThresholdPct         float64 `json:"binanceSignalThresholdPct"`
 	PaperBinanceExecutionDelayMs      int     `json:"paperBinanceExecutionDelayMs"`
@@ -257,6 +265,9 @@ func LoadConfig() (*Config, error) {
 		TradingHoursMode:                  parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
 		CopytradeTarget:                   strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
+		CopytradeSizingMode:               normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
+		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(parseEnvFloat("COPYTRADE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
+		CopytradeSizeShares:               normalizeCopytradeSizeShares(parseEnvFloat("COPYTRADE_SIZE_SHARES", 1.0)),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
 		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
@@ -280,6 +291,15 @@ func normalizeTradeSizingMode(mode string) string {
 	}
 }
 
+func normalizeCopytradeSizingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case CopytradeSizingModeShares:
+		return CopytradeSizingModeShares
+	default:
+		return CopytradeSizingModeUSDC
+	}
+}
+
 func normalizeFixedTradeSizeUSDC(size float64) float64 {
 	if size <= 0 {
 		return 1.0
@@ -287,6 +307,21 @@ func normalizeFixedTradeSizeUSDC(size float64) float64 {
 	size = math.Round(size*10.0) / 10.0
 	if size < 0.1 {
 		return 0.1
+	}
+	return size
+}
+
+func normalizeCopytradeSizeUSDC(size float64) float64 {
+	return normalizeFixedTradeSizeUSDC(size)
+}
+
+func normalizeCopytradeSizeShares(size float64) float64 {
+	if size <= 0 {
+		return 1.0
+	}
+	size = math.Round(size*100.0) / 100.0
+	if size < 0.01 {
+		return 0.01
 	}
 	return size
 }
@@ -565,6 +600,9 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TakerCloseMarketMinPrice:          c.TakerCloseMarketMinPrice,
 		CopytradeTarget:                   strings.TrimSpace(c.CopytradeTarget),
 		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
+		CopytradeSizingMode:               normalizeCopytradeSizingMode(c.CopytradeSizingMode),
+		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(c.CopytradeSizeUSDC),
+		CopytradeSizeShares:               normalizeCopytradeSizeShares(c.CopytradeSizeShares),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
 		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
@@ -625,6 +663,9 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
 	c.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	c.CopytradePollIntervalMs = normalizeCopytradePollIntervalMs(s.CopytradePollIntervalMs)
+	c.CopytradeSizingMode = normalizeCopytradeSizingMode(s.CopytradeSizingMode)
+	c.CopytradeSizeUSDC = normalizeCopytradeSizeUSDC(s.CopytradeSizeUSDC)
+	c.CopytradeSizeShares = normalizeCopytradeSizeShares(s.CopytradeSizeShares)
 	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
 	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
 	c.PaperBinanceExecutionDelayMs = normalizePaperBinanceExecutionDelayMs(s.PaperBinanceExecutionDelayMs)
@@ -677,6 +718,9 @@ func (c *Config) SaveSettings() error {
 	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
+	envMap["COPYTRADE_SIZING_MODE"] = normalizeCopytradeSizingMode(c.CopytradeSizingMode)
+	envMap["COPYTRADE_SIZE_USDC"] = strconv.FormatFloat(normalizeCopytradeSizeUSDC(c.CopytradeSizeUSDC), 'f', -1, 64)
+	envMap["COPYTRADE_SIZE_SHARES"] = strconv.FormatFloat(normalizeCopytradeSizeShares(c.CopytradeSizeShares), 'f', -1, 64)
 	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
 	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
 	envMap["PAPER_BINANCE_EXECUTION_DELAY_MS"] = strconv.Itoa(normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs))
@@ -715,6 +759,30 @@ func CalculateTradeSizeForMode(currentBalance, tradeScaleFactor, tradeSizeUSDC, 
 		tradeSize = 0.1
 	}
 	return tradeSize
+}
+
+func CalculateCopytradeSharesForMode(targetShares, price, sizeUSDC, sizeShares, maxTradeSize float64, mode string) float64 {
+	if targetShares <= 0 || price <= 0 {
+		return 0
+	}
+	switch normalizeCopytradeSizingMode(mode) {
+	case CopytradeSizingModeShares:
+		limit := normalizeCopytradeSizeShares(sizeShares)
+		if limit > targetShares {
+			limit = targetShares
+		}
+		return limit
+	default:
+		budget := normalizeCopytradeSizeUSDC(sizeUSDC)
+		if maxTradeSize > 0 && budget > maxTradeSize {
+			budget = maxTradeSize
+		}
+		shares := budget / price
+		if shares > targetShares {
+			shares = targetShares
+		}
+		return shares
+	}
 }
 
 func LoadBotConfig(profile string) (*Config, error) {
