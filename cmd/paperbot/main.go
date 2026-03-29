@@ -186,6 +186,9 @@ type paperbotCopytradeState struct {
 	lastTargetPoll    map[string]time.Time
 	pendingSellTarget map[string]float64
 	pendingSellPoll   map[string]time.Time
+	lastTradeFetch    time.Time
+	tradesSeeded      bool
+	seenTradeKeys     map[string]time.Time
 	lastLogAt         map[string]time.Time
 	lastLogMsg        map[string]string
 }
@@ -208,6 +211,7 @@ func newPaperbotCopytradeState() *paperbotCopytradeState {
 		lastTargetPoll:    make(map[string]time.Time),
 		pendingSellTarget: make(map[string]float64),
 		pendingSellPoll:   make(map[string]time.Time),
+		seenTradeKeys:     make(map[string]time.Time),
 		lastLogAt:         make(map[string]time.Time),
 		lastLogMsg:        make(map[string]string),
 	}
@@ -638,6 +642,55 @@ func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string,
 	state.pendingSellTarget[outcome] = targetQty
 	state.pendingSellPoll[outcome] = pollTime
 	return 0, false, true
+}
+
+func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, strings.TrimSpace(trade.TransactionHash))
+}
+
+func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.PublicTrade, conditionID string) []api.PublicTrade {
+	if state == nil || len(trades) == 0 {
+		return nil
+	}
+	conditionID = strings.TrimSpace(conditionID)
+	now := time.Now()
+	for key, seenAt := range state.seenTradeKeys {
+		if now.Sub(seenAt) > 15*time.Minute {
+			delete(state.seenTradeKeys, key)
+		}
+	}
+
+	filtered := make([]api.PublicTrade, 0, len(trades))
+	for _, trade := range trades {
+		if conditionID != "" && !strings.EqualFold(strings.TrimSpace(trade.ConditionID), conditionID) {
+			continue
+		}
+		if core.SanitizeString(trade.Outcome) == "" || trade.Size <= 0.01 {
+			continue
+		}
+		filtered = append(filtered, trade)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Timestamp == filtered[j].Timestamp {
+			return paperbotCopytradeTradeKey(filtered[i]) < paperbotCopytradeTradeKey(filtered[j])
+		}
+		return filtered[i].Timestamp < filtered[j].Timestamp
+	})
+
+	fresh := make([]api.PublicTrade, 0, len(filtered))
+	for _, trade := range filtered {
+		key := paperbotCopytradeTradeKey(trade)
+		if _, seen := state.seenTradeKeys[key]; seen {
+			continue
+		}
+		state.seenTradeKeys[key] = now
+		fresh = append(fresh, trade)
+	}
+	if !state.tradesSeeded {
+		state.tradesSeeded = true
+		return nil
+	}
+	return fresh
 }
 
 func paperbotLocalPositionAvg(engine *paper.Engine, marketID, outcome string) (float64, float64) {
@@ -4060,8 +4113,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
 	}
+	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
+		return
+	}
+	state.lastTradeFetch = time.Now()
+
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	targetShares, polledAt, err := t.CopytradePoller.sharesForCondition(pollCtx, t.RestClient, pollEvery, t.Market.ConditionID)
+	trades, err := t.RestClient.GetPublicTrades(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 32)
 	cancel()
 	if err != nil {
 		if err.Error() != state.lastError {
@@ -4072,33 +4130,30 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	}
 	state.lastError = ""
 
-	for _, outcome := range t.Outcomes {
-		targetQty := targetShares[outcome]
+	freshTrades := paperbotCopytradeFreshTrades(state, trades, t.Market.ConditionID)
+	for _, signal := range freshTrades {
+		outcome := core.SanitizeString(signal.Outcome)
+		if outcome == "" {
+			continue
+		}
 		localQty, avgPrice := paperbotLocalPositionAvg(t.Engine, t.ID, outcome)
 		if localQty > 0.01 {
 			state.managed[outcome] = true
 		}
-		targetDelta, ready, pendingSell := paperbotCopytradeTargetDelta(state, outcome, targetQty, polledAt)
-		if pendingSell {
-			msg := fmt.Sprintf("[%s] ⏳ Copytrade exit pending second snapshot for %s: target now %.2f shares; waiting for another poll before selling", t.ID, outcome, targetQty)
-			if paperbotCopytradeShouldLog(state, "sell-confirm:"+outcome, msg, 10*time.Second) {
-				t.TUI.LogEvent("%s", msg)
-			}
-			continue
-		}
-		if !ready {
-			continue
-		}
-
 		tokenID := mkt.GetTokenIDForOutcome(t.Market, outcome)
 		if tokenID == "" {
 			continue
 		}
+		tradeSide := strings.ToUpper(strings.TrimSpace(signal.Side))
+		tradeSize := math.Max(0, signal.Size)
+		if tradeSize <= 0.01 {
+			continue
+		}
 
-		if targetDelta > 0.01 {
+		if tradeSide == "BUY" {
 			ask := t.TokenAsks[outcome]
 			quoteSource := "WS"
-			asks := paperbotNormalizedAsks(t.TokenFullAsks[outcome], ask, math.Max(targetDelta, 1))
+			asks := paperbotNormalizedAsks(t.TokenFullAsks[outcome], ask, math.Max(tradeSize, 1))
 			if ask <= 0 || ask >= 1.0 {
 				quoteSource = "REST"
 				restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -4112,7 +4167,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					continue
 				}
 				ask = restAsk
-				asks = paperbotNormalizedAsks(nil, ask, math.Max(targetDelta, 1))
+				asks = paperbotNormalizedAsks(nil, ask, math.Max(tradeSize, 1))
 			}
 			if ask <= 0 || ask >= 1.0 {
 				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: missing valid ask", t.ID, outcome)
@@ -4131,7 +4186,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketBuyShares(paperbotCopytradeRequestedQty(targetDelta, submitPrice, liveCfg))
+			requestedQty := paperbotNormalizeMarketBuyShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			liq := paperbotAskLiquidityAtOrBelow(asks, submitPrice)
 			if liq > 0 && requestedQty > liq {
 				requestedQty = paperbotNormalizeMarketBuyShares(liq)
@@ -4153,8 +4208,8 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target +%.2f shares (now %.2f), submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
-				t.ID, outcome, targetDelta, targetQty, paperbotFormatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
+			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target trade %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+				t.ID, outcome, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			trade, avgFill, buyErr := t.Engine.MarketBuy(t.ID, outcome, requestedQty, asks)
 			if buyErr != nil {
 				msg := fmt.Sprintf("[%s] ❌ Copytrade buy failed for %s: %v", t.ID, outcome, buyErr)
@@ -4169,14 +4224,10 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			continue
 		}
 
-		if state.managed[outcome] && localQty > 0.01 && (targetDelta < -0.01 || targetQty <= 0.01) {
+		if tradeSide == "SELL" && state.managed[outcome] && localQty > 0.01 {
 			bid := t.TokenBids[outcome]
 			quoteSource := "WS"
-			sellDelta := math.Min(localQty, math.Max(0, -targetDelta))
-			if targetQty <= 0.01 {
-				sellDelta = localQty
-			}
-			bids := paperbotNormalizeBids(t.TokenFullBids[outcome], bid, math.Max(sellDelta, 1))
+			bids := paperbotNormalizeBids(t.TokenFullBids[outcome], bid, math.Max(tradeSize, 1))
 			if bid <= 0 || bid >= 1.0 {
 				quoteSource = "REST"
 				restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -4190,7 +4241,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					continue
 				}
 				bid = restBid
-				bids = paperbotNormalizeBids(nil, bid, math.Max(sellDelta, 1))
+				bids = paperbotNormalizeBids(nil, bid, math.Max(tradeSize, 1))
 			}
 			if bid <= 0 || bid >= 1.0 {
 				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: missing valid bid", t.ID, outcome)
@@ -4209,20 +4260,20 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketSellShares(core.CalculateCopytradeSellSharesForMode(localQty, targetQty, targetDelta, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := paperbotNormalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			if requestedQty > localQty {
+				requestedQty = paperbotNormalizeMarketSellShares(localQty)
+			}
 			liq := paperbotBidLiquidityAtOrAbove(bids, submitFloor)
 			if liq > 0 && requestedQty > liq {
 				requestedQty = paperbotNormalizeMarketSellShares(liq)
 			}
 			if requestedQty < paperbotMinActionShares {
-				if targetQty <= 0.01 && localQty <= 0.01 {
-					state.managed[outcome] = false
-				}
 				continue
 			}
 
-			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target %.2f -> %.2f shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
-				t.ID, outcome, targetQty-targetDelta, targetQty, paperbotFormatShareQty(requestedQty), submitFloor, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
+			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
+				t.ID, outcome, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitFloor, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			trade, sellErr := t.Engine.SellForMarket(t.ID, outcome, bid, requestedQty)
 			if sellErr != nil {
 				msg := fmt.Sprintf("[%s] ❌ Copytrade sell failed for %s: %v", t.ID, outcome, sellErr)
@@ -4234,7 +4285,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			profit := trade.Value - (avgPrice * trade.Quantity)
 			t.TUI.RecordOrderWithMode(t.ID, outcome, "SELL", trade.Quantity, bid, trade.Value, 0.0, profit, paperArbModeCopytrade, "FILLED")
 			t.TUI.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", t.ID, paperbotFormatShareQty(trade.Quantity), outcome, bid)
-			if remainingQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome); remainingQty <= targetQty+0.01 && targetQty <= 0.01 {
+			if remainingQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome); remainingQty <= 0.01 {
 				state.managed[outcome] = false
 			}
 		}

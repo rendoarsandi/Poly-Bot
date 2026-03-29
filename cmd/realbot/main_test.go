@@ -729,6 +729,31 @@ func TestRealbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *t
 	}
 }
 
+func TestRealbotCopytradeFreshTradesSeedsThenEmitsOnlyNewTrades(t *testing.T) {
+	state := newRealbotCopytradeState()
+	initial := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
+	}
+	if got := realbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 0 {
+		t.Fatalf("expected initial trade snapshot to seed without signals, got %d", len(got))
+	}
+	if got := realbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 0 {
+		t.Fatalf("expected repeated trade snapshot to stay deduped, got %d", len(got))
+	}
+
+	next := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: 2000, TransactionHash: "0x2"},
+	}
+	got := realbotCopytradeFreshTrades(state, next, "cond-1")
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one fresh trade, got %d", len(got))
+	}
+	if got[0].Side != "SELL" || got[0].Timestamp != 2000 {
+		t.Fatalf("unexpected fresh trade: %+v", got[0])
+	}
+}
+
 func TestRealbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 	if got := realbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 125*time.Millisecond {
 		t.Fatalf("expected copytrade loop interval 125ms, got %s", got)

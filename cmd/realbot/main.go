@@ -6368,6 +6368,9 @@ type realbotCopytradeState struct {
 	lastTargetPoll    map[string]time.Time
 	pendingSellTarget map[string]float64
 	pendingSellPoll   map[string]time.Time
+	lastTradeFetch    time.Time
+	tradesSeeded      bool
+	seenTradeKeys     map[string]time.Time
 	lastLogAt         map[string]time.Time
 	lastLogMsg        map[string]string
 }
@@ -6390,6 +6393,7 @@ func newRealbotCopytradeState() *realbotCopytradeState {
 		lastTargetPoll:    make(map[string]time.Time),
 		pendingSellTarget: make(map[string]float64),
 		pendingSellPoll:   make(map[string]time.Time),
+		seenTradeKeys:     make(map[string]time.Time),
 		lastLogAt:         make(map[string]time.Time),
 		lastLogMsg:        make(map[string]string),
 	}
@@ -6783,6 +6787,55 @@ func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, t
 	return 0, false, true
 }
 
+func realbotCopytradeTradeKey(trade api.PublicTrade) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, strings.TrimSpace(trade.TransactionHash))
+}
+
+func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.PublicTrade, conditionID string) []api.PublicTrade {
+	if state == nil || len(trades) == 0 {
+		return nil
+	}
+	conditionID = strings.TrimSpace(conditionID)
+	now := time.Now()
+	for key, seenAt := range state.seenTradeKeys {
+		if now.Sub(seenAt) > 15*time.Minute {
+			delete(state.seenTradeKeys, key)
+		}
+	}
+
+	filtered := make([]api.PublicTrade, 0, len(trades))
+	for _, trade := range trades {
+		if conditionID != "" && !strings.EqualFold(strings.TrimSpace(trade.ConditionID), conditionID) {
+			continue
+		}
+		if core.SanitizeString(trade.Outcome) == "" || trade.Size <= 0.01 {
+			continue
+		}
+		filtered = append(filtered, trade)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Timestamp == filtered[j].Timestamp {
+			return realbotCopytradeTradeKey(filtered[i]) < realbotCopytradeTradeKey(filtered[j])
+		}
+		return filtered[i].Timestamp < filtered[j].Timestamp
+	})
+
+	fresh := make([]api.PublicTrade, 0, len(filtered))
+	for _, trade := range filtered {
+		key := realbotCopytradeTradeKey(trade)
+		if _, seen := state.seenTradeKeys[key]; seen {
+			continue
+		}
+		state.seenTradeKeys[key] = now
+		fresh = append(fresh, trade)
+	}
+	if !state.tradesSeeded {
+		state.tradesSeeded = true
+		return nil
+	}
+	return fresh
+}
+
 func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (float64, string, bool) {
 	bid := tokenBids[outcome]
 	if bid <= 0 || bid >= 1.0 {
@@ -6814,7 +6867,7 @@ func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBi
 }
 
 func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, liveCfg paper.TUISettings, poller *realbotCopytradePoller, state *realbotCopytradeState, entryGate *realbotEntryGate, refreshWalletTruth func(time.Duration)) {
-	if restClient == nil || trader == nil || engine == nil || market == nil || state == nil {
+	if restClient == nil || trader == nil || engine == nil || market == nil || state == nil || poller == nil {
 		return
 	}
 
@@ -6822,8 +6875,13 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
 	}
+	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
+		return
+	}
+	state.lastTradeFetch = time.Now()
+
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	targetShares, polledAt, err := poller.sharesForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
+	trades, err := restClient.GetPublicTrades(pollCtx, poller.wallet, []string{market.ConditionID}, 32)
 	cancel()
 	if err != nil {
 		if err.Error() != state.lastError {
@@ -6834,31 +6892,29 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	}
 	state.lastError = ""
 
-	for _, outcome := range outcomes {
-		targetQty := targetShares[outcome]
+	freshTrades := realbotCopytradeFreshTrades(state, trades, market.ConditionID)
+	for _, trade := range freshTrades {
+		outcome := core.SanitizeString(trade.Outcome)
+		if outcome == "" {
+			continue
+		}
 		localQty, avgPrice := localBoughtPositionAvg(engine, marketID, outcome)
 		managed := state.managed[outcome]
 		if localQty > 0.01 {
 			managed = true
 			state.managed[outcome] = true
 		}
-		targetDelta, ready, pendingSell := realbotCopytradeTargetDelta(state, outcome, targetQty, polledAt)
-		if pendingSell {
-			msg := fmt.Sprintf("[%s] ⏳ Copytrade exit pending second snapshot for %s: target now %.2f shares; waiting for another poll before selling", marketID, outcome, targetQty)
-			if realbotCopytradeShouldLog(state, "sell-confirm:"+outcome, msg, 10*time.Second) {
-				tui.LogEvent("%s", msg)
-			}
-			continue
-		}
-		if !ready {
-			continue
-		}
 		tokenID := mkt.GetTokenIDForOutcome(market, outcome)
 		if tokenID == "" {
 			continue
 		}
+		tradeSide := strings.ToUpper(strings.TrimSpace(trade.Side))
+		tradeSize := math.Max(0, trade.Size)
+		if tradeSize <= 0.01 {
+			continue
+		}
 
-		if targetDelta > 0.01 {
+		if tradeSide == "BUY" {
 			feeRate := tokenFeeRates[outcome]
 			if feeRate == 0 {
 				feeRate = 1000
@@ -6908,7 +6964,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			budgetShares := core.CalculateCopytradeSharesForMode(targetDelta, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
+			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
 			budget := liveCfg.CopytradeSizeUSDC
 			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 				budget = budgetShares * submitPrice
@@ -6929,8 +6985,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target +%.2f shares (now %.2f), submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
-				marketID, outcome, targetDelta, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
+			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target trade %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+				marketID, outcome, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
@@ -6979,7 +7035,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			continue
 		}
 
-		if managed && localQty > 0.01 && (targetDelta < -0.01 || targetQty <= 0.01) {
+		if tradeSide == "SELL" && managed && localQty > 0.01 {
 			feeRate := tokenFeeRates[outcome]
 			if feeRate == 0 {
 				feeRate = 1000
@@ -7018,17 +7074,17 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSellSharesForMode(localQty, targetQty, targetDelta, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			if requestedQty > localQty {
+				requestedQty = normalizeMarketSellShares(localQty)
+			}
 			if requestedQty < minOnChainActionShares {
-				if targetQty <= 0.01 {
-					state.managed[outcome] = false
-				}
 				continue
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %.2f -> %.2f shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
-				marketID, outcome, targetQty-targetDelta, targetQty, formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
+			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
+				marketID, outcome, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideSell, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
@@ -7067,7 +7123,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			profit := (execPrice - avgPrice) * execQty
 			tui.RecordOrderWithMode(marketID, outcome, "SELL", execQty, execPrice, execQty*execPrice, 0.0, profit, "copytrade", "FILLED")
 			tui.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", marketID, formatShareQty(execQty), outcome, execPrice)
-			if remainingQty, _ := localBoughtPositionAvg(engine, marketID, outcome); remainingQty <= targetQty+0.01 && targetQty <= 0.01 {
+			if remainingQty, _ := localBoughtPositionAvg(engine, marketID, outcome); remainingQty <= 0.01 {
 				state.managed[outcome] = false
 			}
 			if refreshWalletTruth != nil {
