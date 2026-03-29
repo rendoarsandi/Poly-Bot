@@ -1537,13 +1537,9 @@ func run() error {
 			}
 			copytradeTarget = target
 			tui.LogEvent("🪞 Copytrade target %s → %s", target.Raw, target.Wallet)
-			scanCtx, scanCancel := context.WithTimeout(ctx, 10*time.Second)
-			var scanErr error
-			markets, scanErr = paperbotFindCopytradeMarkets(scanCtx, restClient, target.Wallet, liveSettings.MaxMarkets)
-			scanCancel()
-			if scanErr != nil {
-				logEvent(tui, csvLogger, engine, "WARN", "SYSTEM", "COPYTRADE_SCAN", "Copytrade market scan failed: %v", scanErr)
-			}
+			markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
+				tui.LogEvent(format, args...)
+			})
 		} else {
 			markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
 				tui.LogEvent(format, args...)
