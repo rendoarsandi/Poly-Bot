@@ -689,6 +689,28 @@ func TestRealbotCopytradeTargetSharesForConditionFiltersOtherMarkets(t *testing.
 	}
 }
 
+func TestRealbotCopytradeSharesByConditionAggregatesPerMarket(t *testing.T) {
+	sharesByCondition := realbotCopytradeSharesByCondition([]api.Position{
+		{ConditionID: "cond-1", Outcome: "Up", Size: 2.25},
+		{ConditionID: "cond-1", Outcome: "Up", Size: 0.75},
+		{ConditionID: "cond-1", Outcome: "Down", Size: 4.0},
+		{ConditionID: "cond-2", Outcome: "Up", Size: 1.5},
+		{ConditionID: "cond-2", Outcome: "Down", Size: 0.009},
+	})
+	if sharesByCondition["cond-1"]["Up"] != 3.0 {
+		t.Fatalf("expected cond-1 Up shares 3.0, got %.4f", sharesByCondition["cond-1"]["Up"])
+	}
+	if sharesByCondition["cond-1"]["Down"] != 4.0 {
+		t.Fatalf("expected cond-1 Down shares 4.0, got %.4f", sharesByCondition["cond-1"]["Down"])
+	}
+	if sharesByCondition["cond-2"]["Up"] != 1.5 {
+		t.Fatalf("expected cond-2 Up shares 1.5, got %.4f", sharesByCondition["cond-2"]["Up"])
+	}
+	if sharesByCondition["cond-2"]["Down"] != 0 {
+		t.Fatalf("expected cond-2 Down shares to ignore dust, got %.4f", sharesByCondition["cond-2"]["Down"])
+	}
+}
+
 func TestRealbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *testing.T) {
 	state := newRealbotCopytradeState()
 

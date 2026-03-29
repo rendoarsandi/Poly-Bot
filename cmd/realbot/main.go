@@ -1920,6 +1920,10 @@ func run() error {
 		if err := realTrader.SubscribeUserWSMarkets(ctx, condIDs...); err != nil {
 			tui.LogEvent("⚠️ User WS subscription update failed: %v", err)
 		}
+		copytradePoller := (*realbotCopytradePoller)(nil)
+		if arbMode == paperArbModeCopytrade {
+			copytradePoller = newRealbotCopytradePoller(copytradeTarget.Wallet, condIDs)
+		}
 
 		// Create a context for this specific round of trading
 		roundCtx, roundCancel := context.WithCancel(ctx)
@@ -1953,7 +1957,7 @@ func run() error {
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
 			wg.Add(1)
-			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64, copyWallet string) {
+			go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64, poller *realbotCopytradePoller) {
 				defer wg.Done()
 				// Create a sub-context for this specific trader to prevent goroutine leaks
 				tCtx, tCancel := context.WithCancel(roundCtx)
@@ -1968,8 +1972,8 @@ func run() error {
 						emergencyCleanup()
 					}
 				}()
-				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, copyWallet, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, resolutionCache)
-			}(marketID, market, endTime, marketRiskMgr, currentBalance, copytradeTarget.Wallet)
+				tradeMarket(ctx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, poller, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, resolutionCache)
+			}(marketID, market, endTime, marketRiskMgr, currentBalance, copytradePoller)
 		}
 
 		// Goroutine to monitor for TUI restart requests
@@ -2080,7 +2084,8 @@ shutdown:
 
 func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
-	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64, copytradeWallet string,
+	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
+	copytradePoller *realbotCopytradePoller,
 	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, resolutionCache *api.ResolutionCache) {
 
 	if market != nil && market.ConditionID != "" {
@@ -3018,7 +3023,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		realbotCancelAllMakerQuotes(cancelMakerCtx, id, "maker mode disabled", trader, engine, tui, makerQuotes)
 		cancelMaker()
 		if arbMode == paperArbModeCopytrade {
-			realbotHandleCopytradeMarket(ctx, id, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates, trader, engine, tui, restClient, liveCfg, copytradeWallet, copytradeState, entryGate, refreshWalletTruth)
+			realbotHandleCopytradeMarket(ctx, id, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates, trader, engine, tui, restClient, liveCfg, copytradePoller, copytradeState, entryGate, refreshWalletTruth)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -6316,13 +6321,22 @@ type realbotCopytradeTarget struct {
 }
 
 type realbotCopytradeState struct {
-	lastPoll     time.Time
 	lastError    string
 	managed      map[string]bool
 	targetShares map[string]float64
 	targetSeen   map[string]bool
 	lastLogAt    map[string]time.Time
 	lastLogMsg   map[string]string
+}
+
+type realbotCopytradePoller struct {
+	wallet            string
+	conditionIDs      []string
+	mu                sync.Mutex
+	lastPoll          time.Time
+	fetching          bool
+	waitCh            chan struct{}
+	sharesByCondition map[string]map[string]float64
 }
 
 func newRealbotCopytradeState() *realbotCopytradeState {
@@ -6332,6 +6346,17 @@ func newRealbotCopytradeState() *realbotCopytradeState {
 		targetSeen:   make(map[string]bool),
 		lastLogAt:    make(map[string]time.Time),
 		lastLogMsg:   make(map[string]string),
+	}
+}
+
+func newRealbotCopytradePoller(wallet string, conditionIDs []string) *realbotCopytradePoller {
+	wallet = strings.TrimSpace(wallet)
+	if wallet == "" {
+		return nil
+	}
+	return &realbotCopytradePoller{
+		wallet:       wallet,
+		conditionIDs: normalizeRealbotCopytradeConditionIDs(conditionIDs),
 	}
 }
 
@@ -6539,6 +6564,24 @@ func realbotCopytradeTargetShares(positions []api.Position) map[string]float64 {
 	return realbotCopytradeTargetSharesForCondition(positions, "")
 }
 
+func realbotCopytradeSharesByCondition(positions []api.Position) map[string]map[string]float64 {
+	sharesByCondition := make(map[string]map[string]float64)
+	for _, pos := range positions {
+		conditionID := strings.TrimSpace(pos.ConditionID)
+		outcome := core.SanitizeString(pos.Outcome)
+		if conditionID == "" || outcome == "" || pos.Size <= 0.01 {
+			continue
+		}
+		outcomeShares := sharesByCondition[conditionID]
+		if outcomeShares == nil {
+			outcomeShares = make(map[string]float64)
+			sharesByCondition[conditionID] = outcomeShares
+		}
+		outcomeShares[outcome] += pos.Size
+	}
+	return sharesByCondition
+}
+
 func realbotCopytradeTargetSharesForCondition(positions []api.Position, conditionID string) map[string]float64 {
 	shares := make(map[string]float64, len(positions))
 	conditionID = strings.TrimSpace(conditionID)
@@ -6553,6 +6596,94 @@ func realbotCopytradeTargetSharesForCondition(positions []api.Position, conditio
 		shares[outcome] += pos.Size
 	}
 	return shares
+}
+
+func normalizeRealbotCopytradeConditionIDs(conditionIDs []string) []string {
+	seen := make(map[string]struct{}, len(conditionIDs))
+	normalized := make([]string, 0, len(conditionIDs))
+	for _, conditionID := range conditionIDs {
+		conditionID = strings.TrimSpace(conditionID)
+		if conditionID == "" {
+			continue
+		}
+		if _, exists := seen[conditionID]; exists {
+			continue
+		}
+		seen[conditionID] = struct{}{}
+		normalized = append(normalized, conditionID)
+	}
+	return normalized
+}
+
+func cloneRealbotCopytradeOutcomeShares(shares map[string]float64) map[string]float64 {
+	if len(shares) == 0 {
+		return map[string]float64{}
+	}
+	cloned := make(map[string]float64, len(shares))
+	for outcome, qty := range shares {
+		cloned[outcome] = qty
+	}
+	return cloned
+}
+
+func (p *realbotCopytradePoller) sharesForCondition(ctx context.Context, restClient *api.RestClient, pollEvery time.Duration, conditionID string) (map[string]float64, error) {
+	if p == nil || restClient == nil {
+		return nil, fmt.Errorf("copytrade poller unavailable")
+	}
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	conditionID = strings.TrimSpace(conditionID)
+
+	for {
+		p.mu.Lock()
+		if !p.lastPoll.IsZero() && time.Since(p.lastPoll) < pollEvery {
+			shares := cloneRealbotCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+			p.mu.Unlock()
+			return shares, nil
+		}
+		if p.fetching {
+			waitCh := p.waitCh
+			p.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-waitCh:
+				continue
+			}
+		}
+
+		p.fetching = true
+		p.waitCh = make(chan struct{})
+		wallet := p.wallet
+		conditionIDs := append([]string(nil), p.conditionIDs...)
+		p.mu.Unlock()
+
+		limit := len(conditionIDs) * 8
+		if limit < 32 {
+			limit = 32
+		}
+		positions, err := restClient.GetPublicPositions(ctx, wallet, conditionIDs, 0.01, limit)
+		sharesByCondition := realbotCopytradeSharesByCondition(positions)
+		now := time.Now()
+
+		p.mu.Lock()
+		if err == nil {
+			p.sharesByCondition = sharesByCondition
+		}
+		p.lastPoll = now
+		waitCh := p.waitCh
+		p.fetching = false
+		p.waitCh = nil
+		shares := cloneRealbotCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+		p.mu.Unlock()
+		close(waitCh)
+
+		if err != nil {
+			return nil, err
+		}
+		return shares, nil
+	}
 }
 
 func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, targetQty float64) (float64, bool) {
@@ -6603,7 +6734,7 @@ func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBi
 	return bid, "", true
 }
 
-func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, liveCfg paper.TUISettings, copytradeWallet string, state *realbotCopytradeState, entryGate *realbotEntryGate, refreshWalletTruth func(time.Duration)) {
+func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, liveCfg paper.TUISettings, poller *realbotCopytradePoller, state *realbotCopytradeState, entryGate *realbotEntryGate, refreshWalletTruth func(time.Duration)) {
 	if restClient == nil || trader == nil || engine == nil || market == nil || state == nil {
 		return
 	}
@@ -6612,13 +6743,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
 	}
-	if !state.lastPoll.IsZero() && time.Since(state.lastPoll) < pollEvery {
-		return
-	}
-	state.lastPoll = time.Now()
-
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	positions, err := restClient.GetPublicPositions(pollCtx, copytradeWallet, []string{market.ConditionID}, 0.01, len(outcomes)+4)
+	targetShares, err := poller.sharesForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
 	cancel()
 	if err != nil {
 		if err.Error() != state.lastError {
@@ -6628,8 +6754,6 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		return
 	}
 	state.lastError = ""
-
-	targetShares := realbotCopytradeTargetSharesForCondition(positions, market.ConditionID)
 
 	for _, outcome := range outcomes {
 		targetQty := targetShares[outcome]

@@ -55,6 +55,7 @@ const (
 	paperExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 	paperUIRefreshInterval         = 100 * time.Millisecond
 	paperMainLoopInterval          = 10 * time.Millisecond
+	paperCopytradeLoopInterval     = 50 * time.Millisecond
 	paperFillPollInterval          = 50 * time.Millisecond
 	paperResolutionRefreshInterval = 2 * time.Second
 	paperHistoricalLookupInterval  = 2 * time.Second
@@ -126,6 +127,7 @@ type MarketTrader struct {
 	LastBinanceTrigger time.Time
 	CopytradeWallet    string
 	CopytradeLabel     string
+	CopytradePoller    *paperbotCopytradePoller
 	CopytradeState     *paperbotCopytradeState
 
 	// State
@@ -174,13 +176,22 @@ type paperbotCopytradeTarget struct {
 }
 
 type paperbotCopytradeState struct {
-	lastPoll     time.Time
 	lastError    string
 	managed      map[string]bool
 	targetShares map[string]float64
 	targetSeen   map[string]bool
 	lastLogAt    map[string]time.Time
 	lastLogMsg   map[string]string
+}
+
+type paperbotCopytradePoller struct {
+	wallet            string
+	conditionIDs      []string
+	mu                sync.Mutex
+	lastPoll          time.Time
+	fetching          bool
+	waitCh            chan struct{}
+	sharesByCondition map[string]map[string]float64
 }
 
 func newPaperbotCopytradeState() *paperbotCopytradeState {
@@ -190,6 +201,17 @@ func newPaperbotCopytradeState() *paperbotCopytradeState {
 		targetSeen:   make(map[string]bool),
 		lastLogAt:    make(map[string]time.Time),
 		lastLogMsg:   make(map[string]string),
+	}
+}
+
+func newPaperbotCopytradePoller(wallet string, conditionIDs []string) *paperbotCopytradePoller {
+	wallet = strings.TrimSpace(wallet)
+	if wallet == "" {
+		return nil
+	}
+	return &paperbotCopytradePoller{
+		wallet:       wallet,
+		conditionIDs: normalizeCopytradeConditionIDs(conditionIDs),
 	}
 }
 
@@ -436,6 +458,24 @@ func paperbotCopytradeTargetShares(positions []api.Position) map[string]float64 
 	return paperbotCopytradeTargetSharesForCondition(positions, "")
 }
 
+func paperbotCopytradeSharesByCondition(positions []api.Position) map[string]map[string]float64 {
+	sharesByCondition := make(map[string]map[string]float64)
+	for _, pos := range positions {
+		conditionID := strings.TrimSpace(pos.ConditionID)
+		outcome := core.SanitizeString(pos.Outcome)
+		if conditionID == "" || outcome == "" || pos.Size <= 0.01 {
+			continue
+		}
+		outcomeShares := sharesByCondition[conditionID]
+		if outcomeShares == nil {
+			outcomeShares = make(map[string]float64)
+			sharesByCondition[conditionID] = outcomeShares
+		}
+		outcomeShares[outcome] += pos.Size
+	}
+	return sharesByCondition
+}
+
 func paperbotCopytradeTargetSharesForCondition(positions []api.Position, conditionID string) map[string]float64 {
 	shares := make(map[string]float64, len(positions))
 	conditionID = strings.TrimSpace(conditionID)
@@ -450,6 +490,94 @@ func paperbotCopytradeTargetSharesForCondition(positions []api.Position, conditi
 		shares[outcome] += pos.Size
 	}
 	return shares
+}
+
+func normalizeCopytradeConditionIDs(conditionIDs []string) []string {
+	seen := make(map[string]struct{}, len(conditionIDs))
+	normalized := make([]string, 0, len(conditionIDs))
+	for _, conditionID := range conditionIDs {
+		conditionID = strings.TrimSpace(conditionID)
+		if conditionID == "" {
+			continue
+		}
+		if _, exists := seen[conditionID]; exists {
+			continue
+		}
+		seen[conditionID] = struct{}{}
+		normalized = append(normalized, conditionID)
+	}
+	return normalized
+}
+
+func cloneCopytradeOutcomeShares(shares map[string]float64) map[string]float64 {
+	if len(shares) == 0 {
+		return map[string]float64{}
+	}
+	cloned := make(map[string]float64, len(shares))
+	for outcome, qty := range shares {
+		cloned[outcome] = qty
+	}
+	return cloned
+}
+
+func (p *paperbotCopytradePoller) sharesForCondition(ctx context.Context, restClient *api.RestClient, pollEvery time.Duration, conditionID string) (map[string]float64, error) {
+	if p == nil || restClient == nil {
+		return nil, fmt.Errorf("copytrade poller unavailable")
+	}
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	conditionID = strings.TrimSpace(conditionID)
+
+	for {
+		p.mu.Lock()
+		if !p.lastPoll.IsZero() && time.Since(p.lastPoll) < pollEvery {
+			shares := cloneCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+			p.mu.Unlock()
+			return shares, nil
+		}
+		if p.fetching {
+			waitCh := p.waitCh
+			p.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-waitCh:
+				continue
+			}
+		}
+
+		p.fetching = true
+		p.waitCh = make(chan struct{})
+		wallet := p.wallet
+		conditionIDs := append([]string(nil), p.conditionIDs...)
+		p.mu.Unlock()
+
+		limit := len(conditionIDs) * 8
+		if limit < 32 {
+			limit = 32
+		}
+		positions, err := restClient.GetPublicPositions(ctx, wallet, conditionIDs, 0.01, limit)
+		sharesByCondition := paperbotCopytradeSharesByCondition(positions)
+		now := time.Now()
+
+		p.mu.Lock()
+		if err == nil {
+			p.sharesByCondition = sharesByCondition
+		}
+		p.lastPoll = now
+		waitCh := p.waitCh
+		p.fetching = false
+		p.waitCh = nil
+		shares := cloneCopytradeOutcomeShares(p.sharesByCondition[conditionID])
+		p.mu.Unlock()
+		close(waitCh)
+
+		if err != nil {
+			return nil, err
+		}
+		return shares, nil
+	}
 }
 
 func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string, targetQty float64) (float64, bool) {
@@ -504,6 +632,13 @@ func paperbotFormatShareQty(qty float64) string {
 	default:
 		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.5f", qty), "0"), ".")
 	}
+}
+
+func paperbotTraderLoopInterval(settings paper.TUISettings) time.Duration {
+	if normalizePaperArbMode(settings.PaperArbMode) == paperArbModeCopytrade {
+		return paperCopytradeLoopInterval
+	}
+	return paperMainLoopInterval
 }
 
 func normalizePaperArbMode(mode string) string {
@@ -1610,6 +1745,23 @@ func run() error {
 			continue
 		}
 
+		condSet := make(map[string]struct{}, len(markets))
+		condIDs := make([]string, 0, len(markets))
+		for _, market := range markets {
+			if market == nil || market.ConditionID == "" {
+				continue
+			}
+			if _, exists := condSet[market.ConditionID]; exists {
+				continue
+			}
+			condSet[market.ConditionID] = struct{}{}
+			condIDs = append(condIDs, market.ConditionID)
+		}
+		copytradePoller := (*paperbotCopytradePoller)(nil)
+		if arbMode == paperArbModeCopytrade {
+			copytradePoller = newPaperbotCopytradePoller(copytradeTarget.Wallet, condIDs)
+		}
+
 		// Track starting equity for compounding calculation
 		startingEquity := engine.GetBookEquity()
 		roundStartTrades := engine.GetStats().TotalTrades
@@ -1641,7 +1793,7 @@ func run() error {
 			// Reduced logging: Only TUI for startup info
 			tui.LogEvent("🚀 Trading %s: %s", marketID, market.Slug)
 
-			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache, copytradeTarget)
+			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache, copytradeTarget, copytradePoller)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
@@ -1779,7 +1931,7 @@ func run() error {
 	}
 }
 
-func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache, copytradeTarget paperbotCopytradeTarget) *MarketTrader {
+func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache, copytradeTarget paperbotCopytradeTarget, copytradePoller *paperbotCopytradePoller) *MarketTrader {
 	tokenMap := make(map[string]string)
 	for _, token := range market.Tokens {
 		tokenMap[token.TokenID] = token.Outcome
@@ -1854,6 +2006,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		ResolutionCache:   resCache,
 		CopytradeWallet:   copytradeTarget.Wallet,
 		CopytradeLabel:    copytradeTarget.Label,
+		CopytradePoller:   copytradePoller,
 		CopytradeState:    newPaperbotCopytradeState(),
 	}
 }
@@ -2025,7 +2178,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastResolutionPendingLog := time.Time{}
 	usWeekdayGateClosedLogged := false
 
-	mainLoopTicker := time.NewTicker(paperMainLoopInterval)
+	mainLoopTicker := time.NewTicker(paperbotTraderLoopInterval(t.TUI.GetSettings()))
 	defer mainLoopTicker.Stop()
 
 	for {
@@ -3836,13 +3989,8 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
 	}
-	if !state.lastPoll.IsZero() && time.Since(state.lastPoll) < pollEvery {
-		return
-	}
-	state.lastPoll = time.Now()
-
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	positions, err := t.RestClient.GetPublicPositions(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 0.01, len(t.Outcomes)+4)
+	targetShares, err := t.CopytradePoller.sharesForCondition(pollCtx, t.RestClient, pollEvery, t.Market.ConditionID)
 	cancel()
 	if err != nil {
 		if err.Error() != state.lastError {
@@ -3852,8 +4000,6 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		return
 	}
 	state.lastError = ""
-
-	targetShares := paperbotCopytradeTargetSharesForCondition(positions, t.Market.ConditionID)
 
 	for _, outcome := range t.Outcomes {
 		targetQty := targetShares[outcome]
