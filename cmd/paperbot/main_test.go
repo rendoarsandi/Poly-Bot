@@ -226,13 +226,15 @@ func TestPaperbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *
 	}
 }
 
-func TestPaperbotCopytradeFreshTradesBootstrapsRecentThenDedupes(t *testing.T) {
+func TestPaperbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing.T) {
 	state := newPaperbotCopytradeState()
+	state.startedAt = time.Unix(1500, 0)
 	initial := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: 2000, TransactionHash: "0x2"},
 	}
 	if got := paperbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 1 {
-		t.Fatalf("expected initial recent trade snapshot to bootstrap one signal, got %d", len(got))
+		t.Fatalf("expected initial snapshot to ignore pre-start history and keep one post-start signal, got %d", len(got))
 	}
 	if got := paperbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 0 {
 		t.Fatalf("expected repeated trade snapshot to stay deduped, got %d", len(got))
@@ -241,12 +243,13 @@ func TestPaperbotCopytradeFreshTradesBootstrapsRecentThenDedupes(t *testing.T) {
 	next := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: 2000, TransactionHash: "0x2"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1.25, Timestamp: 3000, TransactionHash: "0x3"},
 	}
 	got := paperbotCopytradeFreshTrades(state, next, "cond-1")
 	if len(got) != 1 {
 		t.Fatalf("expected exactly one fresh trade, got %d", len(got))
 	}
-	if got[0].Side != "SELL" || got[0].Timestamp != 2000 {
+	if got[0].Side != "BUY" || got[0].Timestamp != 3000 {
 		t.Fatalf("unexpected fresh trade: %+v", got[0])
 	}
 }

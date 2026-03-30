@@ -179,6 +179,7 @@ type paperbotCopytradeTarget struct {
 }
 
 type paperbotCopytradeState struct {
+	startedAt         time.Time
 	lastError         string
 	managed           map[string]bool
 	targetShares      map[string]float64
@@ -205,6 +206,7 @@ type paperbotCopytradePoller struct {
 
 func newPaperbotCopytradeState() *paperbotCopytradeState {
 	return &paperbotCopytradeState{
+		startedAt:         time.Now(),
 		managed:           make(map[string]bool),
 		targetShares:      make(map[string]float64),
 		targetSeen:        make(map[string]bool),
@@ -688,28 +690,24 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 	}
 	if !state.tradesSeeded {
 		state.tradesSeeded = true
-		latestTs := int64(0)
-		for _, trade := range fresh {
-			if trade.Timestamp > latestTs {
-				latestTs = trade.Timestamp
-			}
-		}
-		if latestTs == 0 {
+		if state.startedAt.IsZero() {
 			return nil
 		}
-		cutoff := latestTs - 30
-		bootstrapByOutcome := make(map[string]api.PublicTrade)
+		startTs := state.startedAt.Unix()
+		if state.startedAt.Nanosecond() != 0 {
+			startTs--
+		}
+		bootstrap := make([]api.PublicTrade, 0, len(fresh))
 		for _, trade := range fresh {
-			if trade.Timestamp < cutoff {
+			if trade.Timestamp < startTs {
 				continue
 			}
-			bootstrapByOutcome[core.SanitizeString(trade.Outcome)] = trade
-		}
-		bootstrap := make([]api.PublicTrade, 0, len(bootstrapByOutcome))
-		for _, trade := range bootstrapByOutcome {
 			bootstrap = append(bootstrap, trade)
 		}
 		sort.Slice(bootstrap, func(i, j int) bool {
+			if bootstrap[i].Timestamp == bootstrap[j].Timestamp {
+				return paperbotCopytradeTradeKey(bootstrap[i]) < paperbotCopytradeTradeKey(bootstrap[j])
+			}
 			return bootstrap[i].Timestamp < bootstrap[j].Timestamp
 		})
 		return bootstrap
@@ -4175,30 +4173,25 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					}
 					continue
 				}
-				if changed && delta < -0.01 {
+				if changed {
+					side := "BUY"
+					size := delta
+					if delta < -0.01 {
+						side = "SELL"
+						size = -delta
+					} else if delta <= 0.01 {
+						continue
+					}
 					freshTrades = append(freshTrades, api.PublicTrade{
 						ConditionID: t.Market.ConditionID,
 						Outcome:     outcome,
-						Side:        "SELL",
-						Size:        -delta,
+						Side:        side,
+						Size:        size,
 					})
 				}
 			}
 			if len(freshTrades) > 0 {
 				goto processCopytradeSignals
-			}
-			for _, outcome := range t.Outcomes {
-				targetQty := targetShares[outcome]
-				localQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome)
-				if targetQty <= 0.01 || localQty > 0.01 {
-					continue
-				}
-				freshTrades = append(freshTrades, api.PublicTrade{
-					ConditionID: t.Market.ConditionID,
-					Outcome:     outcome,
-					Side:        "BUY",
-					Size:        targetQty,
-				})
 			}
 		}
 	}
