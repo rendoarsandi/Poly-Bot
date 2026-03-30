@@ -867,6 +867,38 @@ func TestRealbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
 	}
 }
 
+func TestRealbotEstimatedPositionBuySignalsSplitsUsingObservedTradeSize(t *testing.T) {
+	state := newRealbotCopytradeState()
+	realbotObserveCopytradeBuySignal(state, api.PublicTrade{Outcome: "Up", Side: "BUY", Size: 10, Timestamp: 1001})
+	realbotObserveCopytradeBuySignal(state, api.PublicTrade{Outcome: "Up", Side: "BUY", Size: 10, Timestamp: 1002})
+
+	got := realbotEstimatedPositionBuySignals(state, "cond-1", "Up", 50, core.CopytradeSizingModeUSDC)
+	if len(got) != 5 {
+		t.Fatalf("expected 5 estimated position buys, got %d", len(got))
+	}
+	total := 0.0
+	for _, sig := range got {
+		total += sig.Size
+		if sig.Source != "position-estimate" {
+			t.Fatalf("expected position-estimate source, got %q", sig.Source)
+		}
+	}
+	if total < 49.99 || total > 50.01 {
+		t.Fatalf("unexpected total estimated delta %.6f", total)
+	}
+}
+
+func TestRealbotEstimatedPositionBuySignalsKeepsSinglePercentSignal(t *testing.T) {
+	state := newRealbotCopytradeState()
+	got := realbotEstimatedPositionBuySignals(state, "cond-1", "Up", 50, core.CopytradeSizingModePercent)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 percent-mode signal, got %d", len(got))
+	}
+	if got[0].Source != "position" {
+		t.Fatalf("expected position source, got %q", got[0].Source)
+	}
+}
+
 func TestRealbotCopytradeIsRateLimited(t *testing.T) {
 	if !realbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
 		t.Fatal("expected 429/1015 error to be treated as rate limit")

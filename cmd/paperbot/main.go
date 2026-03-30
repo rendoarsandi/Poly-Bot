@@ -192,19 +192,21 @@ type paperbotCopytradeTarget struct {
 }
 
 type paperbotCopytradeState struct {
-	startedAt         time.Time
-	lastError         string
-	managed           map[string]bool
-	targetShares      map[string]float64
-	targetSeen        map[string]bool
-	lastTargetPoll    map[string]time.Time
-	pendingSellTarget map[string]float64
-	pendingSellPoll   map[string]time.Time
-	lastTradeFetch    time.Time
-	tradesSeeded      bool
-	seenTradeKeys     map[string]time.Time
-	lastLogAt         map[string]time.Time
-	lastLogMsg        map[string]string
+	startedAt            time.Time
+	lastError            string
+	managed              map[string]bool
+	targetShares         map[string]float64
+	targetSeen           map[string]bool
+	lastTargetPoll       map[string]time.Time
+	pendingSellTarget    map[string]float64
+	pendingSellPoll      map[string]time.Time
+	lastTradeFetch       time.Time
+	tradesSeeded         bool
+	seenTradeKeys        map[string]time.Time
+	observedBuySizeSum   map[string]float64
+	observedBuySizeCount map[string]int
+	lastLogAt            map[string]time.Time
+	lastLogMsg           map[string]string
 }
 
 type paperbotCopytradePoller struct {
@@ -259,16 +261,18 @@ func paperbotCopytradePositionFetchTimeout(pollEvery time.Duration, hasCachedPos
 
 func newPaperbotCopytradeState() *paperbotCopytradeState {
 	return &paperbotCopytradeState{
-		startedAt:         time.Now(),
-		managed:           make(map[string]bool),
-		targetShares:      make(map[string]float64),
-		targetSeen:        make(map[string]bool),
-		lastTargetPoll:    make(map[string]time.Time),
-		pendingSellTarget: make(map[string]float64),
-		pendingSellPoll:   make(map[string]time.Time),
-		seenTradeKeys:     make(map[string]time.Time),
-		lastLogAt:         make(map[string]time.Time),
-		lastLogMsg:        make(map[string]string),
+		startedAt:            time.Now(),
+		managed:              make(map[string]bool),
+		targetShares:         make(map[string]float64),
+		targetSeen:           make(map[string]bool),
+		lastTargetPoll:       make(map[string]time.Time),
+		pendingSellTarget:    make(map[string]float64),
+		pendingSellPoll:      make(map[string]time.Time),
+		seenTradeKeys:        make(map[string]time.Time),
+		observedBuySizeSum:   make(map[string]float64),
+		observedBuySizeCount: make(map[string]int),
+		lastLogAt:            make(map[string]time.Time),
+		lastLogMsg:           make(map[string]string),
 	}
 }
 
@@ -967,6 +971,80 @@ func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
 		return fmt.Sprintf("%s|%s|%s|%.6f|%.6f|%s|%d|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, trade.Price, strings.TrimSpace(trade.Asset), trade.Timestamp, txHash)
 	}
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
+}
+
+func paperbotObserveCopytradeBuySignal(state *paperbotCopytradeState, trade api.PublicTrade) {
+	if state == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(trade.Side), "BUY") {
+		return
+	}
+	if trade.Size <= 0.01 {
+		return
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(trade.Source)), "position") {
+		return
+	}
+	outcome := core.SanitizeString(trade.Outcome)
+	if outcome == "" {
+		return
+	}
+	state.observedBuySizeSum[outcome] += trade.Size
+	state.observedBuySizeCount[outcome]++
+}
+
+func paperbotEstimatedPositionBuySignals(state *paperbotCopytradeState, conditionID, outcome string, delta float64, mode string) []api.PublicTrade {
+	outcome = core.SanitizeString(outcome)
+	if outcome == "" || delta <= 0.01 {
+		return nil
+	}
+	if strings.EqualFold(mode, core.CopytradeSizingModePercent) {
+		return []api.PublicTrade{{
+			ConditionID: strings.TrimSpace(conditionID),
+			Outcome:     outcome,
+			Side:        "BUY",
+			Size:        delta,
+			Source:      "position",
+		}}
+	}
+
+	estimatedTrades := 1
+	if state != nil {
+		if count := state.observedBuySizeCount[outcome]; count > 0 {
+			avg := state.observedBuySizeSum[outcome] / float64(count)
+			if avg > 0.01 {
+				estimatedTrades = int(math.Ceil(delta / avg))
+			}
+		}
+	}
+	if estimatedTrades < 1 {
+		estimatedTrades = 1
+	}
+	if estimatedTrades > 16 {
+		estimatedTrades = 16
+	}
+
+	signals := make([]api.PublicTrade, 0, estimatedTrades)
+	remaining := delta
+	for i := 0; i < estimatedTrades; i++ {
+		chunk := remaining / float64(estimatedTrades-i)
+		if chunk <= 0.01 {
+			continue
+		}
+		signals = append(signals, api.PublicTrade{
+			ConditionID: strings.TrimSpace(conditionID),
+			Outcome:     outcome,
+			Side:        "BUY",
+			Size:        chunk,
+			Source:      "position-estimate",
+		})
+		remaining -= chunk
+	}
+	if len(signals) == 0 {
+		return nil
+	}
+	return signals
 }
 
 func paperbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
@@ -4601,13 +4679,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					if delta <= 0.01 {
 						continue
 					}
-					freshTrades = append(freshTrades, api.PublicTrade{
-						ConditionID: t.Market.ConditionID,
-						Outcome:     outcome,
-						Side:        "BUY",
-						Size:        delta,
-						Source:      "position",
-					})
+					freshTrades = append(freshTrades, paperbotEstimatedPositionBuySignals(state, t.Market.ConditionID, outcome, delta, liveCfg.CopytradeSizingMode)...)
 				}
 			}
 			if len(freshTrades) == 0 {
@@ -4619,6 +4691,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	}
 
 	for _, signal := range freshTrades {
+		paperbotObserveCopytradeBuySignal(state, signal)
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {
 			continue
