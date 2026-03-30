@@ -6675,6 +6675,19 @@ func realbotCopytradeTargetSharesForCondition(positions []api.Position, conditio
 	return shares
 }
 
+func realbotCopytradeHoldsBothOutcomes(targetShares map[string]float64) bool {
+	held := 0
+	for _, qty := range targetShares {
+		if qty > 0.01 {
+			held++
+			if held >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func normalizeRealbotCopytradeConditionIDs(conditionIDs []string) []string {
 	seen := make(map[string]struct{}, len(conditionIDs))
 	normalized := make([]string, 0, len(conditionIDs))
@@ -6946,6 +6959,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		positionCancel()
 		if posErr == nil {
 			targetShares := realbotCopytradeTargetSharesForCondition(targetPositions, market.ConditionID)
+			holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
 			pollTime := time.Now()
 			for _, outcome := range outcomes {
 				targetQty := targetShares[outcome]
@@ -6961,6 +6975,13 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					side := "BUY"
 					size := delta
 					if delta < -0.01 {
+						if holdsBothOutcomes {
+							msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s while target holds both outcomes", marketID, outcome)
+							if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+								tui.LogEvent("%s", msg)
+							}
+							continue
+						}
 						side = "SELL"
 						size = -delta
 					} else if delta <= 0.01 {

@@ -791,6 +791,15 @@ func TestRealbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing
 	}
 }
 
+func TestRealbotCopytradeHoldsBothOutcomes(t *testing.T) {
+	if !realbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 5}) {
+		t.Fatal("expected both-sided target inventory to be detected")
+	}
+	if realbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 0.009}) {
+		t.Fatal("expected dust on second side not to count as both-sided inventory")
+	}
+}
+
 func TestRealbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 	if got := realbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 125*time.Millisecond {
 		t.Fatalf("expected copytrade loop interval 125ms, got %s", got)

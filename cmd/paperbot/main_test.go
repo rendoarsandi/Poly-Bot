@@ -254,6 +254,15 @@ func TestPaperbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testin
 	}
 }
 
+func TestPaperbotCopytradeHoldsBothOutcomes(t *testing.T) {
+	if !paperbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 5}) {
+		t.Fatal("expected both-sided target inventory to be detected")
+	}
+	if paperbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 0.009}) {
+		t.Fatal("expected dust on second side not to count as both-sided inventory")
+	}
+}
+
 func TestPaperbotFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := paperbotFormatShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)
