@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -284,6 +285,27 @@ func TestPaperbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *tes
 	}
 	if got[2].Timestamp != 1001 || got[2].TransactionHash != "0xb" {
 		t.Fatalf("third trade = %+v, want timestamp 1001 tx 0xb", got[2])
+	}
+}
+
+func TestPaperbotCopytradeIsRateLimited(t *testing.T) {
+	if !paperbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
+		t.Fatal("expected 429/1015 error to be treated as rate limit")
+	}
+	if paperbotCopytradeIsRateLimited(errors.New("context deadline exceeded")) {
+		t.Fatal("expected non-429 timeout error not to be treated as rate limit")
+	}
+}
+
+func TestPaperbotCopytradeRateLimitBackoffCaps(t *testing.T) {
+	if got := paperbotCopytradeRateLimitBackoff(1); got != time.Second {
+		t.Fatalf("first backoff = %v, want 1s", got)
+	}
+	if got := paperbotCopytradeRateLimitBackoff(2); got != 2*time.Second {
+		t.Fatalf("second backoff = %v, want 2s", got)
+	}
+	if got := paperbotCopytradeRateLimitBackoff(5); got != 8*time.Second {
+		t.Fatalf("capped backoff = %v, want 8s", got)
 	}
 }
 
