@@ -693,19 +693,14 @@ func paperbotCopytradeSyntheticTradeFromDelta(conditionID, outcome string, delta
 			Size:        delta,
 		}, "", true
 	case delta < -0.01:
+		reason := "position-only exits are disabled"
 		switch {
 		case hasAmbiguousExit:
-			return api.PublicTrade{}, "target inventory is mergeable/redeemable", false
+			reason = "target inventory is mergeable/redeemable"
 		case holdsBothOutcomes:
-			return api.PublicTrade{}, "target holds both outcomes", false
-		default:
-			return api.PublicTrade{
-				ConditionID: conditionID,
-				Outcome:     outcome,
-				Side:        "SELL",
-				Size:        -delta,
-			}, "", true
+			reason = "target holds both outcomes"
 		}
+		return api.PublicTrade{}, reason, false
 	default:
 		return api.PublicTrade{}, "", false
 	}
