@@ -6917,6 +6917,27 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	state.lastError = ""
 
 	freshTrades := realbotCopytradeFreshTrades(state, trades, market.ConditionID)
+	if len(freshTrades) == 0 {
+		positionCtx, positionCancel := context.WithTimeout(ctx, 5*time.Second)
+		targetPositions, posErr := restClient.GetPublicPositions(positionCtx, poller.wallet, []string{market.ConditionID}, 0.01, 8)
+		positionCancel()
+		if posErr == nil {
+			targetShares := realbotCopytradeTargetSharesForCondition(targetPositions, market.ConditionID)
+			for _, outcome := range outcomes {
+				targetQty := targetShares[outcome]
+				localQty, _ := localBoughtPositionAvg(engine, marketID, outcome)
+				if targetQty <= 0.01 || localQty > 0.01 {
+					continue
+				}
+				freshTrades = append(freshTrades, api.PublicTrade{
+					ConditionID: market.ConditionID,
+					Outcome:     outcome,
+					Side:        "BUY",
+					Size:        targetQty,
+				})
+			}
+		}
+	}
 	for _, trade := range freshTrades {
 		outcome := core.SanitizeString(trade.Outcome)
 		if outcome == "" {
@@ -7009,8 +7030,12 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target trade %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
-				marketID, outcome, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
+			label := "trade"
+			if trade.Timestamp == 0 {
+				label = "position"
+			}
+			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+				marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()

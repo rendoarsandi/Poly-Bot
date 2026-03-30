@@ -4155,6 +4155,27 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	state.lastError = ""
 
 	freshTrades := paperbotCopytradeFreshTrades(state, trades, t.Market.ConditionID)
+	if len(freshTrades) == 0 {
+		positionCtx, positionCancel := context.WithTimeout(ctx, 5*time.Second)
+		targetPositions, posErr := t.RestClient.GetPublicPositions(positionCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 0.01, 8)
+		positionCancel()
+		if posErr == nil {
+			targetShares := paperbotCopytradeTargetSharesForCondition(targetPositions, t.Market.ConditionID)
+			for _, outcome := range t.Outcomes {
+				targetQty := targetShares[outcome]
+				localQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome)
+				if targetQty <= 0.01 || localQty > 0.01 {
+					continue
+				}
+				freshTrades = append(freshTrades, api.PublicTrade{
+					ConditionID: t.Market.ConditionID,
+					Outcome:     outcome,
+					Side:        "BUY",
+					Size:        targetQty,
+				})
+			}
+		}
+	}
 	for _, signal := range freshTrades {
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {
@@ -4232,8 +4253,12 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target trade %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
-				t.ID, outcome, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
+			label := "trade"
+			if signal.Timestamp == 0 {
+				label = "position"
+			}
+			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+				t.ID, outcome, label, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			trade, avgFill, buyErr := t.Engine.MarketBuy(t.ID, outcome, requestedQty, asks)
 			if buyErr != nil {
 				msg := fmt.Sprintf("[%s] ❌ Copytrade buy failed for %s: %v", t.ID, outcome, buyErr)
