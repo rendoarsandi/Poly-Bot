@@ -675,37 +675,6 @@ func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string,
 	return 0, false, true
 }
 
-func paperbotCopytradeSyntheticTradeFromDelta(conditionID, outcome string, delta float64, hasAmbiguousExit, holdsBothOutcomes bool) (api.PublicTrade, string, bool) {
-	outcome = core.SanitizeString(outcome)
-	if outcome == "" {
-		return api.PublicTrade{}, "missing outcome", false
-	}
-	conditionID = strings.TrimSpace(conditionID)
-	if conditionID == "" {
-		return api.PublicTrade{}, "missing condition id", false
-	}
-	switch {
-	case delta > 0.01:
-		return api.PublicTrade{
-			ConditionID: conditionID,
-			Outcome:     outcome,
-			Side:        "BUY",
-			Size:        delta,
-		}, "", true
-	case delta < -0.01:
-		reason := "position-only exits are disabled"
-		switch {
-		case hasAmbiguousExit:
-			reason = "target inventory is mergeable/redeemable"
-		case holdsBothOutcomes:
-			reason = "target holds both outcomes"
-		}
-		return api.PublicTrade{}, reason, false
-	default:
-		return api.PublicTrade{}, "", false
-	}
-}
-
 func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, strings.TrimSpace(trade.TransactionHash))
 }
@@ -4217,45 +4186,8 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 
 	freshTrades := paperbotCopytradeFreshTrades(state, trades, t.Market.ConditionID)
 	if len(freshTrades) == 0 {
-		positionCtx, positionCancel := context.WithTimeout(ctx, 5*time.Second)
-		targetPositions, posErr := t.RestClient.GetPublicPositions(positionCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 0.01, 8)
-		positionCancel()
-		if posErr == nil {
-			targetShares := paperbotCopytradeTargetSharesForCondition(targetPositions, t.Market.ConditionID)
-			holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
-			hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(targetPositions, t.Market.ConditionID)
-			pollTime := time.Now()
-			for _, outcome := range t.Outcomes {
-				targetQty := targetShares[outcome]
-				delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-				if pending {
-					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
-					if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
-						t.TUI.LogEvent("%s", msg)
-					}
-					continue
-				}
-				if changed {
-					signal, reason, ok := paperbotCopytradeSyntheticTradeFromDelta(t.Market.ConditionID, outcome, delta, hasAmbiguousExit, holdsBothOutcomes)
-					if !ok {
-						if reason != "" {
-							msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-delta signal for %s: %s", t.ID, outcome, reason)
-							if paperbotCopytradeShouldLog(state, "position-delta-ignored:"+outcome, msg, 10*time.Second) {
-								t.TUI.LogEvent("%s", msg)
-							}
-						}
-						continue
-					}
-					freshTrades = append(freshTrades, signal)
-				}
-			}
-			if len(freshTrades) > 0 {
-				goto processCopytradeSignals
-			}
-		}
+		return
 	}
-
-processCopytradeSignals:
 	for _, signal := range freshTrades {
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {
