@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,45 @@ func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, targetWallet st
 		targetWallet: targetWallet,
 		seen:         make(map[string]time.Time),
 		tokenCache:   make(map[string]pendingResolvedToken),
+	}
+}
+
+func ResolvePolymarketPendingWSURL(explicitWSURL, polygonRPCURL string) string {
+	explicitWSURL = strings.TrimSpace(explicitWSURL)
+	if explicitWSURL != "" {
+		if normalized := normalizeAlchemyPendingWSURL(explicitWSURL); normalized != "" {
+			return normalized
+		}
+		return explicitWSURL
+	}
+	return normalizeAlchemyPendingWSURL(polygonRPCURL)
+}
+
+func normalizeAlchemyPendingWSURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if !strings.Contains(strings.ToLower(parsed.Hostname()), "alchemy.com") {
+		return ""
+	}
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "wss", "ws":
+		return parsed.String()
+	case "https":
+		parsed.Scheme = "wss"
+		return parsed.String()
+	case "http":
+		parsed.Scheme = "ws"
+		return parsed.String()
+	default:
+		return ""
 	}
 }
 

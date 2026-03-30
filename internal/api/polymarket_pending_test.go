@@ -49,3 +49,48 @@ func TestMarketFromGammaEventTokenIDFindsOutcome(t *testing.T) {
 		t.Fatalf("unexpected outcome %s", outcome)
 	}
 }
+
+func TestResolvePolymarketPendingWSURL(t *testing.T) {
+	t.Run("prefers explicit websocket url", func(t *testing.T) {
+		got := ResolvePolymarketPendingWSURL(
+			"wss://polygon-mainnet.g.alchemy.com/v2/explicit",
+			"https://polygon-mainnet.g.alchemy.com/v2/fallback",
+		)
+		want := "wss://polygon-mainnet.g.alchemy.com/v2/explicit"
+		if got != want {
+			t.Fatalf("unexpected resolved url %q want %q", got, want)
+		}
+	})
+
+	t.Run("normalizes explicit https alchemy url", func(t *testing.T) {
+		got := ResolvePolymarketPendingWSURL(
+			"https://polygon-mainnet.g.alchemy.com/v2/explicit",
+			"",
+		)
+		want := "wss://polygon-mainnet.g.alchemy.com/v2/explicit"
+		if got != want {
+			t.Fatalf("unexpected resolved url %q want %q", got, want)
+		}
+	})
+
+	t.Run("falls back to polygon rpc url", func(t *testing.T) {
+		got := ResolvePolymarketPendingWSURL(
+			"",
+			"https://polygon-mainnet.g.alchemy.com/v2/fallback",
+		)
+		want := "wss://polygon-mainnet.g.alchemy.com/v2/fallback"
+		if got != want {
+			t.Fatalf("unexpected resolved url %q want %q", got, want)
+		}
+	})
+
+	t.Run("ignores non alchemy polygon rpc url", func(t *testing.T) {
+		got := ResolvePolymarketPendingWSURL(
+			"",
+			"https://polygon-rpc.com",
+		)
+		if got != "" {
+			t.Fatalf("expected empty resolved url, got %q", got)
+		}
+	})
+}

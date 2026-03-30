@@ -2154,7 +2154,10 @@ func run() error {
 		if arbMode == paperArbModeCopytrade {
 			copytradePoller = newPaperbotCopytradePoller(copytradeTarget.Wallet, condIDs)
 			if copytradePoller != nil {
-				pendingWSURL := strings.TrimSpace(os.Getenv("COPYTRADE_PENDING_WS_URL"))
+				pendingWSURL := api.ResolvePolymarketPendingWSURL(
+					os.Getenv("COPYTRADE_PENDING_WS_URL"),
+					cfg.PolygonRPCURL,
+				)
 				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.Start(ctx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
