@@ -4186,8 +4186,58 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 
 	freshTrades := paperbotCopytradeFreshTrades(state, trades, t.Market.ConditionID)
 	if len(freshTrades) == 0 {
+		positionCtx, positionCancel := context.WithTimeout(ctx, 5*time.Second)
+		targetPositions, posErr := t.RestClient.GetPublicPositions(positionCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 0.01, 8)
+		positionCancel()
+		if posErr == nil {
+			targetShares := paperbotCopytradeTargetSharesForCondition(targetPositions, t.Market.ConditionID)
+			holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
+			hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(targetPositions, t.Market.ConditionID)
+			pollTime := time.Now()
+			for _, outcome := range t.Outcomes {
+				targetQty := targetShares[outcome]
+				delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+				if pending {
+					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
+					if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+						t.TUI.LogEvent("%s", msg)
+					}
+					continue
+				}
+				if changed {
+					if delta < -0.01 {
+						reason := "position-only exits are disabled"
+						switch {
+						case hasAmbiguousExit:
+							reason = "target inventory is mergeable/redeemable"
+						case holdsBothOutcomes:
+							reason = "target holds both outcomes"
+						}
+						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", t.ID, outcome, reason)
+						if paperbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+							t.TUI.LogEvent("%s", msg)
+						}
+						continue
+					}
+					if delta <= 0.01 {
+						continue
+					}
+					freshTrades = append(freshTrades, api.PublicTrade{
+						ConditionID: t.Market.ConditionID,
+						Outcome:     outcome,
+						Side:        "BUY",
+						Size:        delta,
+					})
+				}
+			}
+			if len(freshTrades) > 0 {
+				goto processCopytradeSignals
+			}
+		}
 		return
 	}
+
+processCopytradeSignals:
 	for _, signal := range freshTrades {
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {
