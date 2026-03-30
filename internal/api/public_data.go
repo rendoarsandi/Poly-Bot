@@ -33,6 +33,7 @@ type PublicTrade struct {
 	ProfileImage    string  `json:"profileImage"`
 	ProfileImageOpt string  `json:"profileImageOptimized"`
 	TransactionHash string  `json:"transactionHash"`
+	Source          string  `json:"-"`
 }
 
 type PublicProfile struct {

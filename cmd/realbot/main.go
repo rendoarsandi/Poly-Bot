@@ -1965,6 +1965,16 @@ func run() error {
 		copytradePoller := (*realbotCopytradePoller)(nil)
 		if arbMode == paperArbModeCopytrade {
 			copytradePoller = newRealbotCopytradePoller(copytradeTarget.Wallet, condIDs)
+			if copytradePoller != nil {
+				pendingWSURL := strings.TrimSpace(os.Getenv("COPYTRADE_PENDING_WS_URL"))
+				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
+					watcher.Start(ctx, func(format string, args ...interface{}) {
+						tui.LogEvent(format, args...)
+					})
+					copytradePoller.pendingWatcher = watcher
+					tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
+				}
+			}
 		}
 
 		// Create a context for this specific round of trading
@@ -6412,6 +6422,7 @@ type realbotCopytradePoller struct {
 	lastSnapshot      api.PublicActivitySnapshot
 	rateLimitUntil    time.Time
 	rateLimitStreak   int
+	pendingWatcher    *api.PolymarketPendingWatcher
 }
 
 func newRealbotCopytradeState() *realbotCopytradeState {
@@ -6781,6 +6792,30 @@ func filterRealbotCopytradePositionsByCondition(positions []api.Position, condit
 	return filtered
 }
 
+func (p *realbotCopytradePoller) pendingSignalsForCondition(conditionID string, since time.Time) []api.PublicTrade {
+	if p == nil || p.pendingWatcher == nil {
+		return nil
+	}
+	signals := p.pendingWatcher.SignalsSince(conditionID, since)
+	if len(signals) == 0 {
+		return nil
+	}
+	trades := make([]api.PublicTrade, 0, len(signals))
+	for _, sig := range signals {
+		trades = append(trades, api.PublicTrade{
+			ConditionID:     sig.ConditionID,
+			Outcome:         sig.Outcome,
+			Side:            sig.Side,
+			Size:            sig.Size,
+			Timestamp:       sig.ObservedAt.Unix(),
+			TransactionHash: sig.TxHash,
+			Source:          "mempool",
+			Slug:            sig.Slug,
+		})
+	}
+	return trades
+}
+
 func (p *realbotCopytradePoller) cachedSnapshotForCondition(conditionID string) realbotCopytradeMarketSnapshot {
 	if p == nil {
 		return realbotCopytradeMarketSnapshot{}
@@ -6934,7 +6969,11 @@ func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, t
 }
 
 func realbotCopytradeTradeKey(trade api.PublicTrade) string {
-	return fmt.Sprintf("%s|%d|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, strings.TrimSpace(trade.TransactionHash))
+	txHash := strings.TrimSpace(trade.TransactionHash)
+	if txHash != "" {
+		return fmt.Sprintf("%s|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, txHash)
+	}
+	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
 }
 
 func realbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
@@ -7052,6 +7091,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
 		return
 	}
+	since := state.lastTradeFetch
 	pollStartedAt := time.Now()
 	state.lastTradeFetch = pollStartedAt
 
@@ -7081,7 +7121,11 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	}
 	state.lastError = ""
 
-	freshTrades := realbotCopytradeFreshTrades(state, marketSnapshot.Trades, market.ConditionID)
+	combinedTrades := marketSnapshot.Trades
+	if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
+		combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
+	}
+	freshTrades := realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
 	if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
 		targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
 		holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
@@ -7120,6 +7164,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					Outcome:     outcome,
 					Side:        "BUY",
 					Size:        delta,
+					Source:      "position",
 				})
 			}
 		}
@@ -7222,9 +7267,12 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			label := "trade"
-			if trade.Timestamp == 0 {
-				label = "position"
+			label := strings.TrimSpace(trade.Source)
+			if label == "" {
+				label = "trade"
+				if trade.Timestamp == 0 {
+					label = "position"
+				}
 			}
 			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
 				marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
@@ -7328,8 +7376,15 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
-				marketID, outcome, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
+			label := strings.TrimSpace(trade.Source)
+			if label == "" {
+				label = "trade"
+				if trade.Timestamp == 0 {
+					label = "position"
+				}
+			}
+			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %s %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
+				marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideSell, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()

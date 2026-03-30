@@ -218,6 +218,7 @@ type paperbotCopytradePoller struct {
 	lastSnapshot      api.PublicActivitySnapshot
 	rateLimitUntil    time.Time
 	rateLimitStreak   int
+	pendingWatcher    *api.PolymarketPendingWatcher
 }
 
 func newPaperbotCopytradeState() *paperbotCopytradeState {
@@ -360,8 +361,10 @@ func (l paperCopytradeLatency) detectToExecution() time.Duration {
 
 func logPaperCopytradeLatency(t *MarketTrader, latency paperCopytradeLatency) {
 	apiAge := "n/a"
-	if age := latency.apiAgeAtDetect(); age > 0 {
-		apiAge = age.Round(time.Millisecond).String()
+	if strings.EqualFold(strings.TrimSpace(latency.source), "trade") {
+		if age := latency.apiAgeAtDetect(); age > 0 {
+			apiAge = age.Round(time.Millisecond).String()
+		}
 	}
 	txHash := strings.TrimSpace(latency.txHash)
 	if txHash == "" {
@@ -700,6 +703,30 @@ func filterCopytradePositionsByCondition(positions []api.Position, conditionID s
 	return filtered
 }
 
+func (p *paperbotCopytradePoller) pendingSignalsForCondition(conditionID string, since time.Time) []api.PublicTrade {
+	if p == nil || p.pendingWatcher == nil {
+		return nil
+	}
+	signals := p.pendingWatcher.SignalsSince(conditionID, since)
+	if len(signals) == 0 {
+		return nil
+	}
+	trades := make([]api.PublicTrade, 0, len(signals))
+	for _, sig := range signals {
+		trades = append(trades, api.PublicTrade{
+			ConditionID:     sig.ConditionID,
+			Outcome:         sig.Outcome,
+			Side:            sig.Side,
+			Size:            sig.Size,
+			Timestamp:       sig.ObservedAt.Unix(),
+			TransactionHash: sig.TxHash,
+			Source:          "mempool",
+			Slug:            sig.Slug,
+		})
+	}
+	return trades
+}
+
 func (p *paperbotCopytradePoller) cachedSnapshotForCondition(conditionID string) paperbotCopytradeMarketSnapshot {
 	if p == nil {
 		return paperbotCopytradeMarketSnapshot{}
@@ -853,7 +880,11 @@ func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string,
 }
 
 func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
-	return fmt.Sprintf("%s|%d|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, strings.TrimSpace(trade.TransactionHash))
+	txHash := strings.TrimSpace(trade.TransactionHash)
+	if txHash != "" {
+		return fmt.Sprintf("%s|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, txHash)
+	}
+	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
 }
 
 func paperbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
@@ -2122,6 +2153,16 @@ func run() error {
 		copytradePoller := (*paperbotCopytradePoller)(nil)
 		if arbMode == paperArbModeCopytrade {
 			copytradePoller = newPaperbotCopytradePoller(copytradeTarget.Wallet, condIDs)
+			if copytradePoller != nil {
+				pendingWSURL := strings.TrimSpace(os.Getenv("COPYTRADE_PENDING_WS_URL"))
+				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
+					watcher.Start(ctx, func(format string, args ...interface{}) {
+						tui.LogEvent(format, args...)
+					})
+					copytradePoller.pendingWatcher = watcher
+					tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
+				}
+			}
 		}
 
 		// Track starting equity for compounding calculation
@@ -4355,6 +4396,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
 		return
 	}
+	since := state.lastTradeFetch
 	pollStartedAt := time.Now()
 	state.lastTradeFetch = pollStartedAt
 
@@ -4402,7 +4444,11 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	}
 	state.lastError = ""
 
-	freshTrades := paperbotCopytradeFreshTrades(state, marketSnapshot.Trades, t.Market.ConditionID)
+	combinedTrades := marketSnapshot.Trades
+	if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
+		combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
+	}
+	freshTrades := paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
 	if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
 		targetShares := paperbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, t.Market.ConditionID)
 		holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
@@ -4441,6 +4487,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					Outcome:     outcome,
 					Side:        "BUY",
 					Size:        delta,
+					Source:      "position",
 				})
 			}
 		}
@@ -4527,9 +4574,12 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				}
 				continue
 			}
-			label := "trade"
-			if signal.Timestamp == 0 {
-				label = "position"
+			label := strings.TrimSpace(signal.Source)
+			if label == "" {
+				label = "trade"
+				if signal.Timestamp == 0 {
+					label = "position"
+				}
 			}
 			latency := paperCopytradeLatency{
 				pollStartedAt:   pollStartedAt,
@@ -4624,10 +4674,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			if signal.Timestamp == 0 {
 				latency.source = "position"
 			}
+			if signal.Source != "" {
+				latency.source = signal.Source
+			}
 			latency.quoteReadyAt = time.Now()
 
-			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
-				t.ID, outcome, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitFloor, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
+			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target %s %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
+				t.ID, outcome, latency.source, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitFloor, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			trade, sellErr := t.Engine.SellForMarket(t.ID, outcome, bid, requestedQty)
 			if sellErr != nil {
 				msg := fmt.Sprintf("[%s] ❌ Copytrade sell failed for %s: %v", t.ID, outcome, sellErr)
