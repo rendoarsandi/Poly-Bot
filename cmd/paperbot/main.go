@@ -172,6 +172,19 @@ type paperExecutionLatency struct {
 	expectedPnL float64
 }
 
+type paperCopytradeLatency struct {
+	pollStartedAt   time.Time
+	apiReceivedAt   time.Time
+	quoteReadyAt    time.Time
+	executedAt      time.Time
+	signalTimestamp int64
+	marketID        string
+	outcome         string
+	side            string
+	source          string
+	txHash          string
+}
+
 type paperbotCopytradeTarget struct {
 	Raw    string
 	Wallet string
@@ -295,6 +308,69 @@ func logPaperExecutionLatency(t *MarketTrader, latency paperExecutionLatency) {
 	t.TUI.LogEvent("%s", msg)
 	if t.CSVLogger != nil {
 		t.CSVLogger.Log("TRADE", t.ID, "LATENCY", msg, t.Engine.GetEquity())
+	}
+}
+
+func (l paperCopytradeLatency) pollRoundTrip() time.Duration {
+	if l.pollStartedAt.IsZero() || l.apiReceivedAt.IsZero() {
+		return 0
+	}
+	return l.apiReceivedAt.Sub(l.pollStartedAt)
+}
+
+func (l paperCopytradeLatency) apiAgeAtDetect() time.Duration {
+	if l.signalTimestamp == 0 || l.apiReceivedAt.IsZero() {
+		return 0
+	}
+	return l.apiReceivedAt.Sub(time.Unix(l.signalTimestamp, 0))
+}
+
+func (l paperCopytradeLatency) detectToQuote() time.Duration {
+	if l.apiReceivedAt.IsZero() || l.quoteReadyAt.IsZero() {
+		return 0
+	}
+	return l.quoteReadyAt.Sub(l.apiReceivedAt)
+}
+
+func (l paperCopytradeLatency) quoteToExecution() time.Duration {
+	if l.quoteReadyAt.IsZero() || l.executedAt.IsZero() {
+		return 0
+	}
+	return l.executedAt.Sub(l.quoteReadyAt)
+}
+
+func (l paperCopytradeLatency) detectToExecution() time.Duration {
+	if l.apiReceivedAt.IsZero() || l.executedAt.IsZero() {
+		return 0
+	}
+	return l.executedAt.Sub(l.apiReceivedAt)
+}
+
+func logPaperCopytradeLatency(t *MarketTrader, latency paperCopytradeLatency) {
+	apiAge := "n/a"
+	if age := latency.apiAgeAtDetect(); age > 0 {
+		apiAge = age.Round(time.Millisecond).String()
+	}
+	txHash := strings.TrimSpace(latency.txHash)
+	if txHash == "" {
+		txHash = "n/a"
+	}
+	msg := fmt.Sprintf(
+		"[%s] ⏱ Copytrade %s %s latency | source=%s | apiAge=%s | poll=%s | detect→quote=%s | quote→exec=%s | detect→exec=%s | tx=%s",
+		latency.marketID,
+		strings.ToUpper(strings.TrimSpace(latency.side)),
+		latency.outcome,
+		latency.source,
+		apiAge,
+		latency.pollRoundTrip().Round(time.Millisecond),
+		latency.detectToQuote().Round(time.Millisecond),
+		latency.quoteToExecution().Round(time.Millisecond),
+		latency.detectToExecution().Round(time.Millisecond),
+		txHash,
+	)
+	t.TUI.LogEvent("%s", msg)
+	if t.CSVLogger != nil {
+		t.CSVLogger.Log("TRADE", t.ID, "COPY_LATENCY", msg, t.Engine.GetEquity())
 	}
 }
 
@@ -679,6 +755,17 @@ func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, strings.TrimSpace(trade.TransactionHash))
 }
 
+func paperbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
+	if startedAt.IsZero() {
+		return 0
+	}
+	startTs := startedAt.Unix()
+	if startedAt.Nanosecond() != 0 {
+		startTs--
+	}
+	return startTs
+}
+
 func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.PublicTrade, conditionID string) []api.PublicTrade {
 	if state == nil || len(trades) == 0 {
 		return nil
@@ -722,10 +809,7 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 		if state.startedAt.IsZero() {
 			return nil
 		}
-		startTs := state.startedAt.Unix()
-		if state.startedAt.Nanosecond() != 0 {
-			startTs--
-		}
+		startTs := paperbotCopytradeBootstrapStartTimestamp(state.startedAt)
 		bootstrap := make([]api.PublicTrade, 0, len(fresh))
 		for _, trade := range fresh {
 			if trade.Timestamp < startTs {
@@ -4170,11 +4254,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
 		return
 	}
-	state.lastTradeFetch = time.Now()
+	pollStartedAt := time.Now()
+	state.lastTradeFetch = pollStartedAt
 
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	snapshot := t.RestClient.GetPublicActivitySnapshot(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 32, 0.01, 8)
 	cancel()
+	apiReceivedAt := time.Now()
 	if snapshot.TradesErr != nil && snapshot.PositionsErr != nil {
 		err := fmt.Errorf("trades: %v | positions: %v", snapshot.TradesErr, snapshot.PositionsErr)
 		if err.Error() != state.lastError {
@@ -4310,11 +4396,21 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				}
 				continue
 			}
-
 			label := "trade"
 			if signal.Timestamp == 0 {
 				label = "position"
 			}
+			latency := paperCopytradeLatency{
+				pollStartedAt:   pollStartedAt,
+				apiReceivedAt:   apiReceivedAt,
+				signalTimestamp: signal.Timestamp,
+				marketID:        t.ID,
+				outcome:         outcome,
+				side:            "BUY",
+				source:          label,
+				txHash:          strings.TrimSpace(signal.TransactionHash),
+			}
+			latency.quoteReadyAt = time.Now()
 			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
 				t.ID, outcome, label, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			trade, avgFill, buyErr := t.Engine.MarketBuy(t.ID, outcome, requestedQty, asks)
@@ -4325,9 +4421,11 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				}
 				continue
 			}
+			latency.executedAt = time.Now()
 			state.managed[outcome] = true
 			t.TUI.RecordOrderWithMode(t.ID, outcome, "BUY", trade.Quantity, avgFill, trade.Value, 0.0, 0.0, paperArbModeCopytrade, "FILLED")
 			t.TUI.LogEvent("[%s] ✅ Copytrade bought %s %s at $%.3f", t.ID, paperbotFormatShareQty(trade.Quantity), outcome, avgFill)
+			logPaperCopytradeLatency(t, latency)
 			continue
 		}
 
@@ -4382,6 +4480,20 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				}
 				continue
 			}
+			latency := paperCopytradeLatency{
+				pollStartedAt:   pollStartedAt,
+				apiReceivedAt:   apiReceivedAt,
+				signalTimestamp: signal.Timestamp,
+				marketID:        t.ID,
+				outcome:         outcome,
+				side:            "SELL",
+				source:          "trade",
+				txHash:          strings.TrimSpace(signal.TransactionHash),
+			}
+			if signal.Timestamp == 0 {
+				latency.source = "position"
+			}
+			latency.quoteReadyAt = time.Now()
 
 			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
 				t.ID, outcome, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitFloor, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
@@ -4393,9 +4505,11 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				}
 				continue
 			}
+			latency.executedAt = time.Now()
 			profit := trade.Value - (avgPrice * trade.Quantity)
 			t.TUI.RecordOrderWithMode(t.ID, outcome, "SELL", trade.Quantity, bid, trade.Value, 0.0, profit, paperArbModeCopytrade, "FILLED")
 			t.TUI.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", t.ID, paperbotFormatShareQty(trade.Quantity), outcome, bid)
+			logPaperCopytradeLatency(t, latency)
 			if remainingQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome); remainingQty <= 0.01 {
 				state.managed[outcome] = false
 			}

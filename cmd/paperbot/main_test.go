@@ -254,6 +254,39 @@ func TestPaperbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testin
 	}
 }
 
+func TestPaperbotCopytradeBootstrapStartTimestamp(t *testing.T) {
+	if got := paperbotCopytradeBootstrapStartTimestamp(time.Unix(1500, 0)); got != 1500 {
+		t.Fatalf("exact-second bootstrap timestamp = %d, want 1500", got)
+	}
+	if got := paperbotCopytradeBootstrapStartTimestamp(time.Unix(1500, 250_000_000)); got != 1499 {
+		t.Fatalf("sub-second bootstrap timestamp = %d, want 1499", got)
+	}
+}
+
+func TestPaperbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	state.startedAt = time.Unix(1000, 500_000_000)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 1001, TransactionHash: "0xb"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 1000, TransactionHash: "0xc"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 1001, TransactionHash: "0xa"},
+	}
+
+	got := paperbotCopytradeFreshTrades(state, trades, "cond-1")
+	if len(got) != 3 {
+		t.Fatalf("expected three bootstrap trades, got %d", len(got))
+	}
+	if got[0].Timestamp != 1000 || got[0].TransactionHash != "0xc" {
+		t.Fatalf("first trade = %+v, want timestamp 1000 tx 0xc", got[0])
+	}
+	if got[1].Timestamp != 1001 || got[1].TransactionHash != "0xa" {
+		t.Fatalf("second trade = %+v, want timestamp 1001 tx 0xa", got[1])
+	}
+	if got[2].Timestamp != 1001 || got[2].TransactionHash != "0xb" {
+		t.Fatalf("third trade = %+v, want timestamp 1001 tx 0xb", got[2])
+	}
+}
+
 func TestPaperbotCopytradeHoldsBothOutcomes(t *testing.T) {
 	if !paperbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 5}) {
 		t.Fatal("expected both-sided target inventory to be detected")
