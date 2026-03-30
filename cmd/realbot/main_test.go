@@ -838,6 +838,20 @@ func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing
 	}
 }
 
+func TestRealbotCopytradeFreshTradesKeepsDistinctPublicTradesSameTx(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.45, Asset: "asset-b", Timestamp: 1001, TransactionHash: "0xtx"},
+	}
+
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1")
+	if len(got) != 2 {
+		t.Fatalf("expected two distinct public trades from same tx, got %d", len(got))
+	}
+}
+
 func TestRealbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
 	trade := api.PublicTrade{
 		ConditionID:     "cond-1",

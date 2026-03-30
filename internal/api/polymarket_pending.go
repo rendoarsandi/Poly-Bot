@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/url"
@@ -223,15 +224,30 @@ func (w *PolymarketPendingWatcher) run(ctx context.Context, logf func(string, ..
 		if ctx.Err() != nil {
 			return
 		}
-		if err := w.runSession(ctx); err != nil && ctx.Err() == nil && logf != nil {
-			logf("⚠️ Copytrade mempool watcher reconnecting: %v", err)
+		delay := backoff
+		if err := w.runSession(ctx); err != nil && ctx.Err() == nil {
+			var dialErr *polygonWSDialError
+			if errors.As(err, &dialErr) {
+				if !dialErr.retryable() {
+					if logf != nil {
+						logf("⚠️ Copytrade mempool watcher stopped: %v", err)
+					}
+					return
+				}
+				delay = dialErr.retryDelay(backoff)
+			}
+			if logf != nil {
+				logf("⚠️ Copytrade mempool watcher reconnecting: %v", err)
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
-		if backoff < 8*time.Second {
+		if delay > backoff {
+			backoff = delay
+		} else if backoff < 8*time.Second {
 			backoff *= 2
 		}
 	}
@@ -241,11 +257,11 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(dialCtx, w.wsURL, &websocket.DialOptions{
+	conn, resp, err := websocket.Dial(dialCtx, w.wsURL, &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
-		return fmt.Errorf("pending websocket dial failed: %w", err)
+		return newPolygonWSDialError("pending", resp, err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 

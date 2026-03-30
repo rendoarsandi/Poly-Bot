@@ -222,6 +222,41 @@ type paperbotCopytradePoller struct {
 	minedWatcher      *api.PolymarketMinedWatcher
 }
 
+func paperbotCopytradeTradeFetchTimeout(pollEvery time.Duration) time.Duration {
+	if pollEvery < 250*time.Millisecond {
+		pollEvery = 250 * time.Millisecond
+	}
+	timeout := pollEvery * 4
+	if timeout < 1500*time.Millisecond {
+		timeout = 1500 * time.Millisecond
+	}
+	if timeout > 2500*time.Millisecond {
+		timeout = 2500 * time.Millisecond
+	}
+	return timeout
+}
+
+func paperbotCopytradePositionFetchTimeout(pollEvery time.Duration, hasCachedPositions bool) time.Duration {
+	if hasCachedPositions {
+		timeout := pollEvery * 2
+		if timeout < 350*time.Millisecond {
+			timeout = 350 * time.Millisecond
+		}
+		if timeout > 900*time.Millisecond {
+			timeout = 900 * time.Millisecond
+		}
+		return timeout
+	}
+	timeout := pollEvery * 4
+	if timeout < 1200*time.Millisecond {
+		timeout = 1200 * time.Millisecond
+	}
+	if timeout > 2500*time.Millisecond {
+		timeout = 2500 * time.Millisecond
+	}
+	return timeout
+}
+
 func newPaperbotCopytradeState() *paperbotCopytradeState {
 	return &paperbotCopytradeState{
 		startedAt:         time.Now(),
@@ -808,15 +843,17 @@ func (p *paperbotCopytradePoller) snapshotForCondition(ctx context.Context, rest
 		p.waitCh = make(chan struct{})
 		wallet := p.wallet
 		conditionIDs := append([]string(nil), p.conditionIDs...)
+		cachedPositions := append([]api.Position(nil), p.lastSnapshot.Positions...)
+		cachedPositionsValid := p.lastSnapshot.PositionsErr == nil
 		pollStartedAt := time.Now()
 		p.mu.Unlock()
 
-		tradeLimit := len(conditionIDs) * 32
-		if tradeLimit < 64 {
-			tradeLimit = 64
+		tradeLimit := len(conditionIDs) * 64
+		if tradeLimit < 128 {
+			tradeLimit = 128
 		}
-		if tradeLimit > 500 {
-			tradeLimit = 500
+		if tradeLimit > 1000 {
+			tradeLimit = 1000
 		}
 		positionLimit := len(conditionIDs) * 8
 		if positionLimit < 32 {
@@ -825,7 +862,18 @@ func (p *paperbotCopytradePoller) snapshotForCondition(ctx context.Context, rest
 		if positionLimit > 500 {
 			positionLimit = 500
 		}
-		snapshot := restClient.GetPublicActivitySnapshot(ctx, wallet, conditionIDs, tradeLimit, 0.01, positionLimit)
+		snapshot := restClient.GetPublicActivitySnapshotWithFallback(
+			ctx,
+			wallet,
+			conditionIDs,
+			tradeLimit,
+			0.01,
+			positionLimit,
+			cachedPositions,
+			cachedPositionsValid,
+			paperbotCopytradeTradeFetchTimeout(pollEvery),
+			paperbotCopytradePositionFetchTimeout(pollEvery, cachedPositionsValid),
+		)
 		now := time.Now()
 
 		p.mu.Lock()
@@ -841,7 +889,7 @@ func (p *paperbotCopytradePoller) snapshotForCondition(ctx context.Context, rest
 		} else {
 			p.lastSnapshot.PositionsErr = snapshot.PositionsErr
 		}
-		if paperbotCopytradeIsRateLimited(snapshot.TradesErr) && paperbotCopytradeIsRateLimited(snapshot.PositionsErr) {
+		if paperbotCopytradeIsRateLimited(snapshot.TradesErr) || (snapshot.TradesErr != nil && paperbotCopytradeIsRateLimited(snapshot.PositionsErr)) {
 			p.rateLimitStreak++
 			p.rateLimitUntil = now.Add(paperbotCopytradeRateLimitBackoff(p.rateLimitStreak))
 		} else {
@@ -916,7 +964,7 @@ func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
 	}
 	txHash := strings.TrimSpace(trade.TransactionHash)
 	if txHash != "" {
-		return fmt.Sprintf("%s|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, txHash)
+		return fmt.Sprintf("%s|%s|%s|%.6f|%.6f|%s|%d|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, trade.Price, strings.TrimSpace(trade.Asset), trade.Timestamp, txHash)
 	}
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
 }
@@ -4485,7 +4533,18 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			}
 		} else {
 			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			snapshot := t.RestClient.GetPublicActivitySnapshot(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 32, 0.01, 8)
+			snapshot := t.RestClient.GetPublicActivitySnapshotWithFallback(
+				pollCtx,
+				t.CopytradeWallet,
+				[]string{t.Market.ConditionID},
+				128,
+				0.01,
+				8,
+				nil,
+				false,
+				paperbotCopytradeTradeFetchTimeout(pollEvery),
+				paperbotCopytradePositionFetchTimeout(pollEvery, false),
+			)
 			cancel()
 			marketSnapshot = paperbotCopytradeMarketSnapshot{
 				Trades:        snapshot.Trades,

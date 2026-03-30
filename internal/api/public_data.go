@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var walletAddressPattern = regexp.MustCompile(`^0x[a-fA-F0-9]{40}$`)
@@ -223,6 +224,74 @@ func (c *RestClient) GetPublicActivitySnapshot(ctx context.Context, user string,
 		TradesErr:    tradesRes.err,
 		PositionsErr: positionsRes.err,
 	}
+}
+
+func (c *RestClient) GetPublicActivitySnapshotWithFallback(ctx context.Context, user string, markets []string, tradeLimit int, positionSizeThreshold float64, positionLimit int, cachedPositions []Position, cachedPositionsValid bool, tradeTimeout, positionTimeout time.Duration) PublicActivitySnapshot {
+	type tradeResult struct {
+		trades []PublicTrade
+		err    error
+	}
+	type positionResult struct {
+		positions []Position
+		err       error
+	}
+
+	tradesCtx := ctx
+	tradesCancel := func() {}
+	if tradeTimeout > 0 {
+		tradesCtx, tradesCancel = context.WithTimeout(ctx, tradeTimeout)
+	}
+	defer tradesCancel()
+
+	positionsCtx := ctx
+	positionsCancel := func() {}
+	if positionTimeout > 0 {
+		positionsCtx, positionsCancel = context.WithTimeout(ctx, positionTimeout)
+	}
+	defer positionsCancel()
+
+	tradesCh := make(chan tradeResult, 1)
+	positionsCh := make(chan positionResult, 1)
+
+	go func() {
+		trades, err := c.GetPublicTrades(tradesCtx, user, markets, tradeLimit)
+		tradesCh <- tradeResult{trades: trades, err: err}
+	}()
+	go func() {
+		positions, err := c.GetPublicPositions(positionsCtx, user, markets, positionSizeThreshold, positionLimit)
+		positionsCh <- positionResult{positions: positions, err: err}
+	}()
+
+	tradesRes := <-tradesCh
+	snapshot := PublicActivitySnapshot{
+		Trades:    tradesRes.trades,
+		TradesErr: tradesRes.err,
+	}
+
+	applyPositions := func(res positionResult) {
+		if res.err != nil && cachedPositionsValid {
+			snapshot.Positions = append([]Position(nil), cachedPositions...)
+			snapshot.PositionsErr = nil
+			return
+		}
+		snapshot.Positions = res.positions
+		snapshot.PositionsErr = res.err
+	}
+
+	select {
+	case positionsRes := <-positionsCh:
+		applyPositions(positionsRes)
+	default:
+		if cachedPositionsValid {
+			snapshot.Positions = append([]Position(nil), cachedPositions...)
+			snapshot.PositionsErr = nil
+			return snapshot
+		}
+		positionsRes := <-positionsCh
+		applyPositions(positionsRes)
+	}
+
+	return snapshot
 }
 
 func (c *RestClient) SearchPublicProfiles(ctx context.Context, query string, limit int) ([]PublicProfile, error) {
