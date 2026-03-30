@@ -4315,7 +4315,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			if signal.Timestamp == 0 {
 				label = "position"
 			}
-			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+			t.TUI.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
 				t.ID, outcome, label, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			trade, avgFill, buyErr := t.Engine.MarketBuy(t.ID, outcome, requestedQty, asks)
 			if buyErr != nil {
@@ -4383,7 +4383,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
+			t.TUI.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
 				t.ID, outcome, paperbotFormatShareQty(tradeSize), paperbotFormatShareQty(requestedQty), submitFloor, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			trade, sellErr := t.Engine.SellForMarket(t.ID, outcome, bid, requestedQty)
 			if sellErr != nil {

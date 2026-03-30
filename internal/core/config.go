@@ -123,7 +123,7 @@ type Config struct {
 	TakerCloseMarketMinPrice          float64 // Min price to trigger close buy (default: 0.60)
 	CopytradeTarget                   string  // Wallet address, profile handle, or profile URL to follow
 	CopytradePollIntervalMs           int     // Copytrade public-wallet poll interval in milliseconds
-	CopytradeMaxSlippagePct           float64 // Maximum allowed copytrade execution slippage from observed quote, in percent
+	CopytradeMaxSlippagePct           float64 // Legacy field name; interpreted as absolute copytrade slippage allowance in cents
 	CopytradeSizingMode               string  // "usdc" or "shares" for copytrade entries
 	CopytradeSizeUSDC                 float64 // Fixed per-trade USDC budget when copytrade mode uses USDC sizing
 	CopytradeSizeShares               float64 // Fixed share cap per trade when copytrade mode uses share sizing
@@ -270,7 +270,7 @@ func LoadConfig() (*Config, error) {
 		TradingHoursMode:                  parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
 		CopytradeTarget:                   strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
-		CopytradeMaxSlippagePct:           normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 5.0)),
+		CopytradeMaxSlippagePct:           normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
 		CopytradeSizingMode:               normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
 		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(parseEnvFloat("COPYTRADE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
 		CopytradeSizeShares:               normalizeCopytradeSizeShares(parseEnvFloat("COPYTRADE_SIZE_SHARES", 1.0)),
@@ -366,19 +366,17 @@ func normalizeCopytradeMaxSlippagePct(v float64) float64 {
 	switch {
 	case v < 0:
 		v = 0
-	case v == 0:
-		v = 5.0
 	case v > 50.0:
 		v = 50.0
 	}
-	return math.Round(v*10.0) / 10.0
+	return math.Round(v)
 }
 
 func CopytradeBuyLimitPrice(observedAsk, maxSlippagePct float64) float64 {
 	if observedAsk <= 0 || observedAsk >= 1.0 {
 		return 0
 	}
-	limit := observedAsk * (1.0 + normalizeCopytradeMaxSlippagePct(maxSlippagePct)/100.0)
+	limit := observedAsk + normalizeCopytradeMaxSlippagePct(maxSlippagePct)/100.0
 	if limit > 0.99 {
 		limit = 0.99
 	}
@@ -392,7 +390,7 @@ func CopytradeSellFloorPrice(observedBid, maxSlippagePct float64) float64 {
 	if observedBid <= 0 || observedBid >= 1.0 {
 		return 0
 	}
-	floor := observedBid * (1.0 - normalizeCopytradeMaxSlippagePct(maxSlippagePct)/100.0)
+	floor := observedBid - normalizeCopytradeMaxSlippagePct(maxSlippagePct)/100.0
 	if floor < 0.01 {
 		floor = 0.01
 	}

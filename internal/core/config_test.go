@@ -301,6 +301,33 @@ func TestCalculateCopytradeSharesForMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeCopytradeMaxSlippagePctAllowsZeroAndRoundsToWholeCents(t *testing.T) {
+	if got := normalizeCopytradeMaxSlippagePct(0); got != 0 {
+		t.Fatalf("expected 0c slippage to remain 0, got %.2f", got)
+	}
+	if got := normalizeCopytradeMaxSlippagePct(1.4); got != 1 {
+		t.Fatalf("expected 1.4c to round to 1c, got %.2f", got)
+	}
+	if got := normalizeCopytradeMaxSlippagePct(1.6); got != 2 {
+		t.Fatalf("expected 1.6c to round to 2c, got %.2f", got)
+	}
+}
+
+func TestCopytradePriceBoundsUseAbsoluteCents(t *testing.T) {
+	if got := CopytradeBuyLimitPrice(0.54, 1); math.Abs(got-0.55) > 0.000001 {
+		t.Fatalf("expected buy limit 0.55 from 1c slippage, got %.4f", got)
+	}
+	if got := CopytradeBuyLimitPrice(0.54, 0); math.Abs(got-0.54) > 0.000001 {
+		t.Fatalf("expected buy limit unchanged at 0c slippage, got %.4f", got)
+	}
+	if got := CopytradeSellFloorPrice(0.54, 1); math.Abs(got-0.53) > 0.000001 {
+		t.Fatalf("expected sell floor 0.53 from 1c slippage, got %.4f", got)
+	}
+	if got := CopytradeSellFloorPrice(0.54, 0); math.Abs(got-0.54) > 0.000001 {
+		t.Fatalf("expected sell floor unchanged at 0c slippage, got %.4f", got)
+	}
+}
+
 func TestCalculateCopytradeSellSharesForModeLiquidatesFullFlatTarget(t *testing.T) {
 	got := CalculateCopytradeSellSharesForMode(5.51, 0, -5.51, 0.23, 1.0, 1.0, 100.0, 0, CopytradeSizingModeUSDC)
 	if got != 5.51 {

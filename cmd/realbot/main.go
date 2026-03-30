@@ -7114,7 +7114,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			if trade.Timestamp == 0 {
 				label = "position"
 			}
-			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.1f%%)",
+			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
 				marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
@@ -7216,7 +7216,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.1f%%)",
+			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target trade %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
 				marketID, outcome, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideSell, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)

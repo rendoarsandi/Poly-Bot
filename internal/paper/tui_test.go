@@ -960,17 +960,48 @@ func TestRenderSettingsShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
 		CopytradePollIntervalMs: 250,
 		CopytradeSizingMode:     core.CopytradeSizingModeShares,
 		CopytradeSizeShares:     5.5,
-		CopytradeMaxSlippagePct: 3.5,
+		CopytradeMaxSlippagePct: 1,
 		MinAskPrice:             0.10,
 		MaxAskPrice:             0.90,
 	}, nil)
 
 	view := (tuiModel{tui: tui}).renderSettings(120)
-	if !strings.Contains(view, "Copy Max Slippage %") {
+	if !strings.Contains(view, "Copy Max Slip") {
 		t.Fatalf("expected copytrade slippage row, got %q", view)
+	}
+	if !strings.Contains(view, "1c") {
+		t.Fatalf("expected copytrade slippage to render in cents, got %q", view)
 	}
 	if strings.Contains(view, "Min Ask Price") || strings.Contains(view, "Max Ask Price") {
 		t.Fatalf("expected copytrade settings to hide generic price rows, got %q", view)
+	}
+}
+
+func TestInitSettingsKeepsLowCopytradePollInterval(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "copytrade",
+		CopytradePollIntervalMs: 100,
+	}, nil)
+
+	if got := tui.GetSettings().CopytradePollIntervalMs; got != 100 {
+		t.Fatalf("expected 100ms copytrade poll interval, got %d", got)
+	}
+}
+
+func TestInitSettingsAllowsZeroCopytradeSlippage(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "copytrade",
+		CopytradeMaxSlippagePct: 0,
+	}, nil)
+
+	if got := tui.GetSettings().CopytradeMaxSlippagePct; got != 0 {
+		t.Fatalf("expected 0c copytrade slippage, got %.2f", got)
 	}
 }
 

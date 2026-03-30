@@ -436,7 +436,7 @@ type TUISettings struct {
 	CopytradeSizeUSDC              float64 // fixed per-trade copytrade budget when sizing by USDC
 	CopytradeSizeShares            float64 // fixed per-trade copytrade share cap when sizing by shares
 	CopytradeSizePercent           float64 // percent of the master/target trade size when sizing by percent
-	CopytradeMaxSlippagePct        float64 // maximum buy/sell slippage from observed quote in copytrade mode
+	CopytradeMaxSlippagePct        float64 // legacy field name; interpreted as absolute copytrade slippage allowance in cents
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
@@ -460,9 +460,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.02, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 const (
@@ -643,7 +643,7 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Paper Exec Delay"
 	case settingsRowExecutionSlip:
 		if copytrade {
-			return "Copy Max Slippage %"
+			return "Copy Max Slip"
 		}
 		return "Max Exec Slip %"
 	case settingsRowCopytradeTarget:
@@ -761,21 +761,21 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		}
 	}
 	s.BuyExecutionMarginFloorPercent = normalizeExecutionFloorSetting(s.BuyExecutionMarginFloorPercent)
-	if s.CopytradeMaxSlippagePct <= 0 {
-		s.CopytradeMaxSlippagePct = 5.0
-	}
 	if s.CopytradeMaxSlippagePct > 50.0 {
 		s.CopytradeMaxSlippagePct = 50.0
 	}
-	s.CopytradeMaxSlippagePct = math.Round(s.CopytradeMaxSlippagePct*10.0) / 10.0
+	if s.CopytradeMaxSlippagePct < 0 {
+		s.CopytradeMaxSlippagePct = 0
+	}
+	s.CopytradeMaxSlippagePct = math.Round(s.CopytradeMaxSlippagePct)
 	s.TakerCloseMarketSlippage = normalizeTakerClosePriceSetting(s.TakerCloseMarketSlippage, 0.99)
 	s.TakerCloseMarketMinPrice = normalizeTakerClosePriceSetting(s.TakerCloseMarketMinPrice, 0.60)
 	s.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	if s.CopytradePollIntervalMs <= 0 {
 		s.CopytradePollIntervalMs = 2000
 	}
-	if s.CopytradePollIntervalMs < 250 {
-		s.CopytradePollIntervalMs = 250
+	if s.CopytradePollIntervalMs < 100 {
+		s.CopytradePollIntervalMs = 100
 	}
 	if s.CopytradePollIntervalMs > 30000 {
 		s.CopytradePollIntervalMs = 30000
@@ -1601,14 +1601,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
 				case settingsRowCopytradePoll:
-					m.tui.settings.CopytradePollIntervalMs -= 250
-					if m.tui.settings.CopytradePollIntervalMs < 250 {
-						m.tui.settings.CopytradePollIntervalMs = 250
+					m.tui.settings.CopytradePollIntervalMs -= 100
+					if m.tui.settings.CopytradePollIntervalMs < 100 {
+						m.tui.settings.CopytradePollIntervalMs = 100
 					}
 					changed = true
 				case settingsRowExecutionSlip:
 					if isCopytradeSettingsMode(m.tui.settings) {
-						m.tui.settings.CopytradeMaxSlippagePct -= 0.5
+						m.tui.settings.CopytradeMaxSlippagePct -= 1.0
 						if m.tui.settings.CopytradeMaxSlippagePct < 0 {
 							m.tui.settings.CopytradeMaxSlippagePct = 0
 						}
@@ -1832,14 +1832,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
 				case settingsRowCopytradePoll:
-					m.tui.settings.CopytradePollIntervalMs += 250
+					m.tui.settings.CopytradePollIntervalMs += 100
 					if m.tui.settings.CopytradePollIntervalMs > 30000 {
 						m.tui.settings.CopytradePollIntervalMs = 30000
 					}
 					changed = true
 				case settingsRowExecutionSlip:
 					if isCopytradeSettingsMode(m.tui.settings) {
-						m.tui.settings.CopytradeMaxSlippagePct += 0.5
+						m.tui.settings.CopytradeMaxSlippagePct += 1.0
 						if m.tui.settings.CopytradeMaxSlippagePct > 50.0 {
 							m.tui.settings.CopytradeMaxSlippagePct = 50.0
 						}
@@ -4371,7 +4371,7 @@ func (m tuiModel) renderSettings(w int) string {
 			label: settingsRowLabel(cfg, settingsRowExecutionSlip),
 			value: func() string {
 				if isCopytradeSettingsMode(cfg) {
-					return fmt.Sprintf(" %5.1f%% ", cfg.CopytradeMaxSlippagePct)
+					return fmt.Sprintf(" %4.0fc ", cfg.CopytradeMaxSlippagePct)
 				}
 				return fmt.Sprintf(" %5.1f%% ", executionFloorDisplayPercent(cfg.BuyExecutionMarginFloorPercent))
 			}(),
