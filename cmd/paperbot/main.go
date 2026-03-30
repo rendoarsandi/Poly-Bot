@@ -4321,6 +4321,10 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				requestedQty = paperbotNormalizeMarketSellShares(liq)
 			}
 			if requestedQty < paperbotMinActionShares {
+				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: actionable size below %.2f share", t.ID, outcome, paperbotMinActionShares)
+				if paperbotCopytradeShouldLog(state, "sell-size:"+outcome, msg, 10*time.Second) {
+					t.TUI.LogEvent("%s", msg)
+				}
 				continue
 			}
 

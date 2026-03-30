@@ -7035,8 +7035,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
 				requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, submitPrice)
 			}
-			if requestedQty < 1 {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: trade budget $%.2f is too small at cap $%.3f", marketID, outcome, budget, submitPrice)
+			if requestedQty < minOnChainActionShares {
+				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: actionable size %s is below %.2f share at cap $%.3f", marketID, outcome, formatShareQty(requestedQty), minOnChainActionShares, submitPrice)
 				if realbotCopytradeShouldLog(state, "buy-size:"+outcome, msg, 10*time.Second) {
 					tui.LogEvent("%s", msg)
 				}
@@ -7145,6 +7145,10 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				requestedQty = normalizeMarketSellShares(localQty)
 			}
 			if requestedQty < minOnChainActionShares {
+				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: actionable size %s is below %.2f share", marketID, outcome, formatShareQty(requestedQty), minOnChainActionShares)
+				if realbotCopytradeShouldLog(state, "sell-size:"+outcome, msg, 10*time.Second) {
+					tui.LogEvent("%s", msg)
+				}
 				continue
 			}
 
