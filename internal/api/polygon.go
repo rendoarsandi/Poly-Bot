@@ -366,8 +366,21 @@ type Transaction struct {
 	BlockNumber string `json:"blockNumber"`
 }
 
+type FullBlockTransaction struct {
+	Hash        string `json:"hash"`
+	To          string `json:"to"`
+	Input       string `json:"input"`
+	BlockNumber string `json:"blockNumber"`
+}
+
 type Block struct {
 	BaseFeePerGas string `json:"baseFeePerGas"`
+}
+
+type FullBlock struct {
+	Number       string                 `json:"number"`
+	Timestamp    string                 `json:"timestamp"`
+	Transactions []FullBlockTransaction `json:"transactions"`
 }
 
 func (c *PolygonClient) GetBlockBaseFee(ctx context.Context) (*big.Int, error) {
@@ -728,6 +741,23 @@ func (c *PolygonClient) GetBlockNumber(ctx context.Context) (uint64, error) {
 	return blockNum.Uint64(), nil
 }
 
+func (c *PolygonClient) GetFullBlockByNumber(ctx context.Context, blockNumber uint64) (*FullBlock, error) {
+	blockTag := fmt.Sprintf("0x%x", blockNumber)
+	result, err := c.call(ctx, "eth_getBlockByNumber", []interface{}{blockTag, true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get full block %d: %w", blockNumber, err)
+	}
+	if string(result) == "null" {
+		return nil, nil
+	}
+
+	var block FullBlock
+	if err := json.Unmarshal(result, &block); err != nil {
+		return nil, fmt.Errorf("failed to parse full block: %w", err)
+	}
+	return &block, nil
+}
+
 // call makes a JSON-RPC call
 func (c *PolygonClient) call(ctx context.Context, method string, params []interface{}) (json.RawMessage, error) {
 	reqBody := RPCRequest{
@@ -779,6 +809,22 @@ func parseHexBigInt(s string) (*big.Int, error) {
 		return nil, fmt.Errorf("failed to parse hex string: %s", s)
 	}
 	return n, nil
+}
+
+func parseHexUint64(s string) (uint64, error) {
+	n, err := parseHexBigInt(s)
+	if err != nil {
+		return 0, err
+	}
+	return n.Uint64(), nil
+}
+
+func parseHexInt64(s string) (int64, error) {
+	n, err := parseHexBigInt(s)
+	if err != nil {
+		return 0, err
+	}
+	return n.Int64(), nil
 }
 
 func bumpGasPrice(base *big.Int) *big.Int {

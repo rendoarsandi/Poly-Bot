@@ -838,6 +838,21 @@ func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing
 	}
 }
 
+func TestRealbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
+	trade := api.PublicTrade{
+		ConditionID:     "cond-1",
+		Outcome:         "Up",
+		Side:            "BUY",
+		Size:            2,
+		TransactionHash: "0xtx",
+		Source:          "onchain",
+		SignalID:        "0xtx:1",
+	}
+	if got := realbotCopytradeTradeKey(trade); got != "signal|0xtx:1" {
+		t.Fatalf("unexpected trade key %q", got)
+	}
+}
+
 func TestRealbotCopytradeIsRateLimited(t *testing.T) {
 	if !realbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
 		t.Fatal("expected 429/1015 error to be treated as rate limit")

@@ -1966,17 +1966,26 @@ func run() error {
 		if arbMode == paperArbModeCopytrade {
 			copytradePoller = newRealbotCopytradePoller(copytradeTarget.Wallet, condIDs)
 			if copytradePoller != nil {
+				trackedMarkets := make([]*api.Market, 0, len(markets))
+				for _, market := range markets {
+					if market != nil {
+						trackedMarkets = append(trackedMarkets, market)
+					}
+				}
+				chainWSURL := api.ResolvePolygonWSURL(os.Getenv("POLYGON_WS_URL"), cfg.PolygonRPCURL)
+				if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, copytradeTarget.Wallet); watcher != nil {
+					watcher.PrimeTrackedMarkets(trackedMarkets)
+					watcher.Start(ctx, func(format string, args ...interface{}) {
+						tui.LogEvent(format, args...)
+					})
+					copytradePoller.minedWatcher = watcher
+					tui.LogEvent("⛓️ Copytrade onchain watcher enabled for %s", copytradeTarget.Wallet)
+				}
 				pendingWSURL := api.ResolvePolymarketPendingWSURL(
 					os.Getenv("COPYTRADE_PENDING_WS_URL"),
 					cfg.PolygonRPCURL,
 				)
 				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
-					trackedMarkets := make([]*api.Market, 0, len(markets))
-					for _, market := range markets {
-						if market != nil {
-							trackedMarkets = append(trackedMarkets, market)
-						}
-					}
 					watcher.PrimeTrackedMarkets(trackedMarkets)
 					watcher.Start(ctx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
@@ -6433,6 +6442,7 @@ type realbotCopytradePoller struct {
 	rateLimitUntil    time.Time
 	rateLimitStreak   int
 	pendingWatcher    *api.PolymarketPendingWatcher
+	minedWatcher      *api.PolymarketMinedWatcher
 }
 
 func newRealbotCopytradeState() *realbotCopytradeState {
@@ -6827,8 +6837,33 @@ func (p *realbotCopytradePoller) pendingSignalsForCondition(conditionID string, 
 	return trades
 }
 
-func realbotCopytradeHasMempoolWatcher(p *realbotCopytradePoller) bool {
-	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
+func (p *realbotCopytradePoller) minedSignalsForCondition(conditionID string, since time.Time) []api.PublicTrade {
+	if p == nil || p.minedWatcher == nil {
+		return nil
+	}
+	signals := p.minedWatcher.SignalsSince(conditionID, since)
+	if len(signals) == 0 {
+		return nil
+	}
+	trades := make([]api.PublicTrade, 0, len(signals))
+	for _, sig := range signals {
+		trades = append(trades, api.PublicTrade{
+			ConditionID:     sig.ConditionID,
+			Outcome:         sig.Outcome,
+			Side:            sig.Side,
+			Size:            sig.Size,
+			Timestamp:       sig.BlockTimestamp,
+			TransactionHash: sig.TxHash,
+			Source:          "onchain",
+			SignalID:        sig.SignalID,
+			Slug:            sig.Slug,
+		})
+	}
+	return trades
+}
+
+func realbotCopytradeHasOnchainWatcher(p *realbotCopytradePoller) bool {
+	return p != nil && ((p.pendingWatcher != nil && p.pendingWatcher.Enabled()) || (p.minedWatcher != nil && p.minedWatcher.Enabled()))
 }
 
 func (p *realbotCopytradePoller) cachedSnapshotForCondition(conditionID string) realbotCopytradeMarketSnapshot {
@@ -6984,10 +7019,8 @@ func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, t
 }
 
 func realbotCopytradeTradeKey(trade api.PublicTrade) string {
-	if strings.EqualFold(strings.TrimSpace(trade.Source), "mempool") {
-		if signalID := strings.TrimSpace(trade.SignalID); signalID != "" {
-			return "mempool|" + signalID
-		}
+	if signalID := strings.TrimSpace(trade.SignalID); signalID != "" {
+		return "signal|" + signalID
 	}
 	txHash := strings.TrimSpace(trade.TransactionHash)
 	if txHash != "" {
@@ -7115,87 +7148,94 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	pollStartedAt := time.Now()
 	state.lastTradeFetch = pollStartedAt
 
-	marketSnapshot := realbotCopytradeMarketSnapshot{}
-	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	snapshot, err := poller.snapshotForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
-	cancel()
-	if err != nil {
-		if err.Error() != state.lastError {
-			tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
-			state.lastError = err.Error()
+	freshTrades := make([]api.PublicTrade, 0)
+	if realbotCopytradeHasOnchainWatcher(poller) {
+		combinedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
+		if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
+			combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
 		}
-		return
-	}
-	marketSnapshot = snapshot
-	pollStartedAt = snapshot.PollStartedAt
-	if pollStartedAt.IsZero() {
-		pollStartedAt = state.lastTradeFetch
-	}
-	if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
-		err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
-		if err.Error() != state.lastError {
-			tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
-			state.lastError = err.Error()
-		}
-		return
-	}
-	state.lastError = ""
-
-	combinedTrades := marketSnapshot.Trades
-	if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
-		combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
-	}
-	freshTrades := realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
-	if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
-		if realbotCopytradeHasMempoolWatcher(poller) {
+		freshTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
+		if len(freshTrades) == 0 {
 			return
 		}
-		targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
-		holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
-		hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, market.ConditionID)
-		pollTime := time.Now()
-		for _, outcome := range outcomes {
-			targetQty := targetShares[outcome]
-			delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-			if pending {
-				msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
-				if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
-				continue
+		state.lastError = ""
+	} else {
+		marketSnapshot := realbotCopytradeMarketSnapshot{}
+		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		snapshot, err := poller.snapshotForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
+		cancel()
+		if err != nil {
+			if err.Error() != state.lastError {
+				tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
+				state.lastError = err.Error()
 			}
-			if changed {
-				if delta < -0.01 {
-					reason := "position-only exits are disabled"
-					switch {
-					case hasAmbiguousExit:
-						reason = "target inventory is mergeable/redeemable"
-					case holdsBothOutcomes:
-						reason = "target holds both outcomes"
-					}
-					msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
-					if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+			return
+		}
+		marketSnapshot = snapshot
+		pollStartedAt = snapshot.PollStartedAt
+		if pollStartedAt.IsZero() {
+			pollStartedAt = state.lastTradeFetch
+		}
+		if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
+			err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
+			if err.Error() != state.lastError {
+				tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
+				state.lastError = err.Error()
+			}
+			return
+		}
+		state.lastError = ""
+
+		combinedTrades := marketSnapshot.Trades
+		freshTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
+		if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
+			targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
+			holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
+			hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, market.ConditionID)
+			pollTime := time.Now()
+			for _, outcome := range outcomes {
+				targetQty := targetShares[outcome]
+				delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+				if pending {
+					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
+					if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
 						tui.LogEvent("%s", msg)
 					}
 					continue
 				}
-				if delta <= 0.01 {
-					continue
+				if changed {
+					if delta < -0.01 {
+						reason := "position-only exits are disabled"
+						switch {
+						case hasAmbiguousExit:
+							reason = "target inventory is mergeable/redeemable"
+						case holdsBothOutcomes:
+							reason = "target holds both outcomes"
+						}
+						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
+						if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+							tui.LogEvent("%s", msg)
+						}
+						continue
+					}
+					if delta <= 0.01 {
+						continue
+					}
+					freshTrades = append(freshTrades, api.PublicTrade{
+						ConditionID: market.ConditionID,
+						Outcome:     outcome,
+						Side:        "BUY",
+						Size:        delta,
+						Source:      "position",
+					})
 				}
-				freshTrades = append(freshTrades, api.PublicTrade{
-					ConditionID: market.ConditionID,
-					Outcome:     outcome,
-					Side:        "BUY",
-					Size:        delta,
-					Source:      "position",
-				})
 			}
-		}
-		if len(freshTrades) == 0 {
+			if len(freshTrades) == 0 {
+				return
+			}
+		} else if len(freshTrades) == 0 {
 			return
 		}
-	} else if len(freshTrades) == 0 {
-		return
 	}
 
 	for _, trade := range freshTrades {

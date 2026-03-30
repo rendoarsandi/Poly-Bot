@@ -302,6 +302,21 @@ func TestPaperbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testin
 	}
 }
 
+func TestPaperbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
+	trade := api.PublicTrade{
+		ConditionID:     "cond-1",
+		Outcome:         "Up",
+		Side:            "BUY",
+		Size:            2,
+		TransactionHash: "0xtx",
+		Source:          "onchain",
+		SignalID:        "0xtx:1",
+	}
+	if got := paperbotCopytradeTradeKey(trade); got != "signal|0xtx:1" {
+		t.Fatalf("unexpected trade key %q", got)
+	}
+}
+
 func TestPaperbotCopytradeIsRateLimited(t *testing.T) {
 	if !paperbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
 		t.Fatal("expected 429/1015 error to be treated as rate limit")

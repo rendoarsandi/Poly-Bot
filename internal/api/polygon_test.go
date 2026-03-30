@@ -337,3 +337,32 @@ func TestResolutionCacheUsesOnChainWinner(t *testing.T) {
 		t.Fatalf("expected on-chain winner Up, got %q", status.Winner)
 	}
 }
+
+func TestGetFullBlockByNumber(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Method != "eth_getBlockByNumber" {
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x10","timestamp":"0x65ec8780","transactions":[{"hash":"0xabc","to":"` + CTFExchange + `","input":"0x1234","blockNumber":"0x10"}]}}`))
+	}))
+	defer server.Close()
+
+	client := NewPolygonClient(server.URL)
+	block, err := client.GetFullBlockByNumber(context.Background(), 16)
+	if err != nil {
+		t.Fatalf("GetFullBlockByNumber() error = %v", err)
+	}
+	if block == nil {
+		t.Fatal("expected block result")
+	}
+	if block.Number != "0x10" {
+		t.Fatalf("unexpected block number %q", block.Number)
+	}
+	if len(block.Transactions) != 1 || block.Transactions[0].Hash != "0xabc" {
+		t.Fatalf("unexpected transactions %+v", block.Transactions)
+	}
+}
