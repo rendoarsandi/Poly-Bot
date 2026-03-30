@@ -824,6 +824,20 @@ func TestRealbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *test
 	}
 }
 
+func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:1"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:2"},
+	}
+
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1")
+	if len(got) != 2 {
+		t.Fatalf("expected two distinct mempool signals, got %d", len(got))
+	}
+}
+
 func TestRealbotCopytradeIsRateLimited(t *testing.T) {
 	if !realbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
 		t.Fatal("expected 429/1015 error to be treated as rate limit")

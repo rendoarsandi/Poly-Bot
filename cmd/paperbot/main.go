@@ -721,10 +721,15 @@ func (p *paperbotCopytradePoller) pendingSignalsForCondition(conditionID string,
 			Timestamp:       sig.ObservedAt.Unix(),
 			TransactionHash: sig.TxHash,
 			Source:          "mempool",
+			SignalID:        sig.SignalID,
 			Slug:            sig.Slug,
 		})
 	}
 	return trades
+}
+
+func paperbotCopytradeHasMempoolWatcher(p *paperbotCopytradePoller) bool {
+	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
 }
 
 func (p *paperbotCopytradePoller) cachedSnapshotForCondition(conditionID string) paperbotCopytradeMarketSnapshot {
@@ -880,6 +885,11 @@ func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string,
 }
 
 func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
+	if strings.EqualFold(strings.TrimSpace(trade.Source), "mempool") {
+		if signalID := strings.TrimSpace(trade.SignalID); signalID != "" {
+			return "mempool|" + signalID
+		}
+	}
 	txHash := strings.TrimSpace(trade.TransactionHash)
 	if txHash != "" {
 		return fmt.Sprintf("%s|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, txHash)
@@ -2159,6 +2169,13 @@ func run() error {
 					cfg.PolygonRPCURL,
 				)
 				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
+					trackedMarkets := make([]*api.Market, 0, len(markets))
+					for _, market := range markets {
+						if market != nil {
+							trackedMarkets = append(trackedMarkets, market)
+						}
+					}
+					watcher.PrimeTrackedMarkets(trackedMarkets)
 					watcher.Start(ctx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
 					})
@@ -4453,6 +4470,9 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	}
 	freshTrades := paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
 	if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
+		if paperbotCopytradeHasMempoolWatcher(t.CopytradePoller) {
+			return
+		}
 		targetShares := paperbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, t.Market.ConditionID)
 		holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
 		hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, t.Market.ConditionID)

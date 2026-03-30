@@ -288,6 +288,20 @@ func TestPaperbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *tes
 	}
 }
 
+func TestPaperbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:1"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:2"},
+	}
+
+	got := paperbotCopytradeFreshTrades(state, trades, "cond-1")
+	if len(got) != 2 {
+		t.Fatalf("expected two distinct mempool signals, got %d", len(got))
+	}
+}
+
 func TestPaperbotCopytradeIsRateLimited(t *testing.T) {
 	if !paperbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
 		t.Fatal("expected 429/1015 error to be treated as rate limit")

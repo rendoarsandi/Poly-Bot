@@ -1971,6 +1971,13 @@ func run() error {
 					cfg.PolygonRPCURL,
 				)
 				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
+					trackedMarkets := make([]*api.Market, 0, len(markets))
+					for _, market := range markets {
+						if market != nil {
+							trackedMarkets = append(trackedMarkets, market)
+						}
+					}
+					watcher.PrimeTrackedMarkets(trackedMarkets)
 					watcher.Start(ctx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
 					})
@@ -6813,10 +6820,15 @@ func (p *realbotCopytradePoller) pendingSignalsForCondition(conditionID string, 
 			Timestamp:       sig.ObservedAt.Unix(),
 			TransactionHash: sig.TxHash,
 			Source:          "mempool",
+			SignalID:        sig.SignalID,
 			Slug:            sig.Slug,
 		})
 	}
 	return trades
+}
+
+func realbotCopytradeHasMempoolWatcher(p *realbotCopytradePoller) bool {
+	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
 }
 
 func (p *realbotCopytradePoller) cachedSnapshotForCondition(conditionID string) realbotCopytradeMarketSnapshot {
@@ -6972,6 +6984,11 @@ func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, t
 }
 
 func realbotCopytradeTradeKey(trade api.PublicTrade) string {
+	if strings.EqualFold(strings.TrimSpace(trade.Source), "mempool") {
+		if signalID := strings.TrimSpace(trade.SignalID); signalID != "" {
+			return "mempool|" + signalID
+		}
+	}
 	txHash := strings.TrimSpace(trade.TransactionHash)
 	if txHash != "" {
 		return fmt.Sprintf("%s|%s|%s|%.6f|%s", strings.TrimSpace(trade.ConditionID), core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size, txHash)
@@ -7130,6 +7147,9 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	}
 	freshTrades := realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
 	if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
+		if realbotCopytradeHasMempoolWatcher(poller) {
+			return
+		}
 		targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
 		holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
 		hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, market.ConditionID)

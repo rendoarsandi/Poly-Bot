@@ -25,6 +25,7 @@ type PendingTransaction struct {
 
 type PendingPolymarketSignal struct {
 	ObservedAt  time.Time
+	SignalID    string
 	TxHash      string
 	Wallet      string
 	TokenID     string
@@ -119,6 +120,44 @@ func normalizeAlchemyPendingWSURL(rawURL string) string {
 
 func (w *PolymarketPendingWatcher) Enabled() bool {
 	return w != nil && w.wsURL != "" && w.rest != nil && IsWalletAddress(w.targetWallet)
+}
+
+func (w *PolymarketPendingWatcher) PrimeTrackedMarkets(markets []*Market) {
+	if w == nil {
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, market := range markets {
+		if market == nil {
+			continue
+		}
+		conditionID := strings.TrimSpace(market.ConditionID)
+		if conditionID == "" {
+			continue
+		}
+		slug := strings.TrimSpace(market.Slug)
+		if slug == "" {
+			slug = strings.TrimSpace(market.MarketSlug)
+		}
+		for _, token := range market.Tokens {
+			tokenID := strings.TrimSpace(token.TokenID)
+			outcome := strings.TrimSpace(token.Outcome)
+			if tokenID == "" || outcome == "" {
+				continue
+			}
+			w.tokenCache[tokenID] = pendingResolvedToken{
+				market: Market{
+					ConditionID: conditionID,
+					Slug:        slug,
+					MarketSlug:  strings.TrimSpace(market.MarketSlug),
+				},
+				outcome: outcome,
+			}
+		}
+	}
 }
 
 func (w *PolymarketPendingWatcher) Start(ctx context.Context, logf func(string, ...interface{})) {
@@ -257,7 +296,7 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		return
 	}
 	observedAt := time.Now()
-	for _, order := range orders {
+	for idx, order := range orders {
 		if !strings.EqualFold(order.Maker, w.targetWallet) && !strings.EqualFold(order.Signer, w.targetWallet) && !strings.EqualFold(order.Taker, w.targetWallet) {
 			continue
 		}
@@ -277,6 +316,7 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		}
 		sig := PendingPolymarketSignal{
 			ObservedAt:  observedAt,
+			SignalID:    fmt.Sprintf("%s:%d", strings.TrimSpace(tx.Hash), idx),
 			TxHash:      strings.TrimSpace(tx.Hash),
 			Wallet:      w.targetWallet,
 			TokenID:     order.TokenID,
@@ -320,7 +360,10 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 }
 
 func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) {
-	key := fmt.Sprintf("%s|%s|%s|%s|%.6f", sig.TxHash, sig.TokenID, sig.Outcome, sig.Side, sig.Size)
+	key := strings.TrimSpace(sig.SignalID)
+	if key == "" {
+		key = fmt.Sprintf("%s|%s|%s|%s|%.6f", sig.TxHash, sig.TokenID, sig.Outcome, sig.Side, sig.Size)
+	}
 	now := time.Now()
 
 	w.mu.Lock()
