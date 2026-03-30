@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -273,6 +274,33 @@ func TestPaperbotCopytradeHasAmbiguousPositionExit(t *testing.T) {
 	}
 	if paperbotCopytradeHasAmbiguousPositionExit(positions, "cond-2") {
 		t.Fatal("expected unrelated non-mergeable market not to be blocked")
+	}
+}
+
+func TestPaperbotCopytradeSyntheticTradeFromDeltaBuildsBuyAndSellSignals(t *testing.T) {
+	buy, reason, ok := paperbotCopytradeSyntheticTradeFromDelta("cond-1", "Up", 2.5, false, false)
+	if !ok || reason != "" {
+		t.Fatalf("expected positive delta to build a buy signal, ok=%v reason=%q", ok, reason)
+	}
+	if buy.Side != "BUY" || buy.Size != 2.5 || buy.Outcome != "Up" || buy.ConditionID != "cond-1" {
+		t.Fatalf("unexpected synthetic buy signal: %+v", buy)
+	}
+
+	sell, reason, ok := paperbotCopytradeSyntheticTradeFromDelta("cond-1", "Up", -1.75, false, false)
+	if !ok || reason != "" {
+		t.Fatalf("expected negative delta to build a sell signal, ok=%v reason=%q", ok, reason)
+	}
+	if sell.Side != "SELL" || math.Abs(sell.Size-1.75) > 0.000001 || sell.Outcome != "Up" || sell.ConditionID != "cond-1" {
+		t.Fatalf("unexpected synthetic sell signal: %+v", sell)
+	}
+}
+
+func TestPaperbotCopytradeSyntheticTradeFromDeltaRejectsAmbiguousSellSignals(t *testing.T) {
+	if _, reason, ok := paperbotCopytradeSyntheticTradeFromDelta("cond-1", "Up", -1.0, true, false); ok || reason == "" {
+		t.Fatalf("expected mergeable target inventory to block synthetic sell, ok=%v reason=%q", ok, reason)
+	}
+	if _, reason, ok := paperbotCopytradeSyntheticTradeFromDelta("cond-1", "Up", -1.0, false, true); ok || reason == "" {
+		t.Fatalf("expected both-sided target inventory to block synthetic sell, ok=%v reason=%q", ok, reason)
 	}
 }
 
