@@ -226,13 +226,13 @@ func TestPaperbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *
 	}
 }
 
-func TestPaperbotCopytradeFreshTradesSeedsThenEmitsOnlyNewTrades(t *testing.T) {
+func TestPaperbotCopytradeFreshTradesBootstrapsRecentThenDedupes(t *testing.T) {
 	state := newPaperbotCopytradeState()
 	initial := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
 	}
-	if got := paperbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 0 {
-		t.Fatalf("expected initial trade snapshot to seed without signals, got %d", len(got))
+	if got := paperbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 1 {
+		t.Fatalf("expected initial recent trade snapshot to bootstrap one signal, got %d", len(got))
 	}
 	if got := paperbotCopytradeFreshTrades(state, initial, "cond-1"); len(got) != 0 {
 		t.Fatalf("expected repeated trade snapshot to stay deduped, got %d", len(got))

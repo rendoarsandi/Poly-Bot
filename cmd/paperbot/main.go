@@ -688,7 +688,31 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 	}
 	if !state.tradesSeeded {
 		state.tradesSeeded = true
-		return nil
+		latestTs := int64(0)
+		for _, trade := range fresh {
+			if trade.Timestamp > latestTs {
+				latestTs = trade.Timestamp
+			}
+		}
+		if latestTs == 0 {
+			return nil
+		}
+		cutoff := latestTs - 30
+		bootstrapByOutcome := make(map[string]api.PublicTrade)
+		for _, trade := range fresh {
+			if trade.Timestamp < cutoff {
+				continue
+			}
+			bootstrapByOutcome[core.SanitizeString(trade.Outcome)] = trade
+		}
+		bootstrap := make([]api.PublicTrade, 0, len(bootstrapByOutcome))
+		for _, trade := range bootstrapByOutcome {
+			bootstrap = append(bootstrap, trade)
+		}
+		sort.Slice(bootstrap, func(i, j int) bool {
+			return bootstrap[i].Timestamp < bootstrap[j].Timestamp
+		})
+		return bootstrap
 	}
 	return fresh
 }
