@@ -4344,11 +4344,26 @@ func directExecutionTxSummary(exec directMarketExecution) string {
 	if exec.Result == nil || len(exec.Result.TransactionsHashes) == 0 {
 		return ""
 	}
-	tx := exec.Result.TransactionsHashes[0]
-	if len(tx) > 12 {
-		return tx[:12] + "..."
+	hashes := exec.Result.TransactionsHashes
+	shortened := make([]string, 0, len(hashes))
+	for i, tx := range hashes {
+		if i >= 3 {
+			break
+		}
+		if len(tx) > 12 {
+			shortened = append(shortened, tx[:12]+"...")
+			continue
+		}
+		shortened = append(shortened, tx)
 	}
-	return tx
+	summary := strings.Join(shortened, ", ")
+	if extra := len(hashes) - len(shortened); extra > 0 {
+		summary = fmt.Sprintf("%s (+%d more)", summary, extra)
+	}
+	if len(hashes) == 1 {
+		return summary
+	}
+	return fmt.Sprintf("%d txs [%s]", len(hashes), summary)
 }
 
 func directExecutionHasSizingDrift(exec directMarketExecution, requestedQty float64) bool {

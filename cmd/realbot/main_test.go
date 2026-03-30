@@ -212,6 +212,28 @@ func TestRealbotShouldKeepPendingRedeemTxIgnoresHardFailures(t *testing.T) {
 	}
 }
 
+func TestDirectExecutionTxSummaryIncludesAllReturnedHashes(t *testing.T) {
+	exec := directMarketExecution{
+		Result: &trading.TradeResult{
+			TransactionsHashes: []string{
+				"0x9071f607f4c2ae4b7b4a4849ca1052b7798011540fcb3759536368225a1a186c",
+				"0x1056093066fcc6225983d769b6951bbf0c72f15a7af21ffa5f8c893395722474",
+			},
+		},
+	}
+
+	summary := directExecutionTxSummary(exec)
+	if !strings.Contains(summary, "2 txs [") {
+		t.Fatalf("expected multi-tx count in summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "0x9071f607f4...") {
+		t.Fatalf("expected first tx hash in summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "0x1056093066...") {
+		t.Fatalf("expected second tx hash in summary, got %q", summary)
+	}
+}
+
 func TestRealbotEntryGateAllowsOnlyOneConcurrentAcquire(t *testing.T) {
 	gate := newRealbotEntryGate()
 	if !gate.TryAcquire() {
