@@ -6948,6 +6948,29 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		positionCancel()
 		if posErr == nil {
 			targetShares := realbotCopytradeTargetSharesForCondition(targetPositions, market.ConditionID)
+			pollTime := time.Now()
+			for _, outcome := range outcomes {
+				targetQty := targetShares[outcome]
+				delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+				if pending {
+					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
+					if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+						tui.LogEvent("%s", msg)
+					}
+					continue
+				}
+				if changed && delta < -0.01 {
+					freshTrades = append(freshTrades, api.PublicTrade{
+						ConditionID: market.ConditionID,
+						Outcome:     outcome,
+						Side:        "SELL",
+						Size:        -delta,
+					})
+				}
+			}
+			if len(freshTrades) > 0 {
+				goto processCopytradeSignals
+			}
 			for _, outcome := range outcomes {
 				targetQty := targetShares[outcome]
 				localQty, _ := localBoughtPositionAvg(engine, marketID, outcome)
@@ -6963,6 +6986,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 		}
 	}
+
+processCopytradeSignals:
 	for _, trade := range freshTrades {
 		outcome := core.SanitizeString(trade.Outcome)
 		if outcome == "" {

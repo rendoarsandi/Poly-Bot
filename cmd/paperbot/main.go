@@ -4164,6 +4164,29 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		positionCancel()
 		if posErr == nil {
 			targetShares := paperbotCopytradeTargetSharesForCondition(targetPositions, t.Market.ConditionID)
+			pollTime := time.Now()
+			for _, outcome := range t.Outcomes {
+				targetQty := targetShares[outcome]
+				delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+				if pending {
+					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
+					if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+						t.TUI.LogEvent("%s", msg)
+					}
+					continue
+				}
+				if changed && delta < -0.01 {
+					freshTrades = append(freshTrades, api.PublicTrade{
+						ConditionID: t.Market.ConditionID,
+						Outcome:     outcome,
+						Side:        "SELL",
+						Size:        -delta,
+					})
+				}
+			}
+			if len(freshTrades) > 0 {
+				goto processCopytradeSignals
+			}
 			for _, outcome := range t.Outcomes {
 				targetQty := targetShares[outcome]
 				localQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome)
@@ -4179,6 +4202,8 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			}
 		}
 	}
+
+processCopytradeSignals:
 	for _, signal := range freshTrades {
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {
