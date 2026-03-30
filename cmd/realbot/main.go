@@ -4326,6 +4326,14 @@ func attributedBuyFill(exec directMarketExecution, requestedQty, acquiredQty flo
 	return clampRequestedExecutionQty(qty, requestedQty)
 }
 
+func attributedSellFill(exec directMarketExecution, requestedQty float64) float64 {
+	qty := exec.ExecutedQty
+	if qty <= 0 && exec.AcknowledgedQty > 0 {
+		qty = exec.AcknowledgedQty
+	}
+	return clampRequestedExecutionQty(qty, requestedQty)
+}
+
 func ackNotionalMatchesAttributedBuy(exec directMarketExecution, attributedQty float64) bool {
 	if exec.AcknowledgedQty <= 0 || exec.AcknowledgedNotional <= 0 || attributedQty <= 0 {
 		return false
@@ -7174,7 +7182,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			execQty := clampRequestedExecutionQty(exec.ExecutedQty, requestedQty)
+			execQty := attributedSellFill(exec, requestedQty)
 			if !hasConfirmedExecutedQty(api.SideSell, execQty) {
 				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell for %s lacked confirmed fill", marketID, outcome)
 				if realbotCopytradeShouldLog(state, "sell-unconfirmed:"+outcome, msg, 10*time.Second) {

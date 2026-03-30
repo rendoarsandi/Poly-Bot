@@ -234,6 +234,18 @@ func TestDirectExecutionTxSummaryIncludesAllReturnedHashes(t *testing.T) {
 	}
 }
 
+func TestAttributedSellFillFallsBackToAcknowledgedQty(t *testing.T) {
+	exec := directMarketExecution{
+		ExecutedQty:     0,
+		AcknowledgedQty: 0.51,
+	}
+
+	got := attributedSellFill(exec, 0.75)
+	if math.Abs(got-0.51) > 0.000001 {
+		t.Fatalf("expected acknowledged sell qty fallback 0.51, got %.4f", got)
+	}
+}
+
 func TestRealbotEntryGateAllowsOnlyOneConcurrentAcquire(t *testing.T) {
 	gate := newRealbotEntryGate()
 	if !gate.TryAcquire() {
