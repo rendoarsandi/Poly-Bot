@@ -114,6 +114,7 @@ func (c *RestClient) GetPublicPositions(ctx context.Context, user string, market
 	if len(markets) > 0 {
 		q.Set("market", strings.Join(markets, ","))
 	}
+	q.Set("_nc", fmt.Sprintf("%d", time.Now().UnixNano()))
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
@@ -165,6 +166,7 @@ func (c *RestClient) GetPublicTrades(ctx context.Context, user string, markets [
 	if len(markets) > 0 {
 		q.Set("market", strings.Join(markets, ","))
 	}
+	q.Set("_nc", fmt.Sprintf("%d", time.Now().UnixNano()))
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
