@@ -936,7 +936,7 @@ func (c *CLOBClient) UpdateBalanceAllowance(ctx context.Context) error {
 
 // GetPositions retrieves all positions
 func (c *CLOBClient) GetPositions(ctx context.Context) ([]Position, error) {
-	url := fmt.Sprintf("https://data-api.polymarket.com/positions?user=%s", c.signer.Address())
+	url := fmt.Sprintf("https://data-api.polymarket.com/positions?user=%s&_nc=%d", c.signer.Address(), time.Now().UnixNano())
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
