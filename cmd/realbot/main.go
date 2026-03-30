@@ -6688,6 +6688,22 @@ func realbotCopytradeHoldsBothOutcomes(targetShares map[string]float64) bool {
 	return false
 }
 
+func realbotCopytradeHasAmbiguousPositionExit(positions []api.Position, conditionID string) bool {
+	conditionID = strings.TrimSpace(conditionID)
+	for _, pos := range positions {
+		if conditionID != "" && !strings.EqualFold(strings.TrimSpace(pos.ConditionID), conditionID) {
+			continue
+		}
+		if pos.Size <= 0.01 {
+			continue
+		}
+		if pos.Mergeable || pos.Redeemable {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeRealbotCopytradeConditionIDs(conditionIDs []string) []string {
 	seen := make(map[string]struct{}, len(conditionIDs))
 	normalized := make([]string, 0, len(conditionIDs))
@@ -6960,6 +6976,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		if posErr == nil {
 			targetShares := realbotCopytradeTargetSharesForCondition(targetPositions, market.ConditionID)
 			holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
+			hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(targetPositions, market.ConditionID)
 			pollTime := time.Now()
 			for _, outcome := range outcomes {
 				targetQty := targetShares[outcome]
@@ -6972,26 +6989,28 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					continue
 				}
 				if changed {
-					side := "BUY"
-					size := delta
 					if delta < -0.01 {
-						if holdsBothOutcomes {
-							msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s while target holds both outcomes", marketID, outcome)
-							if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
-								tui.LogEvent("%s", msg)
-							}
-							continue
+						reason := "position-only exits are disabled"
+						switch {
+						case hasAmbiguousExit:
+							reason = "target inventory is mergeable/redeemable"
+						case holdsBothOutcomes:
+							reason = "target holds both outcomes"
 						}
-						side = "SELL"
-						size = -delta
-					} else if delta <= 0.01 {
+						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
+						if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+							tui.LogEvent("%s", msg)
+						}
+						continue
+					}
+					if delta <= 0.01 {
 						continue
 					}
 					freshTrades = append(freshTrades, api.PublicTrade{
 						ConditionID: market.ConditionID,
 						Outcome:     outcome,
-						Side:        side,
-						Size:        size,
+						Side:        "BUY",
+						Size:        delta,
 					})
 				}
 			}

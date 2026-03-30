@@ -800,6 +800,19 @@ func TestRealbotCopytradeHoldsBothOutcomes(t *testing.T) {
 	}
 }
 
+func TestRealbotCopytradeHasAmbiguousPositionExit(t *testing.T) {
+	positions := []api.Position{
+		{ConditionID: "cond-1", Outcome: "Up", Size: 10, Mergeable: true},
+		{ConditionID: "cond-2", Outcome: "Down", Size: 10},
+	}
+	if !realbotCopytradeHasAmbiguousPositionExit(positions, "cond-1") {
+		t.Fatal("expected mergeable target inventory to block position-only sell fallback")
+	}
+	if realbotCopytradeHasAmbiguousPositionExit(positions, "cond-2") {
+		t.Fatal("expected unrelated non-mergeable market not to be blocked")
+	}
+}
+
 func TestRealbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 	if got := realbotTraderLoopInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 125*time.Millisecond {
 		t.Fatalf("expected copytrade loop interval 125ms, got %s", got)

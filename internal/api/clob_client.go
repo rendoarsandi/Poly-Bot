@@ -845,6 +845,8 @@ type Position struct {
 	TokenID         string  `json:"asset"`
 	Size            float64 `json:"size"`
 	AvgPrice        float64 `json:"avgPrice"`
+	Redeemable      bool    `json:"redeemable"`
+	Mergeable       bool    `json:"mergeable"`
 	Outcome         string  `json:"outcome"`
 	ConditionID     string  `json:"conditionId"`
 	Title           string  `json:"title"`

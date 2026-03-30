@@ -263,6 +263,19 @@ func TestPaperbotCopytradeHoldsBothOutcomes(t *testing.T) {
 	}
 }
 
+func TestPaperbotCopytradeHasAmbiguousPositionExit(t *testing.T) {
+	positions := []api.Position{
+		{ConditionID: "cond-1", Outcome: "Up", Size: 10, Mergeable: true},
+		{ConditionID: "cond-2", Outcome: "Down", Size: 10},
+	}
+	if !paperbotCopytradeHasAmbiguousPositionExit(positions, "cond-1") {
+		t.Fatal("expected mergeable target inventory to block position-only sell fallback")
+	}
+	if paperbotCopytradeHasAmbiguousPositionExit(positions, "cond-2") {
+		t.Fatal("expected unrelated non-mergeable market not to be blocked")
+	}
+}
+
 func TestPaperbotFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := paperbotFormatShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)
