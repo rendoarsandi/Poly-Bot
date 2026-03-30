@@ -44,6 +44,13 @@ type PublicProfile struct {
 	Bio         string `json:"bio"`
 }
 
+type PublicActivitySnapshot struct {
+	Trades       []PublicTrade
+	Positions    []Position
+	TradesErr    error
+	PositionsErr error
+}
+
 func NormalizeWalletAddress(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -181,6 +188,39 @@ func (c *RestClient) GetPublicTrades(ctx context.Context, user string, markets [
 		return nil, fmt.Errorf("failed to decode public trades: %w", err)
 	}
 	return trades, nil
+}
+
+func (c *RestClient) GetPublicActivitySnapshot(ctx context.Context, user string, markets []string, tradeLimit int, positionSizeThreshold float64, positionLimit int) PublicActivitySnapshot {
+	type tradeResult struct {
+		trades []PublicTrade
+		err    error
+	}
+	type positionResult struct {
+		positions []Position
+		err       error
+	}
+
+	tradesCh := make(chan tradeResult, 1)
+	positionsCh := make(chan positionResult, 1)
+
+	go func() {
+		trades, err := c.GetPublicTrades(ctx, user, markets, tradeLimit)
+		tradesCh <- tradeResult{trades: trades, err: err}
+	}()
+	go func() {
+		positions, err := c.GetPublicPositions(ctx, user, markets, positionSizeThreshold, positionLimit)
+		positionsCh <- positionResult{positions: positions, err: err}
+	}()
+
+	tradesRes := <-tradesCh
+	positionsRes := <-positionsCh
+
+	return PublicActivitySnapshot{
+		Trades:       tradesRes.trades,
+		Positions:    positionsRes.positions,
+		TradesErr:    tradesRes.err,
+		PositionsErr: positionsRes.err,
+	}
 }
 
 func (c *RestClient) SearchPublicProfiles(ctx context.Context, query string, limit int) ([]PublicProfile, error) {

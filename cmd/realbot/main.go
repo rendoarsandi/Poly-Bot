@@ -6957,9 +6957,10 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	state.lastTradeFetch = time.Now()
 
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	trades, err := restClient.GetPublicTrades(pollCtx, poller.wallet, []string{market.ConditionID}, 32)
+	snapshot := restClient.GetPublicActivitySnapshot(pollCtx, poller.wallet, []string{market.ConditionID}, 32, 0.01, 8)
 	cancel()
-	if err != nil {
+	if snapshot.TradesErr != nil && snapshot.PositionsErr != nil {
+		err := fmt.Errorf("trades: %v | positions: %v", snapshot.TradesErr, snapshot.PositionsErr)
 		if err.Error() != state.lastError {
 			tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
 			state.lastError = err.Error()
@@ -6968,60 +6969,55 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	}
 	state.lastError = ""
 
-	freshTrades := realbotCopytradeFreshTrades(state, trades, market.ConditionID)
-	if len(freshTrades) == 0 {
-		positionCtx, positionCancel := context.WithTimeout(ctx, 5*time.Second)
-		targetPositions, posErr := restClient.GetPublicPositions(positionCtx, poller.wallet, []string{market.ConditionID}, 0.01, 8)
-		positionCancel()
-		if posErr == nil {
-			targetShares := realbotCopytradeTargetSharesForCondition(targetPositions, market.ConditionID)
-			holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
-			hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(targetPositions, market.ConditionID)
-			pollTime := time.Now()
-			for _, outcome := range outcomes {
-				targetQty := targetShares[outcome]
-				delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-				if pending {
-					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
-					if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+	freshTrades := realbotCopytradeFreshTrades(state, snapshot.Trades, market.ConditionID)
+	if len(freshTrades) == 0 && snapshot.PositionsErr == nil {
+		targetShares := realbotCopytradeTargetSharesForCondition(snapshot.Positions, market.ConditionID)
+		holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
+		hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(snapshot.Positions, market.ConditionID)
+		pollTime := time.Now()
+		for _, outcome := range outcomes {
+			targetQty := targetShares[outcome]
+			delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+			if pending {
+				msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
+				if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+					tui.LogEvent("%s", msg)
+				}
+				continue
+			}
+			if changed {
+				if delta < -0.01 {
+					reason := "position-only exits are disabled"
+					switch {
+					case hasAmbiguousExit:
+						reason = "target inventory is mergeable/redeemable"
+					case holdsBothOutcomes:
+						reason = "target holds both outcomes"
+					}
+					msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
+					if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
 						tui.LogEvent("%s", msg)
 					}
 					continue
 				}
-				if changed {
-					if delta < -0.01 {
-						reason := "position-only exits are disabled"
-						switch {
-						case hasAmbiguousExit:
-							reason = "target inventory is mergeable/redeemable"
-						case holdsBothOutcomes:
-							reason = "target holds both outcomes"
-						}
-						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
-						if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
-							tui.LogEvent("%s", msg)
-						}
-						continue
-					}
-					if delta <= 0.01 {
-						continue
-					}
-					freshTrades = append(freshTrades, api.PublicTrade{
-						ConditionID: market.ConditionID,
-						Outcome:     outcome,
-						Side:        "BUY",
-						Size:        delta,
-					})
+				if delta <= 0.01 {
+					continue
 				}
-			}
-			if len(freshTrades) > 0 {
-				goto processCopytradeSignals
+				freshTrades = append(freshTrades, api.PublicTrade{
+					ConditionID: market.ConditionID,
+					Outcome:     outcome,
+					Side:        "BUY",
+					Size:        delta,
+				})
 			}
 		}
+		if len(freshTrades) == 0 {
+			return
+		}
+	} else if len(freshTrades) == 0 {
 		return
 	}
 
-processCopytradeSignals:
 	for _, trade := range freshTrades {
 		outcome := core.SanitizeString(trade.Outcome)
 		if outcome == "" {

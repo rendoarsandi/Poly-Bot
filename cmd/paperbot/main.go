@@ -4173,9 +4173,10 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	state.lastTradeFetch = time.Now()
 
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	trades, err := t.RestClient.GetPublicTrades(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 32)
+	snapshot := t.RestClient.GetPublicActivitySnapshot(pollCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 32, 0.01, 8)
 	cancel()
-	if err != nil {
+	if snapshot.TradesErr != nil && snapshot.PositionsErr != nil {
+		err := fmt.Errorf("trades: %v | positions: %v", snapshot.TradesErr, snapshot.PositionsErr)
 		if err.Error() != state.lastError {
 			t.TUI.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", t.ID, err)
 			state.lastError = err.Error()
@@ -4184,60 +4185,55 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	}
 	state.lastError = ""
 
-	freshTrades := paperbotCopytradeFreshTrades(state, trades, t.Market.ConditionID)
-	if len(freshTrades) == 0 {
-		positionCtx, positionCancel := context.WithTimeout(ctx, 5*time.Second)
-		targetPositions, posErr := t.RestClient.GetPublicPositions(positionCtx, t.CopytradeWallet, []string{t.Market.ConditionID}, 0.01, 8)
-		positionCancel()
-		if posErr == nil {
-			targetShares := paperbotCopytradeTargetSharesForCondition(targetPositions, t.Market.ConditionID)
-			holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
-			hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(targetPositions, t.Market.ConditionID)
-			pollTime := time.Now()
-			for _, outcome := range t.Outcomes {
-				targetQty := targetShares[outcome]
-				delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-				if pending {
-					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
-					if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+	freshTrades := paperbotCopytradeFreshTrades(state, snapshot.Trades, t.Market.ConditionID)
+	if len(freshTrades) == 0 && snapshot.PositionsErr == nil {
+		targetShares := paperbotCopytradeTargetSharesForCondition(snapshot.Positions, t.Market.ConditionID)
+		holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
+		hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(snapshot.Positions, t.Market.ConditionID)
+		pollTime := time.Now()
+		for _, outcome := range t.Outcomes {
+			targetQty := targetShares[outcome]
+			delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+			if pending {
+				msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
+				if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
+					t.TUI.LogEvent("%s", msg)
+				}
+				continue
+			}
+			if changed {
+				if delta < -0.01 {
+					reason := "position-only exits are disabled"
+					switch {
+					case hasAmbiguousExit:
+						reason = "target inventory is mergeable/redeemable"
+					case holdsBothOutcomes:
+						reason = "target holds both outcomes"
+					}
+					msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", t.ID, outcome, reason)
+					if paperbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
 						t.TUI.LogEvent("%s", msg)
 					}
 					continue
 				}
-				if changed {
-					if delta < -0.01 {
-						reason := "position-only exits are disabled"
-						switch {
-						case hasAmbiguousExit:
-							reason = "target inventory is mergeable/redeemable"
-						case holdsBothOutcomes:
-							reason = "target holds both outcomes"
-						}
-						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", t.ID, outcome, reason)
-						if paperbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
-							t.TUI.LogEvent("%s", msg)
-						}
-						continue
-					}
-					if delta <= 0.01 {
-						continue
-					}
-					freshTrades = append(freshTrades, api.PublicTrade{
-						ConditionID: t.Market.ConditionID,
-						Outcome:     outcome,
-						Side:        "BUY",
-						Size:        delta,
-					})
+				if delta <= 0.01 {
+					continue
 				}
-			}
-			if len(freshTrades) > 0 {
-				goto processCopytradeSignals
+				freshTrades = append(freshTrades, api.PublicTrade{
+					ConditionID: t.Market.ConditionID,
+					Outcome:     outcome,
+					Side:        "BUY",
+					Size:        delta,
+				})
 			}
 		}
+		if len(freshTrades) == 0 {
+			return
+		}
+	} else if len(freshTrades) == 0 {
 		return
 	}
 
-processCopytradeSignals:
 	for _, signal := range freshTrades {
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {

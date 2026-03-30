@@ -269,7 +269,7 @@ func LoadConfig() (*Config, error) {
 		SplitReplenishCapPct:              parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
 		TradingHoursMode:                  parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
 		CopytradeTarget:                   strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
-		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 2000)),
+		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
 		CopytradeMaxSlippagePct:           normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 5.0)),
 		CopytradeSizingMode:               normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
 		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(parseEnvFloat("COPYTRADE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
@@ -352,9 +352,9 @@ func normalizeCopytradeSizePercent(size float64) float64 {
 func normalizeCopytradePollIntervalMs(v int) int {
 	switch {
 	case v <= 0:
-		return 2000
-	case v < 250:
-		return 250
+		return 500
+	case v < 100:
+		return 100
 	case v > 30000:
 		return 30000
 	default:
