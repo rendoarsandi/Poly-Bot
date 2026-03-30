@@ -1707,6 +1707,7 @@ func run() error {
 		CopytradeSizingMode:          cfg.CopytradeSizingMode,
 		CopytradeSizeUSDC:            cfg.CopytradeSizeUSDC,
 		CopytradeSizeShares:          cfg.CopytradeSizeShares,
+		CopytradeSizePercent:         cfg.CopytradeSizePercent,
 		CopytradeMaxSlippagePct:      cfg.CopytradeMaxSlippagePct,
 		SplitMinMarginSell:           cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:         cfg.SplitStrategyEnabled,
@@ -1740,6 +1741,7 @@ func run() error {
 		cfg.CopytradeSizingMode = s.CopytradeSizingMode
 		cfg.CopytradeSizeUSDC = s.CopytradeSizeUSDC
 		cfg.CopytradeSizeShares = s.CopytradeSizeShares
+		cfg.CopytradeSizePercent = s.CopytradeSizePercent
 		cfg.CopytradeMaxSlippagePct = s.CopytradeMaxSlippagePct
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -4115,6 +4117,7 @@ func paperbotCopytradeRequestedQty(targetDelta, price float64, liveCfg paper.TUI
 		price,
 		liveCfg.CopytradeSizeUSDC,
 		liveCfg.CopytradeSizeShares,
+		liveCfg.CopytradeSizePercent,
 		liveCfg.MaxTradeSize,
 		liveCfg.CopytradeSizingMode,
 	)
@@ -4231,7 +4234,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketBuyShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := paperbotNormalizeMarketBuyShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			liq := paperbotAskLiquidityAtOrBelow(asks, submitPrice)
 			if liq > 0 && requestedQty > liq {
 				requestedQty = paperbotNormalizeMarketBuyShares(liq)
@@ -4309,7 +4312,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := paperbotNormalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			if requestedQty > localQty {
 				requestedQty = paperbotNormalizeMarketSellShares(localQty)
 			}

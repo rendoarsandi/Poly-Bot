@@ -926,6 +926,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		CopytradeSizingMode:            cfg.CopytradeSizingMode,
 		CopytradeSizeUSDC:              cfg.CopytradeSizeUSDC,
 		CopytradeSizeShares:            cfg.CopytradeSizeShares,
+		CopytradeSizePercent:           cfg.CopytradeSizePercent,
 		CopytradeMaxSlippagePct:        cfg.CopytradeMaxSlippagePct,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
@@ -965,6 +966,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.CopytradeSizingMode = s.CopytradeSizingMode
 	cfg.CopytradeSizeUSDC = s.CopytradeSizeUSDC
 	cfg.CopytradeSizeShares = s.CopytradeSizeShares
+	cfg.CopytradeSizePercent = s.CopytradeSizePercent
 	cfg.CopytradeMaxSlippagePct = s.CopytradeMaxSlippagePct
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
@@ -7024,9 +7026,9 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
+			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
 			budget := liveCfg.CopytradeSizeUSDC
-			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) || strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModePercent) {
 				budget = budgetShares * submitPrice
 			}
 			requestedQty := normalizeMarketBuyShares(budgetShares)
@@ -7138,7 +7140,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			if requestedQty > localQty {
 				requestedQty = normalizeMarketSellShares(localQty)
 			}

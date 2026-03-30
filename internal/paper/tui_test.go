@@ -1447,6 +1447,30 @@ func TestRenderAccountStatusHidesArbAndResolveInCopytradeMode(t *testing.T) {
 	}
 }
 
+func TestRenderAccountStatusShowsPercentCopytradeSizing(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode: "Real",
+			settings: TUISettings{
+				PaperArbMode:            "copytrade",
+				CopytradeSizingMode:     core.CopytradeSizingModePercent,
+				CopytradeSizePercent:    10.0,
+				CopytradeMaxSlippagePct: 5.0,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100.0,
+		StartingBalance: 100.0,
+		RealizedPnL:     0,
+	}, 0, 100, 100, 1.0, 100.0, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Copy 10.0% master") {
+		t.Fatalf("expected percent copytrade sizing label, got %q", rendered)
+	}
+}
+
 func TestRecordOrderDefaultsToTakerMode(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.RecordOrder("BTC", "Down", "BUY", 10, 0.84, 8.4, 0.0, 0.0, "FILLED")

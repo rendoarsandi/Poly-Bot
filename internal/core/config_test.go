@@ -61,6 +61,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"copytradeSizingMode": "shares",
 		"copytradeSizeUsdc": 3.4,
 		"copytradeSizeShares": 7.5,
+		"copytradeSizePercent": 12.5,
 		"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
@@ -122,6 +123,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.CopytradeSizeShares != 7.5 {
 		t.Fatalf("expected JSON CopytradeSizeShares 7.5, got %.1f", cfg.CopytradeSizeShares)
 	}
+	if cfg.CopytradeSizePercent != 12.5 {
+		t.Fatalf("expected JSON CopytradeSizePercent 12.5, got %.1f", cfg.CopytradeSizePercent)
+	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
 	}
@@ -180,6 +184,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.CopytradeSizingMode = CopytradeSizingModeShares
 	cfg.CopytradeSizeUSDC = 4.2
 	cfg.CopytradeSizeShares = 6.5
+	cfg.CopytradeSizePercent = 10.0
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -243,6 +248,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.CopytradeSizeShares != 6.5 {
 		t.Fatalf("expected saved CopytradeSizeShares 6.5, got %.1f", settings.CopytradeSizeShares)
 	}
+	if settings.CopytradeSizePercent != 10.0 {
+		t.Fatalf("expected saved CopytradeSizePercent 10.0, got %.1f", settings.CopytradeSizePercent)
+	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
 	}
@@ -279,26 +287,29 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 }
 
 func TestCalculateCopytradeSharesForMode(t *testing.T) {
-	if got := CalculateCopytradeSharesForMode(12, 0.4, 3.0, 8.0, 0, CopytradeSizingModeUSDC); got != 7.5 {
+	if got := CalculateCopytradeSharesForMode(12, 0.4, 3.0, 8.0, 10.0, 0, CopytradeSizingModeUSDC); got != 7.5 {
 		t.Fatalf("expected USDC copytrade sizing to buy 7.5 shares, got %.4f", got)
 	}
-	if got := CalculateCopytradeSharesForMode(12, 0.4, 3.0, 8.0, 0, CopytradeSizingModeShares); got != 8.0 {
+	if got := CalculateCopytradeSharesForMode(12, 0.4, 3.0, 8.0, 10.0, 0, CopytradeSizingModeShares); got != 8.0 {
 		t.Fatalf("expected share copytrade sizing to cap at 8 shares, got %.4f", got)
 	}
-	if got := CalculateCopytradeSharesForMode(5, 0.4, 10.0, 8.0, 0, CopytradeSizingModeShares); got != 5.0 {
+	if got := CalculateCopytradeSharesForMode(5, 0.4, 10.0, 8.0, 10.0, 0, CopytradeSizingModeShares); got != 5.0 {
 		t.Fatalf("expected share copytrade sizing not to exceed target delta, got %.4f", got)
+	}
+	if got := CalculateCopytradeSharesForMode(100, 0.4, 10.0, 8.0, 10.0, 0, CopytradeSizingModePercent); got != 10.0 {
+		t.Fatalf("expected percent copytrade sizing to follow 10%% of target shares, got %.4f", got)
 	}
 }
 
 func TestCalculateCopytradeSellSharesForModeLiquidatesFullFlatTarget(t *testing.T) {
-	got := CalculateCopytradeSellSharesForMode(5.51, 0, -5.51, 0.23, 1.0, 1.0, 0, CopytradeSizingModeUSDC)
+	got := CalculateCopytradeSellSharesForMode(5.51, 0, -5.51, 0.23, 1.0, 1.0, 100.0, 0, CopytradeSizingModeUSDC)
 	if got != 5.51 {
 		t.Fatalf("expected flat target to liquidate the full 5.51-share remainder, got %.4f", got)
 	}
 }
 
 func TestCalculateCopytradeSellSharesForModeKeepsDeltaCapWhileTargetStillHolds(t *testing.T) {
-	got := CalculateCopytradeSellSharesForMode(5.51, 2.51, -3.0, 0.23, 1.0, 1.0, 0, CopytradeSizingModeUSDC)
+	got := CalculateCopytradeSellSharesForMode(5.51, 2.51, -3.0, 0.23, 1.0, 1.0, 100.0, 0, CopytradeSizingModeUSDC)
 	if math.Abs(got-3.0) > 0.000001 {
 		t.Fatalf("expected non-flat target sell to stay bounded by actionable delta, got %.4f", got)
 	}
