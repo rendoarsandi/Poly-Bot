@@ -333,6 +333,37 @@ func TestPaperbotCopytradeFreshTradesKeepsIdenticalPublicTradesSameTx(t *testing
 	}
 }
 
+func TestPaperbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	
+	// Poll 1: sees 3 identical trades
+	trades1 := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+	}
+
+	got1 := paperbotCopytradeFreshTrades(state, trades1, "cond-1")
+	if len(got1) != 3 {
+		t.Fatalf("Poll 1: expected 3 fresh trades, got %d", len(got1))
+	}
+
+	// Poll 2: sees 5 identical trades (2 new ones added to the batch)
+	trades2 := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+	}
+	
+	got2 := paperbotCopytradeFreshTrades(state, trades2, "cond-1")
+	if len(got2) != 2 {
+		t.Fatalf("Poll 2: expected 2 fresh trades (3 already seen, 5 total in poll), got %d", len(got2))
+	}
+}
+
 func TestPaperbotCopytradeTakeRetryTradesDropsStaleTimestampedSignals(t *testing.T) {
 	state := newPaperbotCopytradeState()
 	now := time.Unix(5000, 0)

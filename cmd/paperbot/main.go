@@ -205,6 +205,7 @@ type paperbotCopytradeState struct {
 	lastTradeFetch       time.Time
 	tradesSeeded         bool
 	seenTradeKeys        map[string]time.Time
+	seenTradeKeysCount   map[string]int
 	retryTrades          []api.PublicTrade
 	observedBuySizeSum   map[string]float64
 	observedBuySizeCount map[string]int
@@ -272,6 +273,7 @@ func newPaperbotCopytradeState() *paperbotCopytradeState {
 		pendingSellTarget:    make(map[string]float64),
 		pendingSellPoll:      make(map[string]time.Time),
 		seenTradeKeys:        make(map[string]time.Time),
+		seenTradeKeysCount:   make(map[string]int),
 		observedBuySizeSum:   make(map[string]float64),
 		observedBuySizeCount: make(map[string]int),
 		lastLogAt:            make(map[string]time.Time),
@@ -1133,16 +1135,17 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 	})
 
 	fresh := make([]api.PublicTrade, 0, len(filtered))
-	perKeyOccurrence := make(map[string]int, len(filtered))
+	currentPollCounts := make(map[string]int)
 	for _, trade := range filtered {
 		baseKey := paperbotCopytradeTradeKey(trade)
-		perKeyOccurrence[baseKey]++
-		key := fmt.Sprintf("%s#%d", baseKey, perKeyOccurrence[baseKey])
-		if _, seen := state.seenTradeKeys[key]; seen {
-			continue
+		currentPollCounts[baseKey]++
+		
+		totalSeen := state.seenTradeKeysCount[baseKey]
+		if currentPollCounts[baseKey] > totalSeen {
+			state.seenTradeKeysCount[baseKey] = currentPollCounts[baseKey]
+			state.seenTradeKeys[fmt.Sprintf("%s#%d", baseKey, currentPollCounts[baseKey])] = now
+			fresh = append(fresh, trade)
 		}
-		state.seenTradeKeys[key] = now
-		fresh = append(fresh, trade)
 	}
 	if !state.tradesSeeded {
 		state.tradesSeeded = true
@@ -2385,6 +2388,9 @@ func run() error {
 					})
 					copytradePoller.pendingWatcher = watcher
 					tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
+				}
+				if !paperbotCopytradeHasOnchainWatcher(copytradePoller) {
+					tui.LogEvent("⚠️ Copytrade watchers (mempool/onchain) disabled; using slower REST polling")
 				}
 			}
 		}
