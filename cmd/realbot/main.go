@@ -7213,7 +7213,7 @@ func realbotCopytradeQueueRetryTrades(state *realbotCopytradeState, retries []ap
 	}
 }
 
-func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.PublicTrade, conditionID string) []api.PublicTrade {
+func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.PublicTrade, conditionID string, sizingMode string) []api.PublicTrade {
 	if state == nil || len(trades) == 0 {
 		return nil
 	}
@@ -7230,7 +7230,7 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 		if conditionID != "" && !strings.EqualFold(strings.TrimSpace(trade.ConditionID), conditionID) {
 			continue
 		}
-		if core.SanitizeString(trade.Outcome) == "" || trade.Size <= 0.01 {
+		if core.SanitizeString(trade.Outcome) == "" {
 			continue
 		}
 		filtered = append(filtered, trade)
@@ -7247,11 +7247,16 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 	for _, trade := range filtered {
 		baseKey := realbotCopytradeTradeKey(trade)
 		currentPollCounts[baseKey]++
-		
+
 		totalSeen := state.seenTradeKeysCount[baseKey]
 		if currentPollCounts[baseKey] > totalSeen {
 			state.seenTradeKeysCount[baseKey] = currentPollCounts[baseKey]
 			state.seenTradeKeys[fmt.Sprintf("%s#%d", baseKey, currentPollCounts[baseKey])] = now
+
+			if trade.Size <= 0.01 && !strings.EqualFold(sizingMode, core.CopytradeSizingModeShares) && !strings.EqualFold(sizingMode, core.CopytradeSizingModeUSDC) {
+				continue
+			}
+
 			fresh = append(fresh, trade)
 		}
 	}
@@ -7328,7 +7333,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
 			}
-			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
+			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
 			state.lastError = ""
 		} else {
 			marketSnapshot := realbotCopytradeMarketSnapshot{}
@@ -7354,7 +7359,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			state.lastError = ""
 
 			combinedTrades := marketSnapshot.Trades
-			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
+			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
 			if len(polledTrades) == 0 && marketSnapshot.PositionsErr == nil {
 				targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
 				holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
@@ -7431,7 +7436,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		}
 		tradeSide := strings.ToUpper(strings.TrimSpace(trade.Side))
 		tradeSize := math.Max(0, trade.Size)
-		if tradeSize <= 0.01 {
+		if tradeSize <= 0.01 && !strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) && !strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
 			continue
 		}
 
@@ -7489,14 +7494,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
-			budget := liveCfg.CopytradeSizeUSDC
-			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) || strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModePercent) {
-				budget = budgetShares * submitPrice
-			}
 			requestedQty := normalizeMarketBuyShares(budgetShares)
-			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
-				requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, submitPrice)
-			}
 			if requestedQty < minOnChainActionShares {
 				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: actionable size %s is below %.2f share at cap $%.3f", marketID, outcome, formatShareQty(requestedQty), minOnChainActionShares, submitPrice)
 				if realbotCopytradeShouldLog(state, "buy-size:"+outcome, msg, 10*time.Second) {

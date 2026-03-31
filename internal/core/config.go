@@ -829,33 +829,24 @@ func CalculateTradeSizeForMode(currentBalance, tradeScaleFactor, tradeSizeUSDC, 
 }
 
 func CalculateCopytradeSharesForMode(targetShares, price, sizeUSDC, sizeShares, sizePercent, maxTradeSize float64, mode string) float64 {
-	if targetShares <= 0 || price <= 0 {
+	if price <= 0 {
 		return 0
 	}
 	switch normalizeCopytradeSizingMode(mode) {
 	case CopytradeSizingModeShares:
-		limit := normalizeCopytradeSizeShares(sizeShares)
-		if limit > targetShares {
-			limit = targetShares
-		}
-		return limit
+		return normalizeCopytradeSizeShares(sizeShares)
 	case CopytradeSizingModePercent:
-		percent := normalizeCopytradeSizePercent(sizePercent)
-		shares := targetShares * (percent / 100.0)
-		if shares > targetShares {
-			shares = targetShares
+		if targetShares <= 0 {
+			return 0
 		}
-		return shares
+		percent := normalizeCopytradeSizePercent(sizePercent)
+		return targetShares * (percent / 100.0)
 	default:
 		budget := normalizeCopytradeSizeUSDC(sizeUSDC)
 		if maxTradeSize > 0 && budget > maxTradeSize {
 			budget = maxTradeSize
 		}
-		shares := budget / price
-		if shares > targetShares {
-			shares = targetShares
-		}
-		return shares
+		return budget / price
 	}
 }
 

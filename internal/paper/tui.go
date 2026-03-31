@@ -3538,7 +3538,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 
 	uptime := time.Since(s.startTime).Round(time.Second)
-	winCount, lossCount := positionWinLossFromOrderHistory(s.orderHistory)
+	winCount, lossCount := positionWinLossFromOrderHistory(s.orderHistory, strings.EqualFold(s.settings.PaperArbMode, "copytrade"))
 	if winCount+lossCount == 0 {
 		winCount = stats.WinningTrades
 		lossCount = stats.LosingTrades
@@ -3583,7 +3583,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	return makePanel(inner, clrTeal, content)
 }
 
-func positionWinLossFromOrderHistory(orderHistory []OrderHistoryEntry) (wins, losses int) {
+func positionWinLossFromOrderHistory(orderHistory []OrderHistoryEntry, isCopytrade bool) (wins, losses int) {
 	positionPnL := make(map[string]float64)
 	for _, entry := range orderHistory {
 		if !strings.EqualFold(strings.TrimSpace(entry.Side), "SELL") {
@@ -3598,7 +3598,12 @@ func positionWinLossFromOrderHistory(orderHistory []OrderHistoryEntry) (wins, lo
 		if marketID == "" || outcome == "" {
 			continue
 		}
-		key := marketID + ":" + strings.ToLower(outcome)
+		var key string
+		if isCopytrade {
+			key = marketID
+		} else {
+			key = marketID + ":" + strings.ToLower(outcome)
+		}
 		positionPnL[key] += entry.Profit
 	}
 	for _, pnl := range positionPnL {
