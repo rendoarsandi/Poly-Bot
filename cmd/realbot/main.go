@@ -50,6 +50,8 @@ const (
 	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	realbotCopytradeUIRefreshMin     = 500 * time.Millisecond
 	realbotCopytradeUIRefreshMax     = 1 * time.Second
+	realbotCopytradeRetryQueueCap    = 256
+	realbotCopytradeRetryMaxAge      = 20 * time.Second
 	realbotFillPollInterval          = 50 * time.Millisecond
 	realbotTakerCloseQuoteRefresh    = 500 * time.Millisecond
 	realbotTakerCloseLogInterval     = 5 * time.Second
@@ -6423,6 +6425,7 @@ type realbotCopytradeState struct {
 	lastTradeFetch       time.Time
 	tradesSeeded         bool
 	seenTradeKeys        map[string]time.Time
+	retryTrades          []api.PublicTrade
 	observedBuySizeSum   map[string]float64
 	observedBuySizeCount map[string]int
 	lastLogAt            map[string]time.Time
@@ -7163,6 +7166,48 @@ func realbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
 	return startTs
 }
 
+func realbotCopytradeRetrySignalFresh(now time.Time, trade api.PublicTrade) bool {
+	if trade.Timestamp <= 0 {
+		return true
+	}
+	tradeAt := time.Unix(trade.Timestamp, 0)
+	if now.Before(tradeAt) {
+		return true
+	}
+	return now.Sub(tradeAt) <= realbotCopytradeRetryMaxAge
+}
+
+func realbotCopytradeTakeRetryTrades(state *realbotCopytradeState, now time.Time) []api.PublicTrade {
+	if state == nil || len(state.retryTrades) == 0 {
+		return nil
+	}
+	retries := state.retryTrades
+	state.retryTrades = nil
+	if now.IsZero() {
+		now = time.Now()
+	}
+	fresh := make([]api.PublicTrade, 0, len(retries))
+	for _, trade := range retries {
+		if realbotCopytradeRetrySignalFresh(now, trade) {
+			fresh = append(fresh, trade)
+		}
+	}
+	return fresh
+}
+
+func realbotCopytradeQueueRetryTrades(state *realbotCopytradeState, retries []api.PublicTrade) {
+	if state == nil || len(retries) == 0 {
+		return
+	}
+	if len(retries) > realbotCopytradeRetryQueueCap {
+		retries = retries[len(retries)-realbotCopytradeRetryQueueCap:]
+	}
+	state.retryTrades = append(state.retryTrades, retries...)
+	if len(state.retryTrades) > realbotCopytradeRetryQueueCap {
+		state.retryTrades = append([]api.PublicTrade(nil), state.retryTrades[len(state.retryTrades)-realbotCopytradeRetryQueueCap:]...)
+	}
+}
+
 func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.PublicTrade, conditionID string) []api.PublicTrade {
 	if state == nil || len(trades) == 0 {
 		return nil
@@ -7193,8 +7238,11 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 	})
 
 	fresh := make([]api.PublicTrade, 0, len(filtered))
+	perKeyOccurrence := make(map[string]int, len(filtered))
 	for _, trade := range filtered {
-		key := realbotCopytradeTradeKey(trade)
+		baseKey := realbotCopytradeTradeKey(trade)
+		perKeyOccurrence[baseKey]++
+		key := fmt.Sprintf("%s#%d", baseKey, perKeyOccurrence[baseKey])
 		if _, seen := state.seenTradeKeys[key]; seen {
 			continue
 		}
@@ -7264,99 +7312,103 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
 	}
-	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
-		return
-	}
-	since := state.lastTradeFetch
-	pollStartedAt := time.Now()
-	state.lastTradeFetch = pollStartedAt
-
-	freshTrades := make([]api.PublicTrade, 0)
-	if realbotCopytradeHasOnchainWatcher(poller) {
-		combinedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
-		if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
-			combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
-		}
-		freshTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
-		if len(freshTrades) == 0 {
-			return
-		}
-		state.lastError = ""
-	} else {
-		marketSnapshot := realbotCopytradeMarketSnapshot{}
-		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		snapshot, err := poller.snapshotForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
-		cancel()
-		if err != nil {
-			if err.Error() != state.lastError {
-				tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
-				state.lastError = err.Error()
+	polledTrades := make([]api.PublicTrade, 0)
+	shouldPoll := state.lastTradeFetch.IsZero() || time.Since(state.lastTradeFetch) >= pollEvery
+	if shouldPoll {
+		since := state.lastTradeFetch
+		state.lastTradeFetch = time.Now()
+		if realbotCopytradeHasOnchainWatcher(poller) {
+			combinedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
+			if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
+				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
 			}
-			return
-		}
-		marketSnapshot = snapshot
-		pollStartedAt = snapshot.PollStartedAt
-		if pollStartedAt.IsZero() {
-			pollStartedAt = state.lastTradeFetch
-		}
-		if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
-			err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
-			if err.Error() != state.lastError {
-				tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
-				state.lastError = err.Error()
-			}
-			return
-		}
-		state.lastError = ""
-
-		combinedTrades := marketSnapshot.Trades
-		freshTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
-		if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
-			targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
-			holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
-			hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, market.ConditionID)
-			pollTime := time.Now()
-			for _, outcome := range outcomes {
-				targetQty := targetShares[outcome]
-				delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-				if pending {
-					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
-					if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
-					continue
+			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
+			state.lastError = ""
+		} else {
+			marketSnapshot := realbotCopytradeMarketSnapshot{}
+			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			snapshot, err := poller.snapshotForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
+			cancel()
+			if err != nil {
+				if err.Error() != state.lastError {
+					tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
+					state.lastError = err.Error()
 				}
-				if changed {
-					if delta < -0.01 {
-						reason := "position-only exits are disabled"
-						switch {
-						case hasAmbiguousExit:
-							reason = "target inventory is mergeable/redeemable"
-						case holdsBothOutcomes:
-							reason = "target holds both outcomes"
-						}
-						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
-						if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+				return
+			}
+			marketSnapshot = snapshot
+			if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
+				err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
+				if err.Error() != state.lastError {
+					tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
+					state.lastError = err.Error()
+				}
+				return
+			}
+			state.lastError = ""
+
+			combinedTrades := marketSnapshot.Trades
+			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID)
+			if len(polledTrades) == 0 && marketSnapshot.PositionsErr == nil {
+				targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
+				holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
+				hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, market.ConditionID)
+				pollTime := time.Now()
+				for _, outcome := range outcomes {
+					targetQty := targetShares[outcome]
+					delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+					if pending {
+						msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
+						if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
 							tui.LogEvent("%s", msg)
 						}
 						continue
 					}
-					if delta <= 0.01 {
-						continue
+					if changed {
+						if delta < -0.01 {
+							reason := "position-only exits are disabled"
+							switch {
+							case hasAmbiguousExit:
+								reason = "target inventory is mergeable/redeemable"
+							case holdsBothOutcomes:
+								reason = "target holds both outcomes"
+							}
+							msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
+							if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+								tui.LogEvent("%s", msg)
+							}
+							continue
+						}
+						if delta <= 0.01 {
+							continue
+						}
+						polledTrades = append(polledTrades, realbotEstimatedPositionBuySignals(state, market.ConditionID, outcome, delta, liveCfg.CopytradeSizingMode)...)
 					}
-					freshTrades = append(freshTrades, realbotEstimatedPositionBuySignals(state, market.ConditionID, outcome, delta, liveCfg.CopytradeSizingMode)...)
 				}
 			}
-			if len(freshTrades) == 0 {
-				return
-			}
-		} else if len(freshTrades) == 0 {
-			return
 		}
+	}
+	for _, trade := range polledTrades {
+		realbotObserveCopytradeBuySignal(state, trade)
+	}
+
+	freshTrades := make([]api.PublicTrade, 0, len(state.retryTrades)+len(polledTrades))
+	if retries := realbotCopytradeTakeRetryTrades(state, time.Now()); len(retries) > 0 {
+		freshTrades = append(freshTrades, retries...)
+	}
+	if len(polledTrades) > 0 {
+		freshTrades = append(freshTrades, polledTrades...)
+	}
+	if len(freshTrades) == 0 {
+		return
+	}
+
+	retryTrades := make([]api.PublicTrade, 0)
+	requeueTrade := func(trade api.PublicTrade) {
+		retryTrades = append(retryTrades, trade)
 	}
 
 	for _, trade := range freshTrades {
-		realbotObserveCopytradeBuySignal(state, trade)
 		outcome := core.SanitizeString(trade.Outcome)
 		if outcome == "" {
 			continue
@@ -7396,6 +7448,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					if realbotCopytradeShouldLog(state, "buy-quote:"+outcome, msg, 10*time.Second) {
 						tui.LogEvent("%s", msg)
 					}
+					requeueTrade(trade)
 					continue
 				}
 				ask = restAsk
@@ -7405,6 +7458,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				if realbotCopytradeShouldLog(state, "buy-ask:"+outcome, msg, 10*time.Second) {
 					tui.LogEvent("%s", msg)
 				}
+				requeueTrade(trade)
 				continue
 			}
 			if entryGate != nil && !entryGate.TryAcquire() {
@@ -7412,6 +7466,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				if realbotCopytradeShouldLog(state, "buy-pause:"+outcome, msg, 10*time.Second) {
 					tui.LogEvent("%s", msg)
 				}
+				requeueTrade(trade)
 				continue
 			}
 
@@ -7524,6 +7579,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					if realbotCopytradeShouldLog(state, "sell-quote:"+outcome, msg, 10*time.Second) {
 						tui.LogEvent("%s", msg)
 					}
+					requeueTrade(trade)
 					continue
 				}
 				bid = restBid
@@ -7533,6 +7589,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				if realbotCopytradeShouldLog(state, "sell-bid:"+outcome, msg, 10*time.Second) {
 					tui.LogEvent("%s", msg)
 				}
+				requeueTrade(trade)
 				continue
 			}
 			submitPrice := core.CopytradeSellFloorPrice(bid, liveCfg.CopytradeMaxSlippagePct)
@@ -7612,4 +7669,5 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 		}
 	}
+	realbotCopytradeQueueRetryTrades(state, retryTrades)
 }

@@ -852,6 +852,64 @@ func TestRealbotCopytradeFreshTradesKeepsDistinctPublicTradesSameTx(t *testing.T
 	}
 }
 
+func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesSameTx(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
+	}
+
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1")
+	if len(got) != 2 {
+		t.Fatalf("expected two identical fills from same tx to stay distinct, got %d", len(got))
+	}
+	if again := realbotCopytradeFreshTrades(state, trades, "cond-1"); len(again) != 0 {
+		t.Fatalf("expected repeated identical snapshot to stay deduped, got %d", len(again))
+	}
+}
+
+func TestRealbotCopytradeTakeRetryTradesDropsStaleTimestampedSignals(t *testing.T) {
+	state := newRealbotCopytradeState()
+	now := time.Unix(5000, 0)
+	state.retryTrades = []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: now.Add(-25 * time.Second).Unix()},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: now.Add(-5 * time.Second).Unix()},
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 0},
+	}
+
+	got := realbotCopytradeTakeRetryTrades(state, now)
+	if len(got) != 2 {
+		t.Fatalf("expected stale retries to be filtered, got %d", len(got))
+	}
+	if len(state.retryTrades) != 0 {
+		t.Fatalf("expected retry queue to be drained after take, got %d", len(state.retryTrades))
+	}
+}
+
+func TestRealbotCopytradeQueueRetryTradesCapsQueueLength(t *testing.T) {
+	state := newRealbotCopytradeState()
+	retries := make([]api.PublicTrade, realbotCopytradeRetryQueueCap+8)
+	for i := range retries {
+		retries[i] = api.PublicTrade{
+			ConditionID: "cond-1",
+			Outcome:     "Up",
+			Side:        "BUY",
+			Size:        1,
+			Timestamp:   int64(1000 + i),
+		}
+	}
+
+	realbotCopytradeQueueRetryTrades(state, retries)
+	if len(state.retryTrades) != realbotCopytradeRetryQueueCap {
+		t.Fatalf("expected retry queue cap %d, got %d", realbotCopytradeRetryQueueCap, len(state.retryTrades))
+	}
+	wantFirst := retries[len(retries)-realbotCopytradeRetryQueueCap].Timestamp
+	if state.retryTrades[0].Timestamp != wantFirst {
+		t.Fatalf("expected queue to keep newest retries starting at %d, got %d", wantFirst, state.retryTrades[0].Timestamp)
+	}
+}
+
 func TestRealbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
 	trade := api.PublicTrade{
 		ConditionID:     "cond-1",
