@@ -1974,7 +1974,7 @@ func run() error {
 						trackedMarkets = append(trackedMarkets, market)
 					}
 				}
-				chainWSURL := api.ResolvePolygonWSURL(os.Getenv("POLYGON_WS_URL"), "")
+				chainWSURL := api.ResolvePolygonWSURL(os.Getenv("POLYGON_WS_URL"), os.Getenv("POLYGON_RPC_URL"))
 				if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.PrimeTrackedMarkets(trackedMarkets)
 					watcher.Start(ctx, func(format string, args ...interface{}) {
@@ -1983,7 +1983,7 @@ func run() error {
 					copytradePoller.minedWatcher = watcher
 					tui.LogEvent("⛓️ Copytrade onchain watcher enabled for %s", copytradeTarget.Wallet)
 				}
-				pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), "")
+				pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), os.Getenv("POLYGON_RPC_URL"))
 				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.PrimeTrackedMarkets(trackedMarkets)
 					watcher.Start(ctx, func(format string, args ...interface{}) {
@@ -7336,67 +7336,10 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
 			state.lastError = ""
 		} else {
-			marketSnapshot := realbotCopytradeMarketSnapshot{}
-			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			snapshot, err := poller.snapshotForCondition(pollCtx, restClient, pollEvery, market.ConditionID)
-			cancel()
-			if err != nil {
-				if err.Error() != state.lastError {
-					tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
-					state.lastError = err.Error()
-				}
-				return
-			}
-			marketSnapshot = snapshot
-			if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
-				err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
-				if err.Error() != state.lastError {
-					tui.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", marketID, err)
-					state.lastError = err.Error()
-				}
-				return
-			}
+				// Note: Public REST polling has been explicitly disabled for copytrading
+				// per request to "disable the public api".
+				// Do not fallback to polling API.
 			state.lastError = ""
-
-			combinedTrades := marketSnapshot.Trades
-			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
-			if len(polledTrades) == 0 && marketSnapshot.PositionsErr == nil {
-				targetShares := realbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, market.ConditionID)
-				holdsBothOutcomes := realbotCopytradeHoldsBothOutcomes(targetShares)
-				hasAmbiguousExit := realbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, market.ConditionID)
-				pollTime := time.Now()
-				for _, outcome := range outcomes {
-					targetQty := targetShares[outcome]
-					delta, changed, pending := realbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-					if pending {
-						msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", marketID, outcome, formatShareQty(targetQty))
-						if realbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
-							tui.LogEvent("%s", msg)
-						}
-						continue
-					}
-					if changed {
-						if delta < -0.01 {
-							reason := "position-only exits are disabled"
-							switch {
-							case hasAmbiguousExit:
-								reason = "target inventory is mergeable/redeemable"
-							case holdsBothOutcomes:
-								reason = "target holds both outcomes"
-							}
-							msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", marketID, outcome, reason)
-							if realbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
-								tui.LogEvent("%s", msg)
-							}
-							continue
-						}
-						if delta <= 0.01 {
-							continue
-						}
-						polledTrades = append(polledTrades, realbotEstimatedPositionBuySignals(state, market.ConditionID, outcome, delta, liveCfg.CopytradeSizingMode)...)
-					}
-				}
-			}
 		}
 	}
 	for _, trade := range polledTrades {

@@ -281,9 +281,44 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		return fmt.Errorf("pending websocket subscribe failed: %w", err)
 	}
 
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
+	txHashes := make(chan string, 10000)
+	if method == "newPendingTransactions" {
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case txHash, ok := <-txHashes:
+						if !ok {
+							return
+						}
+						txCtx, txCancel := context.WithTimeout(ctx, 3*time.Second)
+						tx, err := w.polygon.GetTransactionByHash(txCtx, txHash)
+						txCancel()
+						if err == nil && tx != nil {
+							w.handlePendingTransaction(ctx, PendingTransaction{
+								Hash:  tx.Hash,
+								From:  tx.From,
+								To:    tx.To,
+								Input: tx.Input,
+							})
+						}
+					}
+				}
+			}()
+		}
+	}
+
 	for {
 		var raw map[string]json.RawMessage
 		if err := wsjson.Read(ctx, conn, &raw); err != nil {
+			close(txHashes)
 			return fmt.Errorf("pending websocket read failed: %w", err)
 		}
 		paramsRaw, ok := raw["params"]
@@ -298,16 +333,9 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 				continue
 			}
 			if params.Result != "" {
-				txCtx, txCancel := context.WithTimeout(ctx, 3*time.Second)
-				tx, err := w.polygon.GetTransactionByHash(txCtx, params.Result)
-				txCancel()
-				if err == nil && tx != nil {
-					w.handlePendingTransaction(ctx, PendingTransaction{
-						Hash:  tx.Hash,
-						From:  tx.From,
-						To:    tx.To,
-						Input: tx.Input,
-					})
+				select {
+				case txHashes <- params.Result:
+				default:
 				}
 			}
 		} else {
