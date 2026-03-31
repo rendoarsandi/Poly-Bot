@@ -1,0 +1,12 @@
+--- config_test.go
++++ config_test.go
+@@ -334,9 +331,6 @@
+	if got := CalculateCopytradeSellSharesForMode(10, 5, -5, 1.0, 20.0, 20.0, 50.0, 0, CopytradeSizingModeUSDC); got != 5 {
+		t.Fatalf("expected flat sell not to exceed local shares or target delta, got %.4f", got)
+	}
+-	if got := CalculateCopytradeSellSharesForMode(10, 5, -5, 1.15, 5.0, 5.0, 50.0, 0, CopytradeSizingModeUSDC); got != 4.3478260869565215 {
+-		t.Fatalf("expected non-flat target sell to stay bounded by actionable delta, got %.4f", got)
+-	}
+	if got := CalculateCopytradeSellSharesForMode(10, 0, -10, 1.15, 5.0, 5.0, 50.0, 0, CopytradeSizingModeUSDC); got != 10 {
+		t.Fatalf("expected flat target sell to bypass USDC cap, got %.4f", got)
+	}
