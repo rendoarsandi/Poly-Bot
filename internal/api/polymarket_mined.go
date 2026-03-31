@@ -314,7 +314,7 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 	}
 
 	for _, tx := range block.Transactions {
-		if !strings.EqualFold(strings.TrimSpace(tx.To), CTFExchange) && !strings.EqualFold(strings.TrimSpace(tx.To), NegRiskExchange) {
+		if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
 			continue
 		}
 		orders, err := DecodePolymarketMatchOrdersInput(tx.Input)

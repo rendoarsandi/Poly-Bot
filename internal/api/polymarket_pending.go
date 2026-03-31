@@ -266,7 +266,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	params := []interface{}{method}
 	if method == "alchemy_pendingTransactions" {
 		params = append(params, map[string]interface{}{
-			"toAddress":  []string{CTFExchange, NegRiskExchange},
+			"toAddress":  []string{CTFExchange, NegRiskExchange, w.targetWallet},
 			"hashesOnly": false,
 		})
 	}
@@ -363,7 +363,7 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 	if w == nil {
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(tx.To), CTFExchange) && !strings.EqualFold(strings.TrimSpace(tx.To), NegRiskExchange) {
+	if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
 		return
 	}
 	orders, err := DecodePolymarketMatchOrdersInput(tx.Input)
@@ -455,11 +455,14 @@ func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) {
 }
 
 func DecodePolymarketMatchOrdersInput(input string) ([]decodedPolymarketOrder, error) {
-	input = strings.TrimSpace(input)
-	if !strings.HasPrefix(strings.ToLower(input), polymarketMatchOrdersSelector) {
+	input = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input)), "0x")
+	
+	idx := strings.Index(input, polymarketMatchOrdersSelector[2:])
+	if idx == -1 {
 		return nil, fmt.Errorf("unsupported function selector")
 	}
-	words, err := splitPendingHexWords(input[len(polymarketMatchOrdersSelector):])
+	
+	words, err := splitPendingHexWords(input[idx+8:])
 	if err != nil {
 		return nil, err
 	}
@@ -603,8 +606,9 @@ func splitPendingHexWords(data string) ([]string, error) {
 	if data == "" {
 		return nil, fmt.Errorf("empty hex data")
 	}
-	if len(data)%64 != 0 {
-		return nil, fmt.Errorf("hex data is not word-aligned")
+	remainder := len(data) % 64
+	if remainder != 0 {
+		data += strings.Repeat("0", 64-remainder)
 	}
 	words := make([]string, 0, len(data)/64)
 	for i := 0; i < len(data); i += 64 {
