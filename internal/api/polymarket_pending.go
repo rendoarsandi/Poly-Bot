@@ -286,7 +286,11 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 
 	txHashes := make(chan string, 10000)
 	if method == "newPendingTransactions" {
-		for i := 0; i < 20; i++ {
+		// Rate limit standard RPC queries to ~10 req/s to avoid spamming public nodes
+		rateLimiter := time.NewTicker(100 * time.Millisecond)
+		defer rateLimiter.Stop()
+
+		for i := 0; i < 5; i++ { // Reduced worker count to avoid connection spikes
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -297,6 +301,11 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 					case txHash, ok := <-txHashes:
 						if !ok {
 							return
+						}
+						select {
+						case <-ctx.Done():
+							return
+						case <-rateLimiter.C:
 						}
 						txCtx, txCancel := context.WithTimeout(ctx, 3*time.Second)
 						tx, err := w.polygon.GetTransactionByHash(txCtx, txHash)
