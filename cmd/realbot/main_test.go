@@ -770,10 +770,10 @@ func TestRealbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: 2000, TransactionHash: "0x2"},
 	}
-	if got := realbotCopytradeFreshTrades(state, initial, "cond-1", ""); len(got) != 1 {
+	if got := realbotCopytradeFreshTrades(state, initial, "cond-1", "shares"); len(got) != 1 {
 		t.Fatalf("expected initial snapshot to ignore pre-start history and keep one post-start signal, got %d", len(got))
 	}
-	if got := realbotCopytradeFreshTrades(state, initial, "cond-1", ""); len(got) != 0 {
+	if got := realbotCopytradeFreshTrades(state, initial, "cond-1", "shares"); len(got) != 0 {
 		t.Fatalf("expected repeated trade snapshot to stay deduped, got %d", len(got))
 	}
 
@@ -782,7 +782,7 @@ func TestRealbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing
 		{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: 2000, TransactionHash: "0x2"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1.25, Timestamp: 3000, TransactionHash: "0x3"},
 	}
-	got := realbotCopytradeFreshTrades(state, next, "cond-1", "")
+	got := realbotCopytradeFreshTrades(state, next, "cond-1", "shares")
 	if len(got) != 1 {
 		t.Fatalf("expected exactly one fresh trade, got %d", len(got))
 	}
@@ -809,7 +809,7 @@ func TestRealbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *test
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 1001, TransactionHash: "0xa"},
 	}
 
-	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "")
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
 	if len(got) != 3 {
 		t.Fatalf("expected three bootstrap trades, got %d", len(got))
 	}
@@ -832,7 +832,7 @@ func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:2"},
 	}
 
-	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "")
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
 	if len(got) != 2 {
 		t.Fatalf("expected two distinct mempool signals, got %d", len(got))
 	}
@@ -846,7 +846,7 @@ func TestRealbotCopytradeFreshTradesKeepsDistinctPublicTradesSameTx(t *testing.T
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.45, Asset: "asset-b", Timestamp: 1001, TransactionHash: "0xtx"},
 	}
 
-	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "")
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
 	if len(got) != 2 {
 		t.Fatalf("expected two distinct public trades from same tx, got %d", len(got))
 	}
@@ -860,11 +860,11 @@ func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesSameTx(t *testing.
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 	}
 
-	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "")
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
 	if len(got) != 2 {
 		t.Fatalf("expected two identical fills from same tx to stay distinct, got %d", len(got))
 	}
-	if again := realbotCopytradeFreshTrades(state, trades, "cond-1", ""); len(again) != 0 {
+	if again := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares"); len(again) != 0 {
 		t.Fatalf("expected repeated identical snapshot to stay deduped, got %d", len(again))
 	}
 }
@@ -880,7 +880,7 @@ func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *tes
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 	}
 
-	got1 := realbotCopytradeFreshTrades(state, trades1, "cond-1")
+	got1 := realbotCopytradeFreshTrades(state, trades1, "cond-1", "shares")
 	if len(got1) != 3 {
 		t.Fatalf("Poll 1: expected 3 fresh trades, got %d", len(got1))
 	}
@@ -894,7 +894,7 @@ func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *tes
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 	}
 	
-	got2 := realbotCopytradeFreshTrades(state, trades2, "cond-1")
+	got2 := realbotCopytradeFreshTrades(state, trades2, "cond-1", "shares")
 	if len(got2) != 2 {
 		t.Fatalf("Poll 2: expected 2 fresh trades (3 already seen, 5 total in poll), got %d", len(got2))
 	}

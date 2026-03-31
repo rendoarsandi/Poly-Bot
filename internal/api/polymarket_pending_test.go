@@ -65,7 +65,7 @@ func TestResolvePolymarketPendingWSURL(t *testing.T) {
 		}
 	})
 
-	t.Run("normalizes explicit https alchemy url", func(t *testing.T) {
+	t.Run("normalizes explicit https url", func(t *testing.T) {
 		got := ResolvePolymarketPendingWSURL(
 			"https://polygon-mainnet.g.alchemy.com/v2/explicit",
 			"",
@@ -84,16 +84,6 @@ func TestResolvePolymarketPendingWSURL(t *testing.T) {
 		want := "wss://polygon-mainnet.g.alchemy.com/v2/fallback"
 		if got != want {
 			t.Fatalf("unexpected resolved url %q want %q", got, want)
-		}
-	})
-
-	t.Run("ignores non alchemy polygon rpc url", func(t *testing.T) {
-		got := ResolvePolymarketPendingWSURL(
-			"",
-			"https://polygon-rpc.com",
-		)
-		if got != "" {
-			t.Fatalf("expected empty resolved url, got %q", got)
 		}
 	})
 }

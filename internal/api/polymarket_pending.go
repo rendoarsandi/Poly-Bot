@@ -57,6 +57,7 @@ type PolymarketPendingWatcher struct {
 	wsURL        string
 	rest         *RestClient
 	targetWallet string
+	polygon      *PolygonClient
 
 	mu         sync.Mutex
 	recent     []PendingPolymarketSignal
@@ -65,15 +66,16 @@ type PolymarketPendingWatcher struct {
 	started    bool
 }
 
-func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, targetWallet string) *PolymarketPendingWatcher {
+func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, polygon *PolygonClient, targetWallet string) *PolymarketPendingWatcher {
 	wsURL = strings.TrimSpace(wsURL)
 	targetWallet = NormalizeWalletAddress(targetWallet)
-	if wsURL == "" || rest == nil || !IsWalletAddress(targetWallet) {
+	if wsURL == "" || rest == nil || polygon == nil || !IsWalletAddress(targetWallet) {
 		return nil
 	}
 	return &PolymarketPendingWatcher{
 		wsURL:        wsURL,
 		rest:         rest,
+		polygon:      polygon,
 		targetWallet: targetWallet,
 		seen:         make(map[string]time.Time),
 		tokenCache:   make(map[string]pendingResolvedToken),
@@ -83,15 +85,15 @@ func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, targetWallet st
 func ResolvePolymarketPendingWSURL(explicitWSURL, polygonRPCURL string) string {
 	explicitWSURL = strings.TrimSpace(explicitWSURL)
 	if explicitWSURL != "" {
-		if normalized := normalizeAlchemyPendingWSURL(explicitWSURL); normalized != "" {
+		if normalized := normalizePendingWSURL(explicitWSURL); normalized != "" {
 			return normalized
 		}
 		return explicitWSURL
 	}
-	return normalizeAlchemyPendingWSURL(polygonRPCURL)
+	return normalizePendingWSURL(polygonRPCURL)
 }
 
-func normalizeAlchemyPendingWSURL(rawURL string) string {
+func normalizePendingWSURL(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return ""
@@ -99,9 +101,6 @@ func normalizeAlchemyPendingWSURL(rawURL string) string {
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
-	}
-	if !strings.Contains(strings.ToLower(parsed.Hostname()), "alchemy.com") {
 		return ""
 	}
 
@@ -163,12 +162,6 @@ func (w *PolymarketPendingWatcher) PrimeTrackedMarkets(markets []*Market) {
 
 func (w *PolymarketPendingWatcher) Start(ctx context.Context, logf func(string, ...interface{})) {
 	if !w.Enabled() {
-		return
-	}
-	if !strings.Contains(strings.ToLower(w.wsURL), "alchemy") {
-		if logf != nil {
-			logf("⚠️ Copytrade mempool watcher disabled: websocket URL must support alchemy_pendingTransactions")
-		}
 		return
 	}
 
@@ -265,17 +258,24 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
+	method := "newPendingTransactions"
+	if strings.Contains(strings.ToLower(w.wsURL), "alchemy") {
+		method = "alchemy_pendingTransactions"
+	}
+
+	params := []interface{}{method}
+	if method == "alchemy_pendingTransactions" {
+		params = append(params, map[string]interface{}{
+			"toAddress":  []string{CTFExchange, NegRiskExchange},
+			"hashesOnly": false,
+		})
+	}
+
 	subReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "eth_subscribe",
-		"params": []interface{}{
-			"alchemy_pendingTransactions",
-			map[string]interface{}{
-				"toAddress":  []string{CTFExchange, NegRiskExchange},
-				"hashesOnly": false,
-			},
-		},
+		"params":  params,
 	}
 	if err := wsjson.Write(ctx, conn, subReq); err != nil {
 		return fmt.Errorf("pending websocket subscribe failed: %w", err)
@@ -290,13 +290,35 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		var params struct {
-			Result PendingTransaction `json:"result"`
+		if method == "newPendingTransactions" {
+			var params struct {
+				Result string `json:"result"`
+			}
+			if err := json.Unmarshal(paramsRaw, &params); err != nil {
+				continue
+			}
+			if params.Result != "" {
+				txCtx, txCancel := context.WithTimeout(ctx, 3*time.Second)
+				tx, err := w.polygon.GetTransactionByHash(txCtx, params.Result)
+				txCancel()
+				if err == nil && tx != nil {
+					w.handlePendingTransaction(ctx, PendingTransaction{
+						Hash:  tx.Hash,
+						From:  tx.From,
+						To:    tx.To,
+						Input: tx.Input,
+					})
+				}
+			}
+		} else {
+			var params struct {
+				Result PendingTransaction `json:"result"`
+			}
+			if err := json.Unmarshal(paramsRaw, &params); err != nil {
+				continue
+			}
+			w.handlePendingTransaction(ctx, params.Result)
 		}
-		if err := json.Unmarshal(paramsRaw, &params); err != nil {
-			continue
-		}
-		w.handlePendingTransaction(ctx, params.Result)
 	}
 }
 

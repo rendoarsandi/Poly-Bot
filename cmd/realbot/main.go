@@ -1984,7 +1984,7 @@ func run() error {
 					tui.LogEvent("⛓️ Copytrade onchain watcher enabled for %s", copytradeTarget.Wallet)
 				}
 				pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), "")
-				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, copytradeTarget.Wallet); watcher != nil {
+				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.PrimeTrackedMarkets(trackedMarkets)
 					watcher.Start(ctx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)

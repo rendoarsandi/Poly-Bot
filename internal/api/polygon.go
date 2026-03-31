@@ -364,6 +364,9 @@ type TransactionReceipt struct {
 type Transaction struct {
 	Hash        string `json:"hash"`
 	BlockNumber string `json:"blockNumber"`
+	To          string `json:"to"`
+	From        string `json:"from"`
+	Input       string `json:"input"`
 }
 
 type FullBlockTransaction struct {
