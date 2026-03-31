@@ -59,6 +59,8 @@ const (
 	paperCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	paperCopytradeUIRefreshMin     = 250 * time.Millisecond
 	paperCopytradeUIRefreshMax     = 500 * time.Millisecond
+	paperCopytradeRetryQueueCap    = 256
+	paperCopytradeRetryMaxAge      = 20 * time.Second
 	paperFillPollInterval          = 50 * time.Millisecond
 	paperResolutionRefreshInterval = 2 * time.Second
 	paperHistoricalLookupInterval  = 2 * time.Second
@@ -203,6 +205,7 @@ type paperbotCopytradeState struct {
 	lastTradeFetch       time.Time
 	tradesSeeded         bool
 	seenTradeKeys        map[string]time.Time
+	retryTrades          []api.PublicTrade
 	observedBuySizeSum   map[string]float64
 	observedBuySizeCount map[string]int
 	lastLogAt            map[string]time.Time
@@ -1058,6 +1061,48 @@ func paperbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
 	return startTs
 }
 
+func paperbotCopytradeRetrySignalFresh(now time.Time, trade api.PublicTrade) bool {
+	if trade.Timestamp <= 0 {
+		return true
+	}
+	tradeAt := time.Unix(trade.Timestamp, 0)
+	if now.Before(tradeAt) {
+		return true
+	}
+	return now.Sub(tradeAt) <= paperCopytradeRetryMaxAge
+}
+
+func paperbotCopytradeTakeRetryTrades(state *paperbotCopytradeState, now time.Time) []api.PublicTrade {
+	if state == nil || len(state.retryTrades) == 0 {
+		return nil
+	}
+	retries := state.retryTrades
+	state.retryTrades = nil
+	if now.IsZero() {
+		now = time.Now()
+	}
+	fresh := make([]api.PublicTrade, 0, len(retries))
+	for _, trade := range retries {
+		if paperbotCopytradeRetrySignalFresh(now, trade) {
+			fresh = append(fresh, trade)
+		}
+	}
+	return fresh
+}
+
+func paperbotCopytradeQueueRetryTrades(state *paperbotCopytradeState, retries []api.PublicTrade) {
+	if state == nil || len(retries) == 0 {
+		return
+	}
+	if len(retries) > paperCopytradeRetryQueueCap {
+		retries = retries[len(retries)-paperCopytradeRetryQueueCap:]
+	}
+	state.retryTrades = append(state.retryTrades, retries...)
+	if len(state.retryTrades) > paperCopytradeRetryQueueCap {
+		state.retryTrades = append([]api.PublicTrade(nil), state.retryTrades[len(state.retryTrades)-paperCopytradeRetryQueueCap:]...)
+	}
+}
+
 func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.PublicTrade, conditionID string) []api.PublicTrade {
 	if state == nil || len(trades) == 0 {
 		return nil
@@ -1088,8 +1133,11 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 	})
 
 	fresh := make([]api.PublicTrade, 0, len(filtered))
+	perKeyOccurrence := make(map[string]int, len(filtered))
 	for _, trade := range filtered {
-		key := paperbotCopytradeTradeKey(trade)
+		baseKey := paperbotCopytradeTradeKey(trade)
+		perKeyOccurrence[baseKey]++
+		key := fmt.Sprintf("%s#%d", baseKey, perKeyOccurrence[baseKey])
 		if _, seen := state.seenTradeKeys[key]; seen {
 			continue
 		}
@@ -4569,129 +4617,137 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if pollEvery <= 0 {
 		pollEvery = 2 * time.Second
 	}
-	if !state.lastTradeFetch.IsZero() && time.Since(state.lastTradeFetch) < pollEvery {
-		return
-	}
-	since := state.lastTradeFetch
 	pollStartedAt := time.Now()
-	state.lastTradeFetch = pollStartedAt
-
-	apiReceivedAt := time.Now()
-	freshTrades := make([]api.PublicTrade, 0)
-	if paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
-		combinedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
-		if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
-			combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
-		}
-		freshTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
-		if len(freshTrades) == 0 {
-			return
-		}
-		state.lastError = ""
-	} else {
-		marketSnapshot := paperbotCopytradeMarketSnapshot{}
-		if t.CopytradePoller != nil {
-			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			snapshot, err := t.CopytradePoller.snapshotForCondition(pollCtx, t.RestClient, pollEvery, t.Market.ConditionID)
-			cancel()
-			if err != nil {
+	apiReceivedAt := pollStartedAt
+	polledTrades := make([]api.PublicTrade, 0)
+	shouldPoll := state.lastTradeFetch.IsZero() || time.Since(state.lastTradeFetch) >= pollEvery
+	if shouldPoll {
+		since := state.lastTradeFetch
+		state.lastTradeFetch = time.Now()
+		if paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
+			combinedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
+			if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
+				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
+			}
+			polledTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
+			state.lastError = ""
+		} else {
+			marketSnapshot := paperbotCopytradeMarketSnapshot{}
+			if t.CopytradePoller != nil {
+				pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				snapshot, err := t.CopytradePoller.snapshotForCondition(pollCtx, t.RestClient, pollEvery, t.Market.ConditionID)
+				cancel()
+				if err != nil {
+					if err.Error() != state.lastError {
+						t.TUI.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", t.ID, err)
+						state.lastError = err.Error()
+					}
+					return
+				}
+				marketSnapshot = snapshot
+				if !snapshot.PollStartedAt.IsZero() {
+					pollStartedAt = snapshot.PollStartedAt
+				}
+			} else {
+				pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				snapshot := t.RestClient.GetPublicActivitySnapshotWithFallback(
+					pollCtx,
+					t.CopytradeWallet,
+					[]string{t.Market.ConditionID},
+					128,
+					0.01,
+					8,
+					nil,
+					false,
+					paperbotCopytradeTradeFetchTimeout(pollEvery),
+					paperbotCopytradePositionFetchTimeout(pollEvery, false),
+				)
+				cancel()
+				marketSnapshot = paperbotCopytradeMarketSnapshot{
+					Trades:        snapshot.Trades,
+					Positions:     snapshot.Positions,
+					TradesErr:     snapshot.TradesErr,
+					PositionsErr:  snapshot.PositionsErr,
+					PollStartedAt: pollStartedAt,
+					PolledAt:      time.Now(),
+				}
+			}
+			apiReceivedAt = marketSnapshot.PolledAt
+			if apiReceivedAt.IsZero() {
+				apiReceivedAt = time.Now()
+			}
+			if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
+				err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
 				if err.Error() != state.lastError {
 					t.TUI.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", t.ID, err)
 					state.lastError = err.Error()
 				}
 				return
 			}
-			marketSnapshot = snapshot
-			pollStartedAt = snapshot.PollStartedAt
-			if pollStartedAt.IsZero() {
-				pollStartedAt = state.lastTradeFetch
-			}
-		} else {
-			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			snapshot := t.RestClient.GetPublicActivitySnapshotWithFallback(
-				pollCtx,
-				t.CopytradeWallet,
-				[]string{t.Market.ConditionID},
-				128,
-				0.01,
-				8,
-				nil,
-				false,
-				paperbotCopytradeTradeFetchTimeout(pollEvery),
-				paperbotCopytradePositionFetchTimeout(pollEvery, false),
-			)
-			cancel()
-			marketSnapshot = paperbotCopytradeMarketSnapshot{
-				Trades:        snapshot.Trades,
-				Positions:     snapshot.Positions,
-				TradesErr:     snapshot.TradesErr,
-				PositionsErr:  snapshot.PositionsErr,
-				PollStartedAt: pollStartedAt,
-				PolledAt:      time.Now(),
-			}
-		}
-		apiReceivedAt = marketSnapshot.PolledAt
-		if apiReceivedAt.IsZero() {
-			apiReceivedAt = time.Now()
-		}
-		if marketSnapshot.TradesErr != nil && marketSnapshot.PositionsErr != nil {
-			err := fmt.Errorf("trades: %v | positions: %v", marketSnapshot.TradesErr, marketSnapshot.PositionsErr)
-			if err.Error() != state.lastError {
-				t.TUI.LogEvent("[%s] ⚠️ Copytrade target poll failed: %v", t.ID, err)
-				state.lastError = err.Error()
-			}
-			return
-		}
-		state.lastError = ""
+			state.lastError = ""
 
-		combinedTrades := marketSnapshot.Trades
-		freshTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
-		if len(freshTrades) == 0 && marketSnapshot.PositionsErr == nil {
-			targetShares := paperbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, t.Market.ConditionID)
-			holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
-			hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, t.Market.ConditionID)
-			pollTime := time.Now()
-			for _, outcome := range t.Outcomes {
-				targetQty := targetShares[outcome]
-				delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
-				if pending {
-					msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
-					if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
-						t.TUI.LogEvent("%s", msg)
-					}
-					continue
-				}
-				if changed {
-					if delta < -0.01 {
-						reason := "position-only exits are disabled"
-						switch {
-						case hasAmbiguousExit:
-							reason = "target inventory is mergeable/redeemable"
-						case holdsBothOutcomes:
-							reason = "target holds both outcomes"
-						}
-						msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", t.ID, outcome, reason)
-						if paperbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+			combinedTrades := marketSnapshot.Trades
+			polledTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
+			if len(polledTrades) == 0 && marketSnapshot.PositionsErr == nil {
+				targetShares := paperbotCopytradeTargetSharesForCondition(marketSnapshot.Positions, t.Market.ConditionID)
+				holdsBothOutcomes := paperbotCopytradeHoldsBothOutcomes(targetShares)
+				hasAmbiguousExit := paperbotCopytradeHasAmbiguousPositionExit(marketSnapshot.Positions, t.Market.ConditionID)
+				pollTime := time.Now()
+				for _, outcome := range t.Outcomes {
+					targetQty := targetShares[outcome]
+					delta, changed, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+					if pending {
+						msg := fmt.Sprintf("[%s] ⏳ Copytrade sell pending second snapshot for %s: target now %s shares", t.ID, outcome, paperbotFormatShareQty(targetQty))
+						if paperbotCopytradeShouldLog(state, "sell-pending:"+outcome, msg, 10*time.Second) {
 							t.TUI.LogEvent("%s", msg)
 						}
 						continue
 					}
-					if delta <= 0.01 {
-						continue
+					if changed {
+						if delta < -0.01 {
+							reason := "position-only exits are disabled"
+							switch {
+							case hasAmbiguousExit:
+								reason = "target inventory is mergeable/redeemable"
+							case holdsBothOutcomes:
+								reason = "target holds both outcomes"
+							}
+							msg := fmt.Sprintf("[%s] ℹ️ Copytrade ignored position-only sell for %s: %s", t.ID, outcome, reason)
+							if paperbotCopytradeShouldLog(state, "sell-ambiguous:"+outcome, msg, 10*time.Second) {
+								t.TUI.LogEvent("%s", msg)
+							}
+							continue
+						}
+						if delta <= 0.01 {
+							continue
+						}
+						polledTrades = append(polledTrades, paperbotEstimatedPositionBuySignals(state, t.Market.ConditionID, outcome, delta, liveCfg.CopytradeSizingMode)...)
 					}
-					freshTrades = append(freshTrades, paperbotEstimatedPositionBuySignals(state, t.Market.ConditionID, outcome, delta, liveCfg.CopytradeSizingMode)...)
 				}
 			}
-			if len(freshTrades) == 0 {
-				return
-			}
-		} else if len(freshTrades) == 0 {
-			return
 		}
+	}
+	for _, signal := range polledTrades {
+		paperbotObserveCopytradeBuySignal(state, signal)
+	}
+
+	freshTrades := make([]api.PublicTrade, 0, len(state.retryTrades)+len(polledTrades))
+	if retries := paperbotCopytradeTakeRetryTrades(state, time.Now()); len(retries) > 0 {
+		freshTrades = append(freshTrades, retries...)
+	}
+	if len(polledTrades) > 0 {
+		freshTrades = append(freshTrades, polledTrades...)
+	}
+	if len(freshTrades) == 0 {
+		return
+	}
+
+	retrySignals := make([]api.PublicTrade, 0)
+	requeueSignal := func(sig api.PublicTrade) {
+		retrySignals = append(retrySignals, sig)
 	}
 
 	for _, signal := range freshTrades {
-		paperbotObserveCopytradeBuySignal(state, signal)
 		outcome := core.SanitizeString(signal.Outcome)
 		if outcome == "" {
 			continue
@@ -4724,6 +4780,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					if paperbotCopytradeShouldLog(state, "buy-quote:"+outcome, msg, 10*time.Second) {
 						t.TUI.LogEvent("%s", msg)
 					}
+					requeueSignal(signal)
 					continue
 				}
 				ask = restAsk
@@ -4734,6 +4791,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				if paperbotCopytradeShouldLog(state, "buy-ask:"+outcome, msg, 10*time.Second) {
 					t.TUI.LogEvent("%s", msg)
 				}
+				requeueSignal(signal)
 				continue
 			}
 			submitPrice := core.CopytradeBuyLimitPrice(ask, liveCfg.CopytradeMaxSlippagePct)
@@ -4817,6 +4875,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 					if paperbotCopytradeShouldLog(state, "sell-quote:"+outcome, msg, 10*time.Second) {
 						t.TUI.LogEvent("%s", msg)
 					}
+					requeueSignal(signal)
 					continue
 				}
 				bid = restBid
@@ -4827,6 +4886,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				if paperbotCopytradeShouldLog(state, "sell-bid:"+outcome, msg, 10*time.Second) {
 					t.TUI.LogEvent("%s", msg)
 				}
+				requeueSignal(signal)
 				continue
 			}
 			submitFloor := core.CopytradeSellFloorPrice(bid, liveCfg.CopytradeMaxSlippagePct)
@@ -4891,6 +4951,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				state.managed[outcome] = false
 			}
 		}
+		paperbotCopytradeQueueRetryTrades(state, retrySignals)
 	}
 }
 
