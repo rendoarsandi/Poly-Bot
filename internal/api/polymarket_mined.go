@@ -290,14 +290,10 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 		return fmt.Errorf("mined websocket subscribe failed: %w", err)
 	}
 
-	for {
-		var raw map[string]json.RawMessage
-		if err := wsjson.Read(ctx, conn, &raw); err != nil {
-			return fmt.Errorf("mined websocket read failed: %w", err)
-		}
+	return readPolygonWSJSONWithHeartbeat(ctx, conn, "mined", func(raw map[string]json.RawMessage) error {
 		paramsRaw, ok := raw["params"]
 		if !ok {
-			continue
+			return nil
 		}
 		var params struct {
 			Result struct {
@@ -305,16 +301,17 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(paramsRaw, &params); err != nil {
-			continue
+			return nil
 		}
 		headNum, err := parseHexUint64(params.Result.Number)
 		if err != nil || headNum == 0 {
-			continue
+			return nil
 		}
 		if err := w.processBlocks(ctx, headNum); err != nil {
 			return err
 		}
-	}
+		return nil
+	})
 }
 
 func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint64) error {

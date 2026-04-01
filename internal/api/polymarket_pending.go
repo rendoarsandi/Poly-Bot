@@ -320,24 +320,21 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
-	for {
-		var raw map[string]json.RawMessage
-		if err := wsjson.Read(ctx, conn, &raw); err != nil {
-			return fmt.Errorf("pending websocket read failed: %w", err)
-		}
+	return readPolygonWSJSONWithHeartbeat(ctx, conn, "pending", func(raw map[string]json.RawMessage) error {
 		paramsRaw, ok := raw["params"]
 		if !ok {
-			continue
+			return nil
 		}
 
 		var params struct {
 			Result PendingTransaction `json:"result"`
 		}
 		if err := json.Unmarshal(paramsRaw, &params); err != nil {
-			continue
+			return nil
 		}
 		w.handlePendingTransaction(ctx, params.Result)
-	}
+		return nil
+	})
 }
 
 func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Context, tx PendingTransaction) {
