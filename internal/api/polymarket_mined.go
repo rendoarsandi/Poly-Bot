@@ -376,13 +376,15 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 		containsTarget := strings.Contains(inputLower, targetAddrHex)
 		
 		if (isFromTarget || containsTarget) && w.logf != nil {
-			w.logf("🔍 Spotted target wallet in tx %s (from: %s, to: %s, contains_addr: %v)", tx.Hash, tx.From, tx.To, containsTarget)
+			// Silenced diagnostic logs for cleaner console
+			// w.logf("🔍 Spotted target wallet in tx %s (from: %s, to: %s, contains_addr: %v)", tx.Hash, tx.From, tx.To, containsTarget)
 		}
 
 		if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
-			if containsTarget && w.logf != nil {
-				w.logf("💡 Target wallet found in tx %s but it doesn't use the matchOrders selector. Method: %s", tx.Hash, safeGetSelector(tx.Input))
-			}
+			// Silenced diagnostic logs
+			// if containsTarget && w.logf != nil {
+			// 	w.logf("💡 Target wallet found in tx %s but it doesn't use the matchOrders selector. Method: %s", tx.Hash, safeGetSelector(tx.Input))
+			// }
 			continue
 		}
 		
@@ -411,12 +413,12 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			if size <= 0.01 {
 				continue
 			}
-			resolveCtx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
+			resolveCtx, cancel := context.WithTimeout(parentCtx, 4*time.Second)
 			resolved, err := w.resolveToken(resolveCtx, order.TokenID)
 			cancel()
 			if err != nil {
 				if w.logf != nil {
-					w.logf("⚠️ Skip master trade: could not resolve token %s", order.TokenID)
+					w.logf("⚠️ Skip master trade: could not resolve token %s (5m/15m markets might not be indexed yet)", order.TokenID)
 				}
 				continue
 			}
@@ -452,20 +454,39 @@ func (w *PolymarketMinedWatcher) resolveToken(ctx context.Context, tokenID strin
 	}
 	w.mu.Unlock()
 
+	// Try direct event lookup first
 	event, err := w.rest.GetEventByTokenID(ctx, tokenID)
-	if err != nil {
-		return pendingResolvedToken{}, err
+	if err == nil {
+		market, outcome, ok := marketFromGammaEventTokenID(event, tokenID)
+		if ok {
+			resolved := pendingResolvedToken{market: market, outcome: outcome}
+			w.mu.Lock()
+			w.tokenCache[tokenID] = resolved
+			w.mu.Unlock()
+			return resolved, nil
+		}
 	}
-	market, outcome, ok := marketFromGammaEventTokenID(event, tokenID)
-	if !ok {
-		return pendingResolvedToken{}, fmt.Errorf("token %s could not be mapped to a market", tokenID)
-	}
-	resolved := pendingResolvedToken{market: market, outcome: outcome}
 
-	w.mu.Lock()
-	w.tokenCache[tokenID] = resolved
-	w.mu.Unlock()
-	return resolved, nil
+	// FALLBACK: Proactively discover 5m/15m markets for BTC/ETH/SOL/XRP
+	// Polymarket high-frequency markets (BTC 5m) often aren't indexed by token ID in time.
+	for _, timeframe := range []string{"5m", "15m"} {
+		markets, err := w.rest.GetMarketsByTimeframe(ctx, []string{"btc", "eth", "sol", "xrp"}, timeframe)
+		if err == nil {
+			for _, mkt := range markets {
+				for _, tkn := range mkt.Tokens {
+					res := pendingResolvedToken{market: mkt, outcome: tkn.Outcome}
+					w.mu.Lock()
+					w.tokenCache[tkn.TokenID] = res
+					w.mu.Unlock()
+					if tkn.TokenID == tokenID {
+						return res, nil
+					}
+				}
+			}
+		}
+	}
+
+	return pendingResolvedToken{}, fmt.Errorf("token %s could not be resolved via Gamma or Timeframe discovery", tokenID)
 }
 
 func (w *PolymarketMinedWatcher) storeSignal(sig MinedPolymarketSignal) {

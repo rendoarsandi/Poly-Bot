@@ -2308,7 +2308,8 @@ func run() error {
 		copytradeTarget := paperbotCopytradeTarget{}
 
 		// Find all available markets (BTC, ETH, SOL, XRP)
-		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active markets based on live settings...")
+		// Silenced repetitive market search logs
+		// logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "MARKET_SEARCH", "Searching for active markets based on live settings...")
 		var markets map[string]*api.Market
 		if arbMode == paperArbModeCopytrade {
 			resolveCtx, resolveCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -3057,7 +3058,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					}
 					t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
 				} else {
-					t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
+					// Silenced redundant "No positions to redeem" log
+					// t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
 				}
 
 				if t.CSVLogger != nil {

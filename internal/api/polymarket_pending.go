@@ -396,8 +396,13 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 	}
 	isFromTarget := strings.EqualFold(tx.From, w.targetWallet) || strings.EqualFold(tx.To, w.targetWallet)
 	
+	// Brute force check for target address anywhere in input (for large batch trades)
+	targetAddrHex := strings.TrimPrefix(strings.ToLower(w.targetWallet), "0x")
+	containsTarget := strings.Contains(strings.ToLower(tx.Input), targetAddrHex)
+
 	if isFromTarget && w.logf != nil {
-		w.logf("🛰️ Mempool activity from target wallet: %s (to %s)", tx.Hash, tx.To)
+		// Silenced diagnostic mempool log
+		// w.logf("🛰️ Mempool activity from target wallet: %s (to %s)", tx.Hash, tx.To)
 	}
 
 	if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
@@ -405,7 +410,7 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 	}
 	orders, err := DecodePolymarketMatchOrdersInput(tx.Input)
 	if err != nil || len(orders) == 0 {
-		if isFromTarget && w.logf != nil {
+		if (isFromTarget || containsTarget) && w.logf != nil {
 			w.logf("⚠️ Failed to decode mempool orders from target: %v", err)
 		}
 		return
@@ -417,7 +422,7 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		}
 		
 		if w.logf != nil {
-			w.logf("🎯 Found master trade in mempool: %s", tx.Hash)
+			w.logf("⚡ Spotted target trade in MEMPOOL %s (order index %d)", tx.Hash, idx)
 		}
 
 		side := order.sideString()
@@ -428,12 +433,12 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		if size <= 0.01 {
 			continue
 		}
-		resolveCtx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
+		resolveCtx, cancel := context.WithTimeout(parentCtx, 4*time.Second)
 		resolved, err := w.resolveToken(resolveCtx, order.TokenID)
 		cancel()
 		if err != nil {
 			if w.logf != nil {
-				w.logf("⚠️ Skip mempool trade: could not resolve token %s", order.TokenID)
+				w.logf("⚠️ Skip mempool trade: could not resolve token %s (might be too new)", order.TokenID)
 			}
 			continue
 		}
@@ -466,20 +471,38 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 	}
 	w.mu.Unlock()
 
+	// Try direct event lookup first
 	event, err := w.rest.GetEventByTokenID(ctx, tokenID)
-	if err != nil {
-		return pendingResolvedToken{}, err
+	if err == nil {
+		market, outcome, ok := marketFromGammaEventTokenID(event, tokenID)
+		if ok {
+			resolved := pendingResolvedToken{market: market, outcome: outcome}
+			w.mu.Lock()
+			w.tokenCache[tokenID] = resolved
+			w.mu.Unlock()
+			return resolved, nil
+		}
 	}
-	market, outcome, ok := marketFromGammaEventTokenID(event, tokenID)
-	if !ok {
-		return pendingResolvedToken{}, fmt.Errorf("token %s could not be mapped to a market", tokenID)
-	}
-	resolved := pendingResolvedToken{market: market, outcome: outcome}
 
-	w.mu.Lock()
-	w.tokenCache[tokenID] = resolved
-	w.mu.Unlock()
-	return resolved, nil
+	// FALLBACK: Proactively discover 5m/15m markets for BTC/ETH/SOL/XRP
+	for _, timeframe := range []string{"5m", "15m"} {
+		markets, err := w.rest.GetMarketsByTimeframe(ctx, []string{"btc", "eth", "sol", "xrp"}, timeframe)
+		if err == nil {
+			for _, mkt := range markets {
+				for _, tkn := range mkt.Tokens {
+					res := pendingResolvedToken{market: mkt, outcome: tkn.Outcome}
+					w.mu.Lock()
+					w.tokenCache[tkn.TokenID] = res
+					w.mu.Unlock()
+					if tkn.TokenID == tokenID {
+						return res, nil
+					}
+				}
+			}
+		}
+	}
+
+	return pendingResolvedToken{}, fmt.Errorf("token %s could not be resolved in mempool", tokenID)
 }
 
 func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) {
