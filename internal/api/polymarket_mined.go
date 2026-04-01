@@ -192,8 +192,13 @@ func (w *PolymarketMinedWatcher) run(ctx context.Context, logf func(string, ...i
 		if ctx.Err() != nil {
 			return
 		}
-		delay := backoff
-		if err := w.runSession(ctx); err != nil && ctx.Err() == nil {
+		
+		sessionStart := time.Now()
+		err := w.runSession(ctx)
+		sessionDuration := time.Since(sessionStart)
+
+		if err != nil && ctx.Err() == nil {
+			delay := backoff
 			var dialErr *polygonWSDialError
 			if errors.As(err, &dialErr) {
 				if !dialErr.retryable() {
@@ -204,19 +209,35 @@ func (w *PolymarketMinedWatcher) run(ctx context.Context, logf func(string, ...i
 				}
 				delay = dialErr.retryDelay(backoff)
 			}
+			
 			if logf != nil {
 				logf("⚠️ Copytrade mined watcher reconnecting: %v", err)
 			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
-		}
-		if delay > backoff {
-			backoff = delay
-		} else if backoff < 8*time.Second {
-			backoff *= 2
+
+			// Add jitter to avoid multiple watchers syncing reconnects
+			jitter := time.Duration(100+((sessionStart.UnixNano()%500)*1000000)) * time.Nanosecond
+			
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay + jitter):
+			}
+
+			// Update backoff for next time
+			if delay > backoff {
+				backoff = delay
+			} else if backoff < 60*time.Second {
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			}
+		} else if err == nil {
+			// Successful session ended without error (likely context done)
+			// Reset backoff ONLY if the session was long enough to be considered stable
+			if sessionDuration > 30*time.Second {
+				backoff = time.Second
+			}
 		}
 	}
 }
