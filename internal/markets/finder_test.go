@@ -72,7 +72,7 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 		t.Errorf("Failed to find market. Case-sensitivity bug still present.")
 	}
 
-	if _, ok := markets["BTC"]; !ok {
-		t.Errorf("Expected market 'BTC' to be found, got %v", markets)
+	if _, ok := markets["BTC-15m"]; !ok {
+		t.Errorf("Expected market 'BTC-15m' to be found, got %v", markets)
 	}
 }

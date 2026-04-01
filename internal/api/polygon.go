@@ -377,6 +377,7 @@ type Transaction struct {
 
 type FullBlockTransaction struct {
 	Hash        string `json:"hash"`
+	From        string `json:"from"`
 	To          string `json:"to"`
 	Input       string `json:"input"`
 	BlockNumber string `json:"blockNumber"`

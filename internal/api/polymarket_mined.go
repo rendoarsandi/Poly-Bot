@@ -41,6 +41,7 @@ type PolymarketMinedWatcher struct {
 	tokenCache map[string]pendingResolvedToken
 	started    bool
 	lastBlock  uint64
+	logf       func(string, ...interface{})
 }
 
 func NewPolymarketMinedWatcher(wsURL string, polygon *PolygonClient, rest *RestClient, targetWallet string) *PolymarketMinedWatcher {
@@ -142,6 +143,14 @@ func (w *PolymarketMinedWatcher) PrimeTrackedMarkets(markets []*Market) {
 	}
 }
 
+func safeGetSelector(input string) string {
+	input = strings.TrimPrefix(input, "0x")
+	if len(input) >= 8 {
+		return "0x" + input[:8]
+	}
+	return "0x"
+}
+
 func (w *PolymarketMinedWatcher) SignalsSince(conditionID string, since time.Time) []MinedPolymarketSignal {
 	if w == nil {
 		return nil
@@ -188,12 +197,13 @@ func (w *PolymarketMinedWatcher) Start(ctx context.Context, logf func(string, ..
 		return
 	}
 	w.started = true
+	w.logf = logf
 	w.mu.Unlock()
 
-	go w.run(ctx, logf)
+	go w.run(ctx)
 }
 
-func (w *PolymarketMinedWatcher) run(ctx context.Context, logf func(string, ...interface{})) {
+func (w *PolymarketMinedWatcher) run(ctx context.Context) {
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -209,16 +219,16 @@ func (w *PolymarketMinedWatcher) run(ctx context.Context, logf func(string, ...i
 			var dialErr *polygonWSDialError
 			if errors.As(err, &dialErr) {
 				if !dialErr.retryable() {
-					if logf != nil {
-						logf("⚠️ Copytrade mined watcher stopped: %v", err)
+					if w.logf != nil {
+						w.logf("⚠️ Copytrade mined watcher stopped: %v", err)
 					}
 					return
 				}
 				delay = dialErr.retryDelay(backoff)
 			}
 			
-			if logf != nil {
-				logf("⚠️ Copytrade mined watcher reconnecting: %v", err)
+			if w.logf != nil {
+				w.logf("⚠️ Copytrade mined watcher reconnecting: %v", err)
 			}
 
 			// Add jitter to avoid multiple watchers syncing reconnects
@@ -359,21 +369,28 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 		observedAt = time.Unix(blockTimestamp, 0)
 	}
 
+	targetAddrHex := strings.TrimPrefix(strings.ToLower(w.targetWallet), "0x")
+
 	for _, tx := range block.Transactions {
+		inputLower := strings.ToLower(tx.Input)
 		isFromTarget := strings.EqualFold(tx.From, w.targetWallet) || strings.EqualFold(tx.To, w.targetWallet)
+		containsTarget := strings.Contains(inputLower, targetAddrHex)
 		
-		if isFromTarget && logf != nil {
-			logf("🔍 Activity from target wallet: %s (to %s, input len %d)", tx.Hash, tx.To, len(tx.Input))
+		if (isFromTarget || containsTarget) && w.logf != nil {
+			w.logf("🔍 Spotted target wallet in tx %s (from: %s, to: %s, contains_addr: %v)", tx.Hash, tx.From, tx.To, containsTarget)
 		}
 
 		if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
+			if containsTarget && w.logf != nil {
+				w.logf("💡 Target wallet found in tx %s but it doesn't use the matchOrders selector. Method: %s", tx.Hash, safeGetSelector(tx.Input))
+			}
 			continue
 		}
 		
 		orders, err := DecodePolymarketMatchOrdersInput(tx.Input)
 		if err != nil || len(orders) == 0 {
-			if isFromTarget && logf != nil {
-				logf("⚠️ Failed to decode orders from target wallet tx: %v", err)
+			if isFromTarget && w.logf != nil {
+				w.logf("⚠️ Failed to decode orders from target wallet tx: %v", err)
 			}
 			continue
 		}
@@ -383,8 +400,8 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 				continue
 			}
 			
-			if logf != nil {
-				logf("🎯 Found master trade in %s (order index %d)", tx.Hash, idx)
+			if w.logf != nil {
+				w.logf("🎯 Found master trade in %s (order index %d)", tx.Hash, idx)
 			}
 
 			side := order.sideString()
@@ -399,8 +416,8 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			resolved, err := w.resolveToken(resolveCtx, order.TokenID)
 			cancel()
 			if err != nil {
-				if logf != nil {
-					logf("⚠️ Skip master trade: could not resolve token %s", order.TokenID)
+				if w.logf != nil {
+					w.logf("⚠️ Skip master trade: could not resolve token %s", order.TokenID)
 				}
 				continue
 			}
