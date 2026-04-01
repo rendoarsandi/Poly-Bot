@@ -84,9 +84,16 @@ func normalizePolygonWSURL(rawURL string) string {
 		return parsed.String()
 	case "https":
 		parsed.Scheme = "wss"
+		// Infura requires /ws/v3/ for WebSockets, but the HTTP endpoint is just /v3/
+		if strings.Contains(strings.ToLower(parsed.Host), "infura.io") && !strings.Contains(strings.ToLower(parsed.Path), "/ws/") {
+			parsed.Path = "/ws" + parsed.Path
+		}
 		return parsed.String()
 	case "http":
 		parsed.Scheme = "ws"
+		if strings.Contains(strings.ToLower(parsed.Host), "infura.io") && !strings.Contains(strings.ToLower(parsed.Path), "/ws/") {
+			parsed.Path = "/ws" + parsed.Path
+		}
 		return parsed.String()
 	default:
 		return ""
