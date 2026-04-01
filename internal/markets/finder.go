@@ -78,21 +78,33 @@ func FindMarkets(
 		var markets []api.Market
 		var exactMarkets []api.Market
 
-		// Always fetch both 15m and 5m for maximum coverage, unless a specific timeframe is enforced
-		// The user steering specifically requested adding both 5m and 15m
-		markets15m, err15m := restClient.GetMarketsByTimeframe(ctx, assets, "15m")
-		if err15m == nil {
-			markets = append(markets, markets15m...)
+		// Fetch the primary requested timeframe first so it takes priority
+		primaryMarkets, errPrimary := restClient.GetMarketsByTimeframe(ctx, assets, timeframe)
+		if errPrimary == nil {
+			markets = append(markets, primaryMarkets...)
 		}
 
-		markets5m, err5m := restClient.GetMarketsByTimeframe(ctx, assets, "5m")
-		if err5m == nil {
-			markets = append(markets, markets5m...)
+		// If the user didn't request a specific timeframe, or if they requested 15m/5m,
+		// we fetch the other one to provide maximum coverage for copytrading.
+		secondaryTimeframe := ""
+		if timeframe == "15m" {
+			secondaryTimeframe = "5m"
+		} else if timeframe == "5m" {
+			secondaryTimeframe = "15m"
 		}
 
-		if err15m != nil && err5m != nil {
+		var errSecondary error
+		if secondaryTimeframe != "" {
+			secondaryMarkets, errSec := restClient.GetMarketsByTimeframe(ctx, assets, secondaryTimeframe)
+			errSecondary = errSec
+			if errSecondary == nil {
+				markets = append(markets, secondaryMarkets...)
+			}
+		}
+
+		if errPrimary != nil && (secondaryTimeframe == "" || errSecondary != nil) {
 			if attempts == 0 && logFn != nil {
-				logFn("⚠️ Market fetch error: 15m=%v, 5m=%v, retrying...", err15m, err5m)
+				logFn("⚠️ Market fetch error: primary=%v, secondary=%v, retrying...", errPrimary, errSecondary)
 			}
 			// Don't immediately continue, allow exact slug fallback
 		}
@@ -131,9 +143,9 @@ func FindMarkets(
 			}
 
 			slug := strings.ToLower(m.Slug)
-			// Ensure strict matching for timeframe (e.g. "-5m-" instead of just "5m" which matches "15m")
+			// Ensure matching for both 5m and 15m timeframes to provide maximum coverage
 			// For Kalshi, we bypass this check since timeframe isn't directly in the slug like this
-			isTargetTimeframe := strings.Contains(slug, "-"+timeframe+"-") || restClient.Exchange == "kalshi"
+			isTargetTimeframe := strings.Contains(slug, "-15m-") || strings.Contains(slug, "-5m-") || restClient.Exchange == "kalshi"
 
 			// If it's an exact market, bypass the strict name checks
 			isExactMatch := false
@@ -145,9 +157,9 @@ func FindMarkets(
 			}
 
 			for _, asset := range assets {
-				key := strings.ToUpper(asset)
 				// If it's an exact match, register it directly using the slug as the key
 				if isExactMatch && strings.ToLower(asset) == slug {
+					key := strings.ToUpper(asset)
 					mCopy := m
 					found[key] = &mCopy
 					if len(found) >= maxMarkets {
@@ -157,11 +169,18 @@ func FindMarkets(
 				}
 
 				// Otherwise, use the standard timeframe pattern matching
-				if _, exists := found[key]; !isExactMatch && !exists && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
-					mCopy := m
-					found[key] = &mCopy
-					if len(found) >= maxMarkets {
-						return found
+				if !isExactMatch && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
+					tfSuffix := "15m"
+					if strings.Contains(slug, "-5m-") {
+						tfSuffix = "5m"
+					}
+					key := strings.ToUpper(asset) + "-" + tfSuffix
+					if _, exists := found[key]; !exists {
+						mCopy := m
+						found[key] = &mCopy
+						if len(found) >= maxMarkets {
+							return found
+						}
 					}
 				}
 			}
