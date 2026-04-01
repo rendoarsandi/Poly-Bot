@@ -70,7 +70,7 @@ type PolymarketPendingWatcher struct {
 func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, polygon *PolygonClient, targetWallet string) *PolymarketPendingWatcher {
 	wsURL = strings.TrimSpace(wsURL)
 	targetWallet = NormalizeWalletAddress(targetWallet)
-	if wsURL == "" || rest == nil || polygon == nil || !IsWalletAddress(targetWallet) {
+	if wsURL == "" || !SupportsPolymarketPendingWSURL(wsURL) || rest == nil || polygon == nil || !IsWalletAddress(targetWallet) {
 		return nil
 	}
 	return &PolymarketPendingWatcher{
@@ -126,8 +126,21 @@ func normalizePendingWSURL(rawURL string) string {
 	}
 }
 
+func SupportsPolymarketPendingWSURL(rawURL string) bool {
+	normalized := normalizePendingWSURL(rawURL)
+	if normalized == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(parsed.Host), "alchemy")
+}
+
 func (w *PolymarketPendingWatcher) Enabled() bool {
-	return w != nil && w.wsURL != "" && w.rest != nil && IsWalletAddress(w.targetWallet)
+	return w != nil && w.wsURL != "" && SupportsPolymarketPendingWSURL(w.wsURL) && w.rest != nil && IsWalletAddress(w.targetWallet)
 }
 
 func (w *PolymarketPendingWatcher) PrimeTrackedMarkets(markets []*Market) {

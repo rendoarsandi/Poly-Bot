@@ -86,6 +86,43 @@ func TestResolvePolymarketPendingWSURL(t *testing.T) {
 			t.Fatalf("unexpected resolved url %q want %q", got, want)
 		}
 	})
+
+	t.Run("normalizes infura websocket path", func(t *testing.T) {
+		got := ResolvePolymarketPendingWSURL(
+			"",
+			"https://polygon-mainnet.infura.io/v3/key",
+		)
+		want := "wss://polygon-mainnet.infura.io/ws/v3/key"
+		if got != want {
+			t.Fatalf("unexpected resolved url %q want %q", got, want)
+		}
+	})
+}
+
+func TestSupportsPolymarketPendingWSURL(t *testing.T) {
+	t.Run("accepts alchemy", func(t *testing.T) {
+		if !SupportsPolymarketPendingWSURL("https://polygon-mainnet.g.alchemy.com/v2/key") {
+			t.Fatal("expected alchemy ws url to support pending filtering")
+		}
+	})
+
+	t.Run("rejects infura", func(t *testing.T) {
+		if SupportsPolymarketPendingWSURL("https://polygon-mainnet.infura.io/v3/key") {
+			t.Fatal("expected infura ws url to skip pending filtering")
+		}
+	})
+}
+
+func TestNewPolymarketPendingWatcherRejectsNonAlchemy(t *testing.T) {
+	watcher := NewPolymarketPendingWatcher(
+		"https://polygon-mainnet.infura.io/v3/key",
+		&RestClient{},
+		&PolygonClient{},
+		"0x0000000000000000000000000000000000000001",
+	)
+	if watcher != nil {
+		t.Fatal("expected non-alchemy pending watcher to be rejected")
+	}
 }
 
 func TestPolymarketPendingWatcherPrimeTrackedMarkets(t *testing.T) {

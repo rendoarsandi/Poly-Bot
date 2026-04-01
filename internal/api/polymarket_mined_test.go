@@ -22,6 +22,14 @@ func TestResolvePolygonWSURL(t *testing.T) {
 			t.Fatalf("unexpected resolved ws url %q want %q", got, want)
 		}
 	})
+
+	t.Run("normalizes infura fallback", func(t *testing.T) {
+		got := ResolvePolygonWSURL("", "https://polygon-mainnet.infura.io/v3/key")
+		want := "wss://polygon-mainnet.infura.io/ws/v3/key"
+		if got != want {
+			t.Fatalf("unexpected resolved ws url %q want %q", got, want)
+		}
+	})
 }
 
 func TestPolymarketMinedWatcherPrimeTrackedMarkets(t *testing.T) {

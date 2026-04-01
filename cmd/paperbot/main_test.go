@@ -302,6 +302,23 @@ func TestPaperbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testin
 	}
 }
 
+func TestPaperbotMergeCopytradeTradesDedupesWatcherAndPublicSameTx(t *testing.T) {
+	watcherTrades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:asset-a:BUY"},
+	}
+	publicTrades := paperbotPrepareCopytradeTrades([]api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Asset: "asset-a", Timestamp: 1002, TransactionHash: "0xtx"},
+	}, "public")
+
+	got := paperbotMergeCopytradeTrades(watcherTrades, publicTrades)
+	if len(got) != 1 {
+		t.Fatalf("expected watcher/public duplicate tx to merge into one trade, got %d", len(got))
+	}
+	if got[0].Source != "mempool" {
+		t.Fatalf("expected watcher trade to win merge precedence, got source %q", got[0].Source)
+	}
+}
+
 func TestPaperbotCopytradeFreshTradesKeepsDistinctPublicTradesSameTx(t *testing.T) {
 	state := newPaperbotCopytradeState()
 	state.startedAt = time.Unix(1000, 0)
@@ -336,7 +353,7 @@ func TestPaperbotCopytradeFreshTradesKeepsIdenticalPublicTradesSameTx(t *testing
 func TestPaperbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *testing.T) {
 	state := newPaperbotCopytradeState()
 	state.startedAt = time.Unix(1000, 0)
-	
+
 	// Poll 1: sees 3 identical trades
 	trades1 := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
@@ -357,7 +374,7 @@ func TestPaperbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *te
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 	}
-	
+
 	got2 := paperbotCopytradeFreshTrades(state, trades2, "cond-1")
 	if len(got2) != 2 {
 		t.Fatalf("Poll 2: expected 2 fresh trades (3 already seen, 5 total in poll), got %d", len(got2))

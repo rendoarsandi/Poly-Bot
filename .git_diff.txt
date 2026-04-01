@@ -1,0 +1,232 @@
+diff --git a/cmd/paperbot/main.go b/cmd/paperbot/main.go
+index 7460b6e..b395573 100644
+--- a/cmd/paperbot/main.go
++++ b/cmd/paperbot/main.go
+@@ -1137,11 +1137,11 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
+ 	fresh := make([]api.PublicTrade, 0, len(filtered))
+ 	currentPollCounts := make(map[string]int)
+ 	for _, trade := range filtered {
+ 		baseKey := paperbotCopytradeTradeKey(trade)
+ 		currentPollCounts[baseKey]++
+-		
++
+ 		totalSeen := state.seenTradeKeysCount[baseKey]
+ 		if currentPollCounts[baseKey] > totalSeen {
+ 			state.seenTradeKeysCount[baseKey] = currentPollCounts[baseKey]
+ 			state.seenTradeKeys[fmt.Sprintf("%s#%d", baseKey, currentPollCounts[baseKey])] = now
+ 			fresh = append(fresh, trade)
+@@ -2383,17 +2383,21 @@ func run() error {
+ 					})
+ 					copytradePoller.minedWatcher = watcher
+ 					tui.LogEvent("⛓️ Copytrade onchain watcher enabled for %s", copytradeTarget.Wallet)
+ 				}
+ 				pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), cfg.PolygonRPCURL)
+-				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
+-					watcher.PrimeTrackedMarkets(trackedMarkets)
+-					watcher.Start(roundCtx, func(format string, args ...interface{}) {
+-						tui.LogEvent(format, args...)
+-					})
+-					copytradePoller.pendingWatcher = watcher
+-					tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
++				if api.SupportsPolymarketPendingWSURL(pendingWSURL) {
++					if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
++						watcher.PrimeTrackedMarkets(trackedMarkets)
++						watcher.Start(roundCtx, func(format string, args ...interface{}) {
++							tui.LogEvent(format, args...)
++						})
++						copytradePoller.pendingWatcher = watcher
++						tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
++					}
++				} else if pendingWSURL != "" {
++					tui.LogEvent("ℹ️ Copytrade mempool watcher skipped: pending filtering requires Alchemy; using standard Polygon WS for onchain watcher only")
+ 				}
+ 				if !paperbotCopytradeHasOnchainWatcher(copytradePoller) {
+ 					tui.LogEvent("⚠️ Copytrade watchers (mempool/onchain) disabled; using slower REST polling")
+ 				}
+ 			}
+@@ -4641,13 +4645,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
+ 				// t.TUI.LogEvent("[%s] 📬 Received %d watcher signals", t.ID, len(combinedTrades))
+ 			}
+ 			polledTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
+ 			state.lastError = ""
+ 		} else {
+-				// Note: Public REST polling has been explicitly disabled for copytrading
+-				// per request to "disable the public api".
+-				// Do not fallback to polling API.
++			// Note: Public REST polling has been explicitly disabled for copytrading
++			// per request to "disable the public api".
++			// Do not fallback to polling API.
+ 			state.lastError = ""
+ 		}
+ 	}
+ 	for _, signal := range polledTrades {
+ 		paperbotObserveCopytradeBuySignal(state, signal)
+diff --git a/cmd/realbot/main.go b/cmd/realbot/main.go
+index 28dc94e..ff58db4 100644
+--- a/cmd/realbot/main.go
++++ b/cmd/realbot/main.go
+@@ -1982,17 +1982,21 @@ func run() error {
+ 					})
+ 					copytradePoller.minedWatcher = watcher
+ 					tui.LogEvent("⛓️ Copytrade onchain watcher enabled for %s", copytradeTarget.Wallet)
+ 				}
+ 				pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), cfg.PolygonRPCURL)
+-				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
+-					watcher.PrimeTrackedMarkets(trackedMarkets)
+-					watcher.Start(ctx, func(format string, args ...interface{}) {
+-						tui.LogEvent(format, args...)
+-					})
+-					copytradePoller.pendingWatcher = watcher
+-					tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
++				if api.SupportsPolymarketPendingWSURL(pendingWSURL) {
++					if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
++						watcher.PrimeTrackedMarkets(trackedMarkets)
++						watcher.Start(ctx, func(format string, args ...interface{}) {
++							tui.LogEvent(format, args...)
++						})
++						copytradePoller.pendingWatcher = watcher
++						tui.LogEvent("🛰️ Copytrade mempool watcher enabled for %s", copytradeTarget.Wallet)
++					}
++				} else if pendingWSURL != "" {
++					tui.LogEvent("ℹ️ Copytrade mempool watcher skipped: pending filtering requires Alchemy; using standard Polygon WS for onchain watcher only")
+ 				}
+ 				if !realbotCopytradeHasOnchainWatcher(copytradePoller) {
+ 					tui.LogEvent("⚠️ Copytrade watchers (mempool/onchain) disabled; using slower REST polling")
+ 				}
+ 			}
+@@ -7334,13 +7338,13 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
+ 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
+ 			}
+ 			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
+ 			state.lastError = ""
+ 		} else {
+-				// Note: Public REST polling has been explicitly disabled for copytrading
+-				// per request to "disable the public api".
+-				// Do not fallback to polling API.
++			// Note: Public REST polling has been explicitly disabled for copytrading
++			// per request to "disable the public api".
++			// Do not fallback to polling API.
+ 			state.lastError = ""
+ 		}
+ 	}
+ 	for _, trade := range polledTrades {
+ 		realbotObserveCopytradeBuySignal(state, trade)
+diff --git a/internal/api/polymarket_mined_test.go b/internal/api/polymarket_mined_test.go
+index 994b26d..2f982ce 100644
+--- a/internal/api/polymarket_mined_test.go
++++ b/internal/api/polymarket_mined_test.go
+@@ -20,10 +20,18 @@ func TestResolvePolygonWSURL(t *testing.T) {
+ 		want := "wss://rpc.example/ws"
+ 		if got != want {
+ 			t.Fatalf("unexpected resolved ws url %q want %q", got, want)
+ 		}
+ 	})
++
++	t.Run("normalizes infura fallback", func(t *testing.T) {
++		got := ResolvePolygonWSURL("", "https://polygon-mainnet.infura.io/v3/key")
++		want := "wss://polygon-mainnet.infura.io/ws/v3/key"
++		if got != want {
++			t.Fatalf("unexpected resolved ws url %q want %q", got, want)
++		}
++	})
+ }
+ 
+ func TestPolymarketMinedWatcherPrimeTrackedMarkets(t *testing.T) {
+ 	watcher := &PolymarketMinedWatcher{
+ 		tokenCache: make(map[string]pendingResolvedToken),
+diff --git a/internal/api/polymarket_pending.go b/internal/api/polymarket_pending.go
+index fe7aa64..f694dd9 100644
+--- a/internal/api/polymarket_pending.go
++++ b/internal/api/polymarket_pending.go
+@@ -68,11 +68,11 @@ type PolymarketPendingWatcher struct {
+ }
+ 
+ func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, polygon *PolygonClient, targetWallet string) *PolymarketPendingWatcher {
+ 	wsURL = strings.TrimSpace(wsURL)
+ 	targetWallet = NormalizeWalletAddress(targetWallet)
+-	if wsURL == "" || rest == nil || polygon == nil || !IsWalletAddress(targetWallet) {
++	if wsURL == "" || !SupportsPolymarketPendingWSURL(wsURL) || rest == nil || polygon == nil || !IsWalletAddress(targetWallet) {
+ 		return nil
+ 	}
+ 	return &PolymarketPendingWatcher{
+ 		wsURL:        wsURL,
+ 		rest:         rest,
+@@ -124,12 +124,25 @@ func normalizePendingWSURL(rawURL string) string {
+ 	default:
+ 		return ""
+ 	}
+ }
+ 
++func SupportsPolymarketPendingWSURL(rawURL string) bool {
++	normalized := normalizePendingWSURL(rawURL)
++	if normalized == "" {
++		return false
++	}
++
++	parsed, err := url.Parse(normalized)
++	if err != nil {
++		return false
++	}
++	return strings.Contains(strings.ToLower(parsed.Host), "alchemy")
++}
++
+ func (w *PolymarketPendingWatcher) Enabled() bool {
+-	return w != nil && w.wsURL != "" && w.rest != nil && IsWalletAddress(w.targetWallet)
++	return w != nil && w.wsURL != "" && SupportsPolymarketPendingWSURL(w.wsURL) && w.rest != nil && IsWalletAddress(w.targetWallet)
+ }
+ 
+ func (w *PolymarketPendingWatcher) PrimeTrackedMarkets(markets []*Market) {
+ 	if w == nil {
+ 		return
+diff --git a/internal/api/polymarket_pending_test.go b/internal/api/polymarket_pending_test.go
+index 94f4b13..d37b588 100644
+--- a/internal/api/polymarket_pending_test.go
++++ b/internal/api/polymarket_pending_test.go
+@@ -84,10 +84,47 @@ func TestResolvePolymarketPendingWSURL(t *testing.T) {
+ 		want := "wss://polygon-mainnet.g.alchemy.com/v2/fallback"
+ 		if got != want {
+ 			t.Fatalf("unexpected resolved url %q want %q", got, want)
+ 		}
+ 	})
++
++	t.Run("normalizes infura websocket path", func(t *testing.T) {
++		got := ResolvePolymarketPendingWSURL(
++			"",
++			"https://polygon-mainnet.infura.io/v3/key",
++		)
++		want := "wss://polygon-mainnet.infura.io/ws/v3/key"
++		if got != want {
++			t.Fatalf("unexpected resolved url %q want %q", got, want)
++		}
++	})
++}
++
++func TestSupportsPolymarketPendingWSURL(t *testing.T) {
++	t.Run("accepts alchemy", func(t *testing.T) {
++		if !SupportsPolymarketPendingWSURL("https://polygon-mainnet.g.alchemy.com/v2/key") {
++			t.Fatal("expected alchemy ws url to support pending filtering")
++		}
++	})
++
++	t.Run("rejects infura", func(t *testing.T) {
++		if SupportsPolymarketPendingWSURL("https://polygon-mainnet.infura.io/v3/key") {
++			t.Fatal("expected infura ws url to skip pending filtering")
++		}
++	})
++}
++
++func TestNewPolymarketPendingWatcherRejectsNonAlchemy(t *testing.T) {
++	watcher := NewPolymarketPendingWatcher(
++		"https://polygon-mainnet.infura.io/v3/key",
++		&RestClient{},
++		&PolygonClient{},
++		"0x0000000000000000000000000000000000000001",
++	)
++	if watcher != nil {
++		t.Fatal("expected non-alchemy pending watcher to be rejected")
++	}
+ }
+ 
+ func TestPolymarketPendingWatcherPrimeTrackedMarkets(t *testing.T) {
+ 	watcher := &PolymarketPendingWatcher{
+ 		tokenCache: make(map[string]pendingResolvedToken),
