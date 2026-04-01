@@ -226,13 +226,13 @@ func (w *PolymarketPendingWatcher) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		
+
 		sessionStart := time.Now()
 		err := w.runSession(ctx)
 		sessionDuration := time.Since(sessionStart)
 
 		if err != nil && ctx.Err() == nil {
-			delay := backoff
+			delay := polygonWSRetryDelay(err, backoff)
 			var dialErr *polygonWSDialError
 			if errors.As(err, &dialErr) {
 				if !dialErr.retryable() {
@@ -241,16 +241,15 @@ func (w *PolymarketPendingWatcher) run(ctx context.Context) {
 					}
 					return
 				}
-				delay = dialErr.retryDelay(backoff)
 			}
-			
+
 			if w.logf != nil {
-				w.logf("⚠️ Copytrade mempool watcher reconnecting: %v", err)
+				w.logf("⚠️ Copytrade mempool watcher reconnecting in %s: %v", delay.Round(time.Second), err)
 			}
 
 			// Add jitter to avoid multiple watchers syncing reconnects
 			jitter := time.Duration(100+((sessionStart.UnixNano()%500)*1000000)) * time.Nanosecond
-			
+
 			select {
 			case <-ctx.Done():
 				return
@@ -330,7 +329,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		
+
 		var params struct {
 			Result PendingTransaction `json:"result"`
 		}
@@ -346,7 +345,7 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		return
 	}
 	isFromTarget := strings.EqualFold(tx.From, w.targetWallet) || strings.EqualFold(tx.To, w.targetWallet)
-	
+
 	// Brute force check for target address anywhere in input (for large batch trades)
 	targetAddrHex := strings.TrimPrefix(strings.ToLower(w.targetWallet), "0x")
 	containsTarget := strings.Contains(strings.ToLower(tx.Input), targetAddrHex)
@@ -489,12 +488,12 @@ func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) {
 
 func DecodePolymarketMatchOrdersInput(input string) ([]decodedPolymarketOrder, error) {
 	input = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input)), "0x")
-	
+
 	idx := strings.Index(input, polymarketMatchOrdersSelector[2:])
 	if idx == -1 {
 		return nil, fmt.Errorf("unsupported function selector")
 	}
-	
+
 	words, err := splitPendingHexWords(input[idx+8:])
 	if err != nil {
 		return nil, err

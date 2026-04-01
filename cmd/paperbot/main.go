@@ -2362,6 +2362,9 @@ func run() error {
 			condSet[market.ConditionID] = struct{}{}
 			condIDs = append(condIDs, market.ConditionID)
 		}
+		// Create a context for this specific round of trading
+		roundCtx, roundCancel := context.WithCancel(ctx)
+
 		copytradePoller := (*paperbotCopytradePoller)(nil)
 		if arbMode == paperArbModeCopytrade {
 			copytradePoller = newPaperbotCopytradePoller(copytradeTarget.Wallet, condIDs)
@@ -2375,7 +2378,7 @@ func run() error {
 				chainWSURL := api.ResolvePolygonWSURL(os.Getenv("POLYGON_WS_URL"), cfg.PolygonRPCURL)
 				if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.PrimeTrackedMarkets(trackedMarkets)
-					watcher.Start(ctx, func(format string, args ...interface{}) {
+					watcher.Start(roundCtx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
 					})
 					copytradePoller.minedWatcher = watcher
@@ -2384,7 +2387,7 @@ func run() error {
 				pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), cfg.PolygonRPCURL)
 				if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.PrimeTrackedMarkets(trackedMarkets)
-					watcher.Start(ctx, func(format string, args ...interface{}) {
+					watcher.Start(roundCtx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
 					})
 					copytradePoller.pendingWatcher = watcher
@@ -2401,9 +2404,6 @@ func run() error {
 		roundStartTrades := engine.GetStats().TotalTrades
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "ROUND_START", "Round starting with %d markets | Multiplier: %.2fx", len(markets), compoundMultiplier)
-
-		// Create a context for this specific round of trading
-		roundCtx, roundCancel := context.WithCancel(ctx)
 
 		// Create traders for all found markets
 		var wg sync.WaitGroup

@@ -152,6 +152,14 @@ func safeGetSelector(input string) string {
 	return "0x"
 }
 
+func shortHexForLog(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) > 10 {
+		return raw[:10] + "..."
+	}
+	return raw
+}
+
 func (w *PolymarketMinedWatcher) SignalsSince(conditionID string, since time.Time) []MinedPolymarketSignal {
 	if w == nil {
 		return nil
@@ -210,13 +218,13 @@ func (w *PolymarketMinedWatcher) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		
+
 		sessionStart := time.Now()
 		err := w.runSession(ctx)
 		sessionDuration := time.Since(sessionStart)
 
 		if err != nil && ctx.Err() == nil {
-			delay := backoff
+			delay := polygonWSRetryDelay(err, backoff)
 			var dialErr *polygonWSDialError
 			if errors.As(err, &dialErr) {
 				if !dialErr.retryable() {
@@ -225,16 +233,15 @@ func (w *PolymarketMinedWatcher) run(ctx context.Context) {
 					}
 					return
 				}
-				delay = dialErr.retryDelay(backoff)
 			}
-			
+
 			if w.logf != nil {
-				w.logf("⚠️ Copytrade mined watcher reconnecting: %v", err)
+				w.logf("⚠️ Copytrade mined watcher reconnecting in %s: %v", delay.Round(time.Second), err)
 			}
 
 			// Add jitter to avoid multiple watchers syncing reconnects
 			jitter := time.Duration(100+((sessionStart.UnixNano()%500)*1000000)) * time.Nanosecond
-			
+
 			select {
 			case <-ctx.Done():
 				return
@@ -325,13 +332,13 @@ func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint
 	for blockNum := start; blockNum <= headNum; blockNum++ {
 		var block *FullBlock
 		var err error
-		
+
 		// Retry block fetch up to 3 times if it returns null (common on Infura/Alchemy indexing lag)
 		for attempt := 0; attempt < 3; attempt++ {
 			blockCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			block, err = w.polygon.GetFullBlockByNumber(blockCtx, blockNum)
 			cancel()
-			
+
 			if err != nil {
 				return fmt.Errorf("get block %d failed: %w", blockNum, err)
 			}
@@ -364,8 +371,8 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 		return
 	}
 	blockNumber, _ := parseHexUint64(block.Number)
-	// For copytrading, we MUST use the current arrival time. 
-	// If we use blockTimestamp, the trader might skip it because it looks "old" 
+	// For copytrading, we MUST use the current arrival time.
+	// If we use blockTimestamp, the trader might skip it because it looks "old"
 	// (mined blocks are always in the past).
 	observedAt := time.Now()
 
@@ -375,7 +382,7 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 		inputLower := strings.ToLower(tx.Input)
 		isFromTarget := strings.EqualFold(tx.From, w.targetWallet) || strings.EqualFold(tx.To, w.targetWallet)
 		containsTarget := strings.Contains(inputLower, targetAddrHex)
-		
+
 		if (isFromTarget || containsTarget) && w.logf != nil {
 			// Silenced diagnostic logs for cleaner console
 			// w.logf("🔍 Spotted target wallet in tx %s (from: %s, to: %s, contains_addr: %v)", tx.Hash, tx.From, tx.To, containsTarget)
@@ -388,7 +395,7 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			// }
 			continue
 		}
-		
+
 		orders, err := DecodePolymarketMatchOrdersInput(tx.Input)
 		if err != nil || len(orders) == 0 {
 			if isFromTarget && w.logf != nil {
@@ -402,12 +409,12 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			side    string
 		}
 		aggregatedSizes := make(map[aggKey]float64)
-		
+
 		for _, order := range orders {
 			if !strings.EqualFold(order.Maker, w.targetWallet) && !strings.EqualFold(order.Signer, w.targetWallet) && !strings.EqualFold(order.Taker, w.targetWallet) {
 				continue
 			}
-			
+
 			side := order.sideString()
 			if side == "" {
 				continue
@@ -420,8 +427,14 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 		}
 
 		for key, totalSize := range aggregatedSizes {
-			if w.logf != nil {
-				w.logf("🎯 Found master trade in %s (Token: %s, Side: %s, Total Size: %.2f)", tx.Hash, key.tokenID, key.side, totalSize)
+			signalID := fmt.Sprintf("%s:%s:%s", strings.TrimSpace(tx.Hash), key.tokenID, key.side)
+
+			w.mu.Lock()
+			seenAt, exists := w.seen[signalID]
+			w.mu.Unlock()
+
+			if exists && time.Since(seenAt) < 5*time.Minute {
+				continue
 			}
 
 			resolveCtx, cancel := context.WithTimeout(parentCtx, 4*time.Second)
@@ -435,7 +448,7 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			}
 			sig := MinedPolymarketSignal{
 				ObservedAt:     observedAt,
-				SignalID:       fmt.Sprintf("%s:%s:%s", strings.TrimSpace(tx.Hash), key.tokenID, key.side),
+				SignalID:       signalID,
 				TxHash:         strings.TrimSpace(tx.Hash),
 				Wallet:         w.targetWallet,
 				TokenID:        key.tokenID,
@@ -447,7 +460,19 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 				BlockNumber:    blockNumber,
 				BlockTimestamp: observedAt.Unix(),
 			}
-			w.storeSignal(sig)
+			if !w.storeSignal(sig) {
+				continue
+			}
+			if w.logf != nil {
+				marketLabel := strings.TrimSpace(resolved.market.Slug)
+				if marketLabel == "" {
+					marketLabel = strings.TrimSpace(resolved.market.MarketSlug)
+				}
+				if marketLabel == "" {
+					marketLabel = strings.TrimSpace(resolved.market.ConditionID)
+				}
+				w.logf("🎯 Master %s %.2f %s on %s (%s)", key.side, totalSize, resolved.outcome, marketLabel, shortHexForLog(tx.Hash))
+			}
 		}
 	}
 }
@@ -512,7 +537,7 @@ func (w *PolymarketMinedWatcher) resolveToken(ctx context.Context, tokenID strin
 	return pendingResolvedToken{}, fmt.Errorf("token %s could not be resolved via Gamma or Timeframe discovery", tokenID)
 }
 
-func (w *PolymarketMinedWatcher) storeSignal(sig MinedPolymarketSignal) {
+func (w *PolymarketMinedWatcher) storeSignal(sig MinedPolymarketSignal) bool {
 	key := strings.TrimSpace(sig.SignalID)
 	if key == "" {
 		key = fmt.Sprintf("%s|%s|%s|%s|%.6f", sig.TxHash, sig.TokenID, sig.Outcome, sig.Side, sig.Size)
@@ -523,11 +548,12 @@ func (w *PolymarketMinedWatcher) storeSignal(sig MinedPolymarketSignal) {
 	defer w.mu.Unlock()
 
 	if seenAt, exists := w.seen[key]; exists && now.Sub(seenAt) < 5*time.Minute {
-		return
+		return false
 	}
 	w.seen[key] = now
 	w.recent = append(w.recent, sig)
 	if len(w.recent) > 512 {
 		w.recent = append([]MinedPolymarketSignal(nil), w.recent[len(w.recent)-512:]...)
 	}
+	return true
 }

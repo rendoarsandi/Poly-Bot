@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestResolvePolygonWSURL(t *testing.T) {
@@ -50,5 +51,29 @@ func TestPolymarketMinedWatcherPrimeTrackedMarkets(t *testing.T) {
 	}
 	if resolved.outcome != "Down" {
 		t.Fatalf("unexpected outcome %q", resolved.outcome)
+	}
+}
+
+func TestPolymarketMinedWatcherStoreSignalDedupes(t *testing.T) {
+	watcher := &PolymarketMinedWatcher{
+		seen: make(map[string]time.Time),
+	}
+	sig := MinedPolymarketSignal{
+		SignalID: "tx:token:BUY",
+		TxHash:   "0xtx",
+		TokenID:  "token",
+		Outcome:  "Up",
+		Side:     "BUY",
+		Size:     5,
+	}
+
+	if stored := watcher.storeSignal(sig); !stored {
+		t.Fatalf("expected first signal to be stored")
+	}
+	if stored := watcher.storeSignal(sig); stored {
+		t.Fatalf("expected duplicate signal to be ignored")
+	}
+	if len(watcher.recent) != 1 {
+		t.Fatalf("unexpected recent signal count %d", len(watcher.recent))
 	}
 }

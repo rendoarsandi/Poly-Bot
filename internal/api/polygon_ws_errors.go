@@ -1,11 +1,19 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
+)
+
+const (
+	polygonWSRateLimitMinDelay       = 30 * time.Second
+	polygonWSPolicyViolationMinDelay = 10 * time.Second
 )
 
 type polygonWSDialError struct {
@@ -56,10 +64,59 @@ func (e *polygonWSDialError) retryDelay(defaultDelay time.Duration) time.Duratio
 	if e.retryAfter > 0 {
 		return e.retryAfter
 	}
-	if e.statusCode == http.StatusTooManyRequests && defaultDelay < 30*time.Second {
-		return 30 * time.Second
+	if e.statusCode == http.StatusTooManyRequests && defaultDelay < polygonWSRateLimitMinDelay {
+		return polygonWSRateLimitMinDelay
 	}
 	return defaultDelay
+}
+
+func polygonWSRetryDelay(err error, defaultDelay time.Duration) time.Duration {
+	if defaultDelay <= 0 {
+		defaultDelay = time.Second
+	}
+
+	var dialErr *polygonWSDialError
+	if errors.As(err, &dialErr) {
+		return dialErr.retryDelay(defaultDelay)
+	}
+
+	if delay, ok := polygonWSCloseRetryDelay(err, defaultDelay); ok {
+		return delay
+	}
+	return defaultDelay
+}
+
+func polygonWSCloseRetryDelay(err error, defaultDelay time.Duration) (time.Duration, bool) {
+	if err == nil {
+		return defaultDelay, false
+	}
+
+	var closeErr websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		return defaultDelay, false
+	}
+
+	reason := strings.ToLower(strings.TrimSpace(closeErr.Reason))
+	switch closeErr.Code {
+	case websocket.StatusPolicyViolation:
+		if strings.Contains(reason, "too many requests") || strings.Contains(reason, "rate limit") {
+			if defaultDelay < polygonWSRateLimitMinDelay {
+				return polygonWSRateLimitMinDelay, true
+			}
+			return defaultDelay, true
+		}
+		if defaultDelay < polygonWSPolicyViolationMinDelay {
+			return polygonWSPolicyViolationMinDelay, true
+		}
+		return defaultDelay, true
+	case websocket.StatusTryAgainLater:
+		if defaultDelay < polygonWSRateLimitMinDelay {
+			return polygonWSRateLimitMinDelay, true
+		}
+		return defaultDelay, true
+	default:
+		return defaultDelay, false
+	}
 }
 
 func newPolygonWSDialError(source string, resp *http.Response, err error) error {

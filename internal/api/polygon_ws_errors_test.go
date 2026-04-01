@@ -2,9 +2,12 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestParseRetryAfter(t *testing.T) {
@@ -58,5 +61,16 @@ func TestPolygonWSDialErrorRetryDelay(t *testing.T) {
 	err.retryAfter = 45 * time.Second
 	if got := err.retryDelay(time.Second); got != 45*time.Second {
 		t.Fatalf("unexpected retry-after delay %v", got)
+	}
+}
+
+func TestPolygonWSRetryDelayClosePolicyViolation(t *testing.T) {
+	err := fmt.Errorf("mined websocket read failed: %w", websocket.CloseError{
+		Code:   websocket.StatusPolicyViolation,
+		Reason: "Too Many Requests",
+	})
+
+	if got := polygonWSRetryDelay(err, time.Second); got != 30*time.Second {
+		t.Fatalf("unexpected policy violation retry delay %v", got)
 	}
 }
