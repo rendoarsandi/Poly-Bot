@@ -312,12 +312,29 @@ func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint
 	w.mu.Unlock()
 
 	for blockNum := start; blockNum <= headNum; blockNum++ {
-		blockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		block, err := w.polygon.GetFullBlockByNumber(blockCtx, blockNum)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("get block %d failed: %w", blockNum, err)
+		var block *FullBlock
+		var err error
+		
+		// Retry block fetch up to 3 times if it returns null (common on Infura/Alchemy indexing lag)
+		for attempt := 0; attempt < 3; attempt++ {
+			blockCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			block, err = w.polygon.GetFullBlockByNumber(blockCtx, blockNum)
+			cancel()
+			
+			if err != nil {
+				return fmt.Errorf("get block %d failed: %w", blockNum, err)
+			}
+			if block != nil {
+				break
+			}
+			// Block is null, wait a bit and retry
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
 		}
+
 		if block == nil {
 			continue
 		}
