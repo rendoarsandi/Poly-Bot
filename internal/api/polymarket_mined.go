@@ -364,10 +364,10 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 	}
 	blockNumber, _ := parseHexUint64(block.Number)
 	blockTimestamp, _ := parseHexInt64(block.Timestamp)
+	// For copytrading, we MUST use the current arrival time. 
+	// If we use blockTimestamp, the trader might skip it because it looks "old" 
+	// (mined blocks are always in the past).
 	observedAt := time.Now()
-	if blockTimestamp > 0 {
-		observedAt = time.Unix(blockTimestamp, 0)
-	}
 
 	targetAddrHex := strings.TrimPrefix(strings.ToLower(w.targetWallet), "0x")
 

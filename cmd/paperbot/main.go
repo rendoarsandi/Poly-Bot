@@ -4635,6 +4635,9 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), combinedTrades...)
 			}
+			if len(combinedTrades) > 0 {
+				t.TUI.LogEvent("[%s] 📬 Received %d watcher signals", t.ID, len(combinedTrades))
+			}
 			polledTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
 			state.lastError = ""
 		} else {
