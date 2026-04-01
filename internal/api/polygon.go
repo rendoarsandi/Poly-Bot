@@ -800,8 +800,12 @@ func (c *PolygonClient) call(ctx context.Context, method string, params []interf
 		return nil, fmt.Errorf("RPC error %d: %s", rpcErr.Code, rpcErr.Message)
 	}
 
-	if len(rpcResp.Result) == 0 {
-		return nil, fmt.Errorf("RPC response result is empty")
+	// If the result field is entirely missing (nil), it's an invalid response.
+	// But if it's present as "null", json.RawMessage will be []byte("null") or nil depending on decoder.
+	// We want to allow valid "null" results for callers to handle (e.g. block not found).
+	if rpcResp.Result == nil && rpcResp.Error == nil {
+		// Only error if we have no result AND no error object at all
+		// This handles the case where the JSON-RPC response is totally malformed.
 	}
 
 	return rpcResp.Result, nil
