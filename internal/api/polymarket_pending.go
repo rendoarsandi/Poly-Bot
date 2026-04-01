@@ -294,13 +294,19 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		method = "alchemy_pendingTransactions"
 	}
 
-	params := []interface{}{method}
-	if method == "alchemy_pendingTransactions" {
-		params = append(params, map[string]interface{}{
-			"toAddress":  []string{CTFExchange, NegRiskExchange, RouterExchange, w.targetWallet},
-			"hashesOnly": false,
-		})
+	if method != "alchemy_pendingTransactions" {
+		if w.logf != nil {
+			w.logf("⚠️ Mempool watcher disabled: Only Alchemy RPCs support efficient pending transaction filtering. Standard RPCs require 1000+ req/s and will get banned.")
+		}
+		// Gracefully exit the loop without erroring, the mined watcher will handle trades.
+		<-ctx.Done()
+		return nil
 	}
+
+	params := append([]interface{}{method}, map[string]interface{}{
+		"toAddress":  []string{CTFExchange, NegRiskExchange, RouterExchange, w.targetWallet},
+		"hashesOnly": false,
+	})
 
 	subReq := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -315,78 +321,23 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
-	txHashes := make(chan string, 10000)
-	if method == "newPendingTransactions" {
-		// Rate limit standard RPC queries to ~10 req/s to avoid spamming public nodes
-		rateLimiter := time.NewTicker(100 * time.Millisecond)
-		defer rateLimiter.Stop()
-
-		for i := 0; i < 5; i++ { // Reduced worker count to avoid connection spikes
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case txHash, ok := <-txHashes:
-						if !ok {
-							return
-						}
-						select {
-						case <-ctx.Done():
-							return
-						case <-rateLimiter.C:
-						}
-						txCtx, txCancel := context.WithTimeout(ctx, 3*time.Second)
-						tx, err := w.polygon.GetTransactionByHash(txCtx, txHash)
-						txCancel()
-						if err == nil && tx != nil {
-							w.handlePendingTransaction(ctx, PendingTransaction{
-								Hash:  tx.Hash,
-								From:  tx.From,
-								To:    tx.To,
-								Input: tx.Input,
-							})
-						}
-					}
-				}
-			}()
-		}
-	}
-
 	for {
 		var raw map[string]json.RawMessage
 		if err := wsjson.Read(ctx, conn, &raw); err != nil {
-			close(txHashes)
 			return fmt.Errorf("pending websocket read failed: %w", err)
 		}
 		paramsRaw, ok := raw["params"]
 		if !ok {
 			continue
 		}
-		if method == "newPendingTransactions" {
-			var params struct {
-				Result string `json:"result"`
-			}
-			if err := json.Unmarshal(paramsRaw, &params); err != nil {
-				continue
-			}
-			if params.Result != "" {
-				select {
-				case txHashes <- params.Result:
-				default:
-				}
-			}
-		} else {
-			var params struct {
-				Result PendingTransaction `json:"result"`
-			}
-			if err := json.Unmarshal(paramsRaw, &params); err != nil {
-				continue
-			}
-			w.handlePendingTransaction(ctx, params.Result)
+		
+		var params struct {
+			Result PendingTransaction `json:"result"`
 		}
+		if err := json.Unmarshal(paramsRaw, &params); err != nil {
+			continue
+		}
+		w.handlePendingTransaction(ctx, params.Result)
 	}
 }
 

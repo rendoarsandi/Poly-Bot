@@ -35,13 +35,14 @@ type PolymarketMinedWatcher struct {
 	rest         *RestClient
 	targetWallet string
 
-	mu         sync.Mutex
-	recent     []MinedPolymarketSignal
-	seen       map[string]time.Time
-	tokenCache map[string]pendingResolvedToken
-	started    bool
-	lastBlock  uint64
-	logf       func(string, ...interface{})
+	mu                    sync.Mutex
+	recent                []MinedPolymarketSignal
+	seen                  map[string]time.Time
+	tokenCache            map[string]pendingResolvedToken
+	lastDiscoveryFallback time.Time
+	started               bool
+	lastBlock             uint64
+	logf                  func(string, ...interface{})
 }
 
 func NewPolymarketMinedWatcher(wsURL string, polygon *PolygonClient, rest *RestClient, targetWallet string) *PolymarketMinedWatcher {
@@ -466,6 +467,18 @@ func (w *PolymarketMinedWatcher) resolveToken(ctx context.Context, tokenID strin
 			return resolved, nil
 		}
 	}
+
+	w.mu.Lock()
+	canFallback := time.Since(w.lastDiscoveryFallback) > 5*time.Second
+	w.mu.Unlock()
+
+	if !canFallback {
+		return pendingResolvedToken{}, fmt.Errorf("token %s not found and discovery fallback is cooling down", tokenID)
+	}
+
+	w.mu.Lock()
+	w.lastDiscoveryFallback = time.Now()
+	w.mu.Unlock()
 
 	// FALLBACK: Proactively discover 5m/15m markets for BTC/ETH/SOL/XRP
 	// Polymarket high-frequency markets (BTC 5m) often aren't indexed by token ID in time.
