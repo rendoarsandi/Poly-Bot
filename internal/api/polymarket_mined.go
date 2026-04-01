@@ -232,6 +232,7 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 		return newPolygonWSDialError("mined", resp, err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(5 * 1024 * 1024) // 5MB limit for full block payloads
 
 	subReq := map[string]interface{}{
 		"jsonrpc": "2.0",

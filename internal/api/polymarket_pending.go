@@ -257,6 +257,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		return newPolygonWSDialError("pending", resp, err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(1024 * 1024) // 1MB limit for full transaction payloads
 
 	method := "newPendingTransactions"
 	if strings.Contains(strings.ToLower(w.wsURL), "alchemy") {
