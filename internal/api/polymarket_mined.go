@@ -396,16 +396,18 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			}
 			continue
 		}
+
+		type aggKey struct {
+			tokenID string
+			side    string
+		}
+		aggregatedSizes := make(map[aggKey]float64)
 		
-		for idx, order := range orders {
+		for _, order := range orders {
 			if !strings.EqualFold(order.Maker, w.targetWallet) && !strings.EqualFold(order.Signer, w.targetWallet) && !strings.EqualFold(order.Taker, w.targetWallet) {
 				continue
 			}
 			
-			if w.logf != nil {
-				w.logf("🎯 Found master trade in %s (order index %d)", tx.Hash, idx)
-			}
-
 			side := order.sideString()
 			if side == "" {
 				continue
@@ -414,26 +416,34 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			if size <= 0.01 {
 				continue
 			}
+			aggregatedSizes[aggKey{tokenID: order.TokenID, side: side}] += size
+		}
+
+		for key, totalSize := range aggregatedSizes {
+			if w.logf != nil {
+				w.logf("🎯 Found master trade in %s (Token: %s, Side: %s, Total Size: %.2f)", tx.Hash, key.tokenID, key.side, totalSize)
+			}
+
 			resolveCtx, cancel := context.WithTimeout(parentCtx, 4*time.Second)
-			resolved, err := w.resolveToken(resolveCtx, order.TokenID)
+			resolved, err := w.resolveToken(resolveCtx, key.tokenID)
 			cancel()
 			if err != nil {
 				if w.logf != nil {
-					w.logf("⚠️ Skip master trade: could not resolve token %s (5m/15m markets might not be indexed yet)", order.TokenID)
+					w.logf("⚠️ Skip master trade: could not resolve token %s (5m/15m markets might not be indexed yet)", key.tokenID)
 				}
 				continue
 			}
 			sig := MinedPolymarketSignal{
 				ObservedAt:     observedAt,
-				SignalID:       fmt.Sprintf("%s:%d", strings.TrimSpace(tx.Hash), idx),
+				SignalID:       fmt.Sprintf("%s:%s:%s", strings.TrimSpace(tx.Hash), key.tokenID, key.side),
 				TxHash:         strings.TrimSpace(tx.Hash),
 				Wallet:         w.targetWallet,
-				TokenID:        order.TokenID,
+				TokenID:        key.tokenID,
 				ConditionID:    resolved.market.ConditionID,
 				Slug:           resolved.market.Slug,
 				Outcome:        resolved.outcome,
-				Side:           side,
-				Size:           size,
+				Side:           key.side,
+				Size:           totalSize,
 				BlockNumber:    blockNumber,
 				BlockTimestamp: observedAt.Unix(),
 			}

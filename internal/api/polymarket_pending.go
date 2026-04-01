@@ -367,13 +367,16 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		return
 	}
 	observedAt := time.Now()
-	for idx, order := range orders {
+
+	type aggKey struct {
+		tokenID string
+		side    string
+	}
+	aggregatedSizes := make(map[aggKey]float64)
+
+	for _, order := range orders {
 		if !strings.EqualFold(order.Maker, w.targetWallet) && !strings.EqualFold(order.Signer, w.targetWallet) && !strings.EqualFold(order.Taker, w.targetWallet) {
 			continue
-		}
-		
-		if w.logf != nil {
-			w.logf("⚡ Spotted target trade in MEMPOOL %s (order index %d)", tx.Hash, idx)
 		}
 
 		side := order.sideString()
@@ -384,26 +387,34 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		if size <= 0.01 {
 			continue
 		}
+		aggregatedSizes[aggKey{tokenID: order.TokenID, side: side}] += size
+	}
+
+	for key, totalSize := range aggregatedSizes {
+		if w.logf != nil {
+			w.logf("⚡ Spotted target trade in MEMPOOL %s (Token: %s, Side: %s, Total Size: %.2f)", tx.Hash, key.tokenID, key.side, totalSize)
+		}
+
 		resolveCtx, cancel := context.WithTimeout(parentCtx, 4*time.Second)
-		resolved, err := w.resolveToken(resolveCtx, order.TokenID)
+		resolved, err := w.resolveToken(resolveCtx, key.tokenID)
 		cancel()
 		if err != nil {
 			if w.logf != nil {
-				w.logf("⚠️ Skip mempool trade: could not resolve token %s (might be too new)", order.TokenID)
+				w.logf("⚠️ Skip mempool trade: could not resolve token %s (might be too new)", key.tokenID)
 			}
 			continue
 		}
 		sig := PendingPolymarketSignal{
 			ObservedAt:  observedAt,
-			SignalID:    fmt.Sprintf("%s:%d", strings.TrimSpace(tx.Hash), idx),
+			SignalID:    fmt.Sprintf("%s:%s:%s", strings.TrimSpace(tx.Hash), key.tokenID, key.side),
 			TxHash:      strings.TrimSpace(tx.Hash),
 			Wallet:      w.targetWallet,
-			TokenID:     order.TokenID,
+			TokenID:     key.tokenID,
 			ConditionID: resolved.market.ConditionID,
 			Slug:        resolved.market.Slug,
 			Outcome:     resolved.outcome,
-			Side:        side,
-			Size:        size,
+			Side:        key.side,
+			Size:        totalSize,
 		}
 		w.storeSignal(sig)
 	}

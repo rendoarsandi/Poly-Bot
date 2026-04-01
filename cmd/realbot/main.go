@@ -7389,11 +7389,11 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				feeRate = 1000
 			}
 			ask := 0.0
-			quoteSource := "WS"
+			// quoteSource := "WS"
 			if localAsk, _, ok := realbotCanUseLocalTakerCloseQuote(time.Now(), outcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, realbotTakerCloseLocalMaxAge); ok {
 				ask = localAsk
 			} else {
-				quoteSource = "REST"
+				// quoteSource = "REST"
 				restCtx, restCancel := context.WithTimeout(ctx, realbotTakerCloseRESTTimeout)
 				_, restAsk, restErr := restClient.GetBestBidAsk(restCtx, tokenID)
 				restCancel()
@@ -7457,8 +7457,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					label = "position"
 				}
 			}
-			tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
-				marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
+			// tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
+			//	marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
@@ -7513,11 +7513,11 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				feeRate = 1000
 			}
 			bid := 0.0
-			quoteSource := "WS"
+			// quoteSource := "WS"
 			if localBid, _, ok := realbotCanUseLocalCopytradeSellQuote(time.Now(), outcome, tokenBids, tokenAsks, tokenFullBids, quoteState, realbotTakerCloseLocalMaxAge); ok {
 				bid = localBid
 			} else {
-				quoteSource = "REST"
+				// quoteSource = "REST"
 				restCtx, restCancel := context.WithTimeout(ctx, realbotTakerCloseRESTTimeout)
 				restBid, _, restErr := restClient.GetBestBidAsk(restCtx, tokenID)
 				restCancel()
@@ -7568,8 +7568,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					label = "position"
 				}
 			}
-			tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %s %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
-				marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
+			// tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %s %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
+			//	marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
 			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideSell, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
 			tradeCancel()
