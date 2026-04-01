@@ -363,7 +363,6 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 		return
 	}
 	blockNumber, _ := parseHexUint64(block.Number)
-	blockTimestamp, _ := parseHexInt64(block.Timestamp)
 	// For copytrading, we MUST use the current arrival time. 
 	// If we use blockTimestamp, the trader might skip it because it looks "old" 
 	// (mined blocks are always in the past).
@@ -433,7 +432,7 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 				Side:           side,
 				Size:           size,
 				BlockNumber:    blockNumber,
-				BlockTimestamp: blockTimestamp,
+				BlockTimestamp: observedAt.Unix(),
 			}
 			w.storeSignal(sig)
 		}

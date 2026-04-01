@@ -2424,7 +2424,7 @@ func run() error {
 			outcomes := mkt.GetOutcomes(market)
 			tui.AddMarket(marketID, market.Slug, outcomes, endTime)
 			// Reduced logging: Only TUI for startup info
-			tui.LogEvent("🚀 Trading %s: %s", marketID, market.Slug)
+			// tui.LogEvent("🚀 Trading %s: %s", marketID, market.Slug)
 
 			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache, copytradeTarget, copytradePoller)
 			wg.Add(1)
@@ -2454,7 +2454,7 @@ func run() error {
 			}(marketID, trader)
 		}
 
-		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "TRADERS_RUNNING", "Started %d concurrent market traders", tradersStarted)
+		// logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "TRADERS_RUNNING", "Started %d concurrent market traders", tradersStarted)
 
 		// Goroutine to monitor for TUI restart requests
 		go func() {
@@ -2678,8 +2678,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	// This ensures we exit shortly after the market should have resolved
 	safetyBuffer := 1 * time.Minute
 	traderDeadline := t.EndTime.Add(safetyBuffer)
-	timeUntilDeadline := time.Until(traderDeadline)
-	t.TUI.LogEvent("[%s] ⏰ Timeout: %v (expires + 1m)", t.ID, timeUntilDeadline.Round(time.Second))
+	// timeUntilDeadline := time.Until(traderDeadline)
+	// t.TUI.LogEvent("[%s] ⏰ Timeout: %v (expires + 1m)", t.ID, timeUntilDeadline.Round(time.Second))
 
 	// Subscribe to Order Books
 	var assetIDs []string
@@ -2704,7 +2704,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	// Start WebSocket streaming in background
 
 	wsMsgChan := wsMgr.StartStreaming(ctx)
-	t.TUI.LogEvent("[%s] 📡 WebSocket streaming started", t.ID)
+	// t.TUI.LogEvent("[%s] 📡 WebSocket streaming started", t.ID)
 
 	// Order fill callback
 	t.OrderBook.SetFillCallback(func(order *paper.LimitOrder, fillQty, fillPrice float64) {
@@ -3076,7 +3076,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 		if marketState == paper.MarketStateEnding && !t.MarketEnded {
 			if !t.LaddersPlaced {
-				t.TUI.LogEvent("[%s] ⏳ Market ending in %v...", t.ID, timeToEnd.Round(time.Second))
+				// t.TUI.LogEvent("[%s] ⏳ Market ending in %v...", t.ID, timeToEnd.Round(time.Second))
 				t.LaddersPlaced = true
 			}
 		}
