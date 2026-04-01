@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -784,6 +786,7 @@ func (c *PolygonClient) call(ctx context.Context, method string, params []interf
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -791,9 +794,32 @@ func (c *PolygonClient) call(ctx context.Context, method string, params []interf
 	}
 	defer resp.Body.Close()
 
+	var reader io.ReadCloser = resp.Body
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		var err error
+		reader, err = gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer reader.Close()
+	}
+
+	bodyBytes, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read RPC response body (status %d): %w", resp.StatusCode, err)
+	}
+
+	if len(bodyBytes) == 0 {
+		return nil, fmt.Errorf("empty RPC response body (status %d)", resp.StatusCode)
+	}
+
 	var rpcResp RPCResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-		return nil, fmt.Errorf("failed to decode RPC response: %w", err)
+	if err := json.Unmarshal(bodyBytes, &rpcResp); err != nil {
+		snippet := string(bodyBytes)
+		if len(snippet) > 100 {
+			snippet = snippet[len(snippet)-100:]
+		}
+		return nil, fmt.Errorf("failed to unmarshal RPC response (status %d, len %d): %w | tail: %s", resp.StatusCode, len(bodyBytes), err, snippet)
 	}
 
 	if rpcErr := rpcError(rpcResp.Error); rpcErr != nil {
