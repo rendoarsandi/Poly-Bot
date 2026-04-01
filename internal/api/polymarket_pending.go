@@ -266,7 +266,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	params := []interface{}{method}
 	if method == "alchemy_pendingTransactions" {
 		params = append(params, map[string]interface{}{
-			"toAddress":  []string{CTFExchange, NegRiskExchange, w.targetWallet},
+			"toAddress":  []string{CTFExchange, NegRiskExchange, RouterExchange, w.targetWallet},
 			"hashesOnly": false,
 		})
 	}

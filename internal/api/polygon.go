@@ -24,6 +24,9 @@ const CTFExchange = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 // Polygon Negative Risk Exchange (Multi-outcome) contract address
 const NegRiskExchange = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 
+// Polymarket Exchange Router (used by web UI for matching)
+const RouterExchange = "0xE3f18aCc55091E2C48d883fc8C8413319D4aB7b0"
+
 const (
 	polygonInitialReceiptPollInterval = 2 * time.Second
 	polygonMaxReceiptPollInterval     = 5 * time.Second
