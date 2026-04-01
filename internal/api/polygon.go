@@ -800,6 +800,10 @@ func (c *PolygonClient) call(ctx context.Context, method string, params []interf
 		return nil, fmt.Errorf("RPC error %d: %s", rpcErr.Code, rpcErr.Message)
 	}
 
+	if len(rpcResp.Result) == 0 {
+		return nil, fmt.Errorf("RPC response result is empty")
+	}
+
 	return rpcResp.Result, nil
 }
 

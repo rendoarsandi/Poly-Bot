@@ -28,7 +28,7 @@ const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
 // handshake overhead.  Response bodies are still capped via io.LimitReader
 // (maxResponseBodySize) at every call site to prevent unbounded reads.
 var httpClient = &http.Client{
-	Timeout: 10 * time.Second,
+	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
 		MaxIdleConns:          500,
 		MaxIdleConnsPerHost:   500,
