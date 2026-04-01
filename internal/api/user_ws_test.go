@@ -141,7 +141,7 @@ func TestUserWSClientSubscribeMarketsSendsAuthAndDynamicSubscribe(t *testing.T) 
 		t.Fatalf("initial subscribe failed: %v", err)
 	}
 	first := <-messages
-	if first["type"] != "user" {
+	if first["type"] != "market" {
 		t.Fatalf("expected initial auth subscription, got %+v", first)
 	}
 	markets, ok := first["markets"].([]any)
@@ -201,7 +201,7 @@ func TestUserWSClientSubscribeMarketsReconnectsAfterClosedConn(t *testing.T) {
 		t.Fatalf("initial subscribe failed: %v", err)
 	}
 	first := <-messages
-	if first["type"] != "user" {
+	if first["type"] != "market" {
 		t.Fatalf("expected initial auth payload, got %+v", first)
 	}
 
@@ -214,7 +214,7 @@ func TestUserWSClientSubscribeMarketsReconnectsAfterClosedConn(t *testing.T) {
 		t.Fatalf("expected closed connection to recover, got error: %v", err)
 	}
 	second := <-messages
-	if second["type"] != "user" {
+	if second["type"] != "market" {
 		t.Fatalf("expected reconnect auth payload, got %+v", second)
 	}
 	markets, ok := second["markets"].([]any)

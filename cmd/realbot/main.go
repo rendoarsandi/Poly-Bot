@@ -77,6 +77,8 @@ const (
 	realbotMakerCashUsagePerOutcome  = 0.35
 )
 
+var globalResWatcher *api.ResolutionWatcher
+
 var realbotMakerStrategyParams = strategy.MakerParams{
 	QuoteStep:           realbotMakerQuoteStep,
 	DefaultQuoteGap:     realbotMakerBaseOffset,
@@ -1652,6 +1654,7 @@ func run() error {
 	// Resolution cache for on-chain market resolution checking (shared across all traders)
 	// Realbot has polygon client for on-chain checks and exchange client for CLOB API
 	resolutionCache := api.NewResolutionCache(polygonClient, realTrader.Exchange(), restClient)
+
 	// emergencyCleanup ensures we don't leave hanging orders or unmerged positions
 	emergencyCleanup := func() {
 		// Give the overall cleanup up to 45 seconds, but each merge gets its own context
@@ -1783,6 +1786,23 @@ func run() error {
 	orderBook := paper.NewOrderBook()
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real") // Show "Real Trading Mode" in footer (not "Paper Trading Mode")
+
+	globalResWatcher = api.NewResolutionWatcher(cfg.PolygonRPCURL)
+	if globalResWatcher != nil {
+		globalResWatcher.Start(context.Background(), func(format string, args ...interface{}) {
+			tui.LogEvent(format, args...)
+		})
+	}
+
+	invWatcher := api.NewInventoryWatcher(cfg.PolygonRPCURL, realTrader.Address())
+	if invWatcher != nil {
+		invWatcher.Start(context.Background(), func(format string, args ...interface{}) {
+			tui.LogEvent(format, args...)
+		})
+		invWatcher.RegisterCallback(func() {
+			realTrader.InvalidateCTFBalanceCache()
+		})
+	}
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
 	} else {
@@ -6303,6 +6323,18 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 
 	numOutcomes := len(outcomes)
 
+	wsResCh := make(chan struct{}, 1)
+	if globalResWatcher != nil {
+		globalResWatcher.RegisterCallback(func(eventCondID string) {
+			if strings.EqualFold(eventCondID, conditionID) {
+				select {
+				case wsResCh <- struct{}{}:
+				default:
+				}
+			}
+		})
+	}
+
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	checkRound := 0
@@ -6312,6 +6344,8 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			select {
 			case <-ctx.Done():
 				return
+			case <-wsResCh:
+				tui.LogEvent("[%s] ⚡ WebSocket: ConditionResolved event detected on-chain!", id)
 			case <-ticker.C:
 			}
 		}

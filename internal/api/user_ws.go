@@ -42,7 +42,8 @@ type UserWSClient struct {
 	apiPass string
 
 	// Callbacks
-	onFill func(fill OrderFillData)
+	onFill         func(fill OrderFillData)
+	onAssetBalance func(assetID string, balance string)
 
 	mu                sync.Mutex
 	listenStarted     bool
@@ -74,6 +75,12 @@ func (c *UserWSClient) SetOnFill(callback func(fill OrderFillData)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onFill = callback
+}
+
+func (c *UserWSClient) SetOnAssetBalance(callback func(assetID string, balance string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onAssetBalance = callback
 }
 
 func (c *UserWSClient) SubscribeMarkets(ctx context.Context, markets []string) error {
@@ -157,6 +164,28 @@ func (c *UserWSClient) processMessage(msg []byte) {
 func (c *UserWSClient) handleEvent(evt map[string]interface{}) {
 	evtType, _ := evt["event_type"].(string)
 	rawType, _ := evt["type"].(string)
+	
+	if strings.EqualFold(evtType, "asset_balances") || strings.EqualFold(rawType, "asset_balances") {
+		balances, ok := evt["balances"].([]interface{})
+		if ok {
+			c.mu.Lock()
+			cb := c.onAssetBalance
+			c.mu.Unlock()
+			if cb != nil {
+				for _, bRaw := range balances {
+					if bMap, ok := bRaw.(map[string]interface{}); ok {
+						assetID, _ := bMap["asset_id"].(string)
+						balance, _ := bMap["balance"].(string)
+						if assetID != "" && balance != "" {
+							cb(assetID, balance)
+						}
+					}
+				}
+			}
+		}
+		return
+	}
+
 	if !strings.EqualFold(evtType, "trade") && !strings.EqualFold(rawType, "TRADE") {
 		return
 	}
@@ -240,7 +269,8 @@ func (c *UserWSClient) ensureConnectedOnce(ctx context.Context, markets []string
 
 	if needAuth {
 		authMsg := map[string]interface{}{
-			"type":    "user",
+			"assets":  []string{"all"},
+			"type":    "market",
 			"markets": markets,
 			"auth": map[string]string{
 				"apiKey":     c.apiKey,

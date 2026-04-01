@@ -43,13 +43,8 @@ func main() {
 	fmt.Println("═══════════════════════════════════════════════════════")
 	fmt.Printf("🔑 Wallet: %s\n", address)
 
-	forceRedeem := false
 	target := ""
 	for _, arg := range os.Args[1:] {
-		if arg == "-force" {
-			forceRedeem = true
-			continue
-		}
 		if target == "" && !strings.HasPrefix(arg, "-") {
 			target = arg
 		}
@@ -175,23 +170,10 @@ func main() {
 
 			printMarketHeader()
 			fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
-			fmt.Printf("   👉 ACTION: Auto redeem winning shares.\n")
-			fmt.Printf("   ⏳ Checking on-chain resolution status...")
-			isRes, err := polygon.IsMarketResolved(ctx, m.ConditionID)
-			resolved := err == nil && isRes
-			if resolved {
-				fmt.Println(" ✅ READY")
-			} else {
-				fmt.Println(" ⚠️ NOT YET SETTLED - forcing redeem anyway")
-			}
+			fmt.Printf("   👉 ACTION: Auto redeem winning shares (forced).\n")
 
 			redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
-			var tx string
-			if forceRedeem || !resolved {
-				tx, err = trader.RedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
-			} else {
-				tx, err = trader.RedeemOnChain(redeemCtx, m.ConditionID, len(m.Tokens))
-			}
+			tx, err := trader.RedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
 			cancelRedeem()
 
 			if err != nil {
