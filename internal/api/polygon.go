@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -751,19 +752,84 @@ func (c *PolygonClient) GetBlockNumber(ctx context.Context) (uint64, error) {
 
 func (c *PolygonClient) GetFullBlockByNumber(ctx context.Context, blockNumber uint64) (*FullBlock, error) {
 	blockTag := fmt.Sprintf("0x%x", blockNumber)
-	result, err := c.call(ctx, "eth_getBlockByNumber", []interface{}{blockTag, true})
+	
+	// Create a specialized struct to unmarshal the whole response in one go
+	var response struct {
+		JSONRPC string    `json:"jsonrpc"`
+		Result  *FullBlock `json:"result"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	// Use a new internal method that returns raw body for better debugging
+	body, err := c.callRaw(ctx, "eth_getBlockByNumber", []interface{}{blockTag, true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get full block %d: %w", blockNumber, err)
 	}
-	if string(result) == "null" {
-		return nil, nil
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		// Dump failed block to disk for debugging
+		dumpPath := fmt.Sprintf("failed_block_%d.json", blockNumber)
+		_ = os.WriteFile(dumpPath, body, 0644)
+		return nil, fmt.Errorf("failed to parse full block (dumped to %s): %w", dumpPath, err)
 	}
 
-	var block FullBlock
-	if err := json.Unmarshal(result, &block); err != nil {
-		return nil, fmt.Errorf("failed to parse full block: %w", err)
+	if response.Error.Code != 0 || response.Error.Message != "" {
+		return nil, fmt.Errorf("RPC error %d: %s", response.Error.Code, response.Error.Message)
 	}
-	return &block, nil
+
+	return response.Result, nil
+}
+
+// callRaw is like call but returns the raw response body
+func (c *PolygonClient) callRaw(ctx context.Context, method string, params []interface{}) ([]byte, error) {
+	reqBody := RPCRequest{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+		ID:      1,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.RPCURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var reader io.ReadCloser = resp.Body
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		var err error
+		reader, err = gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer reader.Close()
+	}
+
+	bodyBytes, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read RPC response body (status %d): %w", resp.StatusCode, err)
+	}
+
+	if len(bodyBytes) == 0 {
+		return nil, fmt.Errorf("empty RPC response body (status %d)", resp.StatusCode)
+	}
+
+	return bodyBytes, nil
 }
 
 // call makes a JSON-RPC call
