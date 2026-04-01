@@ -360,17 +360,33 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 	}
 
 	for _, tx := range block.Transactions {
+		isFromTarget := strings.EqualFold(tx.From, w.targetWallet) || strings.EqualFold(tx.To, w.targetWallet)
+		
+		if isFromTarget && logf != nil {
+			logf("🔍 Activity from target wallet: %s (to %s, input len %d)", tx.Hash, tx.To, len(tx.Input))
+		}
+
 		if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
 			continue
 		}
+		
 		orders, err := DecodePolymarketMatchOrdersInput(tx.Input)
 		if err != nil || len(orders) == 0 {
+			if isFromTarget && logf != nil {
+				logf("⚠️ Failed to decode orders from target wallet tx: %v", err)
+			}
 			continue
 		}
+		
 		for idx, order := range orders {
 			if !strings.EqualFold(order.Maker, w.targetWallet) && !strings.EqualFold(order.Signer, w.targetWallet) && !strings.EqualFold(order.Taker, w.targetWallet) {
 				continue
 			}
+			
+			if logf != nil {
+				logf("🎯 Found master trade in %s (order index %d)", tx.Hash, idx)
+			}
+
 			side := order.sideString()
 			if side == "" {
 				continue
@@ -383,6 +399,9 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			resolved, err := w.resolveToken(resolveCtx, order.TokenID)
 			cancel()
 			if err != nil {
+				if logf != nil {
+					logf("⚠️ Skip master trade: could not resolve token %s", order.TokenID)
+				}
 				continue
 			}
 			sig := MinedPolymarketSignal{

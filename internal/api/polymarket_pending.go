@@ -392,11 +392,21 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 	if w == nil {
 		return
 	}
+	logf := w.rest.GetLogger()
+	isFromTarget := strings.EqualFold(tx.From, w.targetWallet) || strings.EqualFold(tx.To, w.targetWallet)
+	
+	if isFromTarget && logf != nil {
+		logf("🛰️ Mempool activity from target wallet: %s (to %s)", tx.Hash, tx.To)
+	}
+
 	if !strings.Contains(tx.Input, polymarketMatchOrdersSelector[2:]) {
 		return
 	}
 	orders, err := DecodePolymarketMatchOrdersInput(tx.Input)
 	if err != nil || len(orders) == 0 {
+		if isFromTarget && logf != nil {
+			logf("⚠️ Failed to decode mempool orders from target: %v", err)
+		}
 		return
 	}
 	observedAt := time.Now()
@@ -404,6 +414,11 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		if !strings.EqualFold(order.Maker, w.targetWallet) && !strings.EqualFold(order.Signer, w.targetWallet) && !strings.EqualFold(order.Taker, w.targetWallet) {
 			continue
 		}
+		
+		if logf != nil {
+			logf("🎯 Found master trade in mempool: %s", tx.Hash)
+		}
+
 		side := order.sideString()
 		if side == "" {
 			continue
@@ -416,6 +431,9 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 		resolved, err := w.resolveToken(resolveCtx, order.TokenID)
 		cancel()
 		if err != nil {
+			if logf != nil {
+				logf("⚠️ Skip mempool trade: could not resolve token %s", order.TokenID)
+			}
 			continue
 		}
 		sig := PendingPolymarketSignal{
