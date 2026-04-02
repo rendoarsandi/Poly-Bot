@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -224,6 +225,179 @@ func TestPaperbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *
 	}
 	if delta, ready, pending := paperbotCopytradeTargetDelta(state, "Up", 26.0, t0.Add(6*time.Second)); !ready || pending || delta != -2.5 {
 		t.Fatalf("expected -2.5 delta after second lower snapshot, got delta=%.4f ready=%v pending=%v", delta, ready, pending)
+	}
+}
+
+func TestPaperbotCopytradeTargetDeltaSeedsVisiblePositionAfterTradesSeeded(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	state.tradesSeeded = true
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	if delta, ready, pending := paperbotCopytradeTargetDelta(state, "Up", 7.25, t0); !ready || pending || math.Abs(delta-7.25) > 0.000001 {
+		t.Fatalf("expected seeded trades to surface +7.25 delta, got delta=%.4f ready=%v pending=%v", delta, ready, pending)
+	}
+}
+
+func TestPaperbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	if trades, deltas := paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 5.51}},
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	); len(trades) != 0 || len(deltas) != 0 {
+		t.Fatalf("initial seed should not emit sync trades, got trades=%d deltas=%d", len(trades), len(deltas))
+	}
+
+	trades, deltas := paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		nil,
+		t0.Add(2*time.Second),
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 0 {
+		t.Fatalf("first lower snapshot should wait for confirmation, got %+v", trades)
+	}
+	if len(deltas) != 0 {
+		t.Fatalf("first lower snapshot should not surface a delta yet, got %+v", deltas)
+	}
+
+	trades, deltas = paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		nil,
+		t0.Add(4*time.Second),
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 1 {
+		t.Fatalf("expected one fallback sell trade, got %d", len(trades))
+	}
+	if trades[0].Side != "SELL" || trades[0].Outcome != "Up" || trades[0].Source != "position" {
+		t.Fatalf("unexpected fallback sell trade: %+v", trades[0])
+	}
+	if math.Abs(trades[0].Size-5.51) > 0.000001 {
+		t.Fatalf("expected fallback sell size 5.51, got %.4f", trades[0].Size)
+	}
+	if got := deltas["Up"]; math.Abs(got+5.51) > 0.000001 {
+		t.Fatalf("expected target delta -5.51, got %.4f", got)
+	}
+}
+
+func TestPaperbotCopytradePositionSyncTradesSkipsFallbackSellWhenFreshSellExists(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 5.51}},
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+
+	trades, deltas := paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		nil,
+		t0.Add(2*time.Second),
+		[]api.PublicTrade{{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: t0.Add(2 * time.Second).Unix()}},
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 0 {
+		t.Fatalf("expected fresh sell to suppress fallback sell, got %+v", trades)
+	}
+	if len(deltas) != 0 {
+		t.Fatalf("first lower snapshot should still be pending, got %+v", deltas)
+	}
+}
+
+func TestPaperbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		nil,
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+
+	trades, deltas := paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
+		t0.Add(2*time.Second),
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 1 {
+		t.Fatalf("expected one estimated buy trade, got %d", len(trades))
+	}
+	if trades[0].Side != "BUY" || trades[0].Outcome != "Up" {
+		t.Fatalf("unexpected estimated buy trade: %+v", trades[0])
+	}
+	if trades[0].Source != "position-estimate" {
+		t.Fatalf("expected position-estimate source, got %q", trades[0].Source)
+	}
+	if math.Abs(trades[0].Size-7.25) > 0.000001 {
+		t.Fatalf("expected estimated buy size 7.25, got %.4f", trades[0].Size)
+	}
+	if got := deltas["Up"]; math.Abs(got-7.25) > 0.000001 {
+		t.Fatalf("expected target delta 7.25, got %.4f", got)
+	}
+}
+
+func TestPaperbotCopytradePositionSyncTradesCreatesResidualBuyWhenFreshBuyIsPartial(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		nil,
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+
+	trades, deltas := paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 10}},
+		t0.Add(2*time.Second),
+		[]api.PublicTrade{{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 4, Timestamp: t0.Add(2 * time.Second).Unix()}},
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 1 {
+		t.Fatalf("expected one residual estimated buy, got %d", len(trades))
+	}
+	if trades[0].Side != "BUY" || trades[0].Source != "position-estimate" {
+		t.Fatalf("unexpected residual buy trade: %+v", trades[0])
+	}
+	if math.Abs(trades[0].Size-6) > 0.000001 {
+		t.Fatalf("expected residual buy size 6, got %.4f", trades[0].Size)
+	}
+	if got := deltas["Up"]; math.Abs(got-10) > 0.000001 {
+		t.Fatalf("expected full target delta 10, got %.4f", got)
 	}
 }
 

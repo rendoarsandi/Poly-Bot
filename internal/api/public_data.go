@@ -48,10 +48,11 @@ type PublicProfile struct {
 }
 
 type PublicActivitySnapshot struct {
-	Trades       []PublicTrade
-	Positions    []Position
-	TradesErr    error
-	PositionsErr error
+	Trades          []PublicTrade
+	Positions       []Position
+	TradesErr       error
+	PositionsErr    error
+	PositionsCached bool
 }
 
 func NormalizeWalletAddress(raw string) string {
@@ -274,6 +275,7 @@ func (c *RestClient) GetPublicActivitySnapshotWithFallback(ctx context.Context, 
 		if res.err != nil && cachedPositionsValid {
 			snapshot.Positions = append([]Position(nil), cachedPositions...)
 			snapshot.PositionsErr = nil
+			snapshot.PositionsCached = true
 			return
 		}
 		snapshot.Positions = res.positions
@@ -287,6 +289,7 @@ func (c *RestClient) GetPublicActivitySnapshotWithFallback(ctx context.Context, 
 		if cachedPositionsValid {
 			snapshot.Positions = append([]Position(nil), cachedPositions...)
 			snapshot.PositionsErr = nil
+			snapshot.PositionsCached = true
 			return snapshot
 		}
 		positionsRes := <-positionsCh

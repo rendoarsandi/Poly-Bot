@@ -214,18 +214,19 @@ type paperbotCopytradeState struct {
 }
 
 type paperbotCopytradePoller struct {
-	wallet            string
-	conditionIDs      []string
-	mu                sync.Mutex
-	lastPoll          time.Time
-	fetching          bool
-	waitCh            chan struct{}
-	lastPollStartedAt time.Time
-	lastSnapshot      api.PublicActivitySnapshot
-	rateLimitUntil    time.Time
-	rateLimitStreak   int
-	pendingWatcher    *api.PolymarketPendingWatcher
-	minedWatcher      *api.PolymarketMinedWatcher
+	wallet                 string
+	conditionIDs           []string
+	mu                     sync.Mutex
+	lastPoll               time.Time
+	lastPositionsRefreshAt time.Time
+	fetching               bool
+	waitCh                 chan struct{}
+	lastPollStartedAt      time.Time
+	lastSnapshot           api.PublicActivitySnapshot
+	rateLimitUntil         time.Time
+	rateLimitStreak        int
+	pendingWatcher         *api.PolymarketPendingWatcher
+	minedWatcher           *api.PolymarketMinedWatcher
 }
 
 type paperbotCopytradeWatcherSet struct {
@@ -249,6 +250,31 @@ func paperbotCopytradeTradeFetchTimeout(pollEvery time.Duration) time.Duration {
 		timeout = 2500 * time.Millisecond
 	}
 	return timeout
+}
+
+func paperbotCopytradePositionFetchTimeout(pollEvery time.Duration) time.Duration {
+	timeout := paperbotCopytradeTradeFetchTimeout(pollEvery) * 2
+	if timeout < 4*time.Second {
+		timeout = 4 * time.Second
+	}
+	if timeout > 8*time.Second {
+		timeout = 8 * time.Second
+	}
+	return timeout
+}
+
+func paperbotCopytradeCanReusePositions(lastRefresh time.Time, pollEvery time.Duration) bool {
+	if lastRefresh.IsZero() {
+		return false
+	}
+	maxAge := pollEvery * 3
+	if maxAge < 5*time.Second {
+		maxAge = 5 * time.Second
+	}
+	if maxAge > 15*time.Second {
+		maxAge = 15 * time.Second
+	}
+	return time.Since(lastRefresh) <= maxAge
 }
 
 func newPaperbotCopytradeState() *paperbotCopytradeState {
@@ -377,12 +403,13 @@ func ensurePaperbotCopytradeWatcherSet(parentCtx context.Context, current *paper
 }
 
 type paperbotCopytradeMarketSnapshot struct {
-	Trades        []api.PublicTrade
-	Positions     []api.Position
-	TradesErr     error
-	PositionsErr  error
-	PollStartedAt time.Time
-	PolledAt      time.Time
+	Trades            []api.PublicTrade
+	Positions         []api.Position
+	TradesErr         error
+	PositionsErr      error
+	PollStartedAt     time.Time
+	PolledAt          time.Time
+	PositionsPolledAt time.Time
 }
 
 func paperbotCopytradeShouldLog(state *paperbotCopytradeState, key, msg string, interval time.Duration) bool {
@@ -891,12 +918,13 @@ func (p *paperbotCopytradePoller) cachedSnapshotForCondition(conditionID string)
 		return paperbotCopytradeMarketSnapshot{}
 	}
 	return paperbotCopytradeMarketSnapshot{
-		Trades:        filterCopytradeTradesByCondition(p.lastSnapshot.Trades, conditionID),
-		Positions:     filterCopytradePositionsByCondition(p.lastSnapshot.Positions, conditionID),
-		TradesErr:     p.lastSnapshot.TradesErr,
-		PositionsErr:  p.lastSnapshot.PositionsErr,
-		PollStartedAt: p.lastPollStartedAt,
-		PolledAt:      p.lastPoll,
+		Trades:            filterCopytradeTradesByCondition(p.lastSnapshot.Trades, conditionID),
+		Positions:         filterCopytradePositionsByCondition(p.lastSnapshot.Positions, conditionID),
+		TradesErr:         p.lastSnapshot.TradesErr,
+		PositionsErr:      p.lastSnapshot.PositionsErr,
+		PollStartedAt:     p.lastPollStartedAt,
+		PolledAt:          p.lastPoll,
+		PositionsPolledAt: p.lastPositionsRefreshAt,
 	}
 }
 
@@ -946,19 +974,48 @@ func (p *paperbotCopytradePoller) snapshotForCondition(ctx context.Context, rest
 		if tradeLimit > 1000 {
 			tradeLimit = 1000
 		}
-		tradesCtx, cancel := context.WithTimeout(ctx, paperbotCopytradeTradeFetchTimeout(pollEvery))
-		trades, tradesErr := restClient.GetPublicTrades(tradesCtx, wallet, conditionIDs, tradeLimit)
-		cancel()
+		positionLimit := len(conditionIDs) * 8
+		if positionLimit < 16 {
+			positionLimit = 16
+		}
+		if positionLimit > 500 {
+			positionLimit = 500
+		}
+		tradeTimeout := paperbotCopytradeTradeFetchTimeout(pollEvery)
+		positionTimeout := paperbotCopytradePositionFetchTimeout(pollEvery)
+		cachedPositions := append([]api.Position(nil), p.lastSnapshot.Positions...)
+		cachedPositionsValid := p.lastSnapshot.PositionsErr == nil && paperbotCopytradeCanReusePositions(p.lastPositionsRefreshAt, pollEvery)
+		snapshot := restClient.GetPublicActivitySnapshotWithFallback(
+			ctx,
+			wallet,
+			conditionIDs,
+			tradeLimit,
+			0.01,
+			positionLimit,
+			cachedPositions,
+			cachedPositionsValid,
+			tradeTimeout,
+			positionTimeout,
+		)
 		now := time.Now()
 
 		p.mu.Lock()
-		if tradesErr == nil {
-			p.lastSnapshot.Trades = trades
+		if snapshot.TradesErr == nil {
+			p.lastSnapshot.Trades = snapshot.Trades
 			p.lastSnapshot.TradesErr = nil
 		} else {
-			p.lastSnapshot.TradesErr = tradesErr
+			p.lastSnapshot.TradesErr = snapshot.TradesErr
 		}
-		if paperbotCopytradeIsRateLimited(tradesErr) {
+		if snapshot.PositionsErr == nil {
+			p.lastSnapshot.Positions = snapshot.Positions
+			p.lastSnapshot.PositionsErr = nil
+			if !snapshot.PositionsCached {
+				p.lastPositionsRefreshAt = now
+			}
+		} else {
+			p.lastSnapshot.PositionsErr = snapshot.PositionsErr
+		}
+		if paperbotCopytradeIsRateLimited(snapshot.TradesErr) {
 			p.rateLimitStreak++
 			p.rateLimitUntil = now.Add(paperbotCopytradeRateLimitBackoff(p.rateLimitStreak))
 		} else {
@@ -976,6 +1033,85 @@ func (p *paperbotCopytradePoller) snapshotForCondition(ctx context.Context, rest
 
 		return filtered, nil
 	}
+}
+
+func paperbotCopytradePositionSyncTrades(state *paperbotCopytradeState, conditionID string, outcomes []string, positions []api.Position, pollTime time.Time, freshTrades []api.PublicTrade, sizingMode string) ([]api.PublicTrade, map[string]float64) {
+	if state == nil || pollTime.IsZero() {
+		return nil, nil
+	}
+
+	targetShares := paperbotCopytradeTargetSharesForCondition(positions, conditionID)
+	holdsBoth := paperbotCopytradeHoldsBothOutcomes(targetShares)
+	ambiguousExit := paperbotCopytradeHasAmbiguousPositionExit(positions, conditionID)
+
+	freshBuySize := make(map[string]float64)
+	freshSell := make(map[string]bool)
+	for _, trade := range freshTrades {
+		outcome := core.SanitizeString(trade.Outcome)
+		if outcome == "" {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(trade.Side)) {
+		case "BUY":
+			freshBuySize[outcome] += math.Max(0, trade.Size)
+		case "SELL":
+			freshSell[outcome] = true
+		}
+	}
+
+	relevantOutcomes := make(map[string]struct{})
+	for _, outcome := range outcomes {
+		outcome = core.SanitizeString(outcome)
+		if outcome != "" {
+			relevantOutcomes[outcome] = struct{}{}
+		}
+	}
+	for outcome := range targetShares {
+		relevantOutcomes[outcome] = struct{}{}
+	}
+	for outcome := range state.targetSeen {
+		if outcome != "" {
+			relevantOutcomes[outcome] = struct{}{}
+		}
+	}
+	if len(relevantOutcomes) == 0 {
+		return nil, nil
+	}
+
+	targetDeltas := make(map[string]float64)
+	syncTrades := make([]api.PublicTrade, 0)
+	for outcome := range relevantOutcomes {
+		targetQty := targetShares[outcome]
+		delta, ready, pending := paperbotCopytradeTargetDelta(state, outcome, targetQty, pollTime)
+		if !ready || pending || math.Abs(delta) <= 0.01 {
+			continue
+		}
+		targetDeltas[outcome] = delta
+		switch {
+		case delta > 0 && !holdsBoth:
+			if remaining := delta - freshBuySize[outcome]; remaining > 0.01 {
+				syncTrades = append(syncTrades, paperbotEstimatedPositionBuySignals(state, strings.TrimSpace(conditionID), outcome, remaining, sizingMode)...)
+			}
+		case delta < 0 && !freshSell[outcome] && !holdsBoth && !ambiguousExit:
+			syncTrades = append(syncTrades, api.PublicTrade{
+				ConditionID: strings.TrimSpace(conditionID),
+				Outcome:     outcome,
+				Side:        "SELL",
+				Size:        -delta,
+				Timestamp:   pollTime.Unix(),
+				Source:      "position",
+			})
+		}
+	}
+
+	sort.Slice(syncTrades, func(i, j int) bool {
+		if syncTrades[i].Outcome == syncTrades[j].Outcome {
+			return syncTrades[i].Side < syncTrades[j].Side
+		}
+		return syncTrades[i].Outcome < syncTrades[j].Outcome
+	})
+
+	return syncTrades, targetDeltas
 }
 
 func paperbotClearPendingCopytradeSell(state *paperbotCopytradeState, outcome string) {
@@ -999,6 +1135,9 @@ func paperbotCopytradeTargetDelta(state *paperbotCopytradeState, outcome string,
 		state.targetShares[outcome] = targetQty
 		state.lastTargetPoll[outcome] = pollTime
 		paperbotClearPendingCopytradeSell(state, outcome)
+		if state.tradesSeeded {
+			return targetQty, true, false
+		}
 		return 0, false, false
 	}
 	if lastPoll := state.lastTargetPoll[outcome]; !lastPoll.IsZero() && lastPoll.Equal(pollTime) {
@@ -4769,11 +4908,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	pollStartedAt := time.Now()
 	apiReceivedAt := pollStartedAt
 	polledTrades := make([]api.PublicTrade, 0)
+	targetDeltas := make(map[string]float64)
 	shouldPoll := state.lastTradeFetch.IsZero() || time.Since(state.lastTradeFetch) >= pollEvery
 	if shouldPoll {
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
 		combinedTrades := make([]api.PublicTrade, 0)
+		snapshot := paperbotCopytradeMarketSnapshot{}
 		restPollEvery := pollEvery
 		if paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
 			restPollEvery = 60 * time.Second
@@ -4784,7 +4925,8 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				combinedTrades = append(combinedTrades, minedTrades...)
 			}
 		}
-		if snapshot, err := t.CopytradePoller.snapshotForCondition(ctx, t.RestClient, restPollEvery, t.Market.ConditionID); err == nil {
+		if nextSnapshot, err := t.CopytradePoller.snapshotForCondition(ctx, t.RestClient, restPollEvery, t.Market.ConditionID); err == nil {
+			snapshot = nextSnapshot
 			publicTrades := paperbotPrepareCopytradeTrades(snapshot.Trades, "public")
 			combinedTrades = paperbotMergeCopytradeTrades(combinedTrades, publicTrades)
 			if !snapshot.PolledAt.IsZero() {
@@ -4800,6 +4942,15 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		}
 		if len(combinedTrades) > 0 {
 			polledTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
+		}
+		if snapshot.PositionsErr == nil {
+			syncTrades, nextTargetDeltas := paperbotCopytradePositionSyncTrades(state, t.Market.ConditionID, t.Outcomes, snapshot.Positions, snapshot.PositionsPolledAt, polledTrades, liveCfg.CopytradeSizingMode)
+			if len(syncTrades) > 0 {
+				polledTrades = append(polledTrades, syncTrades...)
+			}
+			for outcome, delta := range nextTargetDeltas {
+				targetDeltas[outcome] = delta
+			}
 		}
 	}
 	for _, signal := range polledTrades {
@@ -4974,7 +5125,25 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := 0.0
+			targetQty := 0.0
+			targetDelta := -tradeSize
+			positionSignal := strings.HasPrefix(strings.ToLower(strings.TrimSpace(signal.Source)), "position")
+			if state.targetSeen[outcome] {
+				targetQty = state.targetShares[outcome]
+				if positionSignal {
+					targetDelta = -tradeSize
+				} else if delta, ok := targetDeltas[outcome]; ok && delta < -0.01 {
+					targetDelta = delta
+					delete(targetDeltas, outcome)
+				}
+				requestedQty = paperbotNormalizeMarketSellShares(core.CalculateCopytradeSellSharesForMode(localQty, targetQty, targetDelta, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			} else {
+				requestedQty = paperbotNormalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			}
+			if positionSignal && requestedQty > tradeSize {
+				requestedQty = paperbotNormalizeMarketSellShares(tradeSize)
+			}
 			if requestedQty > localQty {
 				requestedQty = paperbotNormalizeMarketSellShares(localQty)
 			}
@@ -5022,12 +5191,25 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			t.TUI.RecordOrderWithMode(t.ID, outcome, "SELL", trade.Quantity, bid, trade.Value, 0.0, profit, paperArbModeCopytrade, "FILLED")
 			t.TUI.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", t.ID, paperbotFormatShareQty(trade.Quantity), outcome, bid)
 			// logPaperCopytradeLatency(t, latency)
+			if positionSignal {
+				remainingSize := paperbotNormalizeMarketSellShares(tradeSize - trade.Quantity)
+				if remainingSize >= paperbotMinActionShares {
+					requeueSignal(api.PublicTrade{
+						ConditionID: strings.TrimSpace(signal.ConditionID),
+						Outcome:     outcome,
+						Side:        "SELL",
+						Size:        remainingSize,
+						Timestamp:   signal.Timestamp,
+						Source:      signal.Source,
+					})
+				}
+			}
 			if remainingQty, _ := paperbotLocalPositionAvg(t.Engine, t.ID, outcome); remainingQty <= 0.01 {
 				state.managed[outcome] = false
 			}
 		}
-		paperbotCopytradeQueueRetryTrades(state, retrySignals)
 	}
+	paperbotCopytradeQueueRetryTrades(state, retrySignals)
 }
 
 func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCfg paper.TUISettings, cfg *core.Config) {
