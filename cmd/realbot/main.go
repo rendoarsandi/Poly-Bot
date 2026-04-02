@@ -7118,22 +7118,19 @@ func realbotMergeCopytradeTrades(groups ...[]api.PublicTrade) []api.PublicTrade 
 	}
 
 	merged := make([]api.PublicTrade, 0, total)
-	seenSignals := make(map[string]int, total)
+	seenSignals := make(map[string]string, total)
 	for _, group := range groups {
 		for _, trade := range group {
 			key := realbotNormalizeCopytradeSignalID(trade)
 			if key != "" {
-				if idx, exists := seenSignals[key]; exists {
-					if merged[idx].Source == trade.Source {
-						totalSize := merged[idx].Size + trade.Size
-						if totalSize > 0 {
-							merged[idx].Price = ((merged[idx].Price * merged[idx].Size) + (trade.Price * trade.Size)) / totalSize
-						}
-						merged[idx].Size = totalSize
+				source := strings.TrimSpace(trade.Source)
+				if seenSource, exists := seenSignals[key]; exists {
+					if seenSource != source {
+						continue
 					}
-					continue
+				} else {
+					seenSignals[key] = source
 				}
-				seenSignals[key] = len(merged)
 			}
 			merged = append(merged, trade)
 		}

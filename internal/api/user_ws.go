@@ -164,7 +164,7 @@ func (c *UserWSClient) processMessage(msg []byte) {
 func (c *UserWSClient) handleEvent(evt map[string]interface{}) {
 	evtType, _ := evt["event_type"].(string)
 	rawType, _ := evt["type"].(string)
-	
+
 	if strings.EqualFold(evtType, "asset_balances") || strings.EqualFold(rawType, "asset_balances") {
 		balances, ok := evt["balances"].([]interface{})
 		if ok {
@@ -270,7 +270,7 @@ func (c *UserWSClient) ensureConnectedOnce(ctx context.Context, markets []string
 	if needAuth {
 		authMsg := map[string]interface{}{
 			"assets":  []string{"all"},
-			"type":    "market",
+			"type":    "user",
 			"markets": markets,
 			"auth": map[string]string{
 				"apiKey":     c.apiKey,
