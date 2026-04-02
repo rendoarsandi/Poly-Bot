@@ -24,8 +24,9 @@ func NormalizeCopytradeMinedWatcherMode(raw string) string {
 }
 
 // ShouldEnableCopytradeMinedWatcher decides whether the on-chain mined watcher
-// should run for copytrade. In fallback mode we only enable it when efficient
-// pending filtering is unavailable.
+// should run for copytrade. The mined watcher is the reliable path because the
+// low-CU pending watcher only sees a subset of target activity when orders are
+// relayed through exchange/router wallets.
 func ShouldEnableCopytradeMinedWatcher(mode, pendingWSURL string) bool {
 	switch NormalizeCopytradeMinedWatcherMode(mode) {
 	case CopytradeMinedWatcherModeAlways:
@@ -33,6 +34,6 @@ func ShouldEnableCopytradeMinedWatcher(mode, pendingWSURL string) bool {
 	case CopytradeMinedWatcherModeOff:
 		return false
 	default:
-		return !SupportsPolymarketPendingWSURL(pendingWSURL)
+		return true
 	}
 }

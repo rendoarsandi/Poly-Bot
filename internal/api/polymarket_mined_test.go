@@ -206,8 +206,8 @@ func TestShouldEnableCopytradeMinedWatcher(t *testing.T) {
 	alchemyPending := "https://polygon-mainnet.g.alchemy.com/v2/key"
 	infuraPending := "https://polygon-mainnet.infura.io/v3/key"
 
-	if ShouldEnableCopytradeMinedWatcher("", alchemyPending) {
-		t.Fatal("expected fallback mode to skip mined watcher when pending filtering is available")
+	if !ShouldEnableCopytradeMinedWatcher("", alchemyPending) {
+		t.Fatal("expected fallback mode to keep mined watcher enabled alongside best-effort pending watcher")
 	}
 	if !ShouldEnableCopytradeMinedWatcher("", infuraPending) {
 		t.Fatal("expected fallback mode to enable mined watcher when pending filtering is unavailable")

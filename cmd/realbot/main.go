@@ -7715,13 +7715,9 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if shouldPoll {
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
-		combinedTrades := make([]api.PublicTrade, 0)
 		minedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
-		if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
-			combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)
-		} else {
-			combinedTrades = append(combinedTrades, minedTrades...)
-		}
+		pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since)
+		combinedTrades := realbotMergeCopytradeTrades(pendingTrades, minedTrades)
 		if len(combinedTrades) > 0 {
 			state.lastError = ""
 			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)

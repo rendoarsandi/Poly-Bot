@@ -4996,13 +4996,9 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if shouldPoll {
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
-		combinedTrades := make([]api.PublicTrade, 0)
 		minedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
-		if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
-			combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)
-		} else {
-			combinedTrades = append(combinedTrades, minedTrades...)
-		}
+		pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since)
+		combinedTrades := paperbotMergeCopytradeTrades(pendingTrades, minedTrades)
 		if len(combinedTrades) > 0 {
 			apiReceivedAt = time.Now()
 			state.lastError = ""
