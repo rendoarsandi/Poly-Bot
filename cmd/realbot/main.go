@@ -7492,7 +7492,9 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
 		combinedTrades := make([]api.PublicTrade, 0)
+		restPollEvery := pollEvery
 		if realbotCopytradeHasOnchainWatcher(poller) {
+			restPollEvery = 60 * time.Second
 			minedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
 			if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)
@@ -7500,7 +7502,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				combinedTrades = append(combinedTrades, minedTrades...)
 			}
 		}
-		if snapshot, err := poller.snapshotForCondition(ctx, restClient, pollEvery, market.ConditionID); err == nil {
+		if snapshot, err := poller.snapshotForCondition(ctx, restClient, restPollEvery, market.ConditionID); err == nil {
 			publicTrades := realbotPrepareCopytradeTrades(snapshot.Trades, "public")
 			combinedTrades = realbotMergeCopytradeTrades(combinedTrades, publicTrades)
 			state.lastError = ""

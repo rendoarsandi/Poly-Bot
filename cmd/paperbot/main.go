@@ -4761,7 +4761,9 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
 		combinedTrades := make([]api.PublicTrade, 0)
+		restPollEvery := pollEvery
 		if paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
+			restPollEvery = 60 * time.Second
 			minedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
 			if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)
@@ -4769,7 +4771,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				combinedTrades = append(combinedTrades, minedTrades...)
 			}
 		}
-		if snapshot, err := t.CopytradePoller.snapshotForCondition(ctx, t.RestClient, pollEvery, t.Market.ConditionID); err == nil {
+		if snapshot, err := t.CopytradePoller.snapshotForCondition(ctx, t.RestClient, restPollEvery, t.Market.ConditionID); err == nil {
 			publicTrades := paperbotPrepareCopytradeTrades(snapshot.Trades, "public")
 			combinedTrades = paperbotMergeCopytradeTrades(combinedTrades, publicTrades)
 			if !snapshot.PolledAt.IsZero() {
