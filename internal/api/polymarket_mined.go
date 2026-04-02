@@ -936,6 +936,8 @@ func (w *PolymarketMinedWatcher) takeReadyTransferSignals(now time.Time) []Mined
 		if !sig.ObservedAt.IsZero() && now.Sub(sig.ObservedAt) < polymarketMinedTransferAggregateWindow {
 			continue
 		}
+		// Reset ObservedAt so the signal isn't dropped by the `since` filter in the consumer's poll loop.
+		sig.ObservedAt = now
 		ready = append(ready, sig)
 		delete(w.pendingTransfers, key)
 	}
