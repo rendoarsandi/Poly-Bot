@@ -1062,12 +1062,69 @@ func (t *RealTrader) RedeemOnChainForce(ctx context.Context, conditionID string,
 	return txHash, nil
 }
 
+// SubmitRedeemOnChainForce sends the redeem transaction immediately using a
+// more aggressive gas profile and returns once the tx is accepted by the RPC.
+// Confirmation is left to the caller.
+func (t *RealTrader) SubmitRedeemOnChainForce(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("redeem not supported/needed on kalshi")
+	}
+	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
+		return t.polygon.RedeemPositionsUrgent(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+	})
+}
+
 // retryOnChainTx executes an on-chain transaction with retry logic and confirmation waiting.
 // txName is used for error messages (e.g., "merge", "split").
 // txFunc is the function that sends the transaction and returns (txHash, error).
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc func() (string, error)) (string, error) {
+	txHash, lastErr := t.submitOnChainTx(ctx, txName, txFunc)
+	if lastErr != nil {
+		return txHash, lastErr
+	}
+
+	// Retry up to 3 times with exponential backoff
+	for attempt := 1; attempt <= 3; attempt++ {
+		// Wait for transaction confirmation
+		success, err := t.polygon.WaitForTransaction(ctx, txHash)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+				return txHash, fmt.Errorf("%s tx %s confirmation pending: %w", txName, txHash, err)
+			}
+			lastErr = fmt.Errorf("%s tx %s failed: %w", txName, txHash, err)
+			// Tx sent but failed on-chain - don't retry same tx, try new one
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+				txHash, lastErr = t.submitOnChainTx(ctx, txName, txFunc)
+				if lastErr == nil {
+					continue
+				}
+			}
+			return txHash, lastErr
+		}
+
+		if !success {
+			lastErr = fmt.Errorf("%s tx %s reverted on-chain", txName, txHash)
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+				txHash, lastErr = t.submitOnChainTx(ctx, txName, txFunc)
+				if lastErr == nil {
+					continue
+				}
+			}
+			return txHash, lastErr
+		}
+
+		// Success!
+		return txHash, nil
+	}
+
+	return txHash, lastErr
+}
+
+func (t *RealTrader) submitOnChainTx(ctx context.Context, txName string, txFunc func() (string, error)) (string, error) {
 	var lastErr error
 	var txHash string
 
@@ -1093,32 +1150,6 @@ func (t *RealTrader) retryOnChainTx(ctx context.Context, txName string, txFunc f
 			}
 			return "", fmt.Errorf("failed to send %s tx after %d attempts: %w", txName, attempt, lastErr)
 		}
-
-		// Wait for transaction confirmation
-		success, err := t.polygon.WaitForTransaction(ctx, txHash)
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
-				return txHash, fmt.Errorf("%s tx %s confirmation pending: %w", txName, txHash, err)
-			}
-			lastErr = fmt.Errorf("%s tx %s failed: %w", txName, txHash, err)
-			// Tx sent but failed on-chain - don't retry same tx, try new one
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * 2 * time.Second)
-				continue
-			}
-			return txHash, lastErr
-		}
-
-		if !success {
-			lastErr = fmt.Errorf("%s tx %s reverted on-chain", txName, txHash)
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * 2 * time.Second)
-				continue
-			}
-			return txHash, lastErr
-		}
-
-		// Success!
 		return txHash, nil
 	}
 

@@ -172,8 +172,8 @@ func main() {
 			fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
 			fmt.Printf("   👉 ACTION: Auto redeem winning shares (forced).\n")
 
-			redeemCtx, cancelRedeem := context.WithTimeout(ctx, 90*time.Second)
-			tx, err := trader.RedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
+			redeemCtx, cancelRedeem := context.WithTimeout(ctx, 20*time.Second)
+			tx, err := trader.SubmitRedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
 			cancelRedeem()
 
 			if err != nil {
@@ -181,7 +181,7 @@ func main() {
 					fmt.Printf("   ❌ Redeem failed: %v\n", err)
 				}
 			} else {
-				fmt.Printf("   ✅ Redeem successful! Tx: %s\n", tx)
+				fmt.Printf("   ⏳ Redeem submitted! Tx: %s\n", tx)
 			}
 		}
 	}

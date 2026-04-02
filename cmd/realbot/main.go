@@ -57,8 +57,9 @@ const (
 	realbotTakerCloseLogInterval     = 5 * time.Second
 	realbotTakerCloseLocalMaxAge     = 350 * time.Millisecond
 	realbotRedeemConfirmTimeout      = 120 * time.Second
+	realbotRedeemSubmitTimeout       = 20 * time.Second
 	realbotRedeemProbeTimeout        = 10 * time.Second
-	realbotRedeemRetryInterval       = 10 * time.Second
+	realbotRedeemRetryInterval       = 3 * time.Second
 	realbotWalletTruthLogMinDelta    = 0.25
 	realbotMaxSaneOutcomeSpread      = 0.10
 	realbotMaxSaneAskPairSum         = 1.10
@@ -1164,6 +1165,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 	go func() {
 		attempt := 0
 		pendingTxHash := ""
+		lastConfirmedAt := time.Time{}
 		for {
 			attempt++
 			skipSubmit := false
@@ -1180,6 +1182,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 					switch txState {
 					case "success":
 						tui.LogEvent("[%s] ✅ Redeem tx confirmed: %s", marketID, realbotShortTxHash(pendingTxHash))
+						lastConfirmedAt = time.Now()
 						pendingTxHash = ""
 						skipSubmit = true
 					case "reverted":
@@ -1194,14 +1197,18 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 					}
 				}
 			}
+			if pendingTxHash == "" && !lastConfirmedAt.IsZero() && time.Since(lastConfirmedAt) < 15*time.Second {
+				skipSubmit = true
+			}
 
 			if !skipSubmit && pendingTxHash == "" {
-				redeemCtx, cancel := context.WithTimeout(context.Background(), realbotRedeemConfirmTimeout)
-				txHash, err := trader.RedeemOnChainForce(redeemCtx, conditionID, numOutcomes)
+				redeemCtx, cancel := context.WithTimeout(context.Background(), realbotRedeemSubmitTimeout)
+				txHash, err := trader.SubmitRedeemOnChainForce(redeemCtx, conditionID, numOutcomes)
 				cancel()
 
 				if err == nil {
-					tui.LogEvent("[%s] ✅ REDEEMED! Tx: %s", marketID, realbotShortTxHash(txHash))
+					pendingTxHash = txHash
+					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted: %s", marketID, attempt, realbotShortTxHash(txHash))
 				} else if realbotShouldKeepPendingRedeemTx(txHash, err) {
 					pendingTxHash = txHash
 					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted, waiting on-chain: %s", marketID, attempt, realbotShortTxHash(txHash))

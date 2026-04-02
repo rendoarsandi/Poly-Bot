@@ -31,15 +31,20 @@ const NegRiskExchange = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 const RouterExchange = "0xE3f18aCc55091E2C48d883fc8C8413319D4aB7b0"
 
 const (
-	polygonInitialReceiptPollInterval = 2 * time.Second
-	polygonMaxReceiptPollInterval     = 5 * time.Second
-	polygonTimeoutStatusProbeTimeout  = 3 * time.Second
-	polygonGasPriceBumpNumerator      = 15
-	polygonGasPriceBumpDenominator    = 10
-	polygonBaseFeeMultiplier          = 2
-	payoutDenominatorSelector         = "0x1479831c"
-	payoutNumeratorsSelector          = "0x0504c814"
+	polygonInitialReceiptPollInterval    = 2 * time.Second
+	polygonMaxReceiptPollInterval        = 5 * time.Second
+	polygonTimeoutStatusProbeTimeout     = 3 * time.Second
+	polygonGasPriceBumpNumerator         = 15
+	polygonGasPriceBumpDenominator       = 10
+	polygonBaseFeeMultiplier             = 2
+	polygonUrgentGasPriceBumpNumerator   = 20
+	polygonUrgentGasPriceBumpDenominator = 10
+	polygonUrgentBaseFeeMultiplier       = 3
+	payoutDenominatorSelector            = "0x1479831c"
+	payoutNumeratorsSelector             = "0x0504c814"
 )
+
+var polygonUrgentMinPriorityFeePerGas = big.NewInt(40_000_000_000) // 40 gwei
 
 // PolygonClient handles Polygon RPC calls
 type PolygonClient struct {
@@ -189,6 +194,19 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
 }
 
+// RedeemPositionsUrgent submits the same redeem call with a more aggressive
+// gas policy so resolved-market payouts clear faster.
+func (c *PolygonClient) RedeemPositionsUrgent(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	parent := "0000000000000000000000000000000000000000000000000000000000000000"
+	cond := strings.TrimPrefix(conditionID, "0x")
+	offset := "0000000000000000000000000000000000000000000000000000000000000080"
+	indexSetsData := generateIndexSetsHex(numOutcomes)
+
+	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
+	return c.signAndSendUrgentWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
+}
+
 // SplitPositions converts USDC into YES+NO tokens via CTF contract (PAID WRITE)
 // This is the inverse of MergePositions - use to create inventory for panic selling.
 // 1 USDC → 1 YES token + 1 NO token
@@ -288,12 +306,31 @@ func (f writeTxFees) UseDynamic() bool {
 }
 
 func (c *PolygonClient) gasFeesForWriteTx(ctx context.Context) (writeTxFees, error) {
+	return c.gasFeesForWriteTxMode(ctx, false)
+}
+
+func (c *PolygonClient) urgentGasFeesForWriteTx(ctx context.Context) (writeTxFees, error) {
+	return c.gasFeesForWriteTxMode(ctx, true)
+}
+
+func (c *PolygonClient) gasFeesForWriteTxMode(ctx context.Context, urgent bool) (writeTxFees, error) {
 	gasPrice, err := c.GetGasPrice(ctx)
 	if err != nil {
 		return writeTxFees{}, err
 	}
+	legacyBumpNum := int64(polygonGasPriceBumpNumerator)
+	legacyBumpDen := int64(polygonGasPriceBumpDenominator)
+	baseFeeMultiplier := int64(polygonBaseFeeMultiplier)
+	minPriorityFee := (*big.Int)(nil)
+	if urgent {
+		legacyBumpNum = polygonUrgentGasPriceBumpNumerator
+		legacyBumpDen = polygonUrgentGasPriceBumpDenominator
+		baseFeeMultiplier = polygonUrgentBaseFeeMultiplier
+		minPriorityFee = polygonUrgentMinPriorityFeePerGas
+	}
+
 	fees := writeTxFees{
-		LegacyGasPrice: bumpGasPrice(gasPrice),
+		LegacyGasPrice: bumpGasPriceWithRatio(gasPrice, legacyBumpNum, legacyBumpDen),
 	}
 
 	priorityFee, err := c.GetMaxPriorityFeePerGas(ctx)
@@ -306,8 +343,11 @@ func (c *PolygonClient) gasFeesForWriteTx(ctx context.Context) (writeTxFees, err
 		return fees, nil
 	}
 
-	bumpedPriority := bumpGasPrice(priorityFee)
-	maxFee := new(big.Int).Mul(baseFee, big.NewInt(polygonBaseFeeMultiplier))
+	bumpedPriority := bumpGasPriceWithRatio(priorityFee, legacyBumpNum, legacyBumpDen)
+	if minPriorityFee != nil && bumpedPriority.Cmp(minPriorityFee) < 0 {
+		bumpedPriority = new(big.Int).Set(minPriorityFee)
+	}
+	maxFee := new(big.Int).Mul(baseFee, big.NewInt(baseFeeMultiplier))
 	maxFee.Add(maxFee, bumpedPriority)
 	if fees.LegacyGasPrice != nil && maxFee.Cmp(fees.LegacyGasPrice) < 0 {
 		maxFee = new(big.Int).Set(fees.LegacyGasPrice)
@@ -328,8 +368,25 @@ func (c *PolygonClient) signAndSendWriteTransaction(ctx context.Context, signer 
 	if err != nil {
 		return "", err
 	}
+	return c.signAndSendWriteTransactionWithFees(ctx, signer, nonce, to, value, gasLimit, data, fees)
+}
 
+func (c *PolygonClient) signAndSendUrgentWriteTransaction(ctx context.Context, signer *Signer, to string, value *big.Int, gasLimit uint64, data string) (string, error) {
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	fees, err := c.urgentGasFeesForWriteTx(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.signAndSendWriteTransactionWithFees(ctx, signer, nonce, to, value, gasLimit, data, fees)
+}
+
+func (c *PolygonClient) signAndSendWriteTransactionWithFees(ctx context.Context, signer *Signer, nonce uint64, to string, value *big.Int, gasLimit uint64, data string, fees writeTxFees) (string, error) {
 	var signedTx string
+	var err error
 	if fees.UseDynamic() {
 		signedTx, err = signer.SignDynamicFeeTransaction(nonce, to, value, gasLimit, fees.MaxFeePerGas, fees.MaxPriorityFeePerGas, data)
 	} else {
@@ -753,10 +810,10 @@ func (c *PolygonClient) GetBlockNumber(ctx context.Context) (uint64, error) {
 
 func (c *PolygonClient) GetFullBlockByNumber(ctx context.Context, blockNumber uint64) (*FullBlock, error) {
 	blockTag := fmt.Sprintf("0x%x", blockNumber)
-	
+
 	// Create a specialized struct to unmarshal the whole response in one go
 	var response struct {
-		JSONRPC string    `json:"jsonrpc"`
+		JSONRPC string     `json:"jsonrpc"`
 		Result  *FullBlock `json:"result"`
 		Error   struct {
 			Code    int    `json:"code"`
@@ -935,11 +992,18 @@ func parseHexInt64(s string) (int64, error) {
 }
 
 func bumpGasPrice(base *big.Int) *big.Int {
+	return bumpGasPriceWithRatio(base, polygonGasPriceBumpNumerator, polygonGasPriceBumpDenominator)
+}
+
+func bumpGasPriceWithRatio(base *big.Int, numerator, denominator int64) *big.Int {
 	if base == nil {
 		return nil
 	}
-	bumped := new(big.Int).Mul(base, big.NewInt(polygonGasPriceBumpNumerator))
-	bumped.Div(bumped, big.NewInt(polygonGasPriceBumpDenominator))
+	if denominator <= 0 {
+		return new(big.Int).Set(base)
+	}
+	bumped := new(big.Int).Mul(base, big.NewInt(numerator))
+	bumped.Div(bumped, big.NewInt(denominator))
 	if bumped.Cmp(base) < 0 {
 		return new(big.Int).Set(base)
 	}
