@@ -1088,7 +1088,7 @@ func paperbotCopytradePositionSyncTrades(state *paperbotCopytradeState, conditio
 		}
 		targetDeltas[outcome] = delta
 		switch {
-		case delta > 0 && !holdsBoth:
+		case delta > 0:
 			if remaining := delta - freshBuySize[outcome]; remaining > 0.01 {
 				syncTrades = append(syncTrades, paperbotEstimatedPositionBuySignals(state, strings.TrimSpace(conditionID), outcome, remaining, sizingMode)...)
 			}

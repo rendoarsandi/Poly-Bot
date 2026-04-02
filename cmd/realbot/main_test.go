@@ -936,6 +936,49 @@ func TestRealbotCopytradePositionSyncTradesCreatesResidualBuyWhenFreshBuyIsParti
 	}
 }
 
+func TestRealbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOutcomes(t *testing.T) {
+	state := newRealbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	realbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{
+			{ConditionID: "cond-1", Outcome: "Up", Size: 100},
+			{ConditionID: "cond-1", Outcome: "Down", Size: 100},
+		},
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+
+	trades, deltas := realbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{
+			{ConditionID: "cond-1", Outcome: "Up", Size: 129},
+			{ConditionID: "cond-1", Outcome: "Down", Size: 100},
+		},
+		t0.Add(2*time.Second),
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 1 {
+		t.Fatalf("expected one buy catch-up trade while holding both outcomes, got %d", len(trades))
+	}
+	if trades[0].Outcome != "Up" || trades[0].Side != "BUY" || trades[0].Source != "position-estimate" {
+		t.Fatalf("unexpected buy catch-up trade: %+v", trades[0])
+	}
+	if math.Abs(trades[0].Size-29) > 0.000001 {
+		t.Fatalf("expected 29-share catch-up buy, got %.4f", trades[0].Size)
+	}
+	if got := deltas["Up"]; math.Abs(got-29) > 0.000001 {
+		t.Fatalf("expected up delta 29, got %.4f", got)
+	}
+}
+
 func TestRealbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing.T) {
 	state := newRealbotCopytradeState()
 	state.startedAt = time.Unix(1500, 0)
