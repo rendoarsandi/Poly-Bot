@@ -14,6 +14,14 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+const (
+	// Warn when reconnect catch-up spans more than a handful of blocks so
+	// operators can distinguish backlog processing from live heads.
+	polymarketMinedCatchupWarnBlocks = uint64(6)
+	// Hard cap eth_getBlockByNumber pacing for mined watcher processing.
+	polymarketMinedBlockFetchMinGap = 250 * time.Millisecond
+)
+
 type MinedPolymarketSignal struct {
 	ObservedAt     time.Time
 	SignalID       string
@@ -42,6 +50,7 @@ type PolymarketMinedWatcher struct {
 	lastDiscoveryFallback time.Time
 	started               bool
 	lastBlock             uint64
+	lastBlockFetchAt      time.Time
 	logf                  func(string, ...interface{})
 }
 
@@ -316,17 +325,29 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 
 func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint64) error {
 	w.mu.Lock()
-	start := headNum
-	if w.lastBlock > 0 && headNum > w.lastBlock {
-		start = w.lastBlock + 1
-	}
-	if w.lastBlock > 0 && headNum <= w.lastBlock {
-		w.mu.Unlock()
-		return nil
-	}
+	lastBlock := w.lastBlock
 	w.mu.Unlock()
 
-	for blockNum := start; blockNum <= headNum; blockNum++ {
+	start, end, ok := minedWatcherSelectBlockRange(lastBlock, headNum)
+	if !ok {
+		return nil
+	}
+	if lastBlock > 0 && w.logf != nil {
+		backlog := end - start + 1
+		if backlog > polymarketMinedCatchupWarnBlocks {
+			w.logf(
+				"⚠️ Copytrade mined watcher catching up %d blocks after reconnect (last=%d head=%d)",
+				backlog,
+				lastBlock,
+				headNum,
+			)
+		}
+	}
+
+	for blockNum := start; blockNum <= end; blockNum++ {
+		if err := w.waitBlockFetchSlot(ctx); err != nil {
+			return err
+		}
 		var block *FullBlock
 		var err error
 
@@ -361,6 +382,46 @@ func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint
 		w.mu.Unlock()
 	}
 	return nil
+}
+
+func minedWatcherSelectBlockRange(lastBlock, headNum uint64) (start, end uint64, ok bool) {
+	if headNum == 0 {
+		return 0, 0, false
+	}
+	if lastBlock > 0 && headNum <= lastBlock {
+		return 0, 0, false
+	}
+
+	if lastBlock == 0 {
+		return headNum, headNum, true
+	}
+
+	start = lastBlock + 1
+	end = headNum
+	return start, end, true
+}
+
+func (w *PolymarketMinedWatcher) waitBlockFetchSlot(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	for {
+		w.mu.Lock()
+		now := time.Now()
+		if w.lastBlockFetchAt.IsZero() || now.Sub(w.lastBlockFetchAt) >= polymarketMinedBlockFetchMinGap {
+			w.lastBlockFetchAt = now
+			w.mu.Unlock()
+			return nil
+		}
+		waitFor := polymarketMinedBlockFetchMinGap - now.Sub(w.lastBlockFetchAt)
+		w.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(waitFor):
+		}
+	}
 }
 
 func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *FullBlock) {

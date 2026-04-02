@@ -85,3 +85,41 @@ func TestPolymarketMinedWatcherStoreSignalDedupes(t *testing.T) {
 		t.Fatalf("unexpected recent signal count %d", len(watcher.recent))
 	}
 }
+
+func TestMinedWatcherSelectBlockRange(t *testing.T) {
+	t.Run("bootstraps from latest head only", func(t *testing.T) {
+		start, end, ok := minedWatcherSelectBlockRange(0, 123)
+		if !ok {
+			t.Fatal("expected valid range")
+		}
+		if start != 123 || end != 123 {
+			t.Fatalf("unexpected range start=%d end=%d", start, end)
+		}
+	})
+
+	t.Run("ignores already processed head", func(t *testing.T) {
+		if _, _, ok := minedWatcherSelectBlockRange(100, 100); ok {
+			t.Fatal("expected no range when head is already processed")
+		}
+	})
+
+	t.Run("processes full small gap", func(t *testing.T) {
+		start, end, ok := minedWatcherSelectBlockRange(100, 103)
+		if !ok {
+			t.Fatal("expected valid range")
+		}
+		if start != 101 || end != 103 {
+			t.Fatalf("unexpected range start=%d end=%d", start, end)
+		}
+	})
+
+	t.Run("replays the full reconnect gap", func(t *testing.T) {
+		start, end, ok := minedWatcherSelectBlockRange(100, 120)
+		if !ok {
+			t.Fatal("expected valid range")
+		}
+		if start != 101 || end != 120 {
+			t.Fatalf("unexpected range start=%d end=%d", start, end)
+		}
+	})
+}
