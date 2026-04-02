@@ -7359,6 +7359,44 @@ func realbotCopytradeTradeKey(trade api.PublicTrade) string {
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
 }
 
+func realbotCopytradeSignalSource(trade api.PublicTrade) string {
+	label := strings.TrimSpace(trade.Source)
+	if label != "" {
+		return label
+	}
+	if trade.Timestamp == 0 {
+		return "position"
+	}
+	return "trade"
+}
+
+func realbotCopytradeSignalSummary(trade api.PublicTrade) string {
+	side := strings.ToUpper(strings.TrimSpace(trade.Side))
+	if side == "" {
+		side = "?"
+	}
+	outcome := core.SanitizeString(trade.Outcome)
+	if outcome == "" {
+		outcome = "?"
+	}
+	parts := []string{
+		fmt.Sprintf("%s %s", side, outcome),
+		fmt.Sprintf("master=%s", formatShareQty(math.Max(0, trade.Size))),
+		fmt.Sprintf("source=%s", realbotCopytradeSignalSource(trade)),
+	}
+	if txHash := realbotShortTxHash(trade.TransactionHash); txHash != "" {
+		parts = append(parts, "tx="+txHash)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func realbotLogCopytradeSignalResult(tui *paper.TUI, marketID string, trade api.PublicTrade, status, result string) {
+	if tui == nil {
+		return
+	}
+	tui.LogEvent("[%s] %s Copytrade signal %s -> %s", marketID, status, realbotCopytradeSignalSummary(trade), result)
+}
+
 func realbotNormalizeCopytradeSignalID(trade api.PublicTrade) string {
 	if signalID := strings.TrimSpace(trade.SignalID); signalID != "" {
 		return signalID
@@ -7698,6 +7736,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	for _, trade := range freshTrades {
 		outcome := core.SanitizeString(trade.Outcome)
 		if outcome == "" {
+			realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: empty outcome")
 			continue
 		}
 		localQty, avgPrice := localBoughtPositionAvg(engine, marketID, outcome)
@@ -7708,11 +7747,13 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		}
 		tokenID := mkt.GetTokenIDForOutcome(market, outcome)
 		if tokenID == "" {
+			realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: outcome %s is not mapped to a token", outcome))
 			continue
 		}
 		tradeSide := strings.ToUpper(strings.TrimSpace(trade.Side))
 		tradeSize := math.Max(0, trade.Size)
 		if tradeSize <= 0.01 && !strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeShares) && !strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
+			realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: master size %s is below %.2f share", formatShareQty(tradeSize), minOnChainActionShares))
 			continue
 		}
 
@@ -7731,38 +7772,26 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				_, restAsk, restErr := restClient.GetBestBidAsk(restCtx, tokenID)
 				restCancel()
 				if restErr != nil {
-					msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: quote refresh failed: %v", marketID, outcome, restErr)
-					if realbotCopytradeShouldLog(state, "buy-quote:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "↩", fmt.Sprintf("requeued: quote refresh failed: %v", restErr))
 					requeueTrade(trade)
 					continue
 				}
 				ask = restAsk
 			}
 			if ask <= 0 || ask >= 1.0 {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: missing valid ask", marketID, outcome)
-				if realbotCopytradeShouldLog(state, "buy-ask:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "↩", "requeued: missing valid ask")
 				requeueTrade(trade)
 				continue
 			}
 			if entryGate != nil && !entryGate.TryAcquire() {
-				msg := fmt.Sprintf("[%s] ⏳ Copytrade buy paused for %s: another market is executing a live entry", marketID, outcome)
-				if realbotCopytradeShouldLog(state, "buy-pause:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "↩", "requeued: another market is executing a live entry")
 				requeueTrade(trade)
 				continue
 			}
 
 			submitPrice := core.CopytradeBuyLimitPrice(ask, liveCfg.CopytradeMaxSlippagePct)
 			if submitPrice <= 0 || submitPrice >= 1.0 {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: invalid slippage cap from ask $%.3f", marketID, outcome, ask)
-				if realbotCopytradeShouldLog(state, "buy-cap:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: invalid slippage cap from ask $%.3f", ask))
 				if entryGate != nil {
 					entryGate.Release()
 				}
@@ -7772,10 +7801,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
 			requestedQty := normalizeMarketBuyShares(budgetShares)
 			if requestedQty < minOnChainActionShares {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy skipped for %s: actionable size %s is below %.2f share at cap $%.3f", marketID, outcome, formatShareQty(requestedQty), minOnChainActionShares, submitPrice)
-				if realbotCopytradeShouldLog(state, "buy-size:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: actionable size %s is below %.2f share at cap $%.3f", formatShareQty(requestedQty), minOnChainActionShares, submitPrice))
 				if entryGate != nil {
 					entryGate.Release()
 				}
@@ -7783,13 +7809,6 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			label := strings.TrimSpace(trade.Source)
-			if label == "" {
-				label = "trade"
-				if trade.Timestamp == 0 {
-					label = "position"
-				}
-			}
 			// tui.LogEvent("[%s] 🪞 Copytrade BUY %s: target %s %s shares, submit %s @ cap $%.3f (%s ask $%.3f, slip %.0fc)",
 			//	marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, ask, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
@@ -7801,25 +7820,18 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 			if !exec.Success {
 				if exec.Err != nil {
-					msg := fmt.Sprintf("[%s] ❌ Copytrade buy failed for %s: %v", marketID, outcome, exec.Err)
-					if realbotCopytradeShouldLog(state, "buy-fail:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %v", exec.Err))
 				} else if exec.Result != nil && exec.Result.Message != "" {
-					msg := fmt.Sprintf("[%s] ❌ Copytrade buy failed for %s: %s", marketID, outcome, exec.Result.Message)
-					if realbotCopytradeShouldLog(state, "buy-fail:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %s", exec.Result.Message))
+				} else {
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", "failed: execution did not succeed")
 				}
 				continue
 			}
 
 			execQty := attributedBuyFill(exec, requestedQty, 0, false)
 			if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade buy for %s lacked confirmed fill", marketID, outcome)
-				if realbotCopytradeShouldLog(state, "buy-unconfirmed:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: lacked confirmed fill")
 				continue
 			}
 
@@ -7833,14 +7845,18 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 			state.managed[outcome] = true
 			tui.RecordOrderWithMode(marketID, outcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "copytrade", "FILLED")
-			tui.LogEvent("[%s] ✅ Copytrade bought %s %s at $%.3f", marketID, formatShareQty(execQty), outcome, execPrice)
+			realbotLogCopytradeSignalResult(tui, marketID, trade, "✅", fmt.Sprintf("bought %s at $%.3f", formatShareQty(execQty), execPrice))
 			if refreshWalletTruth != nil {
 				refreshWalletTruth(5 * time.Second)
 			}
 			continue
 		}
 
-		if tradeSide == "SELL" && managed && localQty > 0.01 {
+		if tradeSide == "SELL" {
+			if !managed || localQty <= 0.01 {
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: no managed local position to sell")
+				continue
+			}
 			feeRate := tokenFeeRates[outcome]
 			if feeRate == 0 {
 				feeRate = 1000
@@ -7855,29 +7871,20 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				restBid, _, restErr := restClient.GetBestBidAsk(restCtx, tokenID)
 				restCancel()
 				if restErr != nil {
-					msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: quote refresh failed: %v", marketID, outcome, restErr)
-					if realbotCopytradeShouldLog(state, "sell-quote:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "↩", fmt.Sprintf("requeued: quote refresh failed: %v", restErr))
 					requeueTrade(trade)
 					continue
 				}
 				bid = restBid
 			}
 			if bid <= 0 || bid >= 1.0 {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: missing valid bid", marketID, outcome)
-				if realbotCopytradeShouldLog(state, "sell-bid:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "↩", "requeued: missing valid bid")
 				requeueTrade(trade)
 				continue
 			}
 			submitPrice := core.CopytradeSellFloorPrice(bid, liveCfg.CopytradeMaxSlippagePct)
 			if submitPrice <= 0 || submitPrice >= 1.0 {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: invalid slippage floor from bid $%.3f", marketID, outcome, bid)
-				if realbotCopytradeShouldLog(state, "sell-floor:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: invalid slippage floor from bid $%.3f", bid))
 				continue
 			}
 
@@ -7904,21 +7911,11 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				requestedQty = normalizeMarketSellShares(localQty)
 			}
 			if requestedQty < minOnChainActionShares {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell skipped for %s: actionable size %s is below %.2f share", marketID, outcome, formatShareQty(requestedQty), minOnChainActionShares)
-				if realbotCopytradeShouldLog(state, "sell-size:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: actionable size %s is below %.2f share", formatShareQty(requestedQty), minOnChainActionShares))
 				continue
 			}
 
 			initialPosition := trader.GetLivePositionSize(tokenID)
-			label := strings.TrimSpace(trade.Source)
-			if label == "" {
-				label = "trade"
-				if trade.Timestamp == 0 {
-					label = "position"
-				}
-			}
 			// tui.LogEvent("[%s] 🪞 Copytrade SELL %s: target %s %s shares, sell %s @ floor $%.3f (%s bid $%.3f, slip %.0fc)",
 			//	marketID, outcome, label, formatShareQty(tradeSize), formatShareQty(requestedQty), submitPrice, quoteSource, bid, liveCfg.CopytradeMaxSlippagePct)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
@@ -7927,25 +7924,18 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			logDirectExecutionAudit(tui, marketID, "Copytrade SELL", requestedQty, submitPrice, exec)
 			if !exec.Success {
 				if exec.Err != nil {
-					msg := fmt.Sprintf("[%s] ❌ Copytrade sell failed for %s: %v", marketID, outcome, exec.Err)
-					if realbotCopytradeShouldLog(state, "sell-fail:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %v", exec.Err))
 				} else if exec.Result != nil && exec.Result.Message != "" {
-					msg := fmt.Sprintf("[%s] ❌ Copytrade sell failed for %s: %s", marketID, outcome, exec.Result.Message)
-					if realbotCopytradeShouldLog(state, "sell-fail:"+outcome, msg, 10*time.Second) {
-						tui.LogEvent("%s", msg)
-					}
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %s", exec.Result.Message))
+				} else {
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", "failed: execution did not succeed")
 				}
 				continue
 			}
 
 			execQty := attributedSellFill(exec, requestedQty)
 			if !hasConfirmedExecutedQty(api.SideSell, execQty) {
-				msg := fmt.Sprintf("[%s] ⚠️ Copytrade sell for %s lacked confirmed fill", marketID, outcome)
-				if realbotCopytradeShouldLog(state, "sell-unconfirmed:"+outcome, msg, 10*time.Second) {
-					tui.LogEvent("%s", msg)
-				}
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: lacked confirmed fill")
 				continue
 			}
 
@@ -7958,7 +7948,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 			profit := (execPrice - avgPrice) * execQty
 			tui.RecordOrderWithMode(marketID, outcome, "SELL", execQty, execPrice, execQty*execPrice, 0.0, profit, "copytrade", "FILLED")
-			tui.LogEvent("[%s] ✅ Copytrade sold %s %s at $%.3f", marketID, formatShareQty(execQty), outcome, execPrice)
+			realbotLogCopytradeSignalResult(tui, marketID, trade, "✅", fmt.Sprintf("sold %s at $%.3f", formatShareQty(execQty), execPrice))
 			if positionSignal {
 				remainingSize := normalizeMarketSellShares(tradeSize - execQty)
 				if remainingSize >= minOnChainActionShares {
@@ -7978,7 +7968,10 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			if refreshWalletTruth != nil {
 				refreshWalletTruth(5 * time.Second)
 			}
+			continue
 		}
+
+		realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: unsupported side %q", tradeSide))
 	}
 	realbotCopytradeQueueRetryTrades(state, retryTrades)
 }

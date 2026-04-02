@@ -741,6 +741,30 @@ func TestPaperbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
 	}
 }
 
+func TestPaperbotCopytradeSignalSummaryIncludesSourceAndTx(t *testing.T) {
+	trade := api.PublicTrade{
+		Outcome:         "Up",
+		Side:            "buy",
+		Size:            28.45,
+		Source:          "onchain",
+		TransactionHash: "0x1234567890abcdef",
+	}
+	if got := paperbotCopytradeSignalSummary(trade); got != "BUY Up | master=28.45 | source=onchain | tx=0x12345678..." {
+		t.Fatalf("unexpected summary %q", got)
+	}
+}
+
+func TestPaperbotCopytradeSignalSummaryDefaultsToPositionSource(t *testing.T) {
+	trade := api.PublicTrade{
+		Outcome: "Down",
+		Side:    "sell",
+		Size:    3,
+	}
+	if got := paperbotCopytradeSignalSummary(trade); got != "SELL Down | master=3 | source=position" {
+		t.Fatalf("unexpected summary %q", got)
+	}
+}
+
 func TestPaperbotEstimatedPositionBuySignalsSplitsUsingObservedTradeSize(t *testing.T) {
 	state := newPaperbotCopytradeState()
 	paperbotObserveCopytradeBuySignal(state, api.PublicTrade{Outcome: "Up", Side: "BUY", Size: 10, Timestamp: 1001})

@@ -76,6 +76,30 @@ func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	}
 }
 
+func TestRealbotCopytradeSignalSummaryIncludesSourceAndTx(t *testing.T) {
+	trade := api.PublicTrade{
+		Outcome:         "Up",
+		Side:            "buy",
+		Size:            28.45,
+		Source:          "onchain",
+		TransactionHash: "0x1234567890abcdef",
+	}
+	if got := realbotCopytradeSignalSummary(trade); got != "BUY Up | master=28.45 | source=onchain | tx=0x12345678..." {
+		t.Fatalf("unexpected summary %q", got)
+	}
+}
+
+func TestRealbotCopytradeSignalSummaryDefaultsToPositionSource(t *testing.T) {
+	trade := api.PublicTrade{
+		Outcome: "Down",
+		Side:    "sell",
+		Size:    3,
+	}
+	if got := realbotCopytradeSignalSummary(trade); got != "SELL Down | master=3 | source=position" {
+		t.Fatalf("unexpected summary %q", got)
+	}
+}
+
 func TestRealbotBinanceSymbolForExactSlugMarket(t *testing.T) {
 	cfg := &core.Config{BinanceQuoteAsset: "usdt"}
 	got := realbotBinanceSymbolForMarket("btc-updown-15m-1767358800#deadbeef", cfg)
