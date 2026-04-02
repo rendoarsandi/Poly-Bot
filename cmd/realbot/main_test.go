@@ -44,11 +44,11 @@ func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	}
 }
 
-func TestRealbotCopytradeRESTPollEvery(t *testing.T) {
+func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 
-	if got := realbotCopytradeRESTPollEvery(nil, 250*time.Millisecond); got != 250*time.Millisecond {
-		t.Fatalf("expected no-watcher poll interval to stay unchanged, got %s", got)
+	if !realbotCopytradeShouldUsePublicActivityAPI(nil) {
+		t.Fatal("expected nil poller to allow public activity api")
 	}
 
 	minedOnly := &realbotCopytradePoller{
@@ -59,8 +59,8 @@ func TestRealbotCopytradeRESTPollEvery(t *testing.T) {
 			wallet,
 		),
 	}
-	if got := realbotCopytradeRESTPollEvery(minedOnly, 250*time.Millisecond); got != realbotCopytradeMinedRESTPollMin {
-		t.Fatalf("expected mined-only repair interval %s, got %s", realbotCopytradeMinedRESTPollMin, got)
+	if realbotCopytradeShouldUsePublicActivityAPI(minedOnly) {
+		t.Fatal("expected mined-only watcher to disable public activity api")
 	}
 
 	pending := &realbotCopytradePoller{
@@ -71,8 +71,8 @@ func TestRealbotCopytradeRESTPollEvery(t *testing.T) {
 			wallet,
 		),
 	}
-	if got := realbotCopytradeRESTPollEvery(pending, 250*time.Millisecond); got != realbotCopytradePendingRESTPoll {
-		t.Fatalf("expected pending watcher repair interval %s, got %s", realbotCopytradePendingRESTPoll, got)
+	if realbotCopytradeShouldUsePublicActivityAPI(pending) {
+		t.Fatal("expected pending watcher to disable public activity api")
 	}
 }
 
@@ -816,7 +816,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t 
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 5.51}},
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	); len(trades) != 0 || len(deltas) != 0 {
 		t.Fatalf("initial seed should not emit sync trades, got trades=%d deltas=%d", len(trades), len(deltas))
 	}
@@ -828,7 +828,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t 
 		nil,
 		t0.Add(2*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 0 {
 		t.Fatalf("first lower snapshot should wait for confirmation, got %+v", trades)
@@ -844,7 +844,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t 
 		nil,
 		t0.Add(4*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one fallback sell trade, got %d", len(trades))
@@ -871,7 +871,7 @@ func TestRealbotCopytradePositionSyncTradesSkipsFallbackSellWhenFreshSellExists(
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 5.51}},
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := realbotCopytradePositionSyncTrades(
@@ -881,7 +881,7 @@ func TestRealbotCopytradePositionSyncTradesSkipsFallbackSellWhenFreshSellExists(
 		nil,
 		t0.Add(2*time.Second),
 		[]api.PublicTrade{{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: t0.Add(2 * time.Second).Unix()}},
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 0 {
 		t.Fatalf("expected fresh sell to suppress fallback sell, got %+v", trades)
@@ -902,7 +902,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade(
 		nil,
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := realbotCopytradePositionSyncTrades(
@@ -912,7 +912,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade(
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
 		t0.Add(2*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one estimated buy trade, got %d", len(trades))
@@ -920,8 +920,8 @@ func TestRealbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade(
 	if trades[0].Side != "BUY" || trades[0].Outcome != "Up" {
 		t.Fatalf("unexpected estimated buy trade: %+v", trades[0])
 	}
-	if trades[0].Source != "position-estimate" {
-		t.Fatalf("expected position-estimate source, got %q", trades[0].Source)
+	if trades[0].Source != "position" {
+		t.Fatalf("expected position source, got %q", trades[0].Source)
 	}
 	if math.Abs(trades[0].Size-7.25) > 0.000001 {
 		t.Fatalf("expected estimated buy size 7.25, got %.4f", trades[0].Size)
@@ -942,7 +942,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesResidualBuyWhenFreshBuyIsParti
 		nil,
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := realbotCopytradePositionSyncTrades(
@@ -952,12 +952,12 @@ func TestRealbotCopytradePositionSyncTradesCreatesResidualBuyWhenFreshBuyIsParti
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 10}},
 		t0.Add(2*time.Second),
 		[]api.PublicTrade{{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 4, Timestamp: t0.Add(2 * time.Second).Unix()}},
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one residual estimated buy, got %d", len(trades))
 	}
-	if trades[0].Side != "BUY" || trades[0].Source != "position-estimate" {
+	if trades[0].Side != "BUY" || trades[0].Source != "position" {
 		t.Fatalf("unexpected residual buy trade: %+v", trades[0])
 	}
 	if math.Abs(trades[0].Size-6) > 0.000001 {
@@ -982,7 +982,7 @@ func TestRealbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOutc
 		},
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := realbotCopytradePositionSyncTrades(
@@ -995,12 +995,12 @@ func TestRealbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOutc
 		},
 		t0.Add(2*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one buy catch-up trade while holding both outcomes, got %d", len(trades))
 	}
-	if trades[0].Outcome != "Up" || trades[0].Side != "BUY" || trades[0].Source != "position-estimate" {
+	if trades[0].Outcome != "Up" || trades[0].Side != "BUY" || trades[0].Source != "position" {
 		t.Fatalf("unexpected buy catch-up trade: %+v", trades[0])
 	}
 	if math.Abs(trades[0].Size-29) > 0.000001 {
@@ -1008,6 +1008,37 @@ func TestRealbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOutc
 	}
 	if got := deltas["Up"]; math.Abs(got-29) > 0.000001 {
 		t.Fatalf("expected up delta 29, got %.4f", got)
+	}
+}
+
+func TestRealbotCopytradePositionSyncTradesIgnoresFixedSizeModes(t *testing.T) {
+	state := newRealbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	trades, deltas := realbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 0 || len(deltas) != 0 {
+		t.Fatalf("shares mode should ignore position sync, got trades=%d deltas=%d", len(trades), len(deltas))
+	}
+
+	trades, deltas = realbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
+		t0,
+		nil,
+		core.CopytradeSizingModeUSDC,
+	)
+	if len(trades) != 0 || len(deltas) != 0 {
+		t.Fatalf("usdc mode should ignore position sync, got trades=%d deltas=%d", len(trades), len(deltas))
 	}
 }
 

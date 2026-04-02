@@ -59,9 +59,6 @@ const (
 	paperCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	paperCopytradeUIRefreshMin     = 250 * time.Millisecond
 	paperCopytradeUIRefreshMax     = 500 * time.Millisecond
-	paperCopytradePendingRESTPoll  = 60 * time.Second
-	paperCopytradeMinedRESTPollMin = 5 * time.Second
-	paperCopytradeMinedRESTPollMax = 15 * time.Second
 	paperCopytradeRetryQueueCap    = 256
 	paperCopytradeRetryMaxAge      = 20 * time.Second
 	paperFillPollInterval          = 50 * time.Millisecond
@@ -920,24 +917,8 @@ func paperbotCopytradeHasPendingWatcher(p *paperbotCopytradePoller) bool {
 	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
 }
 
-func paperbotCopytradeRESTPollEvery(p *paperbotCopytradePoller, pollEvery time.Duration) time.Duration {
-	if pollEvery <= 0 {
-		pollEvery = 2 * time.Second
-	}
-	if paperbotCopytradeHasPendingWatcher(p) {
-		return paperCopytradePendingRESTPoll
-	}
-	if paperbotCopytradeHasOnchainWatcher(p) {
-		repairEvery := pollEvery * 4
-		if repairEvery < paperCopytradeMinedRESTPollMin {
-			repairEvery = paperCopytradeMinedRESTPollMin
-		}
-		if repairEvery > paperCopytradeMinedRESTPollMax {
-			repairEvery = paperCopytradeMinedRESTPollMax
-		}
-		return repairEvery
-	}
-	return pollEvery
+func paperbotCopytradeShouldUsePublicActivityAPI(p *paperbotCopytradePoller) bool {
+	return !paperbotCopytradeHasOnchainWatcher(p)
 }
 
 func (p *paperbotCopytradePoller) cachedSnapshotForCondition(conditionID string) paperbotCopytradeMarketSnapshot {
@@ -1064,6 +1045,9 @@ func (p *paperbotCopytradePoller) snapshotForCondition(ctx context.Context, rest
 
 func paperbotCopytradePositionSyncTrades(state *paperbotCopytradeState, conditionID string, outcomes []string, positions []api.Position, pollTime time.Time, freshTrades []api.PublicTrade, sizingMode string) ([]api.PublicTrade, map[string]float64) {
 	if state == nil || pollTime.IsZero() {
+		return nil, nil
+	}
+	if !strings.EqualFold(sizingMode, core.CopytradeSizingModePercent) {
 		return nil, nil
 	}
 
@@ -2698,9 +2682,12 @@ func run() error {
 					copytradeWatchers.attach(copytradePoller)
 				}
 				if !paperbotCopytradeHasOnchainWatcher(copytradePoller) {
-					tui.LogEvent("⚠️ Copytrade watchers (mempool/onchain) disabled; using slower REST polling")
-				} else if !paperbotCopytradeHasPendingWatcher(copytradePoller) {
-					tui.LogEvent("ℹ️ Copytrade running in mined/onchain mode only; pending filtering requires Alchemy, so fills can trail the master")
+					tui.LogEvent("⚠️ Copytrade disabled: Polygon WS RPC watcher is required; public trades/positions API fallback is off")
+				} else {
+					tui.LogEvent("ℹ️ Copytrade WS-only mode active; public trades/positions API disabled")
+					if !paperbotCopytradeHasPendingWatcher(copytradePoller) {
+						tui.LogEvent("ℹ️ Copytrade running in mined/onchain mode only; pending filtering requires Alchemy, so fills can trail the master")
+					}
 				}
 			} else if copytradeWatchers != nil {
 				copytradeWatchers.stop()
@@ -4928,6 +4915,13 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		}
 		return
 	}
+	if !paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
+		if time.Since(t.lastCopytradeNoticeAt) > 10*time.Second {
+			t.TUI.LogEvent("[%s] ⚠️ Copytrade requires Polygon WS RPC watcher; public API fallback is disabled", t.ID)
+			t.lastCopytradeNoticeAt = time.Now()
+		}
+		return
+	}
 
 	state := t.CopytradeState
 	pollEvery := time.Duration(liveCfg.CopytradePollIntervalMs) * time.Millisecond
@@ -4943,43 +4937,16 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
 		combinedTrades := make([]api.PublicTrade, 0)
-		snapshot := paperbotCopytradeMarketSnapshot{}
-		restPollEvery := pollEvery
-		if paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
-			restPollEvery = paperbotCopytradeRESTPollEvery(t.CopytradePoller, pollEvery)
-			minedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
-			if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
-				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)
-			} else {
-				combinedTrades = append(combinedTrades, minedTrades...)
-			}
-		}
-		if nextSnapshot, err := t.CopytradePoller.snapshotForCondition(ctx, t.RestClient, restPollEvery, t.Market.ConditionID); err == nil {
-			snapshot = nextSnapshot
-			publicTrades := paperbotPrepareCopytradeTrades(snapshot.Trades, "public")
-			combinedTrades = paperbotMergeCopytradeTrades(combinedTrades, publicTrades)
-			if !snapshot.PolledAt.IsZero() {
-				apiReceivedAt = snapshot.PolledAt
-			} else {
-				apiReceivedAt = time.Now()
-			}
-			state.lastError = ""
-		} else if len(combinedTrades) > 0 {
-			state.lastError = ""
+		minedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
+		if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
+			combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)
 		} else {
-			state.lastError = err.Error()
+			combinedTrades = append(combinedTrades, minedTrades...)
 		}
 		if len(combinedTrades) > 0 {
+			apiReceivedAt = time.Now()
+			state.lastError = ""
 			polledTrades = paperbotCopytradeFreshTrades(state, combinedTrades, t.Market.ConditionID)
-		}
-		if snapshot.PositionsErr == nil {
-			syncTrades, nextTargetDeltas := paperbotCopytradePositionSyncTrades(state, t.Market.ConditionID, t.Outcomes, snapshot.Positions, snapshot.PositionsPolledAt, polledTrades, liveCfg.CopytradeSizingMode)
-			if len(syncTrades) > 0 {
-				polledTrades = append(polledTrades, syncTrades...)
-			}
-			for outcome, delta := range nextTargetDeltas {
-				targetDeltas[outcome] = delta
-			}
 		}
 	}
 	for _, signal := range polledTrades {

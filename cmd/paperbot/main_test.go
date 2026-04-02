@@ -68,11 +68,11 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	}
 }
 
-func TestPaperbotCopytradeRESTPollEvery(t *testing.T) {
+func TestPaperbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 
-	if got := paperbotCopytradeRESTPollEvery(nil, 250*time.Millisecond); got != 250*time.Millisecond {
-		t.Fatalf("expected no-watcher poll interval to stay unchanged, got %s", got)
+	if !paperbotCopytradeShouldUsePublicActivityAPI(nil) {
+		t.Fatal("expected nil poller to allow public activity api")
 	}
 
 	minedOnly := &paperbotCopytradePoller{
@@ -83,8 +83,8 @@ func TestPaperbotCopytradeRESTPollEvery(t *testing.T) {
 			wallet,
 		),
 	}
-	if got := paperbotCopytradeRESTPollEvery(minedOnly, 250*time.Millisecond); got != paperCopytradeMinedRESTPollMin {
-		t.Fatalf("expected mined-only repair interval %s, got %s", paperCopytradeMinedRESTPollMin, got)
+	if paperbotCopytradeShouldUsePublicActivityAPI(minedOnly) {
+		t.Fatal("expected mined-only watcher to disable public activity api")
 	}
 
 	pending := &paperbotCopytradePoller{
@@ -95,8 +95,8 @@ func TestPaperbotCopytradeRESTPollEvery(t *testing.T) {
 			wallet,
 		),
 	}
-	if got := paperbotCopytradeRESTPollEvery(pending, 250*time.Millisecond); got != paperCopytradePendingRESTPoll {
-		t.Fatalf("expected pending watcher repair interval %s, got %s", paperCopytradePendingRESTPoll, got)
+	if paperbotCopytradeShouldUsePublicActivityAPI(pending) {
+		t.Fatal("expected pending watcher to disable public activity api")
 	}
 }
 
@@ -281,7 +281,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 5.51}},
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	); len(trades) != 0 || len(deltas) != 0 {
 		t.Fatalf("initial seed should not emit sync trades, got trades=%d deltas=%d", len(trades), len(deltas))
 	}
@@ -293,7 +293,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t
 		nil,
 		t0.Add(2*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 0 {
 		t.Fatalf("first lower snapshot should wait for confirmation, got %+v", trades)
@@ -309,7 +309,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesFallbackSellWhenTargetFlats(t
 		nil,
 		t0.Add(4*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one fallback sell trade, got %d", len(trades))
@@ -336,7 +336,7 @@ func TestPaperbotCopytradePositionSyncTradesSkipsFallbackSellWhenFreshSellExists
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 5.51}},
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := paperbotCopytradePositionSyncTrades(
@@ -346,7 +346,7 @@ func TestPaperbotCopytradePositionSyncTradesSkipsFallbackSellWhenFreshSellExists
 		nil,
 		t0.Add(2*time.Second),
 		[]api.PublicTrade{{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: t0.Add(2 * time.Second).Unix()}},
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 0 {
 		t.Fatalf("expected fresh sell to suppress fallback sell, got %+v", trades)
@@ -367,7 +367,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade
 		nil,
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := paperbotCopytradePositionSyncTrades(
@@ -377,7 +377,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
 		t0.Add(2*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one estimated buy trade, got %d", len(trades))
@@ -385,8 +385,8 @@ func TestPaperbotCopytradePositionSyncTradesCreatesEstimatedBuyWithoutFreshTrade
 	if trades[0].Side != "BUY" || trades[0].Outcome != "Up" {
 		t.Fatalf("unexpected estimated buy trade: %+v", trades[0])
 	}
-	if trades[0].Source != "position-estimate" {
-		t.Fatalf("expected position-estimate source, got %q", trades[0].Source)
+	if trades[0].Source != "position" {
+		t.Fatalf("expected position source, got %q", trades[0].Source)
 	}
 	if math.Abs(trades[0].Size-7.25) > 0.000001 {
 		t.Fatalf("expected estimated buy size 7.25, got %.4f", trades[0].Size)
@@ -407,7 +407,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesResidualBuyWhenFreshBuyIsPart
 		nil,
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := paperbotCopytradePositionSyncTrades(
@@ -417,12 +417,12 @@ func TestPaperbotCopytradePositionSyncTradesCreatesResidualBuyWhenFreshBuyIsPart
 		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 10}},
 		t0.Add(2*time.Second),
 		[]api.PublicTrade{{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 4, Timestamp: t0.Add(2 * time.Second).Unix()}},
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one residual estimated buy, got %d", len(trades))
 	}
-	if trades[0].Side != "BUY" || trades[0].Source != "position-estimate" {
+	if trades[0].Side != "BUY" || trades[0].Source != "position" {
 		t.Fatalf("unexpected residual buy trade: %+v", trades[0])
 	}
 	if math.Abs(trades[0].Size-6) > 0.000001 {
@@ -447,7 +447,7 @@ func TestPaperbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOut
 		},
 		t0,
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 
 	trades, deltas := paperbotCopytradePositionSyncTrades(
@@ -460,12 +460,12 @@ func TestPaperbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOut
 		},
 		t0.Add(2*time.Second),
 		nil,
-		core.CopytradeSizingModeShares,
+		core.CopytradeSizingModePercent,
 	)
 	if len(trades) != 1 {
 		t.Fatalf("expected one buy catch-up trade while holding both outcomes, got %d", len(trades))
 	}
-	if trades[0].Outcome != "Up" || trades[0].Side != "BUY" || trades[0].Source != "position-estimate" {
+	if trades[0].Outcome != "Up" || trades[0].Side != "BUY" || trades[0].Source != "position" {
 		t.Fatalf("unexpected buy catch-up trade: %+v", trades[0])
 	}
 	if math.Abs(trades[0].Size-29) > 0.000001 {
@@ -473,6 +473,37 @@ func TestPaperbotCopytradePositionSyncTradesCreatesBuyCatchupWhileHoldingBothOut
 	}
 	if got := deltas["Up"]; math.Abs(got-29) > 0.000001 {
 		t.Fatalf("expected up delta 29, got %.4f", got)
+	}
+}
+
+func TestPaperbotCopytradePositionSyncTradesIgnoresFixedSizeModes(t *testing.T) {
+	state := newPaperbotCopytradeState()
+	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
+
+	trades, deltas := paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
+		t0,
+		nil,
+		core.CopytradeSizingModeShares,
+	)
+	if len(trades) != 0 || len(deltas) != 0 {
+		t.Fatalf("shares mode should ignore position sync, got trades=%d deltas=%d", len(trades), len(deltas))
+	}
+
+	trades, deltas = paperbotCopytradePositionSyncTrades(
+		state,
+		"cond-1",
+		[]string{"Up", "Down"},
+		[]api.Position{{ConditionID: "cond-1", Outcome: "Up", Size: 7.25}},
+		t0,
+		nil,
+		core.CopytradeSizingModeUSDC,
+	)
+	if len(trades) != 0 || len(deltas) != 0 {
+		t.Fatalf("usdc mode should ignore position sync, got trades=%d deltas=%d", len(trades), len(deltas))
 	}
 }
 
