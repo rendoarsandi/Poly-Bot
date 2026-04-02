@@ -24,6 +24,10 @@ const (
 	polymarketMinedCatchupReplayCap = uint64(8)
 	// Hard cap eth_getBlockByNumber pacing for mined watcher processing.
 	polymarketMinedBlockFetchMinGap = 250 * time.Millisecond
+	// Collapse split transfer logs from the same tx into a single signal before
+	// copytrade consumes them. This avoids double-counting fee/rebate legs that
+	// arrive as separate ERC1155 transfers for one master fill.
+	polymarketMinedTransferAggregateWindow = 250 * time.Millisecond
 )
 
 type MinedPolymarketSignal struct {
@@ -55,6 +59,7 @@ type PolymarketMinedWatcher struct {
 	started               bool
 	lastBlock             uint64
 	lastBlockFetchAt      time.Time
+	pendingTransfers      map[string]MinedPolymarketSignal
 	logf                  func(string, ...interface{})
 }
 
@@ -65,12 +70,13 @@ func NewPolymarketMinedWatcher(wsURL string, polygon *PolygonClient, rest *RestC
 		return nil
 	}
 	return &PolymarketMinedWatcher{
-		wsURL:        wsURL,
-		polygon:      polygon,
-		rest:         rest,
-		targetWallet: targetWallet,
-		seen:         make(map[string]time.Time),
-		tokenCache:   make(map[string]pendingResolvedToken),
+		wsURL:            wsURL,
+		polygon:          polygon,
+		rest:             rest,
+		targetWallet:     targetWallet,
+		seen:             make(map[string]time.Time),
+		tokenCache:       make(map[string]pendingResolvedToken),
+		pendingTransfers: make(map[string]MinedPolymarketSignal),
 	}
 }
 
@@ -179,6 +185,7 @@ func (w *PolymarketMinedWatcher) SignalsSince(conditionID string, since time.Tim
 	}
 	conditionID = strings.TrimSpace(conditionID)
 	now := time.Now()
+	w.flushReadyTransferSignals(now)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -531,19 +538,7 @@ func (w *PolymarketMinedWatcher) handleTransferLog(parentCtx context.Context, en
 			BlockNumber:    blockNumber,
 			BlockTimestamp: observedAt.Unix(),
 		}
-		if !w.storeSignal(sig) {
-			continue
-		}
-		if w.logf != nil {
-			marketLabel := strings.TrimSpace(resolved.market.Slug)
-			if marketLabel == "" {
-				marketLabel = strings.TrimSpace(resolved.market.MarketSlug)
-			}
-			if marketLabel == "" {
-				marketLabel = strings.TrimSpace(resolved.market.ConditionID)
-			}
-			w.logf("🎯 Master %s %.2f %s on %s (%s)", side, sizes[i], resolved.outcome, marketLabel, shortHexForLog(entry.TransactionHash))
-		}
+		w.queueTransferSignal(sig)
 	}
 }
 
@@ -850,4 +845,70 @@ func (w *PolymarketMinedWatcher) storeSignal(sig MinedPolymarketSignal) bool {
 		w.recent = append([]MinedPolymarketSignal(nil), w.recent[len(w.recent)-512:]...)
 	}
 	return true
+}
+
+func (w *PolymarketMinedWatcher) queueTransferSignal(sig MinedPolymarketSignal) {
+	if w == nil {
+		return
+	}
+	now := time.Now()
+
+	w.mu.Lock()
+	if w.pendingTransfers == nil {
+		w.pendingTransfers = make(map[string]MinedPolymarketSignal)
+	}
+	if pending, exists := w.pendingTransfers[sig.SignalID]; exists {
+		pending.Size += sig.Size
+		if pending.ObservedAt.IsZero() || sig.ObservedAt.Before(pending.ObservedAt) {
+			pending.ObservedAt = sig.ObservedAt
+		}
+		w.pendingTransfers[sig.SignalID] = pending
+	} else {
+		w.pendingTransfers[sig.SignalID] = sig
+	}
+	w.mu.Unlock()
+
+	w.flushReadyTransferSignals(now)
+}
+
+func (w *PolymarketMinedWatcher) flushReadyTransferSignals(now time.Time) {
+	if w == nil {
+		return
+	}
+	ready := w.takeReadyTransferSignals(now)
+	for _, sig := range ready {
+		if !w.storeSignal(sig) {
+			continue
+		}
+		if w.logf != nil {
+			marketLabel := strings.TrimSpace(sig.Slug)
+			if marketLabel == "" {
+				marketLabel = strings.TrimSpace(sig.ConditionID)
+			}
+			w.logf("🎯 Master %s %.2f %s on %s (%s)", sig.Side, sig.Size, sig.Outcome, marketLabel, shortHexForLog(sig.TxHash))
+		}
+	}
+}
+
+func (w *PolymarketMinedWatcher) takeReadyTransferSignals(now time.Time) []MinedPolymarketSignal {
+	if w == nil {
+		return nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if len(w.pendingTransfers) == 0 {
+		return nil
+	}
+
+	ready := make([]MinedPolymarketSignal, 0, len(w.pendingTransfers))
+	for key, sig := range w.pendingTransfers {
+		if !sig.ObservedAt.IsZero() && now.Sub(sig.ObservedAt) < polymarketMinedTransferAggregateWindow {
+			continue
+		}
+		ready = append(ready, sig)
+		delete(w.pendingTransfers, key)
+	}
+	return ready
 }

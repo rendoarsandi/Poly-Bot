@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,6 +86,55 @@ func TestPolymarketMinedWatcherStoreSignalDedupes(t *testing.T) {
 	}
 	if len(watcher.recent) != 1 {
 		t.Fatalf("unexpected recent signal count %d", len(watcher.recent))
+	}
+}
+
+func TestPolymarketMinedWatcherAggregatesSplitTransferSignals(t *testing.T) {
+	var logged []string
+	watcher := &PolymarketMinedWatcher{
+		seen:             make(map[string]time.Time),
+		pendingTransfers: make(map[string]MinedPolymarketSignal),
+		logf: func(format string, args ...interface{}) {
+			logged = append(logged, fmt.Sprintf(format, args...))
+		},
+	}
+
+	base := time.Now()
+	first := MinedPolymarketSignal{
+		ObservedAt:  base,
+		SignalID:    "tx:token:BUY",
+		TxHash:      "0xtx",
+		TokenID:     "token",
+		ConditionID: "cond-1",
+		Slug:        "btc-updown",
+		Outcome:     "Up",
+		Side:        "BUY",
+		Size:        27.0,
+	}
+	second := first
+	second.ObservedAt = base.Add(10 * time.Millisecond)
+	second.Size = 1.5744
+
+	watcher.queueTransferSignal(first)
+	watcher.queueTransferSignal(second)
+
+	if len(watcher.recent) != 0 {
+		t.Fatalf("expected transfer pieces to remain buffered before flush, got %d recent signals", len(watcher.recent))
+	}
+
+	watcher.flushReadyTransferSignals(base.Add(polymarketMinedTransferAggregateWindow + time.Millisecond))
+
+	if len(watcher.recent) != 1 {
+		t.Fatalf("expected 1 aggregated signal, got %d", len(watcher.recent))
+	}
+	if math.Abs(watcher.recent[0].Size-28.5744) > 1e-9 {
+		t.Fatalf("unexpected aggregated size %.6f", watcher.recent[0].Size)
+	}
+	if len(logged) != 1 {
+		t.Fatalf("expected 1 log line, got %d", len(logged))
+	}
+	if !strings.Contains(logged[0], "28.57") {
+		t.Fatalf("expected aggregated log size, got %q", logged[0])
 	}
 }
 
@@ -230,6 +280,7 @@ func TestPolymarketMinedWatcherHandleTransferLogStoresSignal(t *testing.T) {
 		BlockNumber:     "0x20",
 		TransactionHash: "0xabc",
 	})
+	watcher.flushReadyTransferSignals(time.Now().Add(polymarketMinedTransferAggregateWindow + time.Millisecond))
 
 	if len(watcher.recent) != 1 {
 		t.Fatalf("expected 1 stored signal, got %d", len(watcher.recent))
