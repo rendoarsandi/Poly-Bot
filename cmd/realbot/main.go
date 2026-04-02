@@ -50,6 +50,9 @@ const (
 	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	realbotCopytradeUIRefreshMin     = 500 * time.Millisecond
 	realbotCopytradeUIRefreshMax     = 1 * time.Second
+	realbotCopytradePendingRESTPoll  = 60 * time.Second
+	realbotCopytradeMinedRESTPollMin = 5 * time.Second
+	realbotCopytradeMinedRESTPollMax = 15 * time.Second
 	realbotCopytradeRetryQueueCap    = 256
 	realbotCopytradeRetryMaxAge      = 20 * time.Second
 	realbotFillPollInterval          = 50 * time.Millisecond
@@ -2038,6 +2041,8 @@ func run() error {
 				}
 				if !realbotCopytradeHasOnchainWatcher(copytradePoller) {
 					tui.LogEvent("⚠️ Copytrade watchers (mempool/onchain) disabled; using slower REST polling")
+				} else if !realbotCopytradeHasPendingWatcher(copytradePoller) {
+					tui.LogEvent("ℹ️ Copytrade running in mined/onchain mode only; pending filtering requires Alchemy, so fills can trail the master")
 				}
 			} else if copytradeWatchers != nil {
 				copytradeWatchers.stop()
@@ -7079,6 +7084,30 @@ func realbotCopytradeHasOnchainWatcher(p *realbotCopytradePoller) bool {
 	return p != nil && ((p.pendingWatcher != nil && p.pendingWatcher.Enabled()) || (p.minedWatcher != nil && p.minedWatcher.Enabled()))
 }
 
+func realbotCopytradeHasPendingWatcher(p *realbotCopytradePoller) bool {
+	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
+}
+
+func realbotCopytradeRESTPollEvery(p *realbotCopytradePoller, pollEvery time.Duration) time.Duration {
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	if realbotCopytradeHasPendingWatcher(p) {
+		return realbotCopytradePendingRESTPoll
+	}
+	if realbotCopytradeHasOnchainWatcher(p) {
+		repairEvery := pollEvery * 4
+		if repairEvery < realbotCopytradeMinedRESTPollMin {
+			repairEvery = realbotCopytradeMinedRESTPollMin
+		}
+		if repairEvery > realbotCopytradeMinedRESTPollMax {
+			repairEvery = realbotCopytradeMinedRESTPollMax
+		}
+		return repairEvery
+	}
+	return pollEvery
+}
+
 func (p *realbotCopytradePoller) cachedSnapshotForCondition(conditionID string) realbotCopytradeMarketSnapshot {
 	if p == nil {
 		return realbotCopytradeMarketSnapshot{}
@@ -7648,7 +7677,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		snapshot := realbotCopytradeMarketSnapshot{}
 		restPollEvery := pollEvery
 		if realbotCopytradeHasOnchainWatcher(poller) {
-			restPollEvery = 60 * time.Second
+			restPollEvery = realbotCopytradeRESTPollEvery(poller, pollEvery)
 			minedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
 			if pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since); len(pendingTrades) > 0 {
 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)

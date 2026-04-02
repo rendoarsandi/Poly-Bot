@@ -59,6 +59,9 @@ const (
 	paperCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	paperCopytradeUIRefreshMin     = 250 * time.Millisecond
 	paperCopytradeUIRefreshMax     = 500 * time.Millisecond
+	paperCopytradePendingRESTPoll  = 60 * time.Second
+	paperCopytradeMinedRESTPollMin = 5 * time.Second
+	paperCopytradeMinedRESTPollMax = 15 * time.Second
 	paperCopytradeRetryQueueCap    = 256
 	paperCopytradeRetryMaxAge      = 20 * time.Second
 	paperFillPollInterval          = 50 * time.Millisecond
@@ -911,6 +914,30 @@ func (p *paperbotCopytradePoller) minedSignalsForCondition(conditionID string, s
 
 func paperbotCopytradeHasOnchainWatcher(p *paperbotCopytradePoller) bool {
 	return p != nil && ((p.pendingWatcher != nil && p.pendingWatcher.Enabled()) || (p.minedWatcher != nil && p.minedWatcher.Enabled()))
+}
+
+func paperbotCopytradeHasPendingWatcher(p *paperbotCopytradePoller) bool {
+	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
+}
+
+func paperbotCopytradeRESTPollEvery(p *paperbotCopytradePoller, pollEvery time.Duration) time.Duration {
+	if pollEvery <= 0 {
+		pollEvery = 2 * time.Second
+	}
+	if paperbotCopytradeHasPendingWatcher(p) {
+		return paperCopytradePendingRESTPoll
+	}
+	if paperbotCopytradeHasOnchainWatcher(p) {
+		repairEvery := pollEvery * 4
+		if repairEvery < paperCopytradeMinedRESTPollMin {
+			repairEvery = paperCopytradeMinedRESTPollMin
+		}
+		if repairEvery > paperCopytradeMinedRESTPollMax {
+			repairEvery = paperCopytradeMinedRESTPollMax
+		}
+		return repairEvery
+	}
+	return pollEvery
 }
 
 func (p *paperbotCopytradePoller) cachedSnapshotForCondition(conditionID string) paperbotCopytradeMarketSnapshot {
@@ -2672,6 +2699,8 @@ func run() error {
 				}
 				if !paperbotCopytradeHasOnchainWatcher(copytradePoller) {
 					tui.LogEvent("⚠️ Copytrade watchers (mempool/onchain) disabled; using slower REST polling")
+				} else if !paperbotCopytradeHasPendingWatcher(copytradePoller) {
+					tui.LogEvent("ℹ️ Copytrade running in mined/onchain mode only; pending filtering requires Alchemy, so fills can trail the master")
 				}
 			} else if copytradeWatchers != nil {
 				copytradeWatchers.stop()
@@ -4917,7 +4946,7 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 		snapshot := paperbotCopytradeMarketSnapshot{}
 		restPollEvery := pollEvery
 		if paperbotCopytradeHasOnchainWatcher(t.CopytradePoller) {
-			restPollEvery = 60 * time.Second
+			restPollEvery = paperbotCopytradeRESTPollEvery(t.CopytradePoller, pollEvery)
 			minedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
 			if pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since); len(pendingTrades) > 0 {
 				combinedTrades = append(append([]api.PublicTrade{}, pendingTrades...), minedTrades...)

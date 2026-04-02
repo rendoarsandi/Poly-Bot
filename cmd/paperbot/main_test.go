@@ -68,6 +68,38 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	}
 }
 
+func TestPaperbotCopytradeRESTPollEvery(t *testing.T) {
+	wallet := "0x0000000000000000000000000000000000000001"
+
+	if got := paperbotCopytradeRESTPollEvery(nil, 250*time.Millisecond); got != 250*time.Millisecond {
+		t.Fatalf("expected no-watcher poll interval to stay unchanged, got %s", got)
+	}
+
+	minedOnly := &paperbotCopytradePoller{
+		minedWatcher: api.NewPolymarketMinedWatcher(
+			"https://polygon-mainnet.infura.io/v3/test",
+			&api.PolygonClient{},
+			&api.RestClient{},
+			wallet,
+		),
+	}
+	if got := paperbotCopytradeRESTPollEvery(minedOnly, 250*time.Millisecond); got != paperCopytradeMinedRESTPollMin {
+		t.Fatalf("expected mined-only repair interval %s, got %s", paperCopytradeMinedRESTPollMin, got)
+	}
+
+	pending := &paperbotCopytradePoller{
+		pendingWatcher: api.NewPolymarketPendingWatcher(
+			"https://polygon-mainnet.g.alchemy.com/v2/test",
+			&api.RestClient{},
+			&api.PolygonClient{},
+			wallet,
+		),
+	}
+	if got := paperbotCopytradeRESTPollEvery(pending, 250*time.Millisecond); got != paperCopytradePendingRESTPoll {
+		t.Fatalf("expected pending watcher repair interval %s, got %s", paperCopytradePendingRESTPoll, got)
+	}
+}
+
 func TestComputePaperMakerArbPricesStayInsideSpreadAndMarginCap(t *testing.T) {
 	price1, price2, ok := computePaperMakerArbPrices(0.43, 0.46, 0.45, 0.49, 0.97)
 	if !ok {

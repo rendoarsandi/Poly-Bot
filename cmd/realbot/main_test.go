@@ -44,6 +44,38 @@ func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	}
 }
 
+func TestRealbotCopytradeRESTPollEvery(t *testing.T) {
+	wallet := "0x0000000000000000000000000000000000000001"
+
+	if got := realbotCopytradeRESTPollEvery(nil, 250*time.Millisecond); got != 250*time.Millisecond {
+		t.Fatalf("expected no-watcher poll interval to stay unchanged, got %s", got)
+	}
+
+	minedOnly := &realbotCopytradePoller{
+		minedWatcher: api.NewPolymarketMinedWatcher(
+			"https://polygon-mainnet.infura.io/v3/test",
+			&api.PolygonClient{},
+			&api.RestClient{},
+			wallet,
+		),
+	}
+	if got := realbotCopytradeRESTPollEvery(minedOnly, 250*time.Millisecond); got != realbotCopytradeMinedRESTPollMin {
+		t.Fatalf("expected mined-only repair interval %s, got %s", realbotCopytradeMinedRESTPollMin, got)
+	}
+
+	pending := &realbotCopytradePoller{
+		pendingWatcher: api.NewPolymarketPendingWatcher(
+			"https://polygon-mainnet.g.alchemy.com/v2/test",
+			&api.RestClient{},
+			&api.PolygonClient{},
+			wallet,
+		),
+	}
+	if got := realbotCopytradeRESTPollEvery(pending, 250*time.Millisecond); got != realbotCopytradePendingRESTPoll {
+		t.Fatalf("expected pending watcher repair interval %s, got %s", realbotCopytradePendingRESTPoll, got)
+	}
+}
+
 func TestRealbotBinanceSymbolForExactSlugMarket(t *testing.T) {
 	cfg := &core.Config{BinanceQuoteAsset: "usdt"}
 	got := realbotBinanceSymbolForMarket("btc-updown-15m-1767358800#deadbeef", cfg)
