@@ -316,8 +316,8 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	}
 
 	params := append([]interface{}{method}, map[string]interface{}{
-		"toAddress":  []string{CTFExchange, NegRiskExchange, RouterExchange, w.targetWallet},
-		"hashesOnly": false,
+		"fromAddress": []string{w.targetWallet},
+		"hashesOnly":  false,
 	})
 
 	subReq := map[string]interface{}{
@@ -522,7 +522,8 @@ func DecodePolymarketMatchOrdersInput(input string) ([]decodedPolymarketOrder, e
 	}
 
 	takerFillAmount := pendingHexWordToBigInt(words[2])
-	makerFillAmountsOffset, err := pendingHexWordToInt(words[3])
+	takerReceiveAmount := pendingHexWordToBigInt(words[3])
+	makerFillAmountsOffset, err := pendingHexWordToInt(words[4])
 	if err != nil {
 		makerFillAmountsOffset = 0
 	}
@@ -530,7 +531,7 @@ func DecodePolymarketMatchOrdersInput(input string) ([]decodedPolymarketOrder, e
 
 	orders := make([]decodedPolymarketOrder, 0, 4)
 	if takerOrder, err := decodePendingMatchOrder(words, takerOffset/32); err == nil {
-		takerOrder.FilledShares = pendingOrderFilledShares(takerOrder, takerFillAmount, nil)
+		takerOrder.FilledShares = pendingOrderFilledShares(takerOrder, takerFillAmount, takerReceiveAmount)
 		orders = append(orders, takerOrder)
 	}
 

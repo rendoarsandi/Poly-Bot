@@ -301,7 +301,6 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 	conn.SetReadLimit(1024 * 1024)
 
 	targetTopic := polygonLogTopicAddress(w.targetWallet)
-	operatorTopics := polygonExchangeOperatorTopics()
 	transferTopics := []string{
 		"0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62",
 		"0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7ce",
@@ -317,7 +316,7 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 				"address": CTFContract,
 				"topics": []interface{}{
 					transferTopics,
-					operatorTopics,
+					nil,
 					nil,
 					targetTopic,
 				},
@@ -334,7 +333,7 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 				"address": CTFContract,
 				"topics": []interface{}{
 					transferTopics,
-					operatorTopics,
+					nil,
 					targetTopic,
 				},
 			},
@@ -353,6 +352,10 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 		if err := wsjson.Read(subReadCtx, conn, &subResp); err != nil {
 			subReadCancel()
 			return fmt.Errorf("mined subscribe ack failed: %w", err)
+		}
+		if errData, ok := subResp["error"]; ok {
+			subReadCancel()
+			return fmt.Errorf("mined subscribe rejected by node: %v", errData)
 		}
 		subReadCancel()
 	}
@@ -402,13 +405,6 @@ func polygonLogTopicAddress(address string) string {
 	return "0x000000000000000000000000" + strings.TrimPrefix(address, "0x")
 }
 
-func polygonExchangeOperatorTopics() []string {
-	return []string{
-		polygonLogTopicAddress(CTFExchange),
-		polygonLogTopicAddress(NegRiskExchange),
-		polygonLogTopicAddress(RouterExchange),
-	}
-}
 
 func decodeTransferSingleLog(data string) ([]string, []float64, error) {
 	words, err := splitPendingHexWords(data)
