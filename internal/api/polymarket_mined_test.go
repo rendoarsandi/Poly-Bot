@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"testing"
 	"time"
 )
@@ -122,4 +124,122 @@ func TestMinedWatcherSelectBlockRange(t *testing.T) {
 			t.Fatalf("unexpected range start=%d end=%d", start, end)
 		}
 	})
+}
+
+func TestNormalizeCopytradeMinedWatcherMode(t *testing.T) {
+	tests := map[string]string{
+		"":         CopytradeMinedWatcherModeFallback,
+		"fallback": CopytradeMinedWatcherModeFallback,
+		"always":   CopytradeMinedWatcherModeAlways,
+		"1":        CopytradeMinedWatcherModeAlways,
+		"off":      CopytradeMinedWatcherModeOff,
+		"0":        CopytradeMinedWatcherModeOff,
+		"weird":    CopytradeMinedWatcherModeFallback,
+	}
+	for input, want := range tests {
+		if got := NormalizeCopytradeMinedWatcherMode(input); got != want {
+			t.Fatalf("NormalizeCopytradeMinedWatcherMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestShouldEnableCopytradeMinedWatcher(t *testing.T) {
+	alchemyPending := "https://polygon-mainnet.g.alchemy.com/v2/key"
+	infuraPending := "https://polygon-mainnet.infura.io/v3/key"
+
+	if ShouldEnableCopytradeMinedWatcher("", alchemyPending) {
+		t.Fatal("expected fallback mode to skip mined watcher when pending filtering is available")
+	}
+	if !ShouldEnableCopytradeMinedWatcher("", infuraPending) {
+		t.Fatal("expected fallback mode to enable mined watcher when pending filtering is unavailable")
+	}
+	if !ShouldEnableCopytradeMinedWatcher("always", alchemyPending) {
+		t.Fatal("expected always mode to force mined watcher on")
+	}
+	if ShouldEnableCopytradeMinedWatcher("off", infuraPending) {
+		t.Fatal("expected off mode to disable mined watcher")
+	}
+}
+
+func TestDecodeTransferSingleLog(t *testing.T) {
+	tokenIDs, sizes, err := decodeTransferSingleLog("0x" + minedTestHexWord(12345) + minedTestHexWord(2500000))
+	if err != nil {
+		t.Fatalf("decodeTransferSingleLog failed: %v", err)
+	}
+	if len(tokenIDs) != 1 || tokenIDs[0] != "12345" {
+		t.Fatalf("unexpected token ids %#v", tokenIDs)
+	}
+	if len(sizes) != 1 || math.Abs(sizes[0]-2.5) > 1e-9 {
+		t.Fatalf("unexpected sizes %#v", sizes)
+	}
+}
+
+func TestDecodeTransferBatchLog(t *testing.T) {
+	data := "0x" +
+		minedTestHexWord(64) +
+		minedTestHexWord(160) +
+		minedTestHexWord(2) +
+		minedTestHexWord(111) +
+		minedTestHexWord(222) +
+		minedTestHexWord(2) +
+		minedTestHexWord(1500000) +
+		minedTestHexWord(2750000)
+
+	tokenIDs, sizes, err := decodeTransferBatchLog(data)
+	if err != nil {
+		t.Fatalf("decodeTransferBatchLog failed: %v", err)
+	}
+	if len(tokenIDs) != 2 || tokenIDs[0] != "111" || tokenIDs[1] != "222" {
+		t.Fatalf("unexpected token ids %#v", tokenIDs)
+	}
+	if len(sizes) != 2 || math.Abs(sizes[0]-1.5) > 1e-9 || math.Abs(sizes[1]-2.75) > 1e-9 {
+		t.Fatalf("unexpected sizes %#v", sizes)
+	}
+}
+
+func TestPolymarketMinedWatcherHandleTransferLogStoresSignal(t *testing.T) {
+	target := "0x00000000000000000000000000000000000000aa"
+	watcher := &PolymarketMinedWatcher{
+		targetWallet: NormalizeWalletAddress(target),
+		seen:         make(map[string]time.Time),
+		tokenCache: map[string]pendingResolvedToken{
+			"12345": {
+				market:  Market{ConditionID: "cond-1", Slug: "btc-updown"},
+				outcome: "Up",
+			},
+		},
+	}
+
+	watcher.handleTransferLog(context.Background(), polymarketTransferLog{
+		Topics: []string{
+			"0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62",
+			polygonLogTopicAddress(CTFExchange),
+			polygonLogTopicAddress("0x00000000000000000000000000000000000000bb"),
+			polygonLogTopicAddress(target),
+		},
+		Data:            "0x" + minedTestHexWord(12345) + minedTestHexWord(3000000),
+		BlockNumber:     "0x20",
+		TransactionHash: "0xabc",
+	})
+
+	if len(watcher.recent) != 1 {
+		t.Fatalf("expected 1 stored signal, got %d", len(watcher.recent))
+	}
+	sig := watcher.recent[0]
+	if sig.Side != "BUY" {
+		t.Fatalf("unexpected side %q", sig.Side)
+	}
+	if sig.TokenID != "12345" {
+		t.Fatalf("unexpected token id %q", sig.TokenID)
+	}
+	if math.Abs(sig.Size-3.0) > 1e-9 {
+		t.Fatalf("unexpected size %.6f", sig.Size)
+	}
+	if sig.BlockNumber != 32 {
+		t.Fatalf("unexpected block number %d", sig.BlockNumber)
+	}
+}
+
+func minedTestHexWord(n int64) string {
+	return fmt.Sprintf("%064x", n)
 }

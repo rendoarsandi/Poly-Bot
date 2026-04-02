@@ -6593,6 +6593,7 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 	wallet = strings.TrimSpace(wallet)
 	chainWSURL = strings.TrimSpace(chainWSURL)
 	pendingWSURL = strings.TrimSpace(pendingWSURL)
+	minedWatcherMode := api.NormalizeCopytradeMinedWatcherMode(os.Getenv("COPYTRADE_MINED_WATCHER_MODE"))
 	if wallet == "" {
 		if current != nil {
 			current.stop()
@@ -6620,13 +6621,25 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 		cancel:       cancel,
 	}
 
-	if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, wallet); watcher != nil {
-		watcher.PrimeTrackedMarkets(trackedMarkets)
-		watcher.Start(watcherCtx, logf)
-		next.minedWatcher = watcher
-		logf("⛓️ Copytrade onchain watcher enabled for %s", wallet)
+	pendingSupported := api.SupportsPolymarketPendingWSURL(pendingWSURL)
+	if api.ShouldEnableCopytradeMinedWatcher(minedWatcherMode, pendingWSURL) {
+		if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, wallet); watcher != nil {
+			watcher.PrimeTrackedMarkets(trackedMarkets)
+			watcher.Start(watcherCtx, logf)
+			next.minedWatcher = watcher
+			logf("⛓️ Copytrade onchain watcher enabled for %s", wallet)
+		}
+	} else {
+		switch {
+		case minedWatcherMode == api.CopytradeMinedWatcherModeOff:
+			logf("ℹ️ Copytrade onchain watcher disabled by COPYTRADE_MINED_WATCHER_MODE=off")
+		case pendingSupported:
+			logf("ℹ️ Copytrade onchain watcher skipped: pending watcher available, reducing Polygon RPC usage")
+		default:
+			logf("ℹ️ Copytrade onchain watcher skipped")
+		}
 	}
-	if api.SupportsPolymarketPendingWSURL(pendingWSURL) {
+	if pendingSupported {
 		if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, wallet); watcher != nil {
 			watcher.PrimeTrackedMarkets(trackedMarkets)
 			watcher.Start(watcherCtx, logf)

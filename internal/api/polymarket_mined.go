@@ -287,16 +287,67 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 		return newPolygonWSDialError("mined", resp, err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	conn.SetReadLimit(5 * 1024 * 1024) // 5MB limit for full block payloads
+	conn.SetReadLimit(1024 * 1024)
 
-	subReq := map[string]interface{}{
+	targetTopic := polygonLogTopicAddress(w.targetWallet)
+	operatorTopics := polygonExchangeOperatorTopics()
+	transferTopics := []string{
+		"0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62",
+		"0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7ce",
+	}
+
+	subReqIn := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "eth_subscribe",
-		"params":  []interface{}{"newHeads"},
+		"params": []interface{}{
+			"logs",
+			map[string]interface{}{
+				"address": CTFContract,
+				"topics": []interface{}{
+					transferTopics,
+					operatorTopics,
+					nil,
+					targetTopic,
+				},
+			},
+		},
 	}
-	if err := wsjson.Write(ctx, conn, subReq); err != nil {
-		return fmt.Errorf("mined websocket subscribe failed: %w", err)
+	subReqOut := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "eth_subscribe",
+		"params": []interface{}{
+			"logs",
+			map[string]interface{}{
+				"address": CTFContract,
+				"topics": []interface{}{
+					transferTopics,
+					operatorTopics,
+					targetTopic,
+				},
+			},
+		},
+	}
+	if err := wsjson.Write(ctx, conn, subReqIn); err != nil {
+		return fmt.Errorf("mined incoming log subscribe failed: %w", err)
+	}
+	if err := wsjson.Write(ctx, conn, subReqOut); err != nil {
+		return fmt.Errorf("mined outgoing log subscribe failed: %w", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		var subResp map[string]interface{}
+		subReadCtx, subReadCancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := wsjson.Read(subReadCtx, conn, &subResp); err != nil {
+			subReadCancel()
+			return fmt.Errorf("mined subscribe ack failed: %w", err)
+		}
+		subReadCancel()
+	}
+
+	if w.logf != nil {
+		w.logf("📡 Copytrade mined watcher subscribed to CTF transfer logs for %s", w.targetWallet)
 	}
 
 	return readPolygonWSJSONWithHeartbeat(ctx, conn, "mined", func(raw map[string]json.RawMessage) error {
@@ -305,22 +356,191 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 			return nil
 		}
 		var params struct {
-			Result struct {
-				Number string `json:"number"`
-			} `json:"result"`
+			Result polymarketTransferLog `json:"result"`
 		}
 		if err := json.Unmarshal(paramsRaw, &params); err != nil {
 			return nil
 		}
-		headNum, err := parseHexUint64(params.Result.Number)
-		if err != nil || headNum == 0 {
-			return nil
-		}
-		if err := w.processBlocks(ctx, headNum); err != nil {
-			return err
-		}
+		w.handleTransferLog(ctx, params.Result)
 		return nil
 	})
+}
+
+type polymarketTransferLog struct {
+	Address         string   `json:"address"`
+	Topics          []string `json:"topics"`
+	Data            string   `json:"data"`
+	BlockNumber     string   `json:"blockNumber"`
+	TransactionHash string   `json:"transactionHash"`
+	Removed         bool     `json:"removed"`
+}
+
+func polygonLogTopicAddress(address string) string {
+	address = NormalizeWalletAddress(address)
+	if address == "" {
+		return ""
+	}
+	return "0x000000000000000000000000" + strings.TrimPrefix(address, "0x")
+}
+
+func polygonExchangeOperatorTopics() []string {
+	return []string{
+		polygonLogTopicAddress(CTFExchange),
+		polygonLogTopicAddress(NegRiskExchange),
+		polygonLogTopicAddress(RouterExchange),
+	}
+}
+
+func decodeTransferSingleLog(data string) ([]string, []float64, error) {
+	words, err := splitPendingHexWords(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(words) < 2 {
+		return nil, nil, fmt.Errorf("transfer single log missing words")
+	}
+	tokenID := pendingHexWordToDecimal(words[0])
+	value := pendingMicroToFloat(pendingHexWordToBigInt(words[1]))
+	if tokenID == "" || value <= 0 {
+		return nil, nil, fmt.Errorf("transfer single log missing token or value")
+	}
+	return []string{tokenID}, []float64{value}, nil
+}
+
+func decodeTransferBatchLog(data string) ([]string, []float64, error) {
+	words, err := splitPendingHexWords(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(words) < 2 {
+		return nil, nil, fmt.Errorf("transfer batch log missing offsets")
+	}
+	idsBase, err := polygonLogOffsetWordToBase(words[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("transfer batch ids offset: %w", err)
+	}
+	valuesBase, err := polygonLogOffsetWordToBase(words[1])
+	if err != nil {
+		return nil, nil, fmt.Errorf("transfer batch values offset: %w", err)
+	}
+	idsRaw := decodePendingUintArray(words, idsBase)
+	valuesRaw := decodePendingUintArray(words, valuesBase)
+	if len(idsRaw) == 0 || len(valuesRaw) == 0 || len(idsRaw) != len(valuesRaw) {
+		return nil, nil, fmt.Errorf("transfer batch arrays mismatch")
+	}
+	tokenIDs := make([]string, 0, len(idsRaw))
+	sizes := make([]float64, 0, len(valuesRaw))
+	for i := range idsRaw {
+		if idsRaw[i] == nil || valuesRaw[i] == nil {
+			continue
+		}
+		value := pendingMicroToFloat(valuesRaw[i])
+		if value <= 0 {
+			continue
+		}
+		tokenIDs = append(tokenIDs, idsRaw[i].String())
+		sizes = append(sizes, value)
+	}
+	if len(tokenIDs) == 0 {
+		return nil, nil, fmt.Errorf("transfer batch contained no positive values")
+	}
+	return tokenIDs, sizes, nil
+}
+
+func polygonLogOffsetWordToBase(word string) (int, error) {
+	offset := pendingHexWordToBigInt(word)
+	if offset == nil || !offset.IsInt64() {
+		return 0, fmt.Errorf("invalid offset")
+	}
+	offsetInt := int(offset.Int64())
+	if offsetInt < 0 || offsetInt%32 != 0 {
+		return 0, fmt.Errorf("invalid offset %d", offsetInt)
+	}
+	return offsetInt / 32, nil
+}
+
+func (w *PolymarketMinedWatcher) handleTransferLog(parentCtx context.Context, entry polymarketTransferLog) {
+	if w == nil || entry.Removed || len(entry.Topics) < 4 {
+		return
+	}
+
+	from := pendingHexWordToAddress(strings.TrimPrefix(entry.Topics[2], "0x"))
+	to := pendingHexWordToAddress(strings.TrimPrefix(entry.Topics[3], "0x"))
+	side := ""
+	switch {
+	case strings.EqualFold(to, w.targetWallet) && !strings.EqualFold(from, w.targetWallet):
+		side = "BUY"
+	case strings.EqualFold(from, w.targetWallet) && !strings.EqualFold(to, w.targetWallet):
+		side = "SELL"
+	default:
+		return
+	}
+
+	var (
+		tokenIDs []string
+		sizes    []float64
+		err      error
+	)
+	switch strings.ToLower(strings.TrimSpace(entry.Topics[0])) {
+	case "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62":
+		tokenIDs, sizes, err = decodeTransferSingleLog(entry.Data)
+	case "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7ce":
+		tokenIDs, sizes, err = decodeTransferBatchLog(entry.Data)
+	default:
+		return
+	}
+	if err != nil {
+		if w.logf != nil {
+			w.logf("⚠️ Copytrade mined watcher skipped undecodable transfer log %s: %v", shortHexForLog(entry.TransactionHash), err)
+		}
+		return
+	}
+
+	blockNumber, _ := parseHexUint64(entry.BlockNumber)
+	observedAt := time.Now()
+
+	for i, tokenID := range tokenIDs {
+		if i >= len(sizes) || sizes[i] <= 0.01 {
+			continue
+		}
+		resolveCtx, cancel := context.WithTimeout(parentCtx, 4*time.Second)
+		resolved, err := w.resolveToken(resolveCtx, tokenID)
+		cancel()
+		if err != nil {
+			if w.logf != nil {
+				w.logf("⚠️ Skip master trade: could not resolve transferred token %s", tokenID)
+			}
+			continue
+		}
+
+		sig := MinedPolymarketSignal{
+			ObservedAt:     observedAt,
+			SignalID:       fmt.Sprintf("%s:%s:%s", strings.TrimSpace(entry.TransactionHash), tokenID, side),
+			TxHash:         strings.TrimSpace(entry.TransactionHash),
+			Wallet:         w.targetWallet,
+			TokenID:        tokenID,
+			ConditionID:    resolved.market.ConditionID,
+			Slug:           resolved.market.Slug,
+			Outcome:        resolved.outcome,
+			Side:           side,
+			Size:           sizes[i],
+			BlockNumber:    blockNumber,
+			BlockTimestamp: observedAt.Unix(),
+		}
+		if !w.storeSignal(sig) {
+			continue
+		}
+		if w.logf != nil {
+			marketLabel := strings.TrimSpace(resolved.market.Slug)
+			if marketLabel == "" {
+				marketLabel = strings.TrimSpace(resolved.market.MarketSlug)
+			}
+			if marketLabel == "" {
+				marketLabel = strings.TrimSpace(resolved.market.ConditionID)
+			}
+			w.logf("🎯 Master %s %.2f %s on %s (%s)", side, sizes[i], resolved.outcome, marketLabel, shortHexForLog(entry.TransactionHash))
+		}
+	}
 }
 
 func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint64) error {
