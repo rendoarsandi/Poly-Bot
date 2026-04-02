@@ -522,8 +522,7 @@ func DecodePolymarketMatchOrdersInput(input string) ([]decodedPolymarketOrder, e
 	}
 
 	takerFillAmount := pendingHexWordToBigInt(words[2])
-	takerReceiveAmount := pendingHexWordToBigInt(words[3])
-	makerFillAmountsOffset, err := pendingHexWordToInt(words[4])
+	makerFillAmountsOffset, err := pendingHexWordToInt(words[3])
 	if err != nil {
 		makerFillAmountsOffset = 0
 	}
@@ -531,7 +530,7 @@ func DecodePolymarketMatchOrdersInput(input string) ([]decodedPolymarketOrder, e
 
 	orders := make([]decodedPolymarketOrder, 0, 4)
 	if takerOrder, err := decodePendingMatchOrder(words, takerOffset/32); err == nil {
-		takerOrder.FilledShares = pendingOrderFilledShares(takerOrder, takerFillAmount, takerReceiveAmount)
+		takerOrder.FilledShares = pendingOrderFilledShares(takerOrder, takerFillAmount, nil)
 		orders = append(orders, takerOrder)
 	}
 

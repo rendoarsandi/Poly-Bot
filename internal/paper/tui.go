@@ -761,8 +761,8 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		}
 	}
 	s.BuyExecutionMarginFloorPercent = normalizeExecutionFloorSetting(s.BuyExecutionMarginFloorPercent)
-	if s.CopytradeMaxSlippagePct > 50.0 {
-		s.CopytradeMaxSlippagePct = 50.0
+	if s.CopytradeMaxSlippagePct > 99.0 {
+		s.CopytradeMaxSlippagePct = 99.0
 	}
 	if s.CopytradeMaxSlippagePct < 0 {
 		s.CopytradeMaxSlippagePct = 0
@@ -1455,6 +1455,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			switch key {
 			case "s", "S":
+				m.showSettings = false
+				m.refreshScrollMetrics()
+				return m, nil
+			case "r", "R":
 				m.tui.mu.Lock()
 				m.tui.restartReq = true
 				m.tui.mu.Unlock()
@@ -1467,13 +1471,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.settingsInput = m.tui.settings.CopytradeTarget
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
-					return m, nil
 				}
-				m.tui.mu.Lock()
-				m.tui.restartReq = true
-				m.tui.mu.Unlock()
-				m.showSettings = false
-				m.refreshScrollMetrics()
 				return m, nil
 			case "esc":
 				m.showSettings = false
@@ -1840,8 +1838,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowExecutionSlip:
 					if isCopytradeSettingsMode(m.tui.settings) {
 						m.tui.settings.CopytradeMaxSlippagePct += 1.0
-						if m.tui.settings.CopytradeMaxSlippagePct > 50.0 {
-							m.tui.settings.CopytradeMaxSlippagePct = 50.0
+						if m.tui.settings.CopytradeMaxSlippagePct > 99.0 {
+							m.tui.settings.CopytradeMaxSlippagePct = 99.0
 						}
 					} else {
 						m.tui.settings.BuyExecutionMarginFloorPercent += 0.01
@@ -4232,11 +4230,11 @@ func (m tuiModel) renderSettings(w int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
 	title := titleStyle.Render("⚙  LIVE SETTINGS")
 
-	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [s/Esc] Close")
+	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
 	if m.settingsEdit {
 		keysLine = styleDimmed.Render("  Paste copytrade target  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
 	} else if isCopytradeSettingsMode(cfg) {
-		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [Enter] Paste Target  [1/2/3] Presets  [s/Esc] Close")
+		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [Enter] Paste Target  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
 	}
 
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
@@ -4382,7 +4380,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}(),
 			bar: func() string {
 				if isCopytradeSettingsMode(cfg) {
-					return renderBar(cfg.CopytradeMaxSlippagePct/50.0, 20)
+					return renderBar(cfg.CopytradeMaxSlippagePct/99.0, 20)
 				}
 				return renderBar(math.Abs(normalizeExecutionFloorSetting(cfg.BuyExecutionMarginFloorPercent))/0.10, 20)
 			}(),
@@ -4629,6 +4627,7 @@ func (m tuiModel) renderSettings(w int) string {
 		}
 		modeNote = styleDimmed.Render("  Copytrade mode: buy when the target wallet/profile holds an outcome, sell when it exits. Enter a wallet, @handle, or profile URL on the target row.") + "\n"
 	}
+	restartNote := styleDimmed.Render("  Press r to reload the active round immediately after changing market, exchange, or strategy mode.")
 
 	content := title + "\n" +
 		keysLine + "\n\n" +
@@ -4640,7 +4639,8 @@ func (m tuiModel) renderSettings(w int) string {
 		p3 + "\n\n" +
 		divider + "\n" +
 		modeNote +
-		balanceNote
+		balanceNote + "\n" +
+		restartNote
 
 	return makePanel(inner, clrBrand, content)
 }

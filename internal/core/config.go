@@ -366,8 +366,8 @@ func normalizeCopytradeMaxSlippagePct(v float64) float64 {
 	switch {
 	case v < 0:
 		v = 0
-	case v > 50.0:
-		v = 50.0
+	case v > 99.0:
+		v = 99.0
 	}
 	return math.Round(v)
 }

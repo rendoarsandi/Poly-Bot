@@ -308,6 +308,9 @@ func TestNormalizeCopytradeMaxSlippagePctAllowsZeroAndRoundsToWholeCents(t *test
 	if got := normalizeCopytradeMaxSlippagePct(1.6); got != 2 {
 		t.Fatalf("expected 1.6c to round to 2c, got %.2f", got)
 	}
+	if got := normalizeCopytradeMaxSlippagePct(120); got != 99 {
+		t.Fatalf("expected slippage to clamp at 99c, got %.2f", got)
+	}
 }
 
 func TestCopytradePriceBoundsUseAbsoluteCents(t *testing.T) {

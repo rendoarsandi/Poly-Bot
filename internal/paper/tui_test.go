@@ -977,6 +977,67 @@ func TestRenderSettingsShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
 	}
 }
 
+func TestSettingsEnterDoesNotRequestRestart(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowMinMargin,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(tuiModel)
+
+	if !updated.showSettings {
+		t.Fatalf("expected settings overlay to stay open on enter")
+	}
+	if tui.GetAndClearRestart() {
+		t.Fatalf("expected enter to avoid requesting a restart")
+	}
+}
+
+func TestSettingsCloseKeyDoesNotRequestRestart(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)
+
+	model := tuiModel{
+		tui:          tui,
+		showSettings: true,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated := next.(tuiModel)
+
+	if updated.showSettings {
+		t.Fatalf("expected s to close the settings overlay")
+	}
+	if tui.GetAndClearRestart() {
+		t.Fatalf("expected s to close settings without requesting a restart")
+	}
+}
+
+func TestSettingsRestartKeyRequestsRestart(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)
+
+	model := tuiModel{
+		tui:          tui,
+		showSettings: true,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	updated := next.(tuiModel)
+
+	if updated.showSettings {
+		t.Fatalf("expected r to close the settings overlay")
+	}
+	if !tui.GetAndClearRestart() {
+		t.Fatalf("expected r to request a restart")
+	}
+}
+
 func TestInitSettingsKeepsLowCopytradePollInterval(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -1002,6 +1063,20 @@ func TestInitSettingsAllowsZeroCopytradeSlippage(t *testing.T) {
 
 	if got := tui.GetSettings().CopytradeMaxSlippagePct; got != 0 {
 		t.Fatalf("expected 0c copytrade slippage, got %.2f", got)
+	}
+}
+
+func TestInitSettingsAllowsNinetyNineCentCopytradeSlippage(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "copytrade",
+		CopytradeMaxSlippagePct: 120,
+	}, nil)
+
+	if got := tui.GetSettings().CopytradeMaxSlippagePct; got != 99 {
+		t.Fatalf("expected copytrade slippage to clamp at 99c, got %.2f", got)
 	}
 }
 
