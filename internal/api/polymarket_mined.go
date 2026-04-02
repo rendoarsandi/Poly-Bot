@@ -340,14 +340,23 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 			},
 		},
 	}
+	subReqHeads := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "eth_subscribe",
+		"params":  []interface{}{"newHeads"},
+	}
 	if err := wsjson.Write(ctx, conn, subReqIn); err != nil {
 		return fmt.Errorf("mined incoming log subscribe failed: %w", err)
 	}
 	if err := wsjson.Write(ctx, conn, subReqOut); err != nil {
 		return fmt.Errorf("mined outgoing log subscribe failed: %w", err)
 	}
+	if err := wsjson.Write(ctx, conn, subReqHeads); err != nil {
+		return fmt.Errorf("mined newHeads subscribe failed: %w", err)
+	}
 
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ {
 		var subResp map[string]interface{}
 		subReadCtx, subReadCancel := context.WithTimeout(ctx, 10*time.Second)
 		if err := wsjson.Read(subReadCtx, conn, &subResp); err != nil {
@@ -358,7 +367,7 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 	}
 
 	if w.logf != nil {
-		w.logf("📡 Copytrade mined watcher subscribed to CTF transfer logs for %s", w.targetWallet)
+		w.logf("📡 Copytrade mined watcher subscribed to CTF transfer logs and newHeads for %s", w.targetWallet)
 	}
 
 	return readPolygonWSJSONWithHeartbeat(ctx, conn, "mined", func(raw map[string]json.RawMessage) error {
@@ -366,13 +375,33 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 		if !ok {
 			return nil
 		}
-		var params struct {
-			Result polymarketTransferLog `json:"result"`
+		var commonParams struct {
+			Result map[string]interface{} `json:"result"`
 		}
-		if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		if err := json.Unmarshal(paramsRaw, &commonParams); err != nil {
 			return nil
 		}
-		w.handleTransferLog(ctx, params.Result)
+		
+		if _, hasNumber := commonParams.Result["number"]; hasNumber {
+			var headParams struct {
+				Result struct {
+					Number string `json:"number"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(paramsRaw, &headParams); err == nil && headParams.Result.Number != "" {
+				headNum, _ := parseHexUint64(headParams.Result.Number)
+				if headNum > 0 {
+					return w.processBlocks(ctx, headNum)
+				}
+			}
+		} else if _, hasTopics := commonParams.Result["topics"]; hasTopics {
+			var logParams struct {
+				Result polymarketTransferLog `json:"result"`
+			}
+			if err := json.Unmarshal(paramsRaw, &logParams); err == nil && len(logParams.Result.Topics) > 0 {
+				w.handleTransferLog(ctx, logParams.Result)
+			}
+		}
 		return nil
 	})
 }
