@@ -1984,6 +1984,12 @@ func run() error {
 		if err := realTrader.SubscribeUserWSMarkets(ctx, condIDs...); err != nil {
 			tui.LogEvent("⚠️ User WS subscription update failed: %v", err)
 		}
+
+		// Create a context for this specific round of trading.
+		// Copytrade watchers are tied to this round context so they are stopped on
+		// restart/round completion instead of stacking across rounds.
+		roundCtx, roundCancel := context.WithCancel(ctx)
+
 		copytradePoller := (*realbotCopytradePoller)(nil)
 		if arbMode == paperArbModeCopytrade {
 			copytradePoller = newRealbotCopytradePoller(copytradeTarget.Wallet, condIDs)
@@ -1997,7 +2003,7 @@ func run() error {
 				chainWSURL := api.ResolvePolygonWSURL(os.Getenv("POLYGON_WS_URL"), cfg.PolygonRPCURL)
 				if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, copytradeTarget.Wallet); watcher != nil {
 					watcher.PrimeTrackedMarkets(trackedMarkets)
-					watcher.Start(ctx, func(format string, args ...interface{}) {
+					watcher.Start(roundCtx, func(format string, args ...interface{}) {
 						tui.LogEvent(format, args...)
 					})
 					copytradePoller.minedWatcher = watcher
@@ -2007,7 +2013,7 @@ func run() error {
 				if api.SupportsPolymarketPendingWSURL(pendingWSURL) {
 					if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, copytradeTarget.Wallet); watcher != nil {
 						watcher.PrimeTrackedMarkets(trackedMarkets)
-						watcher.Start(ctx, func(format string, args ...interface{}) {
+						watcher.Start(roundCtx, func(format string, args ...interface{}) {
 							tui.LogEvent(format, args...)
 						})
 						copytradePoller.pendingWatcher = watcher
@@ -2021,9 +2027,6 @@ func run() error {
 				}
 			}
 		}
-
-		// Create a context for this specific round of trading
-		roundCtx, roundCancel := context.WithCancel(ctx)
 
 		// Trade each market in parallel
 		var wg sync.WaitGroup
