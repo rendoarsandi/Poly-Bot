@@ -18,6 +18,10 @@ const (
 	// Warn when reconnect catch-up spans more than a handful of blocks so
 	// operators can distinguish backlog processing from live heads.
 	polymarketMinedCatchupWarnBlocks = uint64(6)
+	// Cap reconnect replay so a brief WS outage does not monopolize RPC quota.
+	// Older missed fills are expected to be repaired by the copytrade position
+	// reconciliation path instead of replaying an unbounded block backlog.
+	polymarketMinedCatchupReplayCap = uint64(8)
 	// Hard cap eth_getBlockByNumber pacing for mined watcher processing.
 	polymarketMinedBlockFetchMinGap = 250 * time.Millisecond
 )
@@ -548,7 +552,7 @@ func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint
 	lastBlock := w.lastBlock
 	w.mu.Unlock()
 
-	start, end, ok := minedWatcherSelectBlockRange(lastBlock, headNum)
+	start, end, truncated, ok := minedWatcherSelectBlockRange(lastBlock, headNum)
 	if !ok {
 		return nil
 	}
@@ -559,6 +563,14 @@ func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint
 				"⚠️ Copytrade mined watcher catching up %d blocks after reconnect (last=%d head=%d)",
 				backlog,
 				lastBlock,
+				headNum,
+			)
+		}
+		if truncated > 0 {
+			w.logf(
+				"ℹ️ Copytrade mined watcher skipped %d older block(s) after reconnect to reduce RPC load (replaying %d newest block(s), head=%d)",
+				truncated,
+				backlog,
 				headNum,
 			)
 		}
@@ -604,21 +616,25 @@ func (w *PolymarketMinedWatcher) processBlocks(ctx context.Context, headNum uint
 	return nil
 }
 
-func minedWatcherSelectBlockRange(lastBlock, headNum uint64) (start, end uint64, ok bool) {
+func minedWatcherSelectBlockRange(lastBlock, headNum uint64) (start, end, truncated uint64, ok bool) {
 	if headNum == 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	if lastBlock > 0 && headNum <= lastBlock {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 
 	if lastBlock == 0 {
-		return headNum, headNum, true
+		return headNum, headNum, 0, true
 	}
 
 	start = lastBlock + 1
 	end = headNum
-	return start, end, true
+	if replay := end - start + 1; replay > polymarketMinedCatchupReplayCap {
+		truncated = replay - polymarketMinedCatchupReplayCap
+		start = end - polymarketMinedCatchupReplayCap + 1
+	}
+	return start, end, truncated, true
 }
 
 func (w *PolymarketMinedWatcher) waitBlockFetchSlot(ctx context.Context) error {
