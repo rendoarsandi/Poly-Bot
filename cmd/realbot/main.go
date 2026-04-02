@@ -7046,6 +7046,7 @@ func (p *realbotCopytradePoller) pendingSignalsForCondition(conditionID string, 
 			Side:            sig.Side,
 			Size:            sig.Size,
 			Timestamp:       sig.ObservedAt.Unix(),
+			ObservedAt:      sig.ObservedAt.Unix(),
 			TransactionHash: sig.TxHash,
 			Source:          "mempool",
 			SignalID:        sig.SignalID,
@@ -7071,6 +7072,7 @@ func (p *realbotCopytradePoller) minedSignalsForCondition(conditionID string, si
 			Side:            sig.Side,
 			Size:            sig.Size,
 			Timestamp:       sig.BlockTimestamp,
+			ObservedAt:      sig.ObservedAt.Unix(),
 			TransactionHash: sig.TxHash,
 			Source:          "onchain",
 			SignalID:        sig.SignalID,
@@ -7359,6 +7361,13 @@ func realbotCopytradeTradeKey(trade api.PublicTrade) string {
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
 }
 
+func realbotCopytradeEffectiveTimestamp(trade api.PublicTrade) int64 {
+	if trade.ObservedAt > 0 {
+		return trade.ObservedAt
+	}
+	return trade.Timestamp
+}
+
 func realbotCopytradeSignalSource(trade api.PublicTrade) string {
 	label := strings.TrimSpace(trade.Source)
 	if label != "" {
@@ -7541,10 +7550,11 @@ func realbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
 }
 
 func realbotCopytradeRetrySignalFresh(now time.Time, trade api.PublicTrade) bool {
-	if trade.Timestamp <= 0 {
+	effectiveTS := realbotCopytradeEffectiveTimestamp(trade)
+	if effectiveTS <= 0 {
 		return true
 	}
-	tradeAt := time.Unix(trade.Timestamp, 0)
+	tradeAt := time.Unix(effectiveTS, 0)
 	if now.Before(tradeAt) {
 		return true
 	}
@@ -7605,10 +7615,12 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 		filtered = append(filtered, trade)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].Timestamp == filtered[j].Timestamp {
+		leftTS := realbotCopytradeEffectiveTimestamp(filtered[i])
+		rightTS := realbotCopytradeEffectiveTimestamp(filtered[j])
+		if leftTS == rightTS {
 			return realbotCopytradeTradeKey(filtered[i]) < realbotCopytradeTradeKey(filtered[j])
 		}
-		return filtered[i].Timestamp < filtered[j].Timestamp
+		return leftTS < rightTS
 	})
 
 	fresh := make([]api.PublicTrade, 0, len(filtered))
@@ -7637,16 +7649,18 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 		startTs := realbotCopytradeBootstrapStartTimestamp(state.startedAt)
 		bootstrap := make([]api.PublicTrade, 0, len(fresh))
 		for _, trade := range fresh {
-			if trade.Timestamp < startTs {
+			if realbotCopytradeEffectiveTimestamp(trade) < startTs {
 				continue
 			}
 			bootstrap = append(bootstrap, trade)
 		}
 		sort.Slice(bootstrap, func(i, j int) bool {
-			if bootstrap[i].Timestamp == bootstrap[j].Timestamp {
+			leftTS := realbotCopytradeEffectiveTimestamp(bootstrap[i])
+			rightTS := realbotCopytradeEffectiveTimestamp(bootstrap[j])
+			if leftTS == rightTS {
 				return realbotCopytradeTradeKey(bootstrap[i]) < realbotCopytradeTradeKey(bootstrap[j])
 			}
-			return bootstrap[i].Timestamp < bootstrap[j].Timestamp
+			return leftTS < rightTS
 		})
 		return bootstrap
 	}

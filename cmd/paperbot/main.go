@@ -875,6 +875,7 @@ func (p *paperbotCopytradePoller) pendingSignalsForCondition(conditionID string,
 			Side:            sig.Side,
 			Size:            sig.Size,
 			Timestamp:       sig.ObservedAt.Unix(),
+			ObservedAt:      sig.ObservedAt.Unix(),
 			TransactionHash: sig.TxHash,
 			Source:          "mempool",
 			SignalID:        sig.SignalID,
@@ -900,6 +901,7 @@ func (p *paperbotCopytradePoller) minedSignalsForCondition(conditionID string, s
 			Side:            sig.Side,
 			Size:            sig.Size,
 			Timestamp:       sig.BlockTimestamp,
+			ObservedAt:      sig.ObservedAt.Unix(),
 			TransactionHash: sig.TxHash,
 			Source:          "onchain",
 			SignalID:        sig.SignalID,
@@ -1188,6 +1190,13 @@ func paperbotCopytradeTradeKey(trade api.PublicTrade) string {
 	return fmt.Sprintf("%s|%d|%s|%s|%.6f", strings.TrimSpace(trade.ConditionID), trade.Timestamp, core.SanitizeString(trade.Outcome), strings.ToUpper(strings.TrimSpace(trade.Side)), trade.Size)
 }
 
+func paperbotCopytradeEffectiveTimestamp(trade api.PublicTrade) int64 {
+	if trade.ObservedAt > 0 {
+		return trade.ObservedAt
+	}
+	return trade.Timestamp
+}
+
 func paperbotShortTxHash(txHash string) string {
 	txHash = strings.TrimSpace(txHash)
 	if len(txHash) > 10 {
@@ -1379,10 +1388,11 @@ func paperbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
 }
 
 func paperbotCopytradeRetrySignalFresh(now time.Time, trade api.PublicTrade) bool {
-	if trade.Timestamp <= 0 {
+	effectiveTS := paperbotCopytradeEffectiveTimestamp(trade)
+	if effectiveTS <= 0 {
 		return true
 	}
-	tradeAt := time.Unix(trade.Timestamp, 0)
+	tradeAt := time.Unix(effectiveTS, 0)
 	if now.Before(tradeAt) {
 		return true
 	}
@@ -1443,10 +1453,12 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 		filtered = append(filtered, trade)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].Timestamp == filtered[j].Timestamp {
+		leftTS := paperbotCopytradeEffectiveTimestamp(filtered[i])
+		rightTS := paperbotCopytradeEffectiveTimestamp(filtered[j])
+		if leftTS == rightTS {
 			return paperbotCopytradeTradeKey(filtered[i]) < paperbotCopytradeTradeKey(filtered[j])
 		}
-		return filtered[i].Timestamp < filtered[j].Timestamp
+		return leftTS < rightTS
 	})
 
 	fresh := make([]api.PublicTrade, 0, len(filtered))
@@ -1470,16 +1482,18 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 		startTs := paperbotCopytradeBootstrapStartTimestamp(state.startedAt)
 		bootstrap := make([]api.PublicTrade, 0, len(fresh))
 		for _, trade := range fresh {
-			if trade.Timestamp < startTs {
+			if paperbotCopytradeEffectiveTimestamp(trade) < startTs {
 				continue
 			}
 			bootstrap = append(bootstrap, trade)
 		}
 		sort.Slice(bootstrap, func(i, j int) bool {
-			if bootstrap[i].Timestamp == bootstrap[j].Timestamp {
+			leftTS := paperbotCopytradeEffectiveTimestamp(bootstrap[i])
+			rightTS := paperbotCopytradeEffectiveTimestamp(bootstrap[j])
+			if leftTS == rightTS {
 				return paperbotCopytradeTradeKey(bootstrap[i]) < paperbotCopytradeTradeKey(bootstrap[j])
 			}
-			return bootstrap[i].Timestamp < bootstrap[j].Timestamp
+			return leftTS < rightTS
 		})
 		return bootstrap
 	}

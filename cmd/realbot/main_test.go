@@ -1127,6 +1127,19 @@ func TestRealbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *test
 	}
 }
 
+func TestRealbotCopytradeFreshTradesBootstrapUsesObservedAtForOnchainSignals(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 999, ObservedAt: 1001, TransactionHash: "0xtx", Source: "onchain"},
+	}
+
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
+	if len(got) != 1 {
+		t.Fatalf("expected onchain signal observed after start to survive bootstrap, got %d", len(got))
+	}
+}
+
 func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing.T) {
 	state := newRealbotCopytradeState()
 	state.startedAt = time.Unix(1000, 0)

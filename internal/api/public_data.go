@@ -34,6 +34,7 @@ type PublicTrade struct {
 	ProfileImage    string  `json:"profileImage"`
 	ProfileImageOpt string  `json:"profileImageOptimized"`
 	TransactionHash string  `json:"transactionHash"`
+	ObservedAt      int64   `json:"-"`
 	Source          string  `json:"-"`
 	SignalID        string  `json:"-"`
 }
