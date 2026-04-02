@@ -762,7 +762,7 @@ func TestPaperbotCopytradeSignalSummaryIncludesSourceAndTx(t *testing.T) {
 		Source:          "onchain",
 		TransactionHash: "0x1234567890abcdef",
 	}
-	if got := paperbotCopytradeSignalSummary(trade); got != "BUY Up | master=28.45 | source=onchain | tx=0x12345678..." {
+	if got := paperbotCopytradeSignalSummary(trade); got != "BUY Up | master=28.45 | source=ONCHAIN | tx=0x12345678..." {
 		t.Fatalf("unexpected summary %q", got)
 	}
 }
@@ -773,7 +773,7 @@ func TestPaperbotCopytradeSignalSummaryDefaultsToPositionSource(t *testing.T) {
 		Side:    "sell",
 		Size:    3,
 	}
-	if got := paperbotCopytradeSignalSummary(trade); got != "SELL Down | master=3 | source=position" {
+	if got := paperbotCopytradeSignalSummary(trade); got != "SELL Down | master=3 | source=POSITION" {
 		t.Fatalf("unexpected summary %q", got)
 	}
 }

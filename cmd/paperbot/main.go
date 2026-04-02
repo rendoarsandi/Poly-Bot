@@ -1216,6 +1216,21 @@ func paperbotCopytradeSignalSource(trade api.PublicTrade) string {
 	return "trade"
 }
 
+func paperbotCopytradeSignalSourceLabel(trade api.PublicTrade) string {
+	switch strings.ToLower(strings.TrimSpace(paperbotCopytradeSignalSource(trade))) {
+	case "mempool":
+		return "MEMPOOL"
+	case "onchain":
+		return "ONCHAIN"
+	case "position", "position-estimate":
+		return "POSITION"
+	case "public":
+		return "PUBLIC"
+	default:
+		return strings.ToUpper(strings.TrimSpace(paperbotCopytradeSignalSource(trade)))
+	}
+}
+
 func paperbotCopytradeSignalSummary(trade api.PublicTrade) string {
 	side := strings.ToUpper(strings.TrimSpace(trade.Side))
 	if side == "" {
@@ -1228,7 +1243,7 @@ func paperbotCopytradeSignalSummary(trade api.PublicTrade) string {
 	parts := []string{
 		fmt.Sprintf("%s %s", side, outcome),
 		fmt.Sprintf("master=%s", paperbotFormatShareQty(math.Max(0, trade.Size))),
-		fmt.Sprintf("source=%s", paperbotCopytradeSignalSource(trade)),
+		fmt.Sprintf("source=%s", paperbotCopytradeSignalSourceLabel(trade)),
 	}
 	if txHash := paperbotShortTxHash(trade.TransactionHash); txHash != "" {
 		parts = append(parts, "tx="+txHash)
@@ -1240,7 +1255,7 @@ func paperbotLogCopytradeSignalResult(t *MarketTrader, trade api.PublicTrade, st
 	if t == nil || t.TUI == nil {
 		return
 	}
-	t.TUI.LogEvent("[%s] %s Copytrade signal %s -> %s", t.ID, status, paperbotCopytradeSignalSummary(trade), result)
+	t.TUI.LogEvent("[%s] %s [%s] Copytrade signal %s -> %s", t.ID, status, paperbotCopytradeSignalSourceLabel(trade), paperbotCopytradeSignalSummary(trade), result)
 }
 
 func paperbotNormalizeCopytradeSignalID(trade api.PublicTrade) string {

@@ -84,7 +84,7 @@ func TestRealbotCopytradeSignalSummaryIncludesSourceAndTx(t *testing.T) {
 		Source:          "onchain",
 		TransactionHash: "0x1234567890abcdef",
 	}
-	if got := realbotCopytradeSignalSummary(trade); got != "BUY Up | master=28.45 | source=onchain | tx=0x12345678..." {
+	if got := realbotCopytradeSignalSummary(trade); got != "BUY Up | master=28.45 | source=ONCHAIN | tx=0x12345678..." {
 		t.Fatalf("unexpected summary %q", got)
 	}
 }
@@ -95,7 +95,7 @@ func TestRealbotCopytradeSignalSummaryDefaultsToPositionSource(t *testing.T) {
 		Side:    "sell",
 		Size:    3,
 	}
-	if got := realbotCopytradeSignalSummary(trade); got != "SELL Down | master=3 | source=position" {
+	if got := realbotCopytradeSignalSummary(trade); got != "SELL Down | master=3 | source=POSITION" {
 		t.Fatalf("unexpected summary %q", got)
 	}
 }

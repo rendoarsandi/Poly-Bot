@@ -315,10 +315,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		return nil
 	}
 
-	params := append([]interface{}{method}, map[string]interface{}{
-		"fromAddress": []string{w.targetWallet},
-		"hashesOnly":  false,
-	})
+	params := append([]interface{}{method}, polymarketPendingAlchemyFilter(w.targetWallet))
 
 	subReq := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -328,6 +325,9 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 	}
 	if err := wsjson.Write(ctx, conn, subReq); err != nil {
 		return fmt.Errorf("pending websocket subscribe failed: %w", err)
+	}
+	if w.logf != nil {
+		w.logf("🛰️ Copytrade mempool watcher using Alchemy filter: from %s OR to Polymarket exchange/router addresses", w.targetWallet)
 	}
 
 	var wg sync.WaitGroup
@@ -425,7 +425,19 @@ func (w *PolymarketPendingWatcher) handlePendingTransaction(parentCtx context.Co
 			Side:        key.side,
 			Size:        totalSize,
 		}
-		w.storeSignal(sig)
+		if !w.storeSignal(sig) {
+			continue
+		}
+		if w.logf != nil {
+			marketLabel := strings.TrimSpace(resolved.market.Slug)
+			if marketLabel == "" {
+				marketLabel = strings.TrimSpace(resolved.market.MarketSlug)
+			}
+			if marketLabel == "" {
+				marketLabel = strings.TrimSpace(resolved.market.ConditionID)
+			}
+			w.logf("⚡ MEMPOOL master %s %.2f %s on %s (%s)", key.side, totalSize, resolved.outcome, marketLabel, shortHexForLog(tx.Hash))
+		}
 	}
 }
 
@@ -476,7 +488,7 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 	return pendingResolvedToken{}, fmt.Errorf("token %s could not be resolved in mempool", tokenID)
 }
 
-func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) {
+func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) bool {
 	key := strings.TrimSpace(sig.SignalID)
 	if key == "" {
 		key = fmt.Sprintf("%s|%s|%s|%s|%.6f", sig.TxHash, sig.TokenID, sig.Outcome, sig.Side, sig.Size)
@@ -487,12 +499,26 @@ func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) {
 	defer w.mu.Unlock()
 
 	if seenAt, exists := w.seen[key]; exists && now.Sub(seenAt) < 2*time.Minute {
-		return
+		return false
 	}
 	w.seen[key] = now
 	w.recent = append(w.recent, sig)
 	if len(w.recent) > 256 {
 		w.recent = append([]PendingPolymarketSignal(nil), w.recent[len(w.recent)-256:]...)
+	}
+	return true
+}
+
+func polymarketPendingAlchemyFilter(targetWallet string) map[string]interface{} {
+	targetWallet = NormalizeWalletAddress(targetWallet)
+	toAddresses := []string{CTFExchange, NegRiskExchange, RouterExchange}
+	if targetWallet != "" {
+		toAddresses = append(toAddresses, targetWallet)
+	}
+	return map[string]interface{}{
+		"fromAddress": []string{targetWallet},
+		"toAddress":   toAddresses,
+		"hashesOnly":  false,
 	}
 }
 

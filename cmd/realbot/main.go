@@ -7386,6 +7386,21 @@ func realbotCopytradeSignalSource(trade api.PublicTrade) string {
 	return "trade"
 }
 
+func realbotCopytradeSignalSourceLabel(trade api.PublicTrade) string {
+	switch strings.ToLower(strings.TrimSpace(realbotCopytradeSignalSource(trade))) {
+	case "mempool":
+		return "MEMPOOL"
+	case "onchain":
+		return "ONCHAIN"
+	case "position", "position-estimate":
+		return "POSITION"
+	case "public":
+		return "PUBLIC"
+	default:
+		return strings.ToUpper(strings.TrimSpace(realbotCopytradeSignalSource(trade)))
+	}
+}
+
 func realbotCopytradeSignalSummary(trade api.PublicTrade) string {
 	side := strings.ToUpper(strings.TrimSpace(trade.Side))
 	if side == "" {
@@ -7398,7 +7413,7 @@ func realbotCopytradeSignalSummary(trade api.PublicTrade) string {
 	parts := []string{
 		fmt.Sprintf("%s %s", side, outcome),
 		fmt.Sprintf("master=%s", formatShareQty(math.Max(0, trade.Size))),
-		fmt.Sprintf("source=%s", realbotCopytradeSignalSource(trade)),
+		fmt.Sprintf("source=%s", realbotCopytradeSignalSourceLabel(trade)),
 	}
 	if txHash := realbotShortTxHash(trade.TransactionHash); txHash != "" {
 		parts = append(parts, "tx="+txHash)
@@ -7410,7 +7425,7 @@ func realbotLogCopytradeSignalResult(tui *paper.TUI, marketID string, trade api.
 	if tui == nil {
 		return
 	}
-	tui.LogEvent("[%s] %s Copytrade signal %s -> %s", marketID, status, realbotCopytradeSignalSummary(trade), result)
+	tui.LogEvent("[%s] %s [%s] Copytrade signal %s -> %s", marketID, status, realbotCopytradeSignalSourceLabel(trade), realbotCopytradeSignalSummary(trade), result)
 }
 
 func realbotNormalizeCopytradeSignalID(trade api.PublicTrade) string {
