@@ -774,23 +774,31 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		status.Reason = fmt.Sprintf("cross-market gap %.3f%% is below the %.3f%% trigger", signal.EffectiveGapPercent, threshold)
 		return
 	}
-	if signal.DirectionalBookScore <= -0.35 {
+	if signal.DirectionalBookScore <= -0.65 {
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("local book opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
+		status.Reason = fmt.Sprintf("local book strongly opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
 		return
 	}
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
-	if polyCatchupMax > 0 && signal.PolyFavorableMoveCents > polyCatchupMax {
+	if polyCatchupMax <= 0 {
+		polyCatchupMax = paper.DefaultBinanceSignalPolyMaxMoveCents
+	}
+	// We relax the catchup check by 50% to account for our extremeness multiplier pushing the gap higher.
+	// We still want to avoid buying the top of a massive spike if Polymarket has fully reacted.
+	if signal.PolyFavorableMoveCents > polyCatchupMax*1.5 {
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
-		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", id, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
+		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax*1.5)
+		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", id, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax*1.5)
 		return
 	}
 	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
-	if polyAdverseMax > 0 && signal.PolyAdverseMoveCents > polyAdverseMax {
+	if polyAdverseMax <= 0 {
+		polyAdverseMax = paper.DefaultBinanceSignalPolyAdverseMoveCents
+	}
+	if signal.PolyAdverseMoveCents > polyAdverseMax*1.5 {
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
-		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", id, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
+		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax*1.5)
+		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", id, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax*1.5)
 		return
 	}
 	spreadMax := cfg.BinanceSignalSpreadMaxCents
@@ -820,7 +828,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		status.Ready = false
 		status.Status = "blocked"
 		status.Reason = fmt.Sprintf("%s ask $%.3f outside %.3f-%.3f", targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
-		logThrottled("[%s] ⚠️ Binance entry skipped: %s ask $%.3f outside configured range %.3f-%.3f", id, targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
+		// SILENCED: Do not log spammy range errors
 		return
 	}
 	limitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice)
@@ -3669,7 +3677,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					ask1 = tokenAsks[outcomes[0]]
 					ask2 = tokenAsks[outcomes[1]]
 					if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: local asks %.3f / %.3f outside configured range %.3f-%.3f", id, ask1, ask2, rMinAsk, rMaxAsk)
+						// SILENCED: Do not log spammy range errors
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}

@@ -5460,25 +5460,31 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Reason = fmt.Sprintf("cross-market gap %.3f%% is below the %.3f%% trigger", signal.EffectiveGapPercent, threshold)
 		return
 	}
-	if signal.DirectionalBookScore <= -0.35 {
+	if signal.DirectionalBookScore <= -0.65 {
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("local book opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
+		status.Reason = fmt.Sprintf("local book strongly opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
 		return
 	}
 
 	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
-	if polyCatchupMax > 0 && signal.PolyFavorableMoveCents > polyCatchupMax {
+	if polyCatchupMax <= 0 {
+		polyCatchupMax = paper.DefaultBinanceSignalPolyMaxMoveCents
+	}
+	if signal.PolyFavorableMoveCents > polyCatchupMax*1.5 {
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
-		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", t.ID, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax)
+		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax*1.5)
+		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", t.ID, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax*1.5)
 		return
 	}
 
 	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
-	if polyAdverseMax > 0 && signal.PolyAdverseMoveCents > polyAdverseMax {
+	if polyAdverseMax <= 0 {
+		polyAdverseMax = paper.DefaultBinanceSignalPolyAdverseMoveCents
+	}
+	if signal.PolyAdverseMoveCents > polyAdverseMax*1.5 {
 		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
-		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", t.ID, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax)
+		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax*1.5)
+		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", t.ID, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax*1.5)
 		return
 	}
 
@@ -5499,7 +5505,7 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Ready = false
 		status.Status = "blocked"
 		status.Reason = fmt.Sprintf("%s ask $%.3f outside %.3f-%.3f", targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
-		logThrottled("[%s] ⚠️ Binance entry skipped: %s ask $%.3f outside configured range %.3f-%.3f", t.ID, targetOutcome, ask, liveCfg.MinAskPrice, liveCfg.MaxAskPrice)
+		// SILENCED: Do not log spammy range errors
 		return
 	}
 
