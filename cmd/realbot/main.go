@@ -1972,9 +1972,22 @@ func run() error {
 			}
 			copytradeTarget = target
 			tui.LogEvent("🪞 Copytrade target %s → %s", target.Raw, target.Wallet)
-			markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
-				tui.LogEvent(format, args...)
-			})
+			maxMarkets := liveSettings.MaxMarkets
+			if maxMarkets <= 0 {
+				maxMarkets = 4
+			}
+			copytradeMarkets, marketsErr := realbotFindCopytradeMarkets(ctx, restClient, copytradeTarget.Wallet, maxMarkets)
+			if marketsErr != nil && len(copytradeMarkets) == 0 {
+				tui.LogEvent("⚠️ Copytrade target market discovery failed: %v", marketsErr)
+			}
+			if len(copytradeMarkets) > 0 {
+				markets = copytradeMarkets
+			} else {
+				tui.LogEvent("ℹ️ Copytrade target has no active tracked markets yet; falling back to generic market scan")
+				markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
+					tui.LogEvent(format, args...)
+				})
+			}
 		} else {
 			markets = mkt.FindMarkets(ctx, restClient, tui.GetSettings, func(format string, args ...interface{}) {
 				tui.LogEvent(format, args...)
