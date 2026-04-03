@@ -1280,6 +1280,11 @@ func (e *Engine) hasNeutralUnsettledInventoryLocked() bool {
 			return true
 		}
 	}
+	for _, payout := range e.pendingRedemptions {
+		if payout > 0.000001 {
+			return true
+		}
+	}
 	return false
 }
 

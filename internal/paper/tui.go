@@ -63,8 +63,8 @@ const (
 	defaultMaxOrderHistory  = 50
 	defaultMaxRoundHistory  = 50
 	defaultMaxEventHistory  = 250
-	defaultTwoColRoundRows  = 8
-	defaultOneColRoundRows  = 6
+	defaultTwoColRoundRows  = 4
+	defaultOneColRoundRows  = 3
 	defaultTwoColOrderRows  = 12
 	defaultOneColOrderRows  = 10
 	defaultTwoColEventRows  = 12
@@ -426,6 +426,7 @@ type RoundHistoryEntry struct {
 	EndingEquity   float64
 	PnL            float64
 	Trades         int
+	ShareSummary   string
 }
 
 // TUISettings holds runtime-adjustable trading parameters.
@@ -2622,16 +2623,21 @@ func (t *TUI) appendEventLocked(msg string) {
 }
 
 func (t *TUI) applyPaperBalanceLocked(balance float64) error {
-	if t.engine != nil {
+	if t.engine == nil {
+		return nil
+	}
+	if t.engine.CanResetPaperSession() {
 		if err := t.engine.ResetPaperSession(balance); err != nil {
 			return err
 		}
+		t.orderHistory = nil
+		t.roundHistory = nil
+		t.splitInventories = nil
+		t.walletTruth = make(map[string][]WalletTruthPosition)
+		t.startTime = time.Now()
+	} else {
+		t.engine.SyncBalanceNeutral(balance)
 	}
-	t.orderHistory = nil
-	t.roundHistory = nil
-	t.splitInventories = nil
-	t.walletTruth = make(map[string][]WalletTruthPosition)
-	t.startTime = time.Now()
 	t.markDirtyLocked()
 	return nil
 }
@@ -2786,7 +2792,61 @@ func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
 	return result
 }
 
-func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int) {
+func roundHistoryShareSummary(positions map[string]Position) string {
+	if len(positions) == 0 {
+		return ""
+	}
+	byOutcome := make(map[string]float64)
+	for _, pos := range positions {
+		outcome := strings.TrimSpace(pos.Outcome)
+		if outcome == "" {
+			outcome = "Unknown"
+		}
+		byOutcome[outcome] += pos.Quantity
+	}
+	if len(byOutcome) == 0 {
+		return ""
+	}
+
+	type outcomeTotal struct {
+		outcome string
+		shares  float64
+	}
+	ordered := make([]outcomeTotal, 0, len(byOutcome))
+	for outcome, shares := range byOutcome {
+		ordered = append(ordered, outcomeTotal{outcome: outcome, shares: shares})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(ordered[i].outcome))
+		right := strings.ToLower(strings.TrimSpace(ordered[j].outcome))
+		rank := func(name string) int {
+			switch name {
+			case "up":
+				return 0
+			case "down":
+				return 1
+			case "yes":
+				return 2
+			case "no":
+				return 3
+			default:
+				return 4
+			}
+		}
+		if rank(left) != rank(right) {
+			return rank(left) < rank(right)
+		}
+		return left < right
+	})
+
+	parts := make([]string, 0, len(ordered))
+	for _, item := range ordered {
+		parts = append(parts, fmt.Sprintf("%s %s", core.SanitizeString(item.outcome), formatDisplayShareQty(item.shares)))
+	}
+	return strings.Join(parts, "  |  ")
+}
+
+func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int, positions map[string]Position) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	entry := RoundHistoryEntry{
@@ -2796,6 +2856,7 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int)
 		EndingEquity:   endingEquity,
 		PnL:            pnl,
 		Trades:         trades,
+		ShareSummary:   roundHistoryShareSummary(positions),
 	}
 	t.roundHistory = append(t.roundHistory, entry)
 	if len(t.roundHistory) > t.maxRoundHistory {
@@ -4273,6 +4334,9 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			entry.Trades,
 			resultStyle.Render(resultLabel),
 		))
+		if entry.ShareSummary != "" {
+			sb.WriteString("        " + styleDimmed.Render("Shares: ") + styleWhite.Render(entry.ShareSummary) + "\n")
+		}
 	}
 
 	return makePanel(inner, clrSlate, sb.String())
@@ -4896,7 +4960,7 @@ func (m tuiModel) renderSettings(w int) string {
 	}
 	balanceResetNote := ""
 	if strings.EqualFold(mode, "Paper") {
-		balanceResetNote = styleDimmed.Render("  Paper Balance resets the paper session bankroll and clears session history. It only applies while the book is flat.") + "\n"
+		balanceResetNote = styleDimmed.Render("  Paper Balance updates available paper USDC. When flat it resets the session bankroll; with open inventory it applies as a neutral cash sync.") + "\n"
 	}
 	restartNote := styleDimmed.Render("  Press r to reload the active round immediately after changing market, exchange, or strategy mode.")
 

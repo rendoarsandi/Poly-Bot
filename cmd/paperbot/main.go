@@ -2937,7 +2937,7 @@ func run() error {
 		// Log market rotation from the shared engine state rather than summing
 		// overlapping per-trader deltas from concurrent goroutines.
 		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
-		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades)
+		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades, engine.GetPositions())
 		tui.LogEvent("📊 Round PnL: $%.2f | Total Equity: $%.2f | Trades: %d | Rotating...", roundPnL, roundEquity, roundTrades)
 
 		// Update compounding multiplier based on round performance

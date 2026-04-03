@@ -1259,9 +1259,9 @@ func TestRenderRoundHistoryShowsUpDownAndWinLoss(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			roundHistory: []RoundHistoryEntry{
-				{Number: 1, Timestamp: time.Unix(0, 0), StartingEquity: 100.0, EndingEquity: 104.65, PnL: 4.65, Trades: 3},
-				{Number: 2, Timestamp: time.Unix(1, 0), StartingEquity: 104.65, EndingEquity: 101.15, PnL: -3.50, Trades: 2},
-				{Number: 3, Timestamp: time.Unix(2, 0), StartingEquity: 101.15, EndingEquity: 101.15, PnL: 0.00, Trades: 0},
+				{Number: 1, Timestamp: time.Unix(0, 0), StartingEquity: 100.0, EndingEquity: 104.65, PnL: 4.65, Trades: 3, ShareSummary: "Up 118  |  Down 103"},
+				{Number: 2, Timestamp: time.Unix(1, 0), StartingEquity: 104.65, EndingEquity: 101.15, PnL: -3.50, Trades: 2, ShareSummary: "Up 90  |  Down 120"},
+				{Number: 3, Timestamp: time.Unix(2, 0), StartingEquity: 101.15, EndingEquity: 101.15, PnL: 0.00, Trades: 0, ShareSummary: "Up 0  |  Down 0"},
 			},
 		},
 	}
@@ -1278,6 +1278,45 @@ func TestRenderRoundHistoryShowsUpDownAndWinLoss(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "+$4.65") || !strings.Contains(rendered, "-$3.50") {
 		t.Fatalf("expected signed round pnl values, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Shares: ") || !strings.Contains(rendered, "Up 118") || !strings.Contains(rendered, "Down 103") {
+		t.Fatalf("expected per-round share summary, got %q", rendered)
+	}
+}
+
+func TestApplyPaperBalanceLockedAllowsOpenInventory(t *testing.T) {
+	engine := NewEngine(1000.0)
+	if _, err := engine.BuyForMarket("BTC#m1", "Up", 0.5, 10); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+	tui := NewTUI(engine, NewOrderBook())
+
+	if err := tui.applyPaperBalanceLocked(250.0); err != nil {
+		t.Fatalf("expected paper balance to adjust with open inventory, got %v", err)
+	}
+
+	stats := engine.GetStats()
+	if stats.CurrentBalance != 250.0 {
+		t.Fatalf("expected current balance 250.0 after cash sync, got %.2f", stats.CurrentBalance)
+	}
+	if stats.StartingBalance <= 0 {
+		t.Fatalf("expected baseline to remain neutralized after cash sync, got %.2f", stats.StartingBalance)
+	}
+}
+
+func TestRecordRoundCapturesOutcomeShares(t *testing.T) {
+	tui := NewTUI(NewEngine(100.0), NewOrderBook())
+	tui.RecordRound(100.0, 92.5, -7.5, 2, map[string]Position{
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 118},
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 103},
+	})
+
+	history := tui.GetRoundHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 round history entry, got %d", len(history))
+	}
+	if !strings.Contains(history[0].ShareSummary, "Up 118") || !strings.Contains(history[0].ShareSummary, "Down 103") {
+		t.Fatalf("expected up/down shares in round summary, got %q", history[0].ShareSummary)
 	}
 }
 
