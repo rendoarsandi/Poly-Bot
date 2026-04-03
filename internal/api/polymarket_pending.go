@@ -327,7 +327,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		return fmt.Errorf("pending websocket subscribe failed: %w", err)
 	}
 	if w.logf != nil {
-		w.logf("🛰️ Copytrade mempool watcher using Alchemy filter: from %s OR to Polymarket exchange/router addresses", w.targetWallet)
+		w.logf("🛰️ Copytrade mempool watcher using Alchemy filter: from %s", w.targetWallet)
 	}
 
 	var wg sync.WaitGroup
@@ -511,13 +511,8 @@ func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) bool
 
 func polymarketPendingAlchemyFilter(targetWallet string) map[string]interface{} {
 	targetWallet = NormalizeWalletAddress(targetWallet)
-	toAddresses := []string{CTFExchange, NegRiskExchange, RouterExchange}
-	if targetWallet != "" {
-		toAddresses = append(toAddresses, targetWallet)
-	}
 	return map[string]interface{}{
 		"fromAddress": []string{targetWallet},
-		"toAddress":   toAddresses,
 		"hashesOnly":  false,
 	}
 }

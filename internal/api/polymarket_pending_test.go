@@ -125,7 +125,7 @@ func TestNewPolymarketPendingWatcherRejectsNonAlchemy(t *testing.T) {
 	}
 }
 
-func TestPolymarketPendingAlchemyFilterIncludesWalletAndRelayerTargets(t *testing.T) {
+func TestPolymarketPendingAlchemyFilterIncludesWalletTarget(t *testing.T) {
 	filter := polymarketPendingAlchemyFilter("0xe0229e10a858860218b6132f4234602c47bd6603")
 
 	fromAddresses, ok := filter["fromAddress"].([]string)
@@ -133,18 +133,8 @@ func TestPolymarketPendingAlchemyFilterIncludesWalletAndRelayerTargets(t *testin
 		t.Fatalf("unexpected fromAddress filter: %#v", filter["fromAddress"])
 	}
 
-	toAddresses, ok := filter["toAddress"].([]string)
-	if !ok {
-		t.Fatalf("unexpected toAddress filter type: %#v", filter["toAddress"])
-	}
-	want := []string{CTFExchange, NegRiskExchange, RouterExchange, "0xe0229e10a858860218b6132f4234602c47bd6603"}
-	if len(toAddresses) != len(want) {
-		t.Fatalf("unexpected toAddress filter length %d want %d", len(toAddresses), len(want))
-	}
-	for i := range want {
-		if toAddresses[i] != want[i] {
-			t.Fatalf("toAddress[%d] = %q, want %q", i, toAddresses[i], want[i])
-		}
+	if _, ok := filter["toAddress"]; ok {
+		t.Fatalf("unexpected toAddress filter: %#v", filter["toAddress"])
 	}
 
 	if hashesOnly, ok := filter["hashesOnly"].(bool); !ok || hashesOnly {
