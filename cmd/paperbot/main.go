@@ -5041,6 +5041,9 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 	if shouldPoll {
 		since := state.lastTradeFetch
 		state.lastTradeFetch = time.Now()
+		if !since.IsZero() {
+			since = since.Add(-10 * time.Second)
+		}
 		minedTrades := t.CopytradePoller.minedSignalsForCondition(t.Market.ConditionID, since)
 		pendingTrades := t.CopytradePoller.pendingSignalsForCondition(t.Market.ConditionID, since)
 		combinedTrades := paperbotMergeCopytradeTrades(pendingTrades, minedTrades)
