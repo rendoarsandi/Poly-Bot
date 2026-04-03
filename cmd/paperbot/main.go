@@ -5339,6 +5339,50 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		logThrottled("[%s] ℹ️ Binance gap mode skipped: no Binance futures feed configured", t.ID)
 		return
 	}
+
+	snap := t.BinanceFeed.Snapshot(now)
+	status.Symbol = snap.Symbol
+	status.Price = snap.Price
+	status.DeltaPercent = snap.DeltaPercent
+
+	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
+	if errMsg := strings.TrimSpace(snap.LastError); errMsg != "" {
+		status.Status = "error"
+		status.Reason = "Binance WS error"
+		logThrottled("[%s] ⚠️ Binance gap feed error on %s: %s", t.ID, snap.Symbol, errMsg)
+		return
+	}
+	if !snap.Connected && snap.UpdatedAt.IsZero() {
+		status.Status = "connecting"
+		status.Reason = fmt.Sprintf("connecting to Binance on %s", snap.Symbol)
+		return
+	}
+	if !snap.Ready {
+		status.Status = "warmup"
+		status.Reason = fmt.Sprintf("building lookback window on %s", snap.Symbol)
+		return
+	}
+	if snap.UpdatedAt.IsZero() || now.Sub(snap.UpdatedAt) > maxSignalAge {
+		status.Status = "waiting"
+		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
+		return
+	}
+	signal, signalReason := paper.EvaluateBinanceGapSignal(now, mapping, t.TokenBids, t.TokenAsks, t.TokenFullBids, t.TokenFullAsks, snap, t.PolySignalTracker, maxSignalAge)
+	status.TargetOutcome = signal.TargetOutcome
+	status.SignalLabel = signal.SignalLabel
+	status.EffectiveGapPercent = signal.EffectiveGapPercent
+	status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
+	status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
+	status.TargetSpreadCents = signal.TargetSpreadCents
+	status.TargetBookImbalance = signal.TargetBookImbalance
+	status.OppositeBookImbalance = signal.OppositeBookImbalance
+	status.DirectionalBookScore = signal.DirectionalBookScore
+
+	threshold := cfg.BinanceSignalThresholdPct
+	if threshold <= 0 {
+		threshold = 0.02
+	}
+
 	positions := t.Engine.GetPositions()
 	upPos, hasUpPos := getPaperMarketPosition(positions, t.ID, mapping.Up)
 	downPos, hasDownPos := getPaperMarketPosition(positions, t.ID, mapping.Down)
@@ -5365,7 +5409,15 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Reason = "managing existing position"
 		bid := t.TokenBids[heldOutcome]
 		targetBid := paperbotDirectionalProfitTargetPrice(heldAvg, liveCfg.MinMarginPercent)
-		if bid <= 0 || bid+1e-9 < targetBid {
+		
+		dynamicExit := false
+		if signalReason == "" && signal.TargetOutcome != "" && signal.TargetOutcome != heldOutcome && signal.EffectiveGapPercent >= (threshold * 0.5) {
+			dynamicExit = true
+			status.Reason = fmt.Sprintf("dynamic momentum exit (Binance flipped %s)", signal.SignalLabel)
+			logThrottled("[%s] 🚨 Binance signal reversed to %s! Dynamically cutting %s position at $%.3f", t.ID, signal.SignalLabel, heldOutcome, bid)
+		}
+
+		if bid <= 0 || (!dynamicExit && bid+1e-9 < targetBid) {
 			return
 		}
 		liq := paperbotBidLiquidityAtOrAbove(t.TokenFullBids[heldOutcome], bid)
@@ -5408,52 +5460,10 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		return
 	}
 
-	snap := t.BinanceFeed.Snapshot(now)
-	status.Symbol = snap.Symbol
-	status.Price = snap.Price
-	status.DeltaPercent = snap.DeltaPercent
-
-	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
-	if errMsg := strings.TrimSpace(snap.LastError); errMsg != "" {
-		status.Status = "error"
-		status.Reason = "Binance WS error"
-		logThrottled("[%s] ⚠️ Binance gap feed error on %s: %s", t.ID, snap.Symbol, errMsg)
-		return
-	}
-	if !snap.Connected && snap.UpdatedAt.IsZero() {
-		status.Status = "connecting"
-		status.Reason = fmt.Sprintf("connecting to Binance on %s", snap.Symbol)
-		return
-	}
-	if !snap.Ready {
-		status.Status = "warmup"
-		status.Reason = fmt.Sprintf("building lookback window on %s", snap.Symbol)
-		return
-	}
-	if snap.UpdatedAt.IsZero() || now.Sub(snap.UpdatedAt) > maxSignalAge {
+	if signalReason != "" {
 		status.Status = "waiting"
-		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
+		status.Reason = signalReason
 		return
-	}
-	signal, reason := paper.EvaluateBinanceGapSignal(now, mapping, t.TokenBids, t.TokenAsks, t.TokenFullBids, t.TokenFullAsks, snap, t.PolySignalTracker, maxSignalAge)
-	status.TargetOutcome = signal.TargetOutcome
-	status.SignalLabel = signal.SignalLabel
-	status.EffectiveGapPercent = signal.EffectiveGapPercent
-	status.PolyFavorableMoveCents = signal.PolyFavorableMoveCents
-	status.PolyAdverseMoveCents = signal.PolyAdverseMoveCents
-	status.TargetSpreadCents = signal.TargetSpreadCents
-	status.TargetBookImbalance = signal.TargetBookImbalance
-	status.OppositeBookImbalance = signal.OppositeBookImbalance
-	status.DirectionalBookScore = signal.DirectionalBookScore
-
-	if reason != "" {
-		status.Status = "waiting"
-		status.Reason = reason
-		return
-	}
-	threshold := cfg.BinanceSignalThresholdPct
-	if threshold <= 0 {
-		threshold = 0.02
 	}
 	if signal.EffectiveGapPercent < threshold {
 		status.Status = "idle"

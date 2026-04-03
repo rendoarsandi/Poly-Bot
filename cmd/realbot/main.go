@@ -656,6 +656,38 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		profitTargetPct = 0
 	}
 
+	snap := binanceFeed.Snapshot(time.Now())
+	setStatusSnapshot(snap)
+	if errMsg := strings.TrimSpace(snap.LastError); errMsg != "" {
+		status.Status = "error"
+		status.Reason = "Binance WS error"
+		logThrottled("[%s] ⚠️ Binance gap feed error on %s: %s", id, snap.Symbol, errMsg)
+		return
+	}
+	if !snap.Connected && snap.UpdatedAt.IsZero() {
+		status.Status = "connecting"
+		status.Reason = fmt.Sprintf("connecting to Binance on %s", snap.Symbol)
+		return
+	}
+	if !snap.Ready {
+		status.Status = "warmup"
+		status.Reason = fmt.Sprintf("building lookback window on %s", snap.Symbol)
+		return
+	}
+	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
+	if snap.UpdatedAt.IsZero() || time.Since(snap.UpdatedAt) > maxSignalAge {
+		status.Status = "waiting"
+		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
+		return
+	}
+	signal, signalReason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, snap, polyTracker, maxSignalAge)
+	setStatusSignal(signal)
+
+	threshold := cfg.BinanceSignalThresholdPct
+	if threshold <= 0 {
+		threshold = 0.02
+	}
+
 	upQty, upAvg := localBoughtPositionAvg(engine, id, mapping.Up)
 	downQty, downAvg := localBoughtPositionAvg(engine, id, mapping.Down)
 	if upQty > 0 && downQty > 0 {
@@ -681,7 +713,16 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		}
 		bid := tokenBids[heldOutcome]
 		targetBid := realbotDirectionalProfitTargetPrice(heldAvg, profitTargetPct)
-		if bid+1e-9 < targetBid {
+
+		dynamicExit := false
+		if signalReason == "" && signal.TargetOutcome != "" && signal.TargetOutcome != heldOutcome {
+			// Signal flipped. Cut losses dynamically to match RL behavior
+			dynamicExit = true
+			status.Reason = fmt.Sprintf("dynamic momentum exit (Binance flipped %s)", signal.SignalLabel)
+			logThrottled("[%s] 🚨 Binance signal reversed to %s! Dynamically cutting %s position at $%.3f", id, signal.SignalLabel, heldOutcome, bid)
+		}
+
+		if !dynamicExit && bid+1e-9 < targetBid {
 			return
 		}
 		tokenID := getTokenID(heldOutcome)
@@ -743,40 +784,10 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		return
 	}
 
-	snap := binanceFeed.Snapshot(time.Now())
-	setStatusSnapshot(snap)
-	if errMsg := strings.TrimSpace(snap.LastError); errMsg != "" {
-		status.Status = "error"
-		status.Reason = "Binance WS error"
-		logThrottled("[%s] ⚠️ Binance gap feed error on %s: %s", id, snap.Symbol, errMsg)
-		return
-	}
-	if !snap.Connected && snap.UpdatedAt.IsZero() {
-		status.Status = "connecting"
-		status.Reason = fmt.Sprintf("connecting to Binance on %s", snap.Symbol)
-		return
-	}
-	if !snap.Ready {
-		status.Status = "warmup"
-		status.Reason = fmt.Sprintf("building lookback window on %s", snap.Symbol)
-		return
-	}
-	maxSignalAge := core.ResolveBinanceSignalMaxAge(cfg)
-	if snap.UpdatedAt.IsZero() || time.Since(snap.UpdatedAt) > maxSignalAge {
+	if signalReason != "" {
 		status.Status = "waiting"
-		status.Reason = fmt.Sprintf("waiting for fresh WS signal on %s", snap.Symbol)
+		status.Reason = signalReason
 		return
-	}
-	signal, reason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, snap, polyTracker, maxSignalAge)
-	setStatusSignal(signal)
-	if reason != "" {
-		status.Status = "waiting"
-		status.Reason = reason
-		return
-	}
-	threshold := cfg.BinanceSignalThresholdPct
-	if threshold <= 0 {
-		threshold = 0.02
 	}
 	if signal.EffectiveGapPercent < threshold {
 		status.Status = "idle"
@@ -6804,6 +6815,41 @@ func parseCopytradeEndTime(raw string) time.Time {
 	return time.Time{}
 }
 
+
+func realbotCopytradeMarketAllowed(slug string, cfg paper.TUISettings) bool {
+	lSlug := strings.ToLower(slug)
+	marketSlug := strings.TrimSpace(cfg.MarketSlug)
+	if marketSlug != "" && !strings.EqualFold(marketSlug, "ALL") {
+		allowed := false
+		for _, s := range strings.Split(marketSlug, ",") {
+			s = strings.TrimSpace(strings.ToLower(s))
+			if s != "" && strings.Contains(lSlug, s) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+
+	timeframe := strings.TrimSpace(cfg.Timeframe)
+	if timeframe != "" && !strings.EqualFold(timeframe, "ALL") {
+		allowed := false
+		for _, f := range strings.Split(timeframe, ",") {
+			f = strings.TrimSpace(strings.ToLower(f))
+			if f != "" && (strings.Contains(lSlug, "-"+f+"-") || strings.HasSuffix(lSlug, "-"+f)) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+	return true
+}
+
 func realbotCopytradeMarketSelectable(now, endTime time.Time) bool {
 	if endTime.IsZero() {
 		return true
@@ -6843,7 +6889,7 @@ func buildCopytradeMarketFromTrade(ctx context.Context, restClient *api.RestClie
 	return nil
 }
 
-func realbotFindCopytradeMarkets(ctx context.Context, restClient *api.RestClient, wallet string, maxMarkets int) (map[string]*api.Market, error) {
+func realbotFindCopytradeMarkets(ctx context.Context, restClient *api.RestClient, wallet string, maxMarkets int, liveCfg paper.TUISettings) (map[string]*api.Market, error) {
 	if restClient == nil {
 		return nil, fmt.Errorf("rest client is nil")
 	}
@@ -6862,6 +6908,9 @@ func realbotFindCopytradeMarkets(ctx context.Context, restClient *api.RestClient
 			return false
 		}
 		if !realbotCopytradeMarketSelectable(time.Now(), market.EndTime) {
+			return false
+		}
+		if !realbotCopytradeMarketAllowed(market.Slug, liveCfg) {
 			return false
 		}
 		if label == "" {
@@ -7467,7 +7516,7 @@ func realbotNormalizeCopytradeSignalID(trade api.PublicTrade) string {
 	return fmt.Sprintf("%s:%s:%s", txHash, asset, side)
 }
 
-func realbotPrepareCopytradeTrades(trades []api.PublicTrade, source string) []api.PublicTrade {
+func realbotPrepareCopytradeTrades(trades []api.PublicTrade, source string, liveCfg paper.TUISettings) []api.PublicTrade {
 	if len(trades) == 0 {
 		return nil
 	}
