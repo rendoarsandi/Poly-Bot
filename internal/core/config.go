@@ -874,8 +874,8 @@ func CalculateCopytradeSellSharesForMode(localShares, targetShares, targetDelta,
 	if targetShares <= 0.01 {
 		return localShares
 	}
-	sellShares := math.Min(localShares, math.Max(0, -targetDelta))
-	return CalculateCopytradeSharesForMode(sellShares, price, sizeUSDC, sizeShares, sizePercent, maxTradeSize, mode)
+	calculated := CalculateCopytradeSharesForMode(math.Max(0, -targetDelta), price, sizeUSDC, sizeShares, sizePercent, maxTradeSize, mode)
+	return math.Min(localShares, calculated)
 }
 
 func LoadBotConfig(profile string) (*Config, error) {

@@ -335,6 +335,17 @@ func TestCalculateCopytradeSellSharesForModeLiquidatesFullFlatTarget(t *testing.
 	}
 }
 
+func TestCalculateCopytradeSellSharesForModePercentUsesTargetDelta(t *testing.T) {
+	// Local shares: 50
+	// Target owns 1000 shares, target sells 500 shares (delta -500). Target remaining shares: 500.
+	// Percent: 10%
+	// Expected sell size: 10% of 500 = 50.
+	got := CalculateCopytradeSellSharesForMode(50, 500, -500, 0.5, 0, 0, 10.0, 0, CopytradeSizingModePercent)
+	if got != 50.0 {
+		t.Fatalf("expected to sell 50 shares (10%% of target delta 500), got %.4f", got)
+	}
+}
+
 func TestCalculateTradeSizeForModeUsesFixedUSDC(t *testing.T) {
 	got := CalculateTradeSizeForMode(1000, 0.05, 2.3, 0, TradeSizingModeUSDC)
 	if got != 2.3 {
