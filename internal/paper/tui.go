@@ -67,8 +67,8 @@ const (
 	defaultOneColRoundRows  = 3
 	defaultTwoColOrderRows  = 12
 	defaultOneColOrderRows  = 10
-	defaultTwoColEventRows  = 12
-	defaultOneColEventRows  = 10
+	defaultTwoColEventRows  = 6
+	defaultOneColEventRows  = 5
 	recentQuoteDisplayGrace = 1500 * time.Millisecond
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
