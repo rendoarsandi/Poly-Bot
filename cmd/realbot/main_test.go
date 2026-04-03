@@ -100,6 +100,20 @@ func TestRealbotCopytradeSignalSummaryDefaultsToPositionSource(t *testing.T) {
 	}
 }
 
+func TestRealbotCopytradeMarketSelectableAllowsFinalSeconds(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+
+	if !realbotCopytradeMarketSelectable(now, time.Time{}) {
+		t.Fatal("expected zero end time to remain selectable")
+	}
+	if !realbotCopytradeMarketSelectable(now, now.Add(10*time.Second)) {
+		t.Fatal("expected market with 10 seconds left to remain selectable")
+	}
+	if realbotCopytradeMarketSelectable(now, now.Add(-time.Second)) {
+		t.Fatal("expected expired market to be rejected")
+	}
+}
+
 func TestRealbotBinanceSymbolForExactSlugMarket(t *testing.T) {
 	cfg := &core.Config{BinanceQuoteAsset: "usdt"}
 	got := realbotBinanceSymbolForMarket("btc-updown-15m-1767358800#deadbeef", cfg)

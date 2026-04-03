@@ -606,6 +606,20 @@ func parsePaperbotCopytradeEndTime(raw string) time.Time {
 	return time.Time{}
 }
 
+func paperbotCopytradeMarketSelectable(now, endTime time.Time) bool {
+	if endTime.IsZero() {
+		return true
+	}
+	return !now.After(endTime)
+}
+
+func paperbotCopytradeCanTrade(marketState paper.MarketState, timeToEnd time.Duration) bool {
+	if timeToEnd <= 0 {
+		return false
+	}
+	return marketState == paper.MarketStateActive || marketState == paper.MarketStateEnding
+}
+
 func buildPaperbotCopytradeMarketFromPosition(pos api.Position) *api.Market {
 	if pos.ConditionID == "" || pos.TokenID == "" || pos.Outcome == "" {
 		return nil
@@ -656,10 +670,8 @@ func paperbotFindCopytradeMarkets(ctx context.Context, restClient *api.RestClien
 		if _, ok := seen[market.ConditionID]; ok {
 			return false
 		}
-		if !market.EndTime.IsZero() {
-			if time.Now().After(market.EndTime) || time.Until(market.EndTime) < 30*time.Second {
-				return false
-			}
+		if !paperbotCopytradeMarketSelectable(time.Now(), market.EndTime) {
+			return false
 		}
 		if label == "" {
 			label = paperbotCopytradeLabelFromHint(market.Slug, "")
@@ -3918,7 +3930,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
 			cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 		}
-		if arbMode == paperArbModeCopytrade && marketState == paper.MarketStateActive && len(t.Outcomes) > 0 {
+		if arbMode == paperArbModeCopytrade && paperbotCopytradeCanTrade(marketState, timeToEnd) && len(t.Outcomes) > 0 {
 			if !weekdayTradingAllowed || takerCloseMode {
 				continue
 			}

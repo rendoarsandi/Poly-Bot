@@ -6783,6 +6783,13 @@ func parseCopytradeEndTime(raw string) time.Time {
 	return time.Time{}
 }
 
+func realbotCopytradeMarketSelectable(now, endTime time.Time) bool {
+	if endTime.IsZero() {
+		return true
+	}
+	return !now.After(endTime)
+}
+
 func buildCopytradeMarketFromPosition(pos api.Position) *api.Market {
 	if pos.ConditionID == "" || pos.TokenID == "" || pos.Outcome == "" {
 		return nil
@@ -6833,10 +6840,8 @@ func realbotFindCopytradeMarkets(ctx context.Context, restClient *api.RestClient
 		if _, ok := seen[market.ConditionID]; ok {
 			return false
 		}
-		if !market.EndTime.IsZero() {
-			if time.Now().After(market.EndTime) || time.Until(market.EndTime) < 30*time.Second {
-				return false
-			}
+		if !realbotCopytradeMarketSelectable(time.Now(), market.EndTime) {
+			return false
 		}
 		if label == "" {
 			label = realbotCopytradeLabelFromHint(market.Slug, "")

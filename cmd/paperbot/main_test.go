@@ -100,6 +100,32 @@ func TestPaperbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	}
 }
 
+func TestPaperbotCopytradeMarketSelectableAllowsFinalSeconds(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+
+	if !paperbotCopytradeMarketSelectable(now, time.Time{}) {
+		t.Fatal("expected zero end time to remain selectable")
+	}
+	if !paperbotCopytradeMarketSelectable(now, now.Add(10*time.Second)) {
+		t.Fatal("expected market with 10 seconds left to remain selectable")
+	}
+	if paperbotCopytradeMarketSelectable(now, now.Add(-time.Second)) {
+		t.Fatal("expected expired market to be rejected")
+	}
+}
+
+func TestPaperbotCopytradeCanTradeUntilActualExpiry(t *testing.T) {
+	if !paperbotCopytradeCanTrade(paper.MarketStateActive, 10*time.Second) {
+		t.Fatal("expected active market with time left to trade")
+	}
+	if !paperbotCopytradeCanTrade(paper.MarketStateEnding, 10*time.Second) {
+		t.Fatal("expected ending market with time left to keep trading in copytrade mode")
+	}
+	if paperbotCopytradeCanTrade(paper.MarketStateEnding, 0) {
+		t.Fatal("expected expired market to stop trading")
+	}
+}
+
 func TestComputePaperMakerArbPricesStayInsideSpreadAndMarginCap(t *testing.T) {
 	price1, price2, ok := computePaperMakerArbPrices(0.43, 0.46, 0.45, 0.49, 0.97)
 	if !ok {
