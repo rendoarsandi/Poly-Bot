@@ -1255,6 +1255,53 @@ func TestRenderOrderHistoryShowsExplicitCloseModeInsteadOfMaker(t *testing.T) {
 	}
 }
 
+func TestRenderRoundHistoryShowsUpDownAndWinLoss(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			roundHistory: []RoundHistoryEntry{
+				{Number: 1, Timestamp: time.Unix(0, 0), StartingEquity: 100.0, EndingEquity: 104.65, PnL: 4.65, Trades: 3},
+				{Number: 2, Timestamp: time.Unix(1, 0), StartingEquity: 104.65, EndingEquity: 101.15, PnL: -3.50, Trades: 2},
+				{Number: 3, Timestamp: time.Unix(2, 0), StartingEquity: 101.15, EndingEquity: 101.15, PnL: 0.00, Trades: 0},
+			},
+		},
+	}
+
+	rendered := model.renderRoundHistory(120, 5)
+	if !strings.Contains(rendered, "UP") || !strings.Contains(rendered, "WIN") {
+		t.Fatalf("expected winning round labels in round history, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "DOWN") || !strings.Contains(rendered, "LOSS") {
+		t.Fatalf("expected losing round labels in round history, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "FLAT") {
+		t.Fatalf("expected flat round label in round history, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "+$4.65") || !strings.Contains(rendered, "-$3.50") {
+		t.Fatalf("expected signed round pnl values, got %q", rendered)
+	}
+}
+
+func TestRenderSettingsShowsPaperBalanceRow(t *testing.T) {
+	tui := NewTUI(NewEngine(100.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperBalance:     250.25,
+		MarketSlug:       "ALL",
+		MaxMarkets:       4,
+		Timeframe:        "15m",
+		TradeScaleFactor: 0.05,
+	}, nil)
+	tui.SetMode("Paper")
+
+	model := tuiModel{tui: tui}
+	rendered := model.renderSettings(120)
+	if !strings.Contains(rendered, "Paper Balance") {
+		t.Fatalf("expected paper balance row in settings, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "$250.25") {
+		t.Fatalf("expected configured paper balance in settings, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusFormatsRealizedFromRealizedPnL(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

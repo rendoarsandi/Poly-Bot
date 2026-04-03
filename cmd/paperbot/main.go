@@ -26,8 +26,7 @@ import (
 )
 
 const (
-	StartingBalance        = 100.0 // $100 paper trading balance
-	UseLiveUI              = true  // Set to false for traditional logging
+	UseLiveUI              = true // Set to false for traditional logging
 	paperArbModeTaker      = "taker"
 	paperArbModeBinanceGap = "binance-gap"
 	paperArbModeCopytrade  = "copytrade"
@@ -2463,15 +2462,15 @@ func run() error {
 	fmt.Println("🎰 POLYARB-15M Starting (Multi-Asset: BTC, ETH, SOL, XRP)...")
 	fmt.Printf("⏰ Started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 
-	// Initialize persistent components (survive market rotation)
-	engine = paper.NewEngine(StartingBalance)
-
 	// Load paperbot settings + env-backed secrets
 	cfg, err := core.LoadBotConfig("paperbot")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	fmt.Println("✅ Config loaded successfully")
+
+	// Initialize persistent components (survive market rotation)
+	engine = paper.NewEngine(cfg.PaperBalance)
 
 	// If Kalshi is selected as the exchange at startup, ensure we have keys
 	// since Kalshi websockets and endpoints require authentication even for market data.
@@ -2522,6 +2521,7 @@ func run() error {
 		Exchange:                     cfg.Exchange,
 		MarketSlug:                   cfg.MarketSlug,
 		MaxMarkets:                   cfg.MaxMarkets,
+		PaperBalance:                 cfg.PaperBalance,
 		Timeframe:                    cfg.Timeframe,
 		TradeSizingMode:              cfg.TradeSizingMode,
 		TradeScaleFactor:             cfg.TradeScaleFactor,
@@ -2556,6 +2556,7 @@ func run() error {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
+		cfg.PaperBalance = s.PaperBalance
 		cfg.Timeframe = s.Timeframe
 		cfg.TradeSizingMode = s.TradeSizingMode
 		cfg.TradeScaleFactor = s.TradeScaleFactor
@@ -2936,6 +2937,7 @@ func run() error {
 		// Log market rotation from the shared engine state rather than summing
 		// overlapping per-trader deltas from concurrent goroutines.
 		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
+		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades)
 		tui.LogEvent("📊 Round PnL: $%.2f | Total Equity: $%.2f | Trades: %d | Rotating...", roundPnL, roundEquity, roundTrades)
 
 		// Update compounding multiplier based on round performance

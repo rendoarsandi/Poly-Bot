@@ -1,6 +1,7 @@
 package paper
 
 import (
+	"errors"
 	"math"
 	"testing"
 )
@@ -465,6 +466,50 @@ func TestEngine_SetBalance(t *testing.T) {
 	stats := engine.GetStats()
 	if stats.PeakBalance != 1200.0 {
 		t.Errorf("Expected peak balance $1200.00, got $%.2f", stats.PeakBalance)
+	}
+}
+
+func TestEngine_ResetPaperSession(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	engine.AddRealizedPnL(12.5)
+	engine.UpdateCompoundMultiplier(15.0, 100.0)
+	engine.SetBalance(87.4)
+
+	if err := engine.ResetPaperSession(250.25); err != nil {
+		t.Fatalf("ResetPaperSession failed: %v", err)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.CurrentBalance-250.25) > 0.0001 {
+		t.Fatalf("expected reset balance 250.25, got %.4f", stats.CurrentBalance)
+	}
+	if absFloat(stats.StartingBalance-250.25) > 0.0001 {
+		t.Fatalf("expected reset baseline 250.25, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(stats.RealizedPnL) > 0.0001 {
+		t.Fatalf("expected realized pnl reset to 0, got %.4f", stats.RealizedPnL)
+	}
+	if stats.TotalTrades != 0 || stats.WinningTrades != 0 || stats.LosingTrades != 0 {
+		t.Fatalf("expected trade stats reset, got %+v", stats)
+	}
+	if got := engine.GetCompoundMultiplier(); absFloat(got-1.0) > 0.0001 {
+		t.Fatalf("expected compound multiplier reset to 1.0, got %.4f", got)
+	}
+	if _, rounds, profitable, losing, sizing := engine.GetCompoundStats(); rounds != 0 || profitable != 0 || losing != 0 || absFloat(sizing-250.25) > 0.0001 {
+		t.Fatalf("unexpected compound stats after reset: rounds=%d profitable=%d losing=%d sizing=%.4f", rounds, profitable, losing, sizing)
+	}
+}
+
+func TestEngine_ResetPaperSessionRequiresFlatBook(t *testing.T) {
+	engine := NewEngine(100.0)
+	if _, err := engine.BuyForMarket("BTC#m1", "Up", 0.5, 10); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	err := engine.ResetPaperSession(200.0)
+	if !errors.Is(err, ErrPaperSessionNotFlat) {
+		t.Fatalf("expected ErrPaperSessionNotFlat, got %v", err)
 	}
 }
 

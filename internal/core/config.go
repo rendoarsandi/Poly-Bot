@@ -58,6 +58,7 @@ type Config struct {
 	// Default: $1000 balance → $50 per trade (5% of balance)
 	BaseBalance      float64 // Reference balance for position sizing ($1000 default)
 	BaseTradeSize    float64 // Trade size at base balance ($50 default)
+	PaperBalance     float64 // Paperbot session balance / bankroll
 	MinMarginPercent float64 // Minimum arbitrage margin to trade (1% default)
 	TradeScaleFactor float64 // Fraction of balance to use per trade (0.05 = 5% default)
 	TradeSizingMode  string  // "percent" or "usdc"
@@ -150,6 +151,7 @@ type RuntimeSettings struct {
 	MaxMarkets                        int     `json:"maxMarkets"`
 	BaseBalance                       float64 `json:"baseBalance"`
 	BaseTradeSize                     float64 `json:"baseTradeSize"`
+	PaperBalance                      float64 `json:"paperBalance"`
 	MinMarginPercent                  float64 `json:"minMarginPercent"`
 	TradeScaleFactor                  float64 `json:"tradeScaleFactor"`
 	TradeSizingMode                   string  `json:"tradeSizingMode"`
@@ -225,6 +227,7 @@ func LoadConfig() (*Config, error) {
 		// Position sizing defaults: $1000 balance → $50 per trade
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
+		PaperBalance:     normalizePaperBalance(parseEnvFloat("PAPER_BALANCE", 100.0)),
 		MinMarginPercent: parseEnvFloat("MIN_MARGIN_PERCENT", 2.0),
 		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.05), // 5% of balance
 		TradeSizingMode:  normalizeTradeSizingMode(parseEnvString("TRADE_SIZING_MODE", TradeSizingModePercent)),
@@ -318,6 +321,13 @@ func normalizeFixedTradeSizeUSDC(size float64) float64 {
 		return 0.1
 	}
 	return size
+}
+
+func normalizePaperBalance(balance float64) float64 {
+	if balance <= 0 {
+		return 100.0
+	}
+	return math.Round(balance*100.0) / 100.0
 }
 
 func normalizeCopytradeSizeUSDC(size float64) float64 {
@@ -623,6 +633,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MaxMarkets:                        c.MaxMarkets,
 		BaseBalance:                       c.BaseBalance,
 		BaseTradeSize:                     c.BaseTradeSize,
+		PaperBalance:                      normalizePaperBalance(c.PaperBalance),
 		MinMarginPercent:                  c.MinMarginPercent,
 		TradeScaleFactor:                  c.TradeScaleFactor,
 		TradeSizingMode:                   normalizeTradeSizingMode(c.TradeSizingMode),
@@ -688,6 +699,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.MaxMarkets = s.MaxMarkets
 	c.BaseBalance = s.BaseBalance
 	c.BaseTradeSize = s.BaseTradeSize
+	c.PaperBalance = normalizePaperBalance(s.PaperBalance)
 	c.MinMarginPercent = s.MinMarginPercent
 	c.TradeScaleFactor = s.TradeScaleFactor
 	c.TradeSizingMode = normalizeTradeSizingMode(s.TradeSizingMode)
@@ -766,6 +778,7 @@ func (c *Config) SaveSettings() error {
 	envMap["TIMEFRAME"] = c.Timeframe
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
+	envMap["PAPER_BALANCE"] = strconv.FormatFloat(normalizePaperBalance(c.PaperBalance), 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
 	envMap["TRADE_SIZING_MODE"] = normalizeTradeSizingMode(c.TradeSizingMode)
 	envMap["TRADE_SIZE_USDC"] = strconv.FormatFloat(normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC), 'f', -1, 64)

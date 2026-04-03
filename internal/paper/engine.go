@@ -1,6 +1,7 @@
 package paper
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -92,6 +93,8 @@ type Engine struct {
 
 	feeRateBps int // Fee configuration
 }
+
+var ErrPaperSessionNotFlat = errors.New("paper session balance can only be reset while flat")
 
 // NewEngine creates a new paper trading engine
 func NewEngine(startingBalance float64) *Engine {
@@ -1278,6 +1281,64 @@ func (e *Engine) hasNeutralUnsettledInventoryLocked() bool {
 		}
 	}
 	return false
+}
+
+func (e *Engine) canResetPaperSessionLocked() bool {
+	if len(e.positions) > 0 {
+		return false
+	}
+	for _, inv := range e.splitInventories {
+		if inv == nil {
+			continue
+		}
+		if _, _, unrealizedValue := inv.GetStats(); unrealizedValue > 0.000001 {
+			return false
+		}
+	}
+	for _, payout := range e.pendingRedemptions {
+		if payout > 0.000001 {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) CanResetPaperSession() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.canResetPaperSessionLocked()
+}
+
+func (e *Engine) ResetPaperSession(balance float64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.canResetPaperSessionLocked() {
+		return ErrPaperSessionNotFlat
+	}
+	if balance <= 0 {
+		balance = 100.0
+	}
+	balance = math.Round(balance*100.0) / 100.0
+
+	e.startingBalance = balance
+	e.pnlBaseline = balance
+	e.currentBalance = balance
+	e.compoundMultiplier = 1.0
+	e.sizingBalance = balance
+	e.roundsCompleted = 0
+	e.profitableRounds = 0
+	e.losingRounds = 0
+	e.trades = nil
+	e.totalTrades = 0
+	e.realizedPnL = 0
+	e.peakBalance = balance
+	e.maxDrawdown = 0
+	e.winningTrades = 0
+	e.losingTrades = 0
+	e.pendingRedemptions = make(map[string]float64)
+	e.recalculateDrawdown()
+	return nil
 }
 
 // SyncBalanceNeutral updates wallet cash from an external source. If unresolved

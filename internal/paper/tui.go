@@ -61,7 +61,10 @@ var (
 
 const (
 	defaultMaxOrderHistory  = 50
+	defaultMaxRoundHistory  = 50
 	defaultMaxEventHistory  = 250
+	defaultTwoColRoundRows  = 8
+	defaultOneColRoundRows  = 6
 	defaultTwoColOrderRows  = 12
 	defaultOneColOrderRows  = 10
 	defaultTwoColEventRows  = 12
@@ -416,12 +419,22 @@ type OrderHistoryEntry struct {
 	Status        string // "FILLED", "PARTIAL", "FAILED"
 }
 
+type RoundHistoryEntry struct {
+	Number         int
+	Timestamp      time.Time
+	StartingEquity float64
+	EndingEquity   float64
+	PnL            float64
+	Trades         int
+}
+
 // TUISettings holds runtime-adjustable trading parameters.
 // These can be changed live from the settings panel (press 's').
 type TUISettings struct {
 	Exchange                       string  // "polymarket" or "kalshi"
 	MarketSlug                     string  // Current selected market slug or ALL or BTC,ETH
 	MaxMarkets                     int     // Max concurrent markets to trade
+	PaperBalance                   float64 // Paper-only bankroll / session reset amount
 	Timeframe                      string  // "5m" or "15m"
 	TradeSizingMode                string  // "percent" or "usdc"
 	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
@@ -468,6 +481,7 @@ var (
 const (
 	settingsRowMarket = iota
 	settingsRowMaxMarkets
+	settingsRowPaperBalance
 	settingsRowTimeframe
 	settingsRowTradeSizingMode
 	settingsRowTradeSizingValue
@@ -544,6 +558,10 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	closeMarket := TakerCloseModeActive(cfg)
 	paperMode := strings.EqualFold(mode, "Paper")
 
+	if idx == settingsRowPaperBalance {
+		return paperMode
+	}
+
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
 		switch idx {
@@ -607,6 +625,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	copytrade := isCopytradeSettingsMode(cfg)
 	binanceGap := isBinanceGapSettingsMode(cfg)
 	switch idx {
+	case settingsRowPaperBalance:
+		return "Paper Balance"
 	case settingsRowTradeSizingMode:
 		if copytrade {
 			return "Copy Size Mode"
@@ -723,6 +743,10 @@ func normalizeMarketSelection(slug string) string {
 
 func normalizeTUISettings(s TUISettings) TUISettings {
 	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	if s.PaperBalance <= 0 {
+		s.PaperBalance = 100.0
+	}
+	s.PaperBalance = math.Round(s.PaperBalance*100.0) / 100.0
 	switch strings.ToLower(strings.TrimSpace(s.PaperArbMode)) {
 	case "maker":
 		s.PaperArbMode = "maker"
@@ -989,6 +1013,8 @@ type TUI struct {
 	maxEvents       int
 	orderHistory    []OrderHistoryEntry
 	maxOrderHistory int
+	roundHistory    []RoundHistoryEntry
+	maxRoundHistory int
 	isKilled        bool
 	killReason      string
 	tradeFactor     float64
@@ -1045,6 +1071,7 @@ type tuiSnapshot struct {
 	orderBookDepth map[string]map[string][]MarketLevel
 	eventLog       []string
 	orderHistory   []OrderHistoryEntry
+	roundHistory   []RoundHistoryEntry
 	isKilled       bool
 	killReason     string
 	tradeFactor    float64
@@ -1214,6 +1241,7 @@ func (m tuiModel) renderMainContent(w int) string {
 		}
 
 		var rightRows []string
+		rightRows = append(rightRows, m.renderRoundHistory(rightW, m.roundHistoryRows(true)))
 		rightRows = append(rightRows, m.renderOrderHistory(rightW, m.orderHistoryRows(true)))
 		rightRows = append(rightRows, m.renderEventLog(rightW, m.eventLogRows(true)))
 
@@ -1233,6 +1261,7 @@ func (m tuiModel) renderMainContent(w int) string {
 			rows = append(rows, ord)
 		}
 
+		rows = append(rows, m.renderRoundHistory(w, m.roundHistoryRows(false)))
 		rows = append(rows, m.renderOrderHistory(w, m.orderHistoryRows(false)))
 		rows = append(rows, "")
 		rows = append(rows, m.renderEventLog(w, m.eventLogRows(false)))
@@ -1379,6 +1408,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.snap.orderBookDepth = snapOrderBookDepth
 			m.snap.eventLog = append([]string(nil), m.tui.eventLog...)
 			m.snap.orderHistory = append([]OrderHistoryEntry(nil), m.tui.orderHistory...)
+			m.snap.roundHistory = append([]RoundHistoryEntry(nil), m.tui.roundHistory...)
 		}
 
 		m.snap.isKilled = m.tui.isKilled
@@ -1428,10 +1458,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "enter":
 					m.tui.mu.Lock()
 					changed := false
+					prevPaperBalance := m.tui.settings.PaperBalance
 					if m.settingsCursor == settingsRowCopytradeTarget {
 						if normalizeCopytradeTargetInput(m.tui.settings.CopytradeTarget) != normalizeCopytradeTargetInput(m.settingsInput) {
 							m.tui.settings.CopytradeTarget = normalizeCopytradeTargetInput(m.settingsInput)
 							changed = true
+						}
+					} else if m.settingsCursor == settingsRowPaperBalance {
+						if val, err := strconv.ParseFloat(strings.TrimSpace(m.settingsInput), 64); err == nil && val > 0 {
+							if m.tui.settings.PaperBalance != val {
+								m.tui.settings.PaperBalance = val
+								changed = true
+							}
 						}
 					} else if m.settingsCursor == settingsRowTradeSizingValue {
 						if val, err := strconv.ParseFloat(strings.TrimSpace(m.settingsInput), 64); err == nil && val > 0 {
@@ -1469,6 +1507,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					if changed {
 						m.tui.settings = normalizeTUISettings(m.tui.settings)
+						if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
+							if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
+								m.tui.settings.PaperBalance = prevPaperBalance
+								m.tui.appendEventLocked(fmt.Sprintf("⚠️ Paper balance change requires a flat book: %v", err))
+							} else {
+								m.tui.appendEventLocked(fmt.Sprintf("💼 Paper balance reset to $%.2f", m.tui.settings.PaperBalance))
+							}
+						}
 						if m.tui.onSettingsChange != nil {
 							m.tui.onSettingsChange(m.tui.settings)
 						}
@@ -1511,6 +1557,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.settingsInput = m.tui.settings.CopytradeTarget
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
+				} else if m.settingsCursor == settingsRowPaperBalance {
+					m.tui.mu.Lock()
+					m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.PaperBalance)
+					m.tui.mu.Unlock()
+					m.settingsEdit = true
 				}
 				return m, nil
 			case "esc":
@@ -1539,6 +1590,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "left", "-", "h":
 				m.tui.mu.Lock()
 				changed := false
+				prevPaperBalance := m.tui.settings.PaperBalance
 				if !settingsRowEditable(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Unlock()
 					return m, nil
@@ -1563,6 +1615,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MaxMarkets--
 					if m.tui.settings.MaxMarkets < 1 {
 						m.tui.settings.MaxMarkets = 1
+					}
+					changed = true
+				case settingsRowPaperBalance:
+					m.tui.settings.PaperBalance -= 10.0
+					if m.tui.settings.PaperBalance < 10.0 {
+						m.tui.settings.PaperBalance = 10.0
 					}
 					changed = true
 				case settingsRowTimeframe:
@@ -1772,6 +1830,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
+					if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
+						if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
+							m.tui.settings.PaperBalance = prevPaperBalance
+							m.tui.appendEventLocked(fmt.Sprintf("⚠️ Paper balance change requires a flat book: %v", err))
+						} else {
+							m.tui.appendEventLocked(fmt.Sprintf("💼 Paper balance reset to $%.2f", m.tui.settings.PaperBalance))
+						}
+					}
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
@@ -1782,6 +1848,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
+				prevPaperBalance := m.tui.settings.PaperBalance
 				if !settingsRowEditable(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Unlock()
 					return m, nil
@@ -1804,6 +1871,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.tui.settings.MaxMarkets > 20 {
 						m.tui.settings.MaxMarkets = 20
 					}
+					changed = true
+				case settingsRowPaperBalance:
+					m.tui.settings.PaperBalance += 10.0
 					changed = true
 				case settingsRowTimeframe:
 					if m.tui.settings.Timeframe == "15m" {
@@ -1997,6 +2067,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if changed {
 					m.tui.settings = normalizeTUISettings(m.tui.settings)
+					if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
+						if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
+							m.tui.settings.PaperBalance = prevPaperBalance
+							m.tui.appendEventLocked(fmt.Sprintf("⚠️ Paper balance change requires a flat book: %v", err))
+						} else {
+							m.tui.appendEventLocked(fmt.Sprintf("💼 Paper balance reset to $%.2f", m.tui.settings.PaperBalance))
+						}
+					}
 				}
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
@@ -2007,8 +2085,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Quick presets
 			case "1":
 				m.tui.mu.Lock()
-				m.tui.settings = normalizeTUISettings(SettingsConservative)
-				m.tui.tradeFactor = SettingsConservative.TradeScaleFactor
+				preset := SettingsConservative
+				preset.PaperBalance = m.tui.settings.PaperBalance
+				m.tui.settings = normalizeTUISettings(preset)
+				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
 				}
@@ -2016,8 +2096,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "2":
 				m.tui.mu.Lock()
-				m.tui.settings = normalizeTUISettings(SettingsModerate)
-				m.tui.tradeFactor = SettingsModerate.TradeScaleFactor
+				preset := SettingsModerate
+				preset.PaperBalance = m.tui.settings.PaperBalance
+				m.tui.settings = normalizeTUISettings(preset)
+				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
 				}
@@ -2025,8 +2107,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "3":
 				m.tui.mu.Lock()
-				m.tui.settings = normalizeTUISettings(SettingsAggressive)
-				m.tui.tradeFactor = SettingsAggressive.TradeScaleFactor
+				preset := SettingsAggressive
+				preset.PaperBalance = m.tui.settings.PaperBalance
+				m.tui.settings = normalizeTUISettings(preset)
+				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
 				}
@@ -2121,6 +2205,8 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		latencySource:   "London API",
 		orderHistory:    make([]OrderHistoryEntry, 0),
 		maxOrderHistory: defaultMaxOrderHistory,
+		roundHistory:    make([]RoundHistoryEntry, 0),
+		maxRoundHistory: defaultMaxRoundHistory,
 		eventLog:        make([]string, 0),
 		maxEvents:       defaultMaxEventHistory,
 		walletTruth:     make(map[string][]WalletTruthPosition),
@@ -2526,6 +2612,30 @@ func pendingOrdersEqual(a, b []PendingOrder) bool {
 	return true
 }
 
+func (t *TUI) appendEventLocked(msg string) {
+	timestamp := time.Now().Format("15:04:05")
+	t.eventLog = append(t.eventLog, fmt.Sprintf("[%s] %s", timestamp, core.SanitizeString(msg)))
+	if len(t.eventLog) > t.maxEvents {
+		t.eventLog = t.eventLog[len(t.eventLog)-t.maxEvents:]
+	}
+	t.markDirtyLocked()
+}
+
+func (t *TUI) applyPaperBalanceLocked(balance float64) error {
+	if t.engine != nil {
+		if err := t.engine.ResetPaperSession(balance); err != nil {
+			return err
+		}
+	}
+	t.orderHistory = nil
+	t.roundHistory = nil
+	t.splitInventories = nil
+	t.walletTruth = make(map[string][]WalletTruthPosition)
+	t.startTime = time.Now()
+	t.markDirtyLocked()
+	return nil
+}
+
 func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -2673,6 +2783,35 @@ func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
 	defer t.mu.Unlock()
 	result := make([]OrderHistoryEntry, len(t.orderHistory))
 	copy(result, t.orderHistory)
+	return result
+}
+
+func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	entry := RoundHistoryEntry{
+		Number:         len(t.roundHistory) + 1,
+		Timestamp:      time.Now(),
+		StartingEquity: startingEquity,
+		EndingEquity:   endingEquity,
+		PnL:            pnl,
+		Trades:         trades,
+	}
+	t.roundHistory = append(t.roundHistory, entry)
+	if len(t.roundHistory) > t.maxRoundHistory {
+		t.roundHistory = t.roundHistory[len(t.roundHistory)-t.maxRoundHistory:]
+		for i := range t.roundHistory {
+			t.roundHistory[i].Number = i + 1
+		}
+	}
+	t.markDirtyLocked()
+}
+
+func (t *TUI) GetRoundHistory() []RoundHistoryEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]RoundHistoryEntry, len(t.roundHistory))
+	copy(result, t.roundHistory)
 	return result
 }
 
@@ -3321,6 +3460,21 @@ func (m tuiModel) orderHistoryRows(twoColumn bool) int {
 		return clamp(defaultTwoColOrderRows+extra/10, defaultTwoColOrderRows, 12)
 	}
 	return clamp(defaultOneColOrderRows+extra/12, defaultOneColOrderRows, 10)
+}
+
+func (m tuiModel) roundHistoryRows(twoColumn bool) int {
+	h := m.snap.height
+	if h <= 0 {
+		if twoColumn {
+			return defaultTwoColRoundRows
+		}
+		return defaultOneColRoundRows
+	}
+	extra := max(0, h-24)
+	if twoColumn {
+		return clamp(defaultTwoColRoundRows+extra/12, defaultTwoColRoundRows, 10)
+	}
+	return clamp(defaultOneColRoundRows+extra/14, defaultOneColRoundRows, 8)
 }
 
 func (m tuiModel) eventLogRows(twoColumn bool) int {
@@ -4056,6 +4210,74 @@ func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 	return makePanel(inner, clrSlate, sb.String())
 }
 
+func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
+	s := m.snap
+	inner := w - 4
+	var sb strings.Builder
+
+	if len(s.roundHistory) == 0 {
+		sb.WriteString(sectionHeader("🧮", "ROUND HISTORY", clrSlate) + "\n")
+		sb.WriteString(styleDimmed.Render("  (no completed rounds yet)"))
+		return makePanel(inner, clrSlate, sb.String())
+	}
+
+	wins := 0
+	losses := 0
+	flats := 0
+	for _, entry := range s.roundHistory {
+		switch {
+		case entry.PnL > 0.0001:
+			wins++
+		case entry.PnL < -0.0001:
+			losses++
+		default:
+			flats++
+		}
+	}
+
+	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND HISTORY  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
+	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
+		"#", "END", "START", "END EQ", "MOVE", "TRDS", "RESULT")) + "\n")
+	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 86))) + "\n")
+
+	displayCount := len(s.roundHistory)
+	if displayCount > maxItems {
+		displayCount = maxItems
+	}
+
+	for i := len(s.roundHistory) - 1; i >= len(s.roundHistory)-displayCount && i >= 0; i-- {
+		entry := s.roundHistory[i]
+		moveLabel := "FLAT"
+		moveStyle := styleDimmed
+		resultLabel := "FLAT"
+		resultStyle := styleDimmed
+		switch {
+		case entry.PnL > 0.0001:
+			moveLabel = "UP"
+			moveStyle = styleGreen
+			resultLabel = "WIN"
+			resultStyle = styleGreen
+		case entry.PnL < -0.0001:
+			moveLabel = "DOWN"
+			moveStyle = styleRed
+			resultLabel = "LOSS"
+			resultStyle = styleRed
+		}
+
+		sb.WriteString(fmt.Sprintf("  %-4d  %s  $%-9.2f  $%-9.2f  %s  %-5d  %s\n",
+			entry.Number,
+			styleDimmed.Render(entry.Timestamp.Format("15:04:05")),
+			entry.StartingEquity,
+			entry.EndingEquity,
+			moveStyle.Render(fmt.Sprintf("%-4s %7s", moveLabel, signedDollar(entry.PnL))),
+			entry.Trades,
+			resultStyle.Render(resultLabel),
+		))
+	}
+
+	return makePanel(inner, clrSlate, sb.String())
+}
+
 // renderOrderHistory: recent trade log panel.
 func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 	s := m.snap
@@ -4272,7 +4494,7 @@ func (m tuiModel) renderSettings(w int) string {
 
 	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
 	if m.settingsEdit {
-		keysLine = styleDimmed.Render("  Paste copytrade target  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
+		keysLine = styleDimmed.Render("  Type value  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
 	} else if isCopytradeSettingsMode(cfg) {
 		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [Enter] Paste Target  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
 	}
@@ -4307,6 +4529,11 @@ func (m tuiModel) renderSettings(w int) string {
 			label: "Max Concurrent",
 			value: fmt.Sprintf(" %d ", cfg.MaxMarkets),
 			bar:   renderBar(float64(cfg.MaxMarkets)/4.0, 20),
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowPaperBalance),
+			value: fmt.Sprintf(" $%.2f ", cfg.PaperBalance),
+			bar:   renderBar(cfg.PaperBalance/1000.0, 20),
 		},
 		{
 			label: "Timeframe",
@@ -4667,6 +4894,10 @@ func (m tuiModel) renderSettings(w int) string {
 		}
 		modeNote = styleDimmed.Render("  Copytrade mode: buy when the target wallet/profile holds an outcome, sell when it exits. Enter a wallet, @handle, or profile URL on the target row.") + "\n"
 	}
+	balanceResetNote := ""
+	if strings.EqualFold(mode, "Paper") {
+		balanceResetNote = styleDimmed.Render("  Paper Balance resets the paper session bankroll and clears session history. It only applies while the book is flat.") + "\n"
+	}
 	restartNote := styleDimmed.Render("  Press r to reload the active round immediately after changing market, exchange, or strategy mode.")
 
 	content := title + "\n" +
@@ -4679,6 +4910,7 @@ func (m tuiModel) renderSettings(w int) string {
 		p3 + "\n\n" +
 		divider + "\n" +
 		modeNote +
+		balanceResetNote +
 		balanceNote + "\n" +
 		restartNote
 
