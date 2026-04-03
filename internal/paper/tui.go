@@ -615,10 +615,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 }
 
 func settingsRowEditable(cfg TUISettings, mode string, idx int) bool {
-	if !isRowVisible(cfg, mode, idx) {
-		return false
-	}
-	return true
+	return isRowVisible(cfg, mode, idx)
 }
 
 func settingsRowLabel(cfg TUISettings, idx int) string {
@@ -3411,18 +3408,20 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		}
 
 		target := core.SanitizeString(sig.TargetOutcome)
-		binLine := fmt.Sprintf("  Bin %s $%s  Δ%+.3f%%  gap %.3f%%", strings.ToUpper(strings.TrimSpace(sig.Symbol)), priceText, sig.DeltaPercent, sig.EffectiveGapPercent)
+		
+		// Line 1: Binance Price & Directional Signal
+		binLine := fmt.Sprintf("  BIN: $%s (%+.3f%%)", priceText, sig.DeltaPercent)
 		if target != "" {
-			binLine += " → " + target
+			binLine += " 🎯 " + target
 		} else if label := strings.TrimSpace(sig.SignalLabel); label != "" {
 			binLine += " " + strings.ToUpper(label)
 		}
 		priceLinesB.WriteString("\n" + truncateText(binLine, innerW))
 
+		// Line 2: The Actionable Gap & Metrics
 		if sig.TargetOutcome != "" || sig.PolyFavorableMoveCents != 0 || sig.PolyAdverseMoveCents != 0 || sig.TargetSpreadCents != 0 || sig.DirectionalBookScore != 0 || sig.Ready {
-			detailLine := fmt.Sprintf("  Lag %.2fc/%.2fc  spr %.2fc  book %.2f",
-				sig.PolyFavorableMoveCents,
-				sig.PolyAdverseMoveCents,
+			detailLine := fmt.Sprintf("  GAP: %.2f%% | SPRD: %.1fc | BOOK: %+.2f",
+				sig.EffectiveGapPercent,
 				sig.TargetSpreadCents,
 				sig.DirectionalBookScore,
 			)

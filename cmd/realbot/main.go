@@ -3990,8 +3990,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							var leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1 float64
 							var leggedSource string
 							reverifyCtx, cancelReverify := context.WithTimeout(ctx, 12*time.Second)
-							leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1, leggedSource, _ = reconcileBoughtPairBalances(reverifyCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+							var leggedErr error
+							leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1, leggedSource, leggedErr = reconcileBoughtPairBalances(reverifyCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
 							cancelReverify()
+							if leggedErr != nil {
+								tui.LogEvent("[%s] ⚠️ Re-verify failed: %v", id, leggedErr)
+							}
 							prevSide1, prevSide2 := side1Success, side2Success
 							side1Success = prevSide1 || shouldAttemptCleanupSell(leggedAcquired0)
 							side2Success = prevSide2 || shouldAttemptCleanupSell(leggedAcquired1)

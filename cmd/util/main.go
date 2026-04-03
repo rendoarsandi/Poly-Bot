@@ -118,7 +118,9 @@ func startUtilbotOrderWarmLoop(parentCtx context.Context, warmer utilbotOrderPat
 		warmOnce := func() {
 			singleCtx, singleCancel := context.WithTimeout(warmCtx, timeout)
 			defer singleCancel()
-			_ = warmUtilbotOrderPath(singleCtx, warmer)
+			if err := warmUtilbotOrderPath(singleCtx, warmer); err != nil {
+				fmt.Printf("⚠️ Order path warming failed: %v\n", err)
+			}
 		}
 
 		warmOnce()

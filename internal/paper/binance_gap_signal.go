@@ -239,6 +239,19 @@ func EvaluateBinanceGapSignal(now time.Time, mapping DirectionalOutcomes, tokenB
 	signal.PolyOppositeMoveCents = -oppositeSnap.DeltaCents
 	signal.PolyFavorableMoveCents = math.Max(math.Max(signal.PolyTargetMoveCents, 0), math.Max(signal.PolyOppositeMoveCents, 0))
 	signal.PolyAdverseMoveCents = math.Max(-signal.PolyTargetMoveCents, 0) + math.Max(-signal.PolyOppositeMoveCents, 0)
-	signal.EffectiveGapPercent = math.Max(math.Abs(signal.BinanceDeltaPercent)-signal.PolyFavorableMoveCents, 0)
+	
+	rawGap := math.Max(math.Abs(signal.BinanceDeltaPercent)-signal.PolyFavorableMoveCents, 0)
+	
+	// Cross-Market State Fusion insight: Extremeness multiplier
+	// Binary markets offer higher edge at extreme probabilities (near 0 or 1) due to
+	// asymmetric share-based payoffs. We boost the effective gap to prioritize these entries.
+	prob := ask
+	if prob > 1.0 {
+		prob = 1.0
+	}
+	extremeness := math.Abs(prob-0.5) * 2.0 // Ranges from 0.0 (at 0.5) to 1.0 (at 0 or 1)
+	extremenessMultiplier := 1.0 + (1.0 * extremeness) // Scales gap up to 2x at extremes
+
+	signal.EffectiveGapPercent = rawGap * extremenessMultiplier
 	return signal, ""
 }

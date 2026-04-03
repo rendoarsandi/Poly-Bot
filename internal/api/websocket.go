@@ -65,7 +65,9 @@ func NewWSManager(exchange, kalshiKey, kalshiPK, customURL string) *WSManager {
 	if exchange == "kalshi" {
 		url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 		if kalshiKey != "" && kalshiPK != "" {
-			kalshiSigner, _ = NewKalshiSigner(kalshiKey, kalshiPK)
+			if signer, err := NewKalshiSigner(kalshiKey, kalshiPK); err == nil {
+				kalshiSigner = signer
+			}
 		}
 	}
 

@@ -439,7 +439,7 @@ func TestRenderMarketPanelShowsBinanceSignalStatus(t *testing.T) {
 	}
 
 	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
-	for _, want := range []string{"BTCUSDT", "0.642%", "Yes", "0.80c", "READY", "signal ready"} {
+	for _, want := range []string{"BIN: $84250.50", "0.642%", "Yes", "READY", "signal ready"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected Binance status %q in panel, got %q", want, rendered)
 		}
