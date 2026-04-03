@@ -60,12 +60,12 @@ var (
 )
 
 const (
-	defaultMaxOrderHistory  = 20
+	defaultMaxOrderHistory  = 50
 	defaultMaxEventHistory  = 250
-	defaultTwoColOrderRows  = 8
-	defaultOneColOrderRows  = 6
-	defaultTwoColEventRows  = 18
-	defaultOneColEventRows  = 14
+	defaultTwoColOrderRows  = 12
+	defaultOneColOrderRows  = 10
+	defaultTwoColEventRows  = 12
+	defaultOneColEventRows  = 10
 	recentQuoteDisplayGrace = 1500 * time.Millisecond
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
@@ -1427,11 +1427,51 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "enter":
 					m.tui.mu.Lock()
-					changed := normalizeCopytradeTargetInput(m.tui.settings.CopytradeTarget) != normalizeCopytradeTargetInput(m.settingsInput)
-					m.tui.settings.CopytradeTarget = normalizeCopytradeTargetInput(m.settingsInput)
-					m.tui.settings = normalizeTUISettings(m.tui.settings)
-					if changed && m.tui.onSettingsChange != nil {
-						m.tui.onSettingsChange(m.tui.settings)
+					changed := false
+					if m.settingsCursor == settingsRowCopytradeTarget {
+						if normalizeCopytradeTargetInput(m.tui.settings.CopytradeTarget) != normalizeCopytradeTargetInput(m.settingsInput) {
+							m.tui.settings.CopytradeTarget = normalizeCopytradeTargetInput(m.settingsInput)
+							changed = true
+						}
+					} else if m.settingsCursor == settingsRowTradeSizingValue {
+						if val, err := strconv.ParseFloat(strings.TrimSpace(m.settingsInput), 64); err == nil && val > 0 {
+							if isCopytradeSettingsMode(m.tui.settings) {
+								if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+									if m.tui.settings.CopytradeSizeShares != val {
+										m.tui.settings.CopytradeSizeShares = val
+										changed = true
+									}
+								} else if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModePercent) {
+									if m.tui.settings.CopytradeSizePercent != val {
+										m.tui.settings.CopytradeSizePercent = val
+										changed = true
+									}
+								} else {
+									if m.tui.settings.CopytradeSizeUSDC != val {
+										m.tui.settings.CopytradeSizeUSDC = val
+										changed = true
+									}
+								}
+							} else {
+								if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+									if m.tui.settings.TradeSizeUSDC != val {
+										m.tui.settings.TradeSizeUSDC = val
+										changed = true
+									}
+								} else {
+									if m.tui.settings.TradeScaleFactor != val {
+										m.tui.settings.TradeScaleFactor = val
+										changed = true
+									}
+								}
+							}
+						}
+					}
+					if changed {
+						m.tui.settings = normalizeTUISettings(m.tui.settings)
+						if m.tui.onSettingsChange != nil {
+							m.tui.onSettingsChange(m.tui.settings)
+						}
 					}
 					m.tui.mu.Unlock()
 					m.settingsEdit = false
@@ -4028,7 +4068,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		return makePanel(inner, clrSlate, sb.String())
 	}
 
-	sb.WriteString(sectionHeader("📋", fmt.Sprintf("ORDER HISTORY  (last %d)", len(s.orderHistory)), clrSlate) + "\n")
+	sb.WriteString(sectionHeader("📋", fmt.Sprintf("GLOBAL ORDER HISTORY  (last %d)", len(s.orderHistory)), clrSlate) + "\n")
 
 	// Table header
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-8s  %-10s  %-6s  %-5s  %-9s  %-8s  %-8s  %s",
