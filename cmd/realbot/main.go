@@ -260,6 +260,9 @@ func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, merg
 	if realbotTakerCloseHoldMode(cfg) || strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeCopytrade) {
 		return false
 	}
+	if strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeBinanceGap) {
+		return false
+	}
 	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
 }
 
@@ -631,6 +634,15 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		logThrottled("[%s] ℹ️ Binance gap mode skipped: outcomes are not Up/Down or Yes/No", id)
 		return
 	}
+
+	// Sync local engine using WSS RPC live positions to update shares without assuming
+	if upTokenID := getTokenID(mapping.Up); upTokenID != "" {
+		engine.SyncExternalPosition(id, mapping.Up, trader.GetLivePositionSize(upTokenID), tokenAsks[mapping.Up])
+	}
+	if downTokenID := getTokenID(mapping.Down); downTokenID != "" {
+		engine.SyncExternalPosition(id, mapping.Down, trader.GetLivePositionSize(downTokenID), tokenAsks[mapping.Down])
+	}
+
 	if binanceFeed == nil {
 		status.Status = "inactive"
 		status.Reason = "no Binance futures feed configured"
@@ -647,10 +659,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	upQty, upAvg := localBoughtPositionAvg(engine, id, mapping.Up)
 	downQty, downAvg := localBoughtPositionAvg(engine, id, mapping.Down)
 	if upQty > 0 && downQty > 0 {
-		status.Status = "exit"
-		status.Reason = "holding both outcomes; waiting for cleanup"
-		logThrottled("[%s] ⚠️ Binance gap mode holding both sides locally; waiting for existing recovery/cleanup before new entries", id)
-		return
+		logThrottled("[%s] ⚠️ Binance gap mode holding both sides locally; managing independently without awaiting merge", id)
 	}
 
 	heldOutcome := ""
