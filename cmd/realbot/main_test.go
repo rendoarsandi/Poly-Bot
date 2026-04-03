@@ -1140,6 +1140,33 @@ func TestRealbotCopytradeFreshTradesBootstrapUsesObservedAtForOnchainSignals(t *
 	}
 }
 
+func TestRealbotCopytradeFreshTradesBootstrapKeepsRecentWatcherSignalsBeforeStart(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 500_000_000)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Down", Side: "BUY", Size: 2, Timestamp: 981, TransactionHash: "0xon", Source: "onchain"},
+		{ConditionID: "cond-1", Outcome: "Down", Side: "BUY", Size: 2, Timestamp: 981, TransactionHash: "0xmem", Source: "mempool", SignalID: "0xmem:1"},
+	}
+
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
+	if len(got) != 2 {
+		t.Fatalf("expected recent watcher signals just before start to survive bootstrap, got %d", len(got))
+	}
+}
+
+func TestRealbotCopytradeFreshTradesBootstrapDropsRecentPublicSignalsBeforeStart(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 500_000_000)
+	trades := []api.PublicTrade{
+		{ConditionID: "cond-1", Outcome: "Down", Side: "BUY", Size: 2, Timestamp: 981, TransactionHash: "0xpub", Source: "public"},
+	}
+
+	got := realbotCopytradeFreshTrades(state, trades, "cond-1", "shares")
+	if len(got) != 0 {
+		t.Fatalf("expected pre-start public signal to be dropped during bootstrap, got %d", len(got))
+	}
+}
+
 func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing.T) {
 	state := newRealbotCopytradeState()
 	state.startedAt = time.Unix(1000, 0)

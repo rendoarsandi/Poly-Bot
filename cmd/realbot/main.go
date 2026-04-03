@@ -7571,6 +7571,25 @@ func realbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
 	return startTs
 }
 
+func realbotCopytradeBootstrapAcceptsTrade(state *realbotCopytradeState, trade api.PublicTrade) bool {
+	if state == nil || state.startedAt.IsZero() {
+		return false
+	}
+	startTs := realbotCopytradeBootstrapStartTimestamp(state.startedAt)
+	effectiveTS := realbotCopytradeEffectiveTimestamp(trade)
+	if effectiveTS >= startTs {
+		return true
+	}
+
+	source := strings.ToLower(strings.TrimSpace(realbotCopytradeSignalSource(trade)))
+	if source != "onchain" && source != "mempool" {
+		return false
+	}
+
+	tradeAt := time.Unix(effectiveTS, 0)
+	return !tradeAt.Before(state.startedAt.Add(-realbotCopytradeRetryMaxAge))
+}
+
 func realbotCopytradeRetrySignalFresh(now time.Time, trade api.PublicTrade) bool {
 	effectiveTS := realbotCopytradeEffectiveTimestamp(trade)
 	if effectiveTS <= 0 {
@@ -7668,10 +7687,9 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 		if state.startedAt.IsZero() {
 			return nil
 		}
-		startTs := realbotCopytradeBootstrapStartTimestamp(state.startedAt)
 		bootstrap := make([]api.PublicTrade, 0, len(fresh))
 		for _, trade := range fresh {
-			if realbotCopytradeEffectiveTimestamp(trade) < startTs {
+			if !realbotCopytradeBootstrapAcceptsTrade(state, trade) {
 				continue
 			}
 			bootstrap = append(bootstrap, trade)

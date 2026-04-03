@@ -1402,6 +1402,25 @@ func paperbotCopytradeBootstrapStartTimestamp(startedAt time.Time) int64 {
 	return startTs
 }
 
+func paperbotCopytradeBootstrapAcceptsTrade(state *paperbotCopytradeState, trade api.PublicTrade) bool {
+	if state == nil || state.startedAt.IsZero() {
+		return false
+	}
+	startTs := paperbotCopytradeBootstrapStartTimestamp(state.startedAt)
+	effectiveTS := paperbotCopytradeEffectiveTimestamp(trade)
+	if effectiveTS >= startTs {
+		return true
+	}
+
+	source := strings.ToLower(strings.TrimSpace(paperbotCopytradeSignalSource(trade)))
+	if source != "onchain" && source != "mempool" {
+		return false
+	}
+
+	tradeAt := time.Unix(effectiveTS, 0)
+	return !tradeAt.Before(state.startedAt.Add(-paperCopytradeRetryMaxAge))
+}
+
 func paperbotCopytradeRetrySignalFresh(now time.Time, trade api.PublicTrade) bool {
 	effectiveTS := paperbotCopytradeEffectiveTimestamp(trade)
 	if effectiveTS <= 0 {
@@ -1494,10 +1513,9 @@ func paperbotCopytradeFreshTrades(state *paperbotCopytradeState, trades []api.Pu
 		if state.startedAt.IsZero() {
 			return nil
 		}
-		startTs := paperbotCopytradeBootstrapStartTimestamp(state.startedAt)
 		bootstrap := make([]api.PublicTrade, 0, len(fresh))
 		for _, trade := range fresh {
-			if paperbotCopytradeEffectiveTimestamp(trade) < startTs {
+			if !paperbotCopytradeBootstrapAcceptsTrade(state, trade) {
 				continue
 			}
 			bootstrap = append(bootstrap, trade)
