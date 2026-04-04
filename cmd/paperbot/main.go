@@ -116,6 +116,11 @@ type MarketTrader struct {
 	// Last time we performed a REST fallback poll
 	LastRestPoll time.Time
 
+	// Post-expiry terminal winner tracking
+	TerminalWinnerCandidate string
+	TerminalWinnerProb      float64
+	TerminalWinnerSource    string
+
 	// Split strategy simulation
 	SplitInventory     *paper.SplitInventory
 	ReplenishCtrl      *paper.ReplenishController
@@ -4720,17 +4725,50 @@ func (t *MarketTrader) determineWinner() string {
 
 	// Prevent early price-based determination until 3 seconds past expiry
 	// to ensure the market has settled to its final $1.00 levels.
+	// But we continuously track the candidate even before the 3 seconds are up.
+	t.mu.Lock()
+	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
+	if ok {
+		// Track the strongest candidate seen post-expiry
+		if highestProb >= t.TerminalWinnerProb {
+			t.TerminalWinnerCandidate = bestOutcome
+			t.TerminalWinnerProb = highestProb
+			t.TerminalWinnerSource = signalSource
+		}
+	} else {
+		// If the book is not empty, but there's no terminal price, we must have dropped below 0.99.
+		// In that case, we should invalidate the candidate!
+		bookIsEmpty := true
+		for _, b := range t.TokenBids {
+			if b > 0 {
+				bookIsEmpty = false
+				break
+			}
+		}
+		if bookIsEmpty {
+			for _, a := range t.TokenAsks {
+				if a > 0 {
+					bookIsEmpty = false
+					break
+				}
+			}
+		}
+
+		if !bookIsEmpty {
+			t.TerminalWinnerCandidate = ""
+			t.TerminalWinnerProb = 0
+			t.TerminalWinnerSource = ""
+		}
+	}
+	t.mu.Unlock()
+
 	if !now.After(t.EndTime.Add(3 * time.Second)) {
 		return ""
 	}
 
-	t.mu.Lock()
-	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
-	t.mu.Unlock()
-
-	if ok {
-		t.TUI.LogEvent("[%s] 📊 Terminal price winner: %s ($%.3f via %s) [no on-chain winner yet]", t.ID, bestOutcome, highestProb, signalSource)
-		return bestOutcome
+	if t.TerminalWinnerCandidate != "" {
+		t.TUI.LogEvent("[%s] 📊 Terminal price winner: %s ($%.3f via %s) [no on-chain winner yet]", t.ID, t.TerminalWinnerCandidate, t.TerminalWinnerProb, t.TerminalWinnerSource)
+		return t.TerminalWinnerCandidate
 	}
 	return ""
 }
