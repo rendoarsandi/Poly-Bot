@@ -8032,9 +8032,6 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			} else {
 				requestedQty = normalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			}
-			if positionSignal && requestedQty > tradeSize {
-				requestedQty = normalizeMarketSellShares(tradeSize)
-			}
 			if requestedQty > localQty {
 				requestedQty = normalizeMarketSellShares(localQty)
 			}

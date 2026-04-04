@@ -5220,9 +5220,6 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 			} else {
 				requestedQty = paperbotNormalizeMarketSellShares(core.CalculateCopytradeSharesForMode(tradeSize, submitFloor, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
 			}
-			if positionSignal && requestedQty > tradeSize {
-				requestedQty = paperbotNormalizeMarketSellShares(tradeSize)
-			}
 			if requestedQty > localQty {
 				requestedQty = paperbotNormalizeMarketSellShares(localQty)
 			}

@@ -1201,7 +1201,7 @@ func TestRealbotMergeCopytradeTradesDedupesWatcherAndPublicSameTx(t *testing.T) 
 	}
 	publicTrades := realbotPrepareCopytradeTrades([]api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Asset: "asset-a", Timestamp: 1002, TransactionHash: "0xtx"},
-	}, "public")
+	}, "public", paper.TUISettings{})
 
 	got := realbotMergeCopytradeTrades(watcherTrades, publicTrades)
 	if len(got) != 1 {
@@ -1218,7 +1218,7 @@ func TestRealbotCopytradeFreshTradesDetectsAdditionalPublicFillSameSignalAcrossP
 
 	poll1 := realbotMergeCopytradeTrades(realbotPrepareCopytradeTrades([]api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
-	}, "public"))
+	}, "public", paper.TUISettings{}))
 	if got := realbotCopytradeFreshTrades(state, poll1, "cond-1", "shares"); len(got) != 1 {
 		t.Fatalf("Poll 1: expected 1 fresh trade, got %d", len(got))
 	}
@@ -1226,7 +1226,7 @@ func TestRealbotCopytradeFreshTradesDetectsAdditionalPublicFillSameSignalAcrossP
 	poll2 := realbotMergeCopytradeTrades(realbotPrepareCopytradeTrades([]api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 3, Price: 0.46, Asset: "asset-a", Timestamp: 1002, TransactionHash: "0xtx"},
-	}, "public"))
+	}, "public", paper.TUISettings{}))
 	got := realbotCopytradeFreshTrades(state, poll2, "cond-1", "shares")
 	if len(got) != 1 {
 		t.Fatalf("Poll 2: expected 1 newly backfilled trade, got %d", len(got))
