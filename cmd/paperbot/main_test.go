@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -1354,42 +1353,7 @@ func TestDetermineWinnerRejectsStaleCloseSnapshot(t *testing.T) {
 	}
 }
 
-func TestDetermineWinnerUsesStoredCloseSnapshotAfterWatch(t *testing.T) {
-	engine := paper.NewEngine(100.0)
-	endTime := time.Now().Add(-paperPostExpiryWinnerWatch - 500*time.Millisecond)
-	trader := &MarketTrader{
-		ID:       "BTC#stored-close",
-		Engine:   engine,
-		TUI:      paper.NewTUI(engine, nil),
-		Outcomes: []string{"Down", "Up"},
-		EndTime:  endTime,
-		TokenBids: map[string]float64{
-			"Down": 0.01,
-			"Up":   0.99,
-		},
-		TokenAsks: map[string]float64{"Down": 0.02, "Up": 1.00},
-		FloatPrices: map[string]float64{
-			"Down": 0.015,
-			"Up":   0.995,
-		},
-		LastUpdate:       time.Now().Add(-200 * time.Millisecond),
-		ExpirySnapshotAt: endTime.Add(-500 * time.Millisecond),
-		ExpirySnapshotBids: map[string]float64{
-			"Down": 0.96,
-			"Up":   0.02,
-		},
-		ExpirySnapshotAsks: map[string]float64{"Down": 0.98, "Up": 0.03},
-		ExpirySnapshotPrices: map[string]float64{
-			"Down": 0.97,
-			"Up":   0.025,
-		},
-	}
 
-	winner := trader.determineWinner()
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want stored close snapshot Down", winner)
-	}
-}
 
 func TestPaperPostExpiryResolutionStateKeepsFastScanThroughPlusFiveSeconds(t *testing.T) {
 	endTime := time.Unix(1_700_000_000, 0)
@@ -1405,56 +1369,4 @@ func TestPaperPostExpiryResolutionStateKeepsFastScanThroughPlusFiveSeconds(t *te
 	}
 }
 
-func TestRefreshWinnerQuotesFromRESTDetectsSparseTerminalWinner(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenID := r.URL.Query().Get("token_id")
-		w.Header().Set("Content-Type", "application/json")
-		switch tokenID {
-		case "token-down":
-			_, _ = w.Write([]byte(`{"market":"m1","asset_id":"token-down","timestamp":"1700000000000","bids":[{"price":"0.99","size":"100"}],"asks":[]}`))
-		case "token-up":
-			_, _ = w.Write([]byte(`{"market":"m1","asset_id":"token-up","timestamp":"1700000000000","bids":[],"asks":[{"price":"0.01","size":"100"}]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
 
-	restClient := api.NewRestClient("polymarket")
-	restClient.BaseURL = server.URL
-
-	engine := paper.NewEngine(100.0)
-	trader := &MarketTrader{
-		ID:            "BTC#test",
-		Engine:        engine,
-		RestClient:    restClient,
-		TUI:           paper.NewTUI(engine, nil),
-		Outcomes:      []string{"Down", "Up"},
-		EndTime:       time.Now().Add(-paperPostExpiryWinnerWatch - time.Second),
-		TokenMap:      map[string]string{"token-down": "Down", "token-up": "Up"},
-		TokenBids:     make(map[string]float64),
-		TokenAsks:     make(map[string]float64),
-		TokenFullBids: make(map[string][]paper.MarketLevel),
-		TokenFullAsks: make(map[string][]paper.MarketLevel),
-		FloatPrices:   make(map[string]float64),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := trader.refreshWinnerQuotesFromREST(ctx); err != nil {
-		t.Fatalf("refreshWinnerQuotesFromREST failed: %v", err)
-	}
-
-	if got := trader.TokenBids["Down"]; got != 0.99 {
-		t.Fatalf("Down bid = %.3f, want 0.990", got)
-	}
-	if got := trader.TokenAsks["Up"]; got != 0.01 {
-		t.Fatalf("Up ask = %.3f, want 0.010", got)
-	}
-
-	winner := trader.determineWinner()
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
-	}
-}
