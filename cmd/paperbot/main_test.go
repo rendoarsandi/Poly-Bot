@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -1248,116 +1247,12 @@ func TestEstimatePaperWinnerFallsBackToAskThenMid(t *testing.T) {
 	}
 }
 
-func TestDetectTerminalWinnerFromPricesAcceptsPinnedBidWithMissingPeerQuotes(t *testing.T) {
-	winner, prob, source, ok := detectTerminalWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0.99, "Up": 0},
-		map[string]float64{"Down": 0, "Up": 0},
-		map[string]float64{"Down": 0, "Up": 0},
-	)
-	if !ok {
-		t.Fatal("expected 0.99 pinned side to be accepted as terminal winner")
-	}
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
-	}
-	if prob != 0.99 {
-		t.Fatalf("prob = %.3f, want 0.990", prob)
-	}
-	if source != "bid" {
-		t.Fatalf("source = %q, want bid", source)
-	}
-}
 
-func TestDetectTerminalWinnerFromPricesUsesPeerAskNearZeroFallback(t *testing.T) {
-	winner, prob, source, ok := detectTerminalWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0, "Up": 0},
-		map[string]float64{"Down": 0, "Up": 0.01},
-		map[string]float64{"Down": 0, "Up": 0},
-	)
-	if ok || winner != "" || prob != 0 || source != "" {
-		t.Fatalf("expected peer ask alone to stay unresolved, got winner=%q prob=%.3f source=%q ok=%v", winner, prob, source, ok)
-	}
-}
 
-func TestDetectTerminalWinnerFromPricesRejectsNonTerminalLevels(t *testing.T) {
-	winner, _, _, ok := detectTerminalWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0.94, "Up": 0.06},
-		map[string]float64{"Down": 0, "Up": 0},
-		map[string]float64{"Down": 0, "Up": 0},
-	)
-	if ok || winner != "" {
-		t.Fatalf("expected no terminal winner, got winner=%q ok=%v", winner, ok)
-	}
-}
 
-func TestDetectTerminalWinnerFromPricesRejectsTiesAtTerminalLevel(t *testing.T) {
-	winner, _, _, ok := detectTerminalWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0.99, "Up": 0.99},
-		map[string]float64{"Down": 0, "Up": 0},
-		map[string]float64{"Down": 0, "Up": 0},
-	)
-	if ok || winner != "" {
-		t.Fatalf("expected tie to be unresolved, got winner=%q ok=%v", winner, ok)
-	}
-}
 
-func TestDetectTerminalWinnerFromPricesRejectsAskOnlyTerminalLevels(t *testing.T) {
-	winner, _, source, ok := detectTerminalWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0, "Up": 0},
-		map[string]float64{"Down": 0.99, "Up": 0.01},
-		map[string]float64{"Down": 0.995, "Up": 0.005},
-	)
-	if ok || winner != "" || source != "" {
-		t.Fatalf("expected ask/mid-only terminal signal to stay unresolved, got winner=%q source=%q ok=%v", winner, source, ok)
-	}
-}
 
-func TestDetectTerminalWinnerFromPricesUsesPinnedBidWithPeerAskConfirmation(t *testing.T) {
-	winner, prob, source, ok := detectTerminalWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0.985, "Up": 0},
-		map[string]float64{"Down": 0, "Up": 0.01},
-		map[string]float64{"Down": 0, "Up": 0},
-	)
-	if !ok {
-		t.Fatal("expected pinned bid plus peer ask confirmation to infer terminal winner")
-	}
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
-	}
-	if prob != 0.985 {
-		t.Fatalf("prob = %.3f, want 0.985", prob)
-	}
-	if source != "bid+peer_ask" {
-		t.Fatalf("source = %q, want bid+peer_ask", source)
-	}
-}
 
-func TestDetectExpiryWinnerFromPricesUsesAskFallbackAtClose(t *testing.T) {
-	winner, prob, source, ok := detectExpiryWinnerFromPrices(
-		[]string{"Down", "Up"},
-		map[string]float64{"Down": 0, "Up": 0},
-		map[string]float64{"Down": 0.98, "Up": 0.03},
-		map[string]float64{"Down": 0, "Up": 0},
-	)
-	if !ok {
-		t.Fatal("expected ask fallback to infer close winner")
-	}
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
-	}
-	if prob != 0.97 {
-		t.Fatalf("prob = %.3f, want 0.970", prob)
-	}
-	if source != "ask" {
-		t.Fatalf("source = %q, want ask", source)
-	}
-}
 
 func TestDetermineWinnerWaitsBeforeQuoteFallback(t *testing.T) {
 	engine := paper.NewEngine(100.0)
@@ -1385,42 +1280,6 @@ func TestDetermineWinnerWaitsBeforeQuoteFallback(t *testing.T) {
 	}
 }
 
-func TestDetermineWinnerUsesStoredCloseSnapshotAfterWatch(t *testing.T) {
-	engine := paper.NewEngine(100.0)
-	endTime := time.Now().Add(-paperPostExpiryWinnerWatch - 500*time.Millisecond)
-	trader := &MarketTrader{
-		ID:       "BTC#stored-close",
-		Engine:   engine,
-		TUI:      paper.NewTUI(engine, nil),
-		Outcomes: []string{"Down", "Up"},
-		EndTime:  endTime,
-		TokenBids: map[string]float64{
-			"Down": 0.01,
-			"Up":   0.99,
-		},
-		TokenAsks: map[string]float64{"Down": 0.02, "Up": 1.00},
-		FloatPrices: map[string]float64{
-			"Down": 0.015,
-			"Up":   0.995,
-		},
-		LastUpdate:       time.Now().Add(-200 * time.Millisecond),
-		ExpirySnapshotAt: endTime.Add(-500 * time.Millisecond),
-		ExpirySnapshotBids: map[string]float64{
-			"Down": 0.96,
-			"Up":   0.02,
-		},
-		ExpirySnapshotAsks: map[string]float64{"Down": 0.98, "Up": 0.03},
-		ExpirySnapshotPrices: map[string]float64{
-			"Down": 0.97,
-			"Up":   0.025,
-		},
-	}
-
-	winner := trader.determineWinner()
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want stored close snapshot Down", winner)
-	}
-}
 
 func TestDetermineWinnerUsesHistoricalEventWinnerBeforeQuoteFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1502,57 +1361,18 @@ func TestDetermineWinnerRejectsStaleCloseSnapshot(t *testing.T) {
 	}
 }
 
+func TestPaperPostExpiryResolutionStateKeepsFastScanThroughPlusFiveSeconds(t *testing.T) {
+	endTime := time.Unix(1_700_000_000, 0)
 
-func TestRefreshWinnerQuotesFromRESTDetectsSparseTerminalWinner(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenID := r.URL.Query().Get("token_id")
-		w.Header().Set("Content-Type", "application/json")
-		switch tokenID {
-		case "token-down":
-			_, _ = w.Write([]byte(`{"market":"m1","asset_id":"token-down","timestamp":"1700000000000","bids":[{"price":"0.99","size":"100"}],"asks":[]}`))
-		case "token-up":
-			_, _ = w.Write([]byte(`{"market":"m1","asset_id":"token-up","timestamp":"1700000000000","bids":[],"asks":[{"price":"0.01","size":"100"}]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	restClient := api.NewRestClient("polymarket")
-	restClient.BaseURL = server.URL
-
-	engine := paper.NewEngine(100.0)
-	trader := &MarketTrader{
-		ID:            "BTC#test",
-		Engine:        engine,
-		RestClient:    restClient,
-		TUI:           paper.NewTUI(engine, nil),
-		Outcomes:      []string{"Down", "Up"},
-		EndTime:       time.Now().Add(-paperPostExpiryWinnerWatch - time.Second),
-		TokenMap:      map[string]string{"token-down": "Down", "token-up": "Up"},
-		TokenBids:     make(map[string]float64),
-		TokenAsks:     make(map[string]float64),
-		TokenFullBids: make(map[string][]paper.MarketLevel),
-		TokenFullAsks: make(map[string][]paper.MarketLevel),
-		FloatPrices:   make(map[string]float64),
+	if interval, refresh := paperPostExpiryResolutionState(endTime, endTime); interval != paperPostExpiryWinnerPoll || !refresh {
+		t.Fatalf("at expiry got interval=%v refresh=%v, want %v true", interval, refresh, paperPostExpiryWinnerPoll)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := trader.refreshWinnerQuotesFromREST(ctx); err != nil {
-		t.Fatalf("refreshWinnerQuotesFromREST failed: %v", err)
+	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(4*time.Second), endTime); interval != paperPostExpiryWinnerPoll || !refresh {
+		t.Fatalf("at +4s got interval=%v refresh=%v, want %v true", interval, refresh, paperPostExpiryWinnerPoll)
 	}
-
-	if got := trader.TokenBids["Down"]; got != 0.99 {
-		t.Fatalf("Down bid = %.3f, want 0.990", got)
-	}
-	if got := trader.TokenAsks["Up"]; got != 0.01 {
-		t.Fatalf("Up ask = %.3f, want 0.010", got)
-	}
-
-	winner := trader.determineWinner()
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
+	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(5*time.Second), endTime); interval != paperResolutionRefreshInterval || !refresh {
+		t.Fatalf("at +5s got interval=%v refresh=%v, want %v true", interval, refresh, paperResolutionRefreshInterval)
 	}
 }
+
+

@@ -65,9 +65,9 @@ const (
 	paperHistoricalLookupInterval  = 2 * time.Second
 	paperHistoricalNotFoundRetry   = 30 * time.Second
 	paperResolutionErrorLogGap     = 5 * time.Second
-	paperPostExpiryWinnerWatch     = 72 * time.Hour
+	paperPostExpiryWinnerWatch     = 5 * time.Second
 	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
-	paperExpiryResolutionBuffer    = 72 * time.Hour
+	paperExpiryResolutionBuffer    = 1 * time.Minute
 	paperExpiryWinnerFloor         = 0.97
 	paperExpiryWinnerQuoteMaxAge   = 2 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
@@ -2072,113 +2072,6 @@ func estimatePaperWinner(outcomes []string, bids, asks, floatPrices map[string]f
 	return bestOutcome, highestProb
 }
 
-func detectTerminalWinnerFromPrices(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64, string, bool) {
-	if len(outcomes) == 0 {
-		return "", 0, "", false
-	}
-
-	bestOutcome := ""
-	bestBid := 0.0
-	secondBest := 0.0
-
-	for _, outcome := range outcomes {
-		candidateBid := bids[outcome]
-		if candidateBid > bestBid+1e-9 {
-			secondBest = bestBid
-			bestBid = candidateBid
-			bestOutcome = outcome
-		} else if candidateBid > secondBest {
-			secondBest = candidateBid
-		}
-	}
-
-	if bestOutcome == "" {
-		return "", 0, "", false
-	}
-	if math.Abs(bestBid-secondBest) <= 1e-6 {
-		return "", 0, "", false
-	}
-
-	if bestBid >= terminalWinnerFloor {
-		return bestOutcome, bestBid, "bid", true
-	}
-
-	if len(outcomes) == 2 && bestBid >= terminalBidFloor {
-		for _, outcome := range outcomes {
-			if outcome == bestOutcome {
-				continue
-			}
-			if peerAsk := asks[outcome]; peerAsk > 0 && peerAsk <= terminalAskCeil {
-				return bestOutcome, bestBid, "bid+peer_ask", true
-			}
-		}
-	}
-
-	return "", 0, "", false
-}
-
-func detectExpiryWinnerFromPrices(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64, string, bool) {
-	if len(outcomes) == 0 {
-		return "", 0, "", false
-	}
-
-	bestOutcome := ""
-	bestPrice := 0.0
-	bestSource := ""
-	secondBest := 0.0
-
-	for i, outcome := range outcomes {
-		candidatePrice := 0.0
-		candidateSource := ""
-
-		if bid := bids[outcome]; bid > candidatePrice {
-			candidatePrice = bid
-			candidateSource = "bid"
-		}
-		if ask := asks[outcome]; ask > 0 {
-			inferred := ask - 0.01
-			if inferred > candidatePrice {
-				candidatePrice = inferred
-				candidateSource = "ask"
-			}
-		}
-		if mid := floatPrices[outcome]; mid > candidatePrice {
-			candidatePrice = mid
-			candidateSource = "mid"
-		}
-
-		// If the peer ask is pinned near zero, infer that this side is the close winner
-		// even when the winning side's bid disappears right at expiry.
-		if len(outcomes) == 2 {
-			peer := outcomes[1-i]
-			if peerAsk := asks[peer]; peerAsk > 0 && peerAsk <= terminalAskCeil {
-				if 1.0 > candidatePrice {
-					candidatePrice = 1.0
-					candidateSource = "peer_ask"
-				}
-			}
-		}
-
-		if candidatePrice > bestPrice+1e-9 {
-			secondBest = bestPrice
-			bestPrice = candidatePrice
-			bestOutcome = outcome
-			bestSource = candidateSource
-		} else if candidatePrice > secondBest {
-			secondBest = candidatePrice
-		}
-	}
-
-	if bestOutcome == "" || bestPrice < paperExpiryWinnerFloor {
-		return "", 0, "", false
-	}
-	if math.Abs(bestPrice-secondBest) <= 1e-6 {
-		return "", 0, "", false
-	}
-
-	return bestOutcome, bestPrice, bestSource, true
-}
-
 func computePaperMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
 	return strategy.ComputeMakerInventorySkew(positionShares, peerShares, targetShares)
 }
@@ -2617,7 +2510,7 @@ func run() error {
 	if strings.TrimSpace(cfg.PolygonRPCURL) != "" {
 		polygonClient = api.NewPolygonClient(cfg.PolygonRPCURL)
 	}
-	resolutionCache := api.NewResolutionCache(polygonClient, nil, restClient)
+	resolutionCache := api.NewResolutionCache(polygonClient, api.NewReadOnlyCLOBClient(), restClient)
 	// Create shared TUI (persistent across market rotations)
 	tui = paper.NewTUI(engine, nil)
 
@@ -4827,63 +4720,6 @@ func (t *MarketTrader) determineWinner() string {
 		}
 	}
 
-	t.mu.Lock()
-	lastUpdate := t.LastUpdate
-	snapshotAt := t.ExpirySnapshotAt
-	closeWinner, closeProb, closeSource, closeOK := detectExpiryWinnerFromPrices(t.Outcomes, t.ExpirySnapshotBids, t.ExpirySnapshotAsks, t.ExpirySnapshotPrices)
-	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
-	if ok {
-		// Track the strongest candidate seen post-expiry
-		if highestProb >= t.TerminalWinnerProb {
-			t.TerminalWinnerCandidate = bestOutcome
-			t.TerminalWinnerProb = highestProb
-			t.TerminalWinnerSource = signalSource
-		}
-	} else {
-		// If the book is not empty, but there's no terminal price, we must have dropped below 0.99.
-		// In that case, we should invalidate the candidate!
-		bookIsEmpty := true
-		for _, b := range t.TokenBids {
-			if b > 0 {
-				bookIsEmpty = false
-				break
-			}
-		}
-		if bookIsEmpty {
-			for _, a := range t.TokenAsks {
-				if a > 0 {
-					bookIsEmpty = false
-					break
-				}
-			}
-		}
-
-		if !bookIsEmpty {
-			t.TerminalWinnerCandidate = ""
-			t.TerminalWinnerProb = 0
-			t.TerminalWinnerSource = ""
-		}
-	}
-	t.mu.Unlock()
-
-	allowQuoteFallback := t.EndTime.IsZero() || !now.Before(t.EndTime.Add(paperPostExpiryWinnerWatch))
-	if !allowQuoteFallback {
-		return ""
-	}
-
-	quoteFreshAtClose := t.EndTime.IsZero() || (!snapshotAt.IsZero() &&
-		!snapshotAt.Before(t.EndTime.Add(-paperExpiryWinnerQuoteMaxAge)) &&
-		!snapshotAt.After(t.EndTime.Add(paperExpiryWinnerQuoteMaxAge)))
-	if closeOK && quoteFreshAtClose {
-		t.TUI.LogEvent("[%s] ⏱ Stored close snapshot winner: %s ($%.3f via %s)", t.ID, closeWinner, closeProb, closeSource)
-		return closeWinner
-	}
-
-	terminalQuoteFresh := lastUpdate.IsZero() || now.Sub(lastUpdate) <= paperPostExpiryWinnerWatch
-	if t.TerminalWinnerCandidate != "" && terminalQuoteFresh {
-		t.TUI.LogEvent("[%s] 📊 Terminal price winner: %s ($%.3f via %s) [no on-chain winner yet]", t.ID, t.TerminalWinnerCandidate, t.TerminalWinnerProb, t.TerminalWinnerSource)
-		return t.TerminalWinnerCandidate
-	}
 	return ""
 }
 
@@ -4891,7 +4727,10 @@ func paperPostExpiryResolutionState(now, endTime time.Time) (pollInterval time.D
 	if endTime.IsZero() {
 		return paperResolutionRefreshInterval, false
 	}
-	return paperResolutionRefreshInterval, false
+	if now.Before(endTime.Add(paperPostExpiryWinnerWatch)) {
+		return paperPostExpiryWinnerPoll, true
+	}
+	return paperResolutionRefreshInterval, true
 }
 
 func (t *MarketTrader) refreshWinnerQuotesFromREST(ctx context.Context) error {

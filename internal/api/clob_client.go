@@ -40,6 +40,14 @@ func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLO
 	}, nil
 }
 
+// NewReadOnlyCLOBClient creates an unauthenticated CLOB client for public endpoints
+func NewReadOnlyCLOBClient() *CLOBClient {
+	return &CLOBClient{
+		BaseURL:  "https://clob.polymarket.com",
+		testMode: false,
+	}
+}
+
 // SetTestMode enables/disables test mode (validate orders but don't submit)
 func (c *CLOBClient) SetTestMode(enabled bool) {
 	c.testMode = enabled

@@ -1298,7 +1298,7 @@ func TestRenderOrderHistoryShowsExplicitCloseModeInsteadOfMaker(t *testing.T) {
 	}
 }
 
-func TestRenderRoundHistoryShowsUpDownAndWinLoss(t *testing.T) {
+func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			roundHistory: []RoundHistoryEntry{
@@ -1310,14 +1310,14 @@ func TestRenderRoundHistoryShowsUpDownAndWinLoss(t *testing.T) {
 	}
 
 	rendered := model.renderRoundHistory(120, 5)
-	if !strings.Contains(rendered, "UP") || !strings.Contains(rendered, "WIN") {
-		t.Fatalf("expected winning round labels in round history, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "DOWN") || !strings.Contains(rendered, "LOSS") {
-		t.Fatalf("expected losing round labels in round history, got %q", rendered)
+	if !strings.Contains(rendered, "PNL") || !strings.Contains(rendered, "WIN") || !strings.Contains(rendered, "LOSS") {
+		t.Fatalf("expected pnl and result labels in round history, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "FLAT") {
 		t.Fatalf("expected flat round label in round history, got %q", rendered)
+	}
+	if strings.Contains(rendered, "UP") || strings.Contains(rendered, "DOWN") {
+		t.Fatalf("expected round history not to imply market winner direction, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "+$4.65") || !strings.Contains(rendered, "-$3.50") {
 		t.Fatalf("expected signed round pnl values, got %q", rendered)

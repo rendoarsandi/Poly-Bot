@@ -4428,7 +4428,7 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 
 	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND HISTORY  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
-		"#", "END", "START", "END EQ", "MOVE", "TRDS", "RESULT")) + "\n")
+		"#", "END", "START", "END EQ", "PNL", "TRDS", "RESULT")) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 86))) + "\n")
 
 	displayCount := len(s.roundHistory)
@@ -4438,19 +4438,17 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 
 	for i := len(s.roundHistory) - 1; i >= len(s.roundHistory)-displayCount && i >= 0; i-- {
 		entry := s.roundHistory[i]
-		moveLabel := "FLAT"
-		moveStyle := styleDimmed
+		pnlStyle := styleDimmed
 		resultLabel := "FLAT"
 		resultStyle := styleDimmed
+		pnlText := signedDollar(entry.PnL)
 		switch {
 		case entry.PnL > 0.0001:
-			moveLabel = "UP"
-			moveStyle = styleGreen
+			pnlStyle = styleGreen
 			resultLabel = "WIN"
 			resultStyle = styleGreen
 		case entry.PnL < -0.0001:
-			moveLabel = "DOWN"
-			moveStyle = styleRed
+			pnlStyle = styleRed
 			resultLabel = "LOSS"
 			resultStyle = styleRed
 		}
@@ -4460,7 +4458,7 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			styleDimmed.Render(entry.Timestamp.Format("15:04:05")),
 			entry.StartingEquity,
 			entry.EndingEquity,
-			moveStyle.Render(fmt.Sprintf("%-4s %7s", moveLabel, signedDollar(entry.PnL))),
+			pnlStyle.Render(fmt.Sprintf("%11s", pnlText)),
 			entry.Trades,
 			resultStyle.Render(resultLabel),
 		))
