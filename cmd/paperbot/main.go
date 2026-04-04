@@ -3619,7 +3619,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								mid := (bid + ask) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+								if marketState == paper.MarketStateActive {
+									t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+								}
 							}
 							// Always update full depth from snapshots.
 							t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
@@ -3794,7 +3796,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							mid := (bid + ask) / 2
 							t.FloatPrices[outcome] = mid
 							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+							if marketState == paper.MarketStateActive {
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+							}
 						}
 						t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 						t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
@@ -4844,7 +4848,6 @@ func (t *MarketTrader) refreshWinnerQuotesFromREST(ctx context.Context) error {
 		if bid > 0 && ask > 0 && ask < 1.0 {
 			mid := (bid + ask) / 2
 			t.FloatPrices[outcome] = mid
-			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
 		} else {
 			delete(t.FloatPrices, outcome)
 		}
@@ -5036,7 +5039,9 @@ func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[s
 			mid := (bid + ask) / 2
 			t.FloatPrices[outcome] = mid
 			tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+			if t.Monitor.CheckState() == paper.MarketStateActive {
+				t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+			}
 		}
 		t.TokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 		t.TokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
