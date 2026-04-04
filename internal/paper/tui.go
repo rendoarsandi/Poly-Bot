@@ -2873,6 +2873,19 @@ func (t *TUI) GetRoundHistory() []RoundHistoryEntry {
 	return result
 }
 
+// AttachDelayedRoundPnL updates the most recent round history entry with PnL that
+// was resolved in the background after the round rotated.
+func (t *TUI) AttachDelayedRoundPnL(pnl float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.roundHistory) > 0 {
+		lastIdx := len(t.roundHistory) - 1
+		t.roundHistory[lastIdx].PnL += pnl
+		t.roundHistory[lastIdx].EndingEquity += pnl
+		t.markDirtyLocked()
+	}
+}
+
 func (t *TUI) RegisterSplitInventory(inv *SplitInventory) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
