@@ -3721,7 +3721,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
 							t.FloatPrices[outcome] = mid
 							tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-							t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+							if t.Monitor.CheckState() == paper.MarketStateActive {
+								t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+							}
 						}
 					}
 					now := time.Now()
@@ -3753,7 +3755,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 								mid := (t.TokenBids[outcome] + t.TokenAsks[outcome]) / 2
 								t.FloatPrices[outcome] = mid
 								tokenPrices[outcome] = fmt.Sprintf("%.3f", mid)
-								t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+								if t.Monitor.CheckState() == paper.MarketStateActive {
+									t.Engine.UpdateMarketData(t.ID, outcome, mid, t.TokenBids[outcome], t.TokenAsks[outcome])
+								}
 							}
 						}
 						quoteState[outcome] = paperQuoteState{UpdatedAt: now, Source: "ws-bbo"}

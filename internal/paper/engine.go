@@ -175,8 +175,23 @@ func (e *Engine) ClearMarketData() {
 	e.currentPrices = make(map[string]float64)
 	e.currentBids = make(map[string]float64)
 	e.currentAsks = make(map[string]float64)
-	e.marketBids = make(map[string]float64)
-	e.marketAsks = make(map[string]float64)
+
+	// Keep market prices for markets we still hold positions in (unresolved)
+	activeMarkets := make(map[string]bool)
+	for k := range e.positions {
+		activeMarkets[k] = true
+	}
+
+	for k := range e.marketBids {
+		if !activeMarkets[k] {
+			delete(e.marketBids, k)
+		}
+	}
+	for k := range e.marketAsks {
+		if !activeMarkets[k] {
+			delete(e.marketAsks, k)
+		}
+	}
 	// Clear split inventory references since they are recreated per round
 	e.splitInventories = nil
 }
@@ -1034,10 +1049,6 @@ func (e *Engine) getUnrealizedValue() float64 {
 		// This is more conservative and realistic
 		if bid, ok := e.marketBids[key]; ok && bid > 0 {
 			value += pos.Quantity * bid
-		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
-			value += pos.Quantity * bid
-		} else if price, ok := e.currentPrices[pos.Outcome]; ok {
-			value += pos.Quantity * price
 		} else {
 			// Use cost basis if no current price
 			value += pos.TotalCost
@@ -1059,12 +1070,6 @@ func (e *Engine) getUnrealizedPnL() float64 {
 		// Use BID price for valuation (what we could sell for)
 		if bid, ok := e.marketBids[key]; ok && bid > 0 {
 			currentValue := pos.Quantity * bid
-			unrealized += currentValue - pos.TotalCost
-		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
-			currentValue := pos.Quantity * bid
-			unrealized += currentValue - pos.TotalCost
-		} else if price, ok := e.currentPrices[pos.Outcome]; ok {
-			currentValue := pos.Quantity * price
 			unrealized += currentValue - pos.TotalCost
 		}
 	}
