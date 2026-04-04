@@ -67,7 +67,7 @@ const (
 	paperResolutionErrorLogGap     = 5 * time.Second
 	paperPostExpiryWinnerWatch     = 5 * time.Second
 	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
-	paperExpiryResolutionBuffer    = 1 * time.Minute
+	paperExpiryResolutionBuffer    = 72 * time.Hour
 	paperExpiryWinnerFloor         = 0.97
 	paperExpiryWinnerQuoteMaxAge   = 2 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
@@ -4569,7 +4569,7 @@ func (t *MarketTrader) determineWinner() string {
 		if status.Error != nil {
 			errMsg := status.Error.Error()
 			if errMsg != t.lastResolutionError || t.lastResolutionErrorLogAt.IsZero() || now.Sub(t.lastResolutionErrorLogAt) >= paperResolutionErrorLogGap {
-				t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v (falling back to price estimate)", t.ID, status.Error)
+				t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v", t.ID, status.Error)
 				t.lastResolutionError = errMsg
 				t.lastResolutionErrorLogAt = now
 			}
@@ -4693,7 +4693,7 @@ func (t *MarketTrader) determineWinner() string {
 			}
 			t.nextHistoricalLookupAt = now.Add(retryAfter)
 			if errMsg != t.lastHistoricalLookupError || t.lastHistoricalLookupErrorLogAt.IsZero() || now.Sub(t.lastHistoricalLookupErrorLogAt) >= paperResolutionErrorLogGap {
-				t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v (falling back to price estimate)", t.ID, err)
+				t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v", t.ID, err)
 				t.lastHistoricalLookupError = errMsg
 				t.lastHistoricalLookupErrorLogAt = now
 			}

@@ -141,7 +141,7 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 					}
 				}
 				// Closed but no winner tagged yet (might be settling)
-				status.Resolved = true
+				// Do NOT set Resolved = true here, otherwise it permanently caches without a winner.
 			}
 			// If market is not closed per API, still check on-chain if past end time
 		}
@@ -160,7 +160,8 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 						return status
 					}
 				}
-				status.Resolved = true
+				// Closed but no winner tagged yet
+				// Do NOT set Resolved = true here, otherwise it permanently caches without a winner.
 			}
 		}
 	}
