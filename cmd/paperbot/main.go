@@ -4718,6 +4718,12 @@ func (t *MarketTrader) determineWinner() string {
 		}
 	}
 
+	// Prevent early price-based determination until 3 seconds past expiry
+	// to ensure the market has settled to its final $1.00 levels.
+	if !now.After(t.EndTime.Add(3 * time.Second)) {
+		return ""
+	}
+
 	t.mu.Lock()
 	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	t.mu.Unlock()
