@@ -874,6 +874,20 @@ func CalculateCopytradeSellSharesForMode(localShares, targetShares, targetDelta,
 	if targetShares <= 0.01 {
 		return localShares
 	}
+
+	// If using fixed sizing (shares or usdc), we must exit proportionally to the master's exit.
+	// For example: if master drops from 300 to 240, they sold 60 shares (20% of their bag).
+	// We must sell 20% of our localShares, otherwise we dump our fixed config size prematurely.
+	if normalizeCopytradeSizingMode(mode) != CopytradeSizingModePercent {
+		soldShares := math.Max(0, -targetDelta)
+		previousMasterShares := targetShares + soldShares
+		if previousMasterShares > 0.01 {
+			proportion := soldShares / previousMasterShares
+			calculated := localShares * proportion
+			return math.Min(localShares, calculated)
+		}
+	}
+
 	calculated := CalculateCopytradeSharesForMode(math.Max(0, -targetDelta), price, sizeUSDC, sizeShares, sizePercent, maxTradeSize, mode)
 	return math.Min(localShares, calculated)
 }
