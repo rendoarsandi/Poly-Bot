@@ -68,6 +68,8 @@ const (
 	paperPostExpiryWinnerWatch     = 5 * time.Second
 	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
 	paperExpiryResolutionBuffer    = 1 * time.Minute
+	paperExpiryWinnerFloor         = 0.97
+	paperExpiryWinnerQuoteMaxAge   = 2 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
@@ -2067,6 +2069,68 @@ func detectTerminalWinnerFromPrices(outcomes []string, bids, asks, floatPrices m
 	}
 
 	return "", 0, "", false
+}
+
+func detectExpiryWinnerFromPrices(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64, string, bool) {
+	if len(outcomes) == 0 {
+		return "", 0, "", false
+	}
+
+	bestOutcome := ""
+	bestPrice := 0.0
+	bestSource := ""
+	secondBest := 0.0
+
+	for i, outcome := range outcomes {
+		candidatePrice := 0.0
+		candidateSource := ""
+
+		if bid := bids[outcome]; bid > candidatePrice {
+			candidatePrice = bid
+			candidateSource = "bid"
+		}
+		if ask := asks[outcome]; ask > 0 {
+			inferred := ask - 0.01
+			if inferred > candidatePrice {
+				candidatePrice = inferred
+				candidateSource = "ask"
+			}
+		}
+		if mid := floatPrices[outcome]; mid > candidatePrice {
+			candidatePrice = mid
+			candidateSource = "mid"
+		}
+
+		// If the peer ask is pinned near zero, infer that this side is the close winner
+		// even when the winning side's bid disappears right at expiry.
+		if len(outcomes) == 2 {
+			peer := outcomes[1-i]
+			if peerAsk := asks[peer]; peerAsk > 0 && peerAsk <= terminalAskCeil {
+				if 1.0 > candidatePrice {
+					candidatePrice = 1.0
+					candidateSource = "peer_ask"
+				}
+			}
+		}
+
+		if candidatePrice > bestPrice+1e-9 {
+			secondBest = bestPrice
+			bestPrice = candidatePrice
+			bestOutcome = outcome
+			bestSource = candidateSource
+		} else if candidatePrice > secondBest {
+			secondBest = candidatePrice
+		}
+	}
+
+	if bestOutcome == "" || bestPrice < paperExpiryWinnerFloor {
+		return "", 0, "", false
+	}
+	if math.Abs(bestPrice-secondBest) <= 1e-6 {
+		return "", 0, "", false
+	}
+
+	return bestOutcome, bestPrice, bestSource, true
 }
 
 func computePaperMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
@@ -4533,8 +4597,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	}
 }
 
-// determineWinner uses authoritative resolution when available, otherwise waits
-// through the post-expiry watch window and only falls back to pinned bids.
+// determineWinner uses authoritative resolution when available. If that is not
+// ready at expiry, it resolves immediately from the freshest close quotes on
+// hand instead of waiting for post-expiry liquidity that may disappear.
 func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
 		return ""
@@ -4709,9 +4774,9 @@ func (t *MarketTrader) determineWinner() string {
 		}
 	}
 
-	// Keep tracking a candidate during the post-expiry watch window, but do not
-	// settle from prices until that window has elapsed.
 	t.mu.Lock()
+	lastUpdate := t.LastUpdate
+	closeWinner, closeProb, closeSource, closeOK := detectExpiryWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	if ok {
 		// Track the strongest candidate seen post-expiry
@@ -4747,11 +4812,14 @@ func (t *MarketTrader) determineWinner() string {
 	}
 	t.mu.Unlock()
 
-	if !now.After(t.EndTime.Add(paperPostExpiryWinnerWatch)) {
-		return ""
+	quoteFreshAtClose := t.EndTime.IsZero() || (!lastUpdate.IsZero() && !lastUpdate.Before(t.EndTime.Add(-paperExpiryWinnerQuoteMaxAge)))
+	if closeOK && quoteFreshAtClose {
+		t.TUI.LogEvent("[%s] ⏱ Close snapshot winner: %s ($%.3f via %s)", t.ID, closeWinner, closeProb, closeSource)
+		return closeWinner
 	}
 
-	if t.TerminalWinnerCandidate != "" {
+	terminalQuoteFresh := lastUpdate.IsZero() || now.Sub(lastUpdate) <= paperPostExpiryWinnerWatch
+	if t.TerminalWinnerCandidate != "" && terminalQuoteFresh {
 		t.TUI.LogEvent("[%s] 📊 Terminal price winner: %s ($%.3f via %s) [no on-chain winner yet]", t.ID, t.TerminalWinnerCandidate, t.TerminalWinnerProb, t.TerminalWinnerSource)
 		return t.TerminalWinnerCandidate
 	}

@@ -1338,6 +1338,73 @@ func TestDetectTerminalWinnerFromPricesUsesPinnedBidWithPeerAskConfirmation(t *t
 	}
 }
 
+func TestDetectExpiryWinnerFromPricesUsesAskFallbackAtClose(t *testing.T) {
+	winner, prob, source, ok := detectExpiryWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0.98, "Up": 0.03},
+		map[string]float64{"Down": 0, "Up": 0},
+	)
+	if !ok {
+		t.Fatal("expected ask fallback to infer close winner")
+	}
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+	if prob != 0.97 {
+		t.Fatalf("prob = %.3f, want 0.970", prob)
+	}
+	if source != "ask" {
+		t.Fatalf("source = %q, want ask", source)
+	}
+}
+
+func TestDetermineWinnerUsesImmediateCloseSnapshot(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	trader := &MarketTrader{
+		ID:        "BTC#close",
+		Engine:    engine,
+		TUI:       paper.NewTUI(engine, nil),
+		Outcomes:  []string{"Down", "Up"},
+		EndTime:   time.Now().Add(-100 * time.Millisecond),
+		TokenBids: map[string]float64{"Down": 0.96, "Up": 0.02},
+		TokenAsks: map[string]float64{"Down": 0.98, "Up": 0.03},
+		FloatPrices: map[string]float64{
+			"Down": 0.97,
+			"Up":   0.025,
+		},
+		LastUpdate: time.Now().Add(-50 * time.Millisecond),
+	}
+
+	winner := trader.determineWinner()
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+}
+
+func TestDetermineWinnerRejectsStaleCloseSnapshot(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	trader := &MarketTrader{
+		ID:        "BTC#stale",
+		Engine:    engine,
+		TUI:       paper.NewTUI(engine, nil),
+		Outcomes:  []string{"Down", "Up"},
+		EndTime:   time.Now().Add(-5 * time.Second),
+		TokenBids: map[string]float64{"Down": 0.99, "Up": 0.01},
+		TokenAsks: map[string]float64{"Down": 0.99, "Up": 0.01},
+		FloatPrices: map[string]float64{
+			"Down": 0.99,
+			"Up":   0.01,
+		},
+		LastUpdate: time.Now().Add(-10 * time.Second),
+	}
+
+	winner := trader.determineWinner()
+	if winner != "" {
+		t.Fatalf("winner = %q, want unresolved stale snapshot", winner)
+	}
+}
+
 func TestPaperPostExpiryResolutionStateKeepsFastScanThroughPlusFiveSeconds(t *testing.T) {
 	endTime := time.Unix(1_700_000_000, 0)
 
