@@ -226,7 +226,7 @@ func (s *SplitInventory) Redeem(marketID, winningOutcome string) (payout, pnl fl
 			cost := shares * s.splitCostBasis[key]
 			totalCost += cost
 
-			if outcome == winningOutcome {
+			if strings.EqualFold(strings.TrimSpace(outcome), strings.TrimSpace(winningOutcome)) {
 				totalPayout += shares * 1.0
 			}
 

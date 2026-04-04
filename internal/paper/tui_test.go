@@ -1352,7 +1352,7 @@ func TestRecordRoundCapturesOutcomeShares(t *testing.T) {
 	tui.RecordRound(100.0, 92.5, -7.5, 2, map[string]Position{
 		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 118},
 		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 103},
-	})
+	}, nil)
 
 	history := tui.GetRoundHistory()
 	if len(history) != 1 {

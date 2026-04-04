@@ -217,7 +217,7 @@ func autoRedeemDecision(info *api.MarketInfo, outcomes []string, balances []floa
 		return "", false
 	}
 	for i, outcome := range outcomes {
-		if outcome == winnerOutcome && i < len(balances) && balances[i] >= minOnChainActionShares {
+		if strings.EqualFold(strings.TrimSpace(outcome), strings.TrimSpace(winnerOutcome)) && i < len(balances) && balances[i] >= minOnChainActionShares {
 			return winnerOutcome, true
 		}
 	}

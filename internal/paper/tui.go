@@ -2789,11 +2789,14 @@ func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
 	return result
 }
 
-func roundHistoryShareSummary(positions map[string]Position) string {
-	if len(positions) == 0 {
+func roundHistoryShareSummary(positions map[string]Position, redemptions []*RedemptionResult) string {
+	if len(positions) == 0 && len(redemptions) == 0 {
 		return ""
 	}
 	byOutcome := make(map[string]float64)
+	winnerOutcomes := make(map[string]bool)
+
+	// Add unresolved positions
 	for _, pos := range positions {
 		outcome := strings.TrimSpace(pos.Outcome)
 		if outcome == "" {
@@ -2801,6 +2804,20 @@ func roundHistoryShareSummary(positions map[string]Position) string {
 		}
 		byOutcome[outcome] += pos.Quantity
 	}
+
+	// Add resolved positions
+	for _, req := range redemptions {
+		if req.WinningShares > 0 && req.WinningOutcome != "" {
+			outcome := strings.TrimSpace(req.WinningOutcome)
+			byOutcome[outcome] += req.WinningShares
+			winnerOutcomes[strings.ToLower(outcome)] = true
+		}
+		if req.LosingShares > 0 && req.LosingOutcome != "" {
+			outcome := strings.TrimSpace(req.LosingOutcome)
+			byOutcome[outcome] += req.LosingShares
+		}
+	}
+
 	if len(byOutcome) == 0 {
 		return ""
 	}
@@ -2808,10 +2825,12 @@ func roundHistoryShareSummary(positions map[string]Position) string {
 	type outcomeTotal struct {
 		outcome string
 		shares  float64
+		isWin   bool
 	}
 	ordered := make([]outcomeTotal, 0, len(byOutcome))
 	for outcome, shares := range byOutcome {
-		ordered = append(ordered, outcomeTotal{outcome: outcome, shares: shares})
+		isWin := winnerOutcomes[strings.ToLower(outcome)]
+		ordered = append(ordered, outcomeTotal{outcome: outcome, shares: shares, isWin: isWin})
 	}
 	sort.Slice(ordered, func(i, j int) bool {
 		left := strings.ToLower(strings.TrimSpace(ordered[i].outcome))
@@ -2838,12 +2857,16 @@ func roundHistoryShareSummary(positions map[string]Position) string {
 
 	parts := make([]string, 0, len(ordered))
 	for _, item := range ordered {
-		parts = append(parts, fmt.Sprintf("%s %s", core.SanitizeString(item.outcome), formatDisplayShareQty(item.shares)))
+		text := fmt.Sprintf("%s %s", core.SanitizeString(item.outcome), formatDisplayShareQty(item.shares))
+		if item.isWin {
+			text += styleGreen.Render(" ✓")
+		}
+		parts = append(parts, text)
 	}
 	return strings.Join(parts, "  |  ")
 }
 
-func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int, positions map[string]Position) {
+func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int, positions map[string]Position, redemptions []*RedemptionResult) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	entry := RoundHistoryEntry{
@@ -2853,7 +2876,7 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 		EndingEquity:   endingEquity,
 		PnL:            pnl,
 		Trades:         trades,
-		ShareSummary:   roundHistoryShareSummary(positions),
+		ShareSummary:   roundHistoryShareSummary(positions, redemptions),
 	}
 	t.roundHistory = append(t.roundHistory, entry)
 	if len(t.roundHistory) > t.maxRoundHistory {

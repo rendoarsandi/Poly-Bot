@@ -65,9 +65,9 @@ const (
 	paperHistoricalLookupInterval  = 2 * time.Second
 	paperHistoricalNotFoundRetry   = 30 * time.Second
 	paperResolutionErrorLogGap     = 5 * time.Second
-	paperPostExpiryWinnerWatch     = 5 * time.Second
+	paperPostExpiryWinnerWatch     = 72 * time.Hour
 	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
-	paperExpiryResolutionBuffer    = 1 * time.Minute
+	paperExpiryResolutionBuffer    = 72 * time.Hour
 	paperExpiryWinnerFloor         = 0.97
 	paperExpiryWinnerQuoteMaxAge   = 2 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
@@ -128,6 +128,9 @@ type MarketTrader struct {
 	TerminalWinnerProb      float64
 	TerminalWinnerSource    string
 
+	// Collected redemptions
+	Redemptions []*paper.RedemptionResult
+
 	// Split strategy simulation
 	SplitInventory     *paper.SplitInventory
 	ReplenishCtrl      *paper.ReplenishController
@@ -170,6 +173,7 @@ type MarketTrader struct {
 type marketResult struct {
 	realizedPnL float64
 	trades      int
+	redemptions []*paper.RedemptionResult
 }
 
 type paperQuoteState struct {
@@ -3019,6 +3023,7 @@ func run() error {
 
 		// Collect results
 		// Read exact number of expected results to avoid hanging if results channel isn't closed due to stuck trader
+		var allRedemptions []*paper.RedemptionResult
 		for i := 0; i < tradersStarted; i++ {
 			select {
 			case result, ok := <-results:
@@ -3027,7 +3032,9 @@ func run() error {
 					i = tradersStarted
 					continue
 				}
-				_ = result
+				if result != nil {
+					allRedemptions = append(allRedemptions, result.redemptions...)
+				}
 			case <-time.After(5 * time.Second):
 				tui.LogEvent("⚠️ Timed out waiting for some traders to return results")
 				// Force break out of the loop
@@ -3038,7 +3045,7 @@ func run() error {
 		// Log market rotation from the shared engine state rather than summing
 		// overlapping per-trader deltas from concurrent goroutines.
 		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
-		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades, engine.GetPositions())
+		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades, engine.GetPositions(), allRedemptions)
 		tui.LogEvent("📊 Round PnL: $%.2f | Total Equity: $%.2f | Trades: %d | Rotating...", roundPnL, roundEquity, roundTrades)
 
 		// Update compounding multiplier based on round performance
@@ -3379,7 +3386,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			winner := t.determineWinner()
 			if winner != "" {
 				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "TIMEOUT_RESOLVE", "Timeout resolution: %s", winner)
-				t.Engine.RedeemWithDetails(t.ID, winner)
+				res := t.Engine.RedeemWithDetails(t.ID, winner)
+				t.Redemptions = append(t.Redemptions, res)
 				if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
 					t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
 				}
@@ -3388,6 +3396,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			return &marketResult{
 				realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
 				trades:      finalStats.TotalTrades - tradesAtStart,
+				redemptions: t.Redemptions,
 			}, nil
 		}
 
@@ -3545,6 +3554,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				return &marketResult{
 					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
 					trades:      finalStats.TotalTrades - tradesAtStart,
+					redemptions: t.Redemptions,
 				}, nil
 			} else {
 				t.redeemResolvedWinner(winner, "MARKET EXPIRED - resolving immediately")
@@ -3555,6 +3565,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				return &marketResult{
 					realizedPnL: marketPnL,
 					trades:      finalStats.TotalTrades - tradesAtStart,
+					redemptions: t.Redemptions,
 				}, nil
 			}
 		}
@@ -4880,10 +4891,7 @@ func paperPostExpiryResolutionState(now, endTime time.Time) (pollInterval time.D
 	if endTime.IsZero() {
 		return paperResolutionRefreshInterval, false
 	}
-	if now.Before(endTime.Add(paperPostExpiryWinnerWatch)) {
-		return paperPostExpiryWinnerPoll, true
-	}
-	return paperResolutionRefreshInterval, true
+	return paperResolutionRefreshInterval, false
 }
 
 func (t *MarketTrader) refreshWinnerQuotesFromREST(ctx context.Context) error {
@@ -4967,6 +4975,7 @@ func (t *MarketTrader) redeemResolvedWinner(winner, reason string) *paper.Redemp
 	logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
 
 	result := t.Engine.RedeemWithDetails(t.ID, winner)
+	t.Redemptions = append(t.Redemptions, result)
 	if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
 		t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
 	}

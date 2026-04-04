@@ -557,7 +557,7 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 	payout := 0.0
 
 	for _, pos := range e.positions {
-		if pos.Outcome == winningOutcome {
+		if strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(winningOutcome)) {
 			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
@@ -605,7 +605,7 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 		}
 
 		// Correctly match the outcome
-		if pos.Outcome == winningOutcome {
+		if strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(winningOutcome)) {
 			// Winning shares are economically locked in at $1 each, but on-chain cash
 			// may not arrive until the redeem transaction confirms.
 			proceeds := pos.Quantity * 1.0
