@@ -3440,7 +3440,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				t.LadderMgr.CancelAllLadders()
 				if time.Since(lastResolutionPendingLog) > 1*time.Second {
 					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED_BG", "MARKET EXPIRED - moving winner confirmation to background")
-					t.TUI.LogEvent("[%s] ⏳ Market expired - scanning winner in background through -5s while foreground rotates", t.ID)
+					t.TUI.LogEvent("[%s] ⏳ Market expired - scanning winner in background through +5s while foreground rotates", t.ID)
 					lastResolutionPendingLog = time.Now()
 				}
 				go t.resolveExpiredMarketInBackground()
@@ -4736,7 +4736,7 @@ func paperPostExpiryResolutionState(now, endTime time.Time) (pollInterval time.D
 	if now.Before(endTime.Add(paperPostExpiryWinnerWatch)) {
 		return paperPostExpiryWinnerPoll, true
 	}
-	return paperResolutionRefreshInterval, false
+	return paperResolutionRefreshInterval, true
 }
 
 func (t *MarketTrader) refreshWinnerQuotesFromREST(ctx context.Context) error {

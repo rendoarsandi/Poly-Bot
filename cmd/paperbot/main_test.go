@@ -1323,8 +1323,8 @@ func TestPaperPostExpiryResolutionStateKeepsFastScanThroughPlusFiveSeconds(t *te
 	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(4*time.Second), endTime); interval != paperPostExpiryWinnerPoll || !refresh {
 		t.Fatalf("at +4s got interval=%v refresh=%v, want %v true", interval, refresh, paperPostExpiryWinnerPoll)
 	}
-	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(5*time.Second), endTime); interval != paperResolutionRefreshInterval || refresh {
-		t.Fatalf("at +5s got interval=%v refresh=%v, want %v false", interval, refresh, paperResolutionRefreshInterval)
+	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(5*time.Second), endTime); interval != paperResolutionRefreshInterval || !refresh {
+		t.Fatalf("at +5s got interval=%v refresh=%v, want %v true", interval, refresh, paperResolutionRefreshInterval)
 	}
 }
 
