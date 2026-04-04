@@ -683,98 +683,12 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	signal, signalReason := paper.EvaluateBinanceGapSignal(time.Now(), mapping, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, snap, polyTracker, maxSignalAge)
 	setStatusSignal(signal)
 
-	threshold := cfg.BinanceSignalThresholdPct
-	if threshold <= 0 {
-		threshold = 0.02
-	}
+	threshold := 0.03 // hardcoded based on cross fusion
 
-	upQty, upAvg := localBoughtPositionAvg(engine, id, mapping.Up)
-	downQty, downAvg := localBoughtPositionAvg(engine, id, mapping.Down)
+	upQty, _ := localBoughtPositionAvg(engine, id, mapping.Up)
+	downQty, _ := localBoughtPositionAvg(engine, id, mapping.Down)
 	if upQty > 0 && downQty > 0 {
 		logThrottled("[%s] ⚠️ Binance gap mode holding both sides locally; managing independently without awaiting merge", id)
-	}
-
-	heldOutcome := ""
-	heldQty := 0.0
-	heldAvg := 0.0
-	if upQty > 0 {
-		heldOutcome, heldQty, heldAvg = mapping.Up, upQty, upAvg
-	} else if downQty > 0 {
-		heldOutcome, heldQty, heldAvg = mapping.Down, downQty, downAvg
-	}
-	if heldOutcome != "" {
-		status.TargetOutcome = heldOutcome
-		status.Status = "exit"
-		status.Reason = "managing existing position"
-		if ok, reason := realbotCanUseLocalDirectionalSellQuote(time.Now(), heldOutcome, tokenBids, tokenAsks, tokenFullBids, quoteState, maxQuoteAge); !ok {
-			status.Reason = reason
-			logThrottled("[%s] ⏳ Binance exit waiting for fresh %s quote (%s)", id, heldOutcome, reason)
-			return
-		}
-		bid := tokenBids[heldOutcome]
-		targetBid := realbotDirectionalProfitTargetPrice(heldAvg, profitTargetPct)
-
-		dynamicExit := false
-		if signalReason == "" && signal.TargetOutcome != "" && signal.TargetOutcome != heldOutcome {
-			// Signal flipped. Cut losses dynamically to match RL behavior
-			dynamicExit = true
-			status.Reason = fmt.Sprintf("dynamic momentum exit (Binance flipped %s)", signal.SignalLabel)
-			logThrottled("[%s] 🚨 Binance signal reversed to %s! Dynamically cutting %s position at $%.3f", id, signal.SignalLabel, heldOutcome, bid)
-		}
-
-		if !dynamicExit && bid+1e-9 < targetBid {
-			return
-		}
-		tokenID := getTokenID(heldOutcome)
-		if tokenID == "" {
-			logThrottled("[%s] ⚠️ Binance exit skipped: missing token id for %s", id, heldOutcome)
-			return
-		}
-		liq := realbotBidLiquidityAtOrAbove(tokenFullBids[heldOutcome], bid)
-		qtyToSell := normalizeMarketSellShares(math.Min(heldQty, liq))
-		if qtyToSell < minOnChainActionShares {
-			logThrottled("[%s] ⏳ Binance exit waiting for bid liquidity on %s at $%.3f", id, heldOutcome, bid)
-			return
-		}
-		initialPosition := trader.GetLivePositionSize(tokenID)
-		rate := tokenFeeRates[heldOutcome]
-		if rate == 0 {
-			rate = 1000
-		}
-		exec := executeMarketOrderWithSignals(ctx, trader, api.SideSell, tokenID, heldOutcome, bid, qtyToSell, rate, initialPosition, 2*time.Second)
-		if !exec.Success {
-			if exec.Err != nil {
-				logThrottled("[%s] ⚠️ Binance exit failed for %s: %v", id, heldOutcome, exec.Err)
-			} else if exec.Result != nil && exec.Result.Message != "" {
-				logThrottled("[%s] ⚠️ Binance exit failed for %s: %s", id, heldOutcome, exec.Result.Message)
-			}
-			return
-		}
-		soldQty := exec.ExecutedQty
-		if soldQty <= 0 {
-			soldQty = exec.AcknowledgedQty
-		}
-		soldQty = math.Min(soldQty, heldQty)
-		if soldQty < minOnChainActionShares {
-			logThrottled("[%s] ⚠️ Binance exit confirmation too small for %s", id, heldOutcome)
-			return
-		}
-		sellPrice := venueExecutionEffectivePrice(exec)
-		if sellPrice <= 0 {
-			sellPrice = bid
-		}
-		trade, err := engine.SellForMarket(id, heldOutcome, sellPrice, soldQty)
-		if err != nil {
-			logThrottled("[%s] ⚠️ Binance exit engine sync failed for %s: %v", id, heldOutcome, err)
-			return
-		}
-		profit := trade.Value - (heldAvg * soldQty)
-		tui.LogEvent("[%s] ✅ BINANCE EXIT %s %.2f @ $%.3f (target $%.3f, pnl $%.2f)", id, heldOutcome, soldQty, sellPrice, targetBid, profit)
-		tui.RecordOrderWithMode(id, heldOutcome, "SELL", soldQty, sellPrice, trade.Value, 0.0, profit, paperArbModeBinanceGap, "FILLED")
-		if lastTrade != nil {
-			*lastTrade = time.Now()
-		}
-		return
 	}
 
 	cooldown := core.ResolveBinanceSignalCooldown(cfg)
@@ -794,43 +708,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		status.Reason = fmt.Sprintf("cross-market gap %.3f%% is below the %.3f%% trigger", signal.EffectiveGapPercent, threshold)
 		return
 	}
-	if signal.DirectionalBookScore <= -0.65 {
-		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("local book strongly opposes %s signal (score %.2f)", signal.SignalLabel, signal.DirectionalBookScore)
-		return
-	}
-	polyCatchupMax := cfg.BinanceSignalPolyMaxMoveCents
-	if polyCatchupMax <= 0 {
-		polyCatchupMax = paper.DefaultBinanceSignalPolyMaxMoveCents
-	}
-	// We relax the catchup check by 50% to account for our extremeness multiplier pushing the gap higher.
-	// We still want to avoid buying the top of a massive spike if Polymarket has fully reacted.
-	if signal.PolyFavorableMoveCents > polyCatchupMax*1.5 {
-		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("%s already caught up %.2fc > %.2fc", signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax*1.5)
-		logThrottled("[%s] ⚠️ Binance entry skipped: %s already caught up %.2fc > %.2fc", id, signal.TargetOutcome, signal.PolyFavorableMoveCents, polyCatchupMax*1.5)
-		return
-	}
-	polyAdverseMax := cfg.BinanceSignalPolyAdverseMoveCents
-	if polyAdverseMax <= 0 {
-		polyAdverseMax = paper.DefaultBinanceSignalPolyAdverseMoveCents
-	}
-	if signal.PolyAdverseMoveCents > polyAdverseMax*1.5 {
-		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("Polymarket moved against %s by %.2fc > %.2fc", signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax*1.5)
-		logThrottled("[%s] ⚠️ Binance entry skipped: Polymarket moved against %s by %.2fc > %.2fc", id, signal.SignalLabel, signal.PolyAdverseMoveCents, polyAdverseMax*1.5)
-		return
-	}
-	spreadMax := cfg.BinanceSignalSpreadMaxCents
-	if spreadMax <= 0 {
-		spreadMax = paper.DefaultBinanceSignalSpreadMaxCents
-	}
-	if signal.TargetSpreadCents > spreadMax {
-		status.Status = "blocked"
-		status.Reason = fmt.Sprintf("%s spread %.2fc > %.2fc", signal.TargetOutcome, signal.TargetSpreadCents, spreadMax)
-		logThrottled("[%s] ⚠️ Binance entry skipped: %s spread %.2fc > %.2fc", id, signal.TargetOutcome, signal.TargetSpreadCents, spreadMax)
-		return
-	}
+
 	targetOutcome := signal.TargetOutcome
 	signalLabel := signal.SignalLabel
 	status.Ready = true

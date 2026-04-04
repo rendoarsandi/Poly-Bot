@@ -597,8 +597,6 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	switch idx {
 	case settingsRowCopytradeTarget, settingsRowCopytradePoll:
 		return copytrade
-	case settingsRowBinanceThreshold:
-		return binanceGap
 	case settingsRowBinanceExecutionDelay:
 		return binanceGap && paperMode
 	case settingsRowExecutionSlip:
@@ -655,8 +653,6 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 			return "Profit Target %"
 		}
 		return "Buy Min Margin %"
-	case settingsRowBinanceThreshold:
-		return "Binance Trigger %"
 	case settingsRowBinanceExecutionDelay:
 		return "Paper Exec Delay"
 	case settingsRowExecutionSlip:
@@ -1675,12 +1671,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MinMarginPercent -= 0.5
 					if m.tui.settings.MinMarginPercent < 0.5 {
 						m.tui.settings.MinMarginPercent = 0.5
-					}
-					changed = true
-				case settingsRowBinanceThreshold:
-					m.tui.settings.BinanceSignalThresholdPct -= 0.005
-					if m.tui.settings.BinanceSignalThresholdPct < 0.005 {
-						m.tui.settings.BinanceSignalThresholdPct = 0.005
 					}
 					changed = true
 				case settingsRowBinanceExecutionDelay:
@@ -4790,13 +4780,7 @@ func (m tuiModel) renderSettings(w int) string {
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, settingsRowBinanceThreshold),
-			value: fmt.Sprintf(" %0.3f%% ", cfg.BinanceSignalThresholdPct),
-			bar:   renderBar(cfg.BinanceSignalThresholdPct/0.25, 20),
-		},
-		{
-			label: settingsRowLabel(cfg, settingsRowBinanceExecutionDelay),
-			value: fmt.Sprintf(" %dms ", cfg.PaperBinanceExecutionDelayMs),
+			label: settingsRowLabel(cfg, settingsRowBinanceExecutionDelay),			value: fmt.Sprintf(" %dms ", cfg.PaperBinanceExecutionDelayMs),
 			bar:   renderBar(float64(cfg.PaperBinanceExecutionDelayMs)/1000.0, 20),
 		},
 		{
