@@ -114,6 +114,11 @@ type MarketTrader struct {
 	LastUpdate time.Time
 	// Last time both sides had a valid, non-crossed local quote at once.
 	LastPairUpdate time.Time
+	// Best local quote snapshot captured around expiry and preserved for later resolution.
+	ExpirySnapshotAt     time.Time
+	ExpirySnapshotBids   map[string]float64
+	ExpirySnapshotAsks   map[string]float64
+	ExpirySnapshotPrices map[string]float64
 
 	// Last time we performed a REST fallback poll
 	LastRestPoll time.Time
@@ -1893,6 +1898,7 @@ func syncPaperPairUpdate(t *MarketTrader, now time.Time) {
 	if hasValidPaperPairQuotes(t.Outcomes, t.TokenBids, t.TokenAsks) {
 		t.LastPairUpdate = now
 	}
+	capturePaperExpirySnapshot(t, now)
 	if t.PolySignalTracker != nil && len(t.Outcomes) == 2 {
 		for _, outcome := range t.Outcomes {
 			bid := t.TokenBids[outcome]
@@ -1902,6 +1908,42 @@ func syncPaperPairUpdate(t *MarketTrader, now time.Time) {
 			}
 		}
 	}
+}
+
+func capturePaperExpirySnapshot(t *MarketTrader, now time.Time) {
+	if t == nil || t.EndTime.IsZero() {
+		return
+	}
+
+	captureStart := t.EndTime.Add(-paperExpiryWinnerQuoteMaxAge)
+	captureEnd := t.EndTime.Add(paperExpiryWinnerQuoteMaxAge)
+	if now.Before(captureStart) || now.After(captureEnd) {
+		return
+	}
+
+	// Before expiry, keep the freshest close quote. After expiry, only fill the
+	// snapshot if we never captured a pre-expiry quote.
+	if now.After(t.EndTime) && !t.ExpirySnapshotAt.IsZero() && !t.ExpirySnapshotAt.After(t.EndTime) {
+		return
+	}
+
+	bids := make(map[string]float64, len(t.TokenBids))
+	for outcome, price := range t.TokenBids {
+		bids[outcome] = price
+	}
+	asks := make(map[string]float64, len(t.TokenAsks))
+	for outcome, price := range t.TokenAsks {
+		asks[outcome] = price
+	}
+	floatPrices := make(map[string]float64, len(t.FloatPrices))
+	for outcome, price := range t.FloatPrices {
+		floatPrices[outcome] = price
+	}
+
+	t.ExpirySnapshotAt = now
+	t.ExpirySnapshotBids = bids
+	t.ExpirySnapshotAsks = asks
+	t.ExpirySnapshotPrices = floatPrices
 }
 
 func computePaperMakerArbPrices(bid1, ask1, bid2, ask2, maxSum float64) (float64, float64, bool) {
@@ -4598,8 +4640,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 }
 
 // determineWinner uses authoritative resolution when available. If that is not
-// ready at expiry, it resolves immediately from the freshest close quotes on
-// hand instead of waiting for post-expiry liquidity that may disappear.
+// ready yet, it waits through the short post-expiry watch before falling back
+// to strict terminal quote inference.
 func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
 		return ""
@@ -4776,7 +4818,8 @@ func (t *MarketTrader) determineWinner() string {
 
 	t.mu.Lock()
 	lastUpdate := t.LastUpdate
-	closeWinner, closeProb, closeSource, closeOK := detectExpiryWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
+	snapshotAt := t.ExpirySnapshotAt
+	closeWinner, closeProb, closeSource, closeOK := detectExpiryWinnerFromPrices(t.Outcomes, t.ExpirySnapshotBids, t.ExpirySnapshotAsks, t.ExpirySnapshotPrices)
 	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	if ok {
 		// Track the strongest candidate seen post-expiry
@@ -4812,9 +4855,16 @@ func (t *MarketTrader) determineWinner() string {
 	}
 	t.mu.Unlock()
 
-	quoteFreshAtClose := t.EndTime.IsZero() || (!lastUpdate.IsZero() && !lastUpdate.Before(t.EndTime.Add(-paperExpiryWinnerQuoteMaxAge)))
+	allowQuoteFallback := t.EndTime.IsZero() || !now.Before(t.EndTime.Add(paperPostExpiryWinnerWatch))
+	if !allowQuoteFallback {
+		return ""
+	}
+
+	quoteFreshAtClose := t.EndTime.IsZero() || (!snapshotAt.IsZero() &&
+		!snapshotAt.Before(t.EndTime.Add(-paperExpiryWinnerQuoteMaxAge)) &&
+		!snapshotAt.After(t.EndTime.Add(paperExpiryWinnerQuoteMaxAge)))
 	if closeOK && quoteFreshAtClose {
-		t.TUI.LogEvent("[%s] ⏱ Close snapshot winner: %s ($%.3f via %s)", t.ID, closeWinner, closeProb, closeSource)
+		t.TUI.LogEvent("[%s] ⏱ Stored close snapshot winner: %s ($%.3f via %s)", t.ID, closeWinner, closeProb, closeSource)
 		return closeWinner
 	}
 
@@ -4904,8 +4954,10 @@ func (t *MarketTrader) refreshWinnerQuotesFromREST(ctx context.Context) error {
 	}
 
 	now := time.Now()
+	t.mu.Lock()
 	t.LastUpdate = now
 	syncPaperPairUpdate(t, now)
+	t.mu.Unlock()
 	return nil
 }
 

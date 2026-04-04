@@ -1359,15 +1359,18 @@ func TestDetectExpiryWinnerFromPricesUsesAskFallbackAtClose(t *testing.T) {
 	}
 }
 
-func TestDetermineWinnerUsesImmediateCloseSnapshot(t *testing.T) {
+func TestDetermineWinnerWaitsBeforeQuoteFallback(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	trader := &MarketTrader{
-		ID:        "BTC#close",
-		Engine:    engine,
-		TUI:       paper.NewTUI(engine, nil),
-		Outcomes:  []string{"Down", "Up"},
-		EndTime:   time.Now().Add(-100 * time.Millisecond),
-		TokenBids: map[string]float64{"Down": 0.96, "Up": 0.02},
+		ID:       "BTC#close",
+		Engine:   engine,
+		TUI:      paper.NewTUI(engine, nil),
+		Outcomes: []string{"Down", "Up"},
+		EndTime:  time.Now().Add(-100 * time.Millisecond),
+		TokenBids: map[string]float64{
+			"Down": 0.96,
+			"Up":   0.02,
+		},
 		TokenAsks: map[string]float64{"Down": 0.98, "Up": 0.03},
 		FloatPrices: map[string]float64{
 			"Down": 0.97,
@@ -1377,8 +1380,102 @@ func TestDetermineWinnerUsesImmediateCloseSnapshot(t *testing.T) {
 	}
 
 	winner := trader.determineWinner()
+	if winner != "" {
+		t.Fatalf("winner = %q, want unresolved until watch window completes", winner)
+	}
+}
+
+func TestDetermineWinnerUsesStoredCloseSnapshotAfterWatch(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	endTime := time.Now().Add(-paperPostExpiryWinnerWatch - 500*time.Millisecond)
+	trader := &MarketTrader{
+		ID:       "BTC#stored-close",
+		Engine:   engine,
+		TUI:      paper.NewTUI(engine, nil),
+		Outcomes: []string{"Down", "Up"},
+		EndTime:  endTime,
+		TokenBids: map[string]float64{
+			"Down": 0.01,
+			"Up":   0.99,
+		},
+		TokenAsks: map[string]float64{"Down": 0.02, "Up": 1.00},
+		FloatPrices: map[string]float64{
+			"Down": 0.015,
+			"Up":   0.995,
+		},
+		LastUpdate:       time.Now().Add(-200 * time.Millisecond),
+		ExpirySnapshotAt: endTime.Add(-500 * time.Millisecond),
+		ExpirySnapshotBids: map[string]float64{
+			"Down": 0.96,
+			"Up":   0.02,
+		},
+		ExpirySnapshotAsks: map[string]float64{"Down": 0.98, "Up": 0.03},
+		ExpirySnapshotPrices: map[string]float64{
+			"Down": 0.97,
+			"Up":   0.025,
+		},
+	}
+
+	winner := trader.determineWinner()
 	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
+		t.Fatalf("winner = %q, want stored close snapshot Down", winner)
+	}
+}
+
+func TestDetermineWinnerUsesHistoricalEventWinnerBeforeQuoteFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/markets/eth-updown-5m-123":
+			http.NotFound(w, r)
+		case "/events":
+			if got := r.URL.Query().Get("slug"); got != "eth-updown-5m-123" {
+				t.Fatalf("expected slug query, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"slug":"eth-updown-5m-123","markets":[{"conditionId":"cond-1","slug":"eth-updown-5m-123","clobTokenIds":"[\"token-up\",\"token-down\"]","outcomes":"[\"Up\",\"Down\"]","outcomePrices":"[\"0\",\"1\"]","umaResolutionStatus":"resolved","active":true,"closed":true}]}
+			]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restClient := api.NewRestClient("polymarket")
+	restClient.BaseURL = server.URL
+	restClient.GammaURL = server.URL
+
+	engine := paper.NewEngine(100.0)
+	trader := &MarketTrader{
+		ID:         "ETH#history",
+		Engine:     engine,
+		RestClient: restClient,
+		TUI:        paper.NewTUI(engine, nil),
+		Outcomes:   []string{"Down", "Up"},
+		EndTime:    time.Now().Add(-100 * time.Millisecond),
+		Market: &api.Market{
+			ConditionID: "cond-1",
+			Slug:        "eth-updown-5m-123",
+			MarketSlug:  "eth-updown-5m-123",
+		},
+		TokenBids: map[string]float64{"Down": 0.02, "Up": 0.98},
+		TokenAsks: map[string]float64{"Down": 0.03, "Up": 0.99},
+		FloatPrices: map[string]float64{
+			"Down": 0.025,
+			"Up":   0.985,
+		},
+		LastUpdate:       time.Now().Add(-50 * time.Millisecond),
+		ExpirySnapshotAt: time.Now().Add(-50 * time.Millisecond),
+		ExpirySnapshotBids: map[string]float64{
+			"Down": 0.02,
+			"Up":   0.98,
+		},
+		ExpirySnapshotAsks: map[string]float64{"Down": 0.03, "Up": 0.99},
+	}
+
+	winner := trader.determineWinner()
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want authoritative historical Down", winner)
 	}
 }
 
@@ -1444,6 +1541,7 @@ func TestRefreshWinnerQuotesFromRESTDetectsSparseTerminalWinner(t *testing.T) {
 		RestClient:    restClient,
 		TUI:           paper.NewTUI(engine, nil),
 		Outcomes:      []string{"Down", "Up"},
+		EndTime:       time.Now().Add(-paperPostExpiryWinnerWatch - time.Second),
 		TokenMap:      map[string]string{"token-down": "Down", "token-up": "Up"},
 		TokenBids:     make(map[string]float64),
 		TokenAsks:     make(map[string]float64),

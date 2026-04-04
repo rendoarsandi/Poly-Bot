@@ -75,7 +75,7 @@ func TestGetMarketsByEventSlug(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`[
-			{"slug":"btc-updown-15m-123","markets":[{"conditionId":"cond-1","clobTokenIds":"[\"yes-token\",\"no-token\"]","outcomes":"[\"Up\",\"Down\"]","active":true,"closed":false}]}
+			{"slug":"btc-updown-15m-123","markets":[{"conditionId":"cond-1","slug":"btc-updown-15m-123","clobTokenIds":"[\"yes-token\",\"no-token\"]","outcomes":"[\"Up\",\"Down\"]","outcomePrices":"[\"1\",\"0\"]","umaResolutionStatus":"resolved","active":true,"closed":true}]}
 		]`))
 	}))
 	defer server.Close()
@@ -97,6 +97,9 @@ func TestGetMarketsByEventSlug(t *testing.T) {
 	}
 	if len(markets[0].Tokens) != 2 || markets[0].Tokens[0].TokenID != "yes-token" {
 		t.Fatalf("unexpected market tokens: %+v", markets[0].Tokens)
+	}
+	if !markets[0].Tokens[0].Winner || markets[0].Tokens[1].Winner {
+		t.Fatalf("unexpected winner flags: %+v", markets[0].Tokens)
 	}
 }
 

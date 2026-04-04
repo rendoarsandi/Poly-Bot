@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -97,11 +98,15 @@ type GammaEvent struct {
 }
 
 type GammaMarket struct {
-	ConditionID  string `json:"conditionId"`
-	ClobTokenIds string `json:"clobTokenIds"` // JSON-encoded string array
-	Outcomes     string `json:"outcomes"`
-	Active       bool   `json:"active"`
-	Closed       bool   `json:"closed"`
+	ConditionID         string `json:"conditionId"`
+	Slug                string `json:"slug"`
+	EndDate             string `json:"endDate"`
+	ClobTokenIds        string `json:"clobTokenIds"` // JSON-encoded string array
+	Outcomes            string `json:"outcomes"`
+	OutcomePrices       string `json:"outcomePrices"`       // JSON-encoded string array
+	UMAResolutionStatus string `json:"umaResolutionStatus"` // "resolved" when winner is authoritative
+	Active              bool   `json:"active"`
+	Closed              bool   `json:"closed"`
 }
 
 func (c *RestClient) GetEventByTokenID(ctx context.Context, tokenID string) (*GammaEvent, error) {
@@ -190,15 +195,25 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 			outcomes = []string{"Up", "Down"}
 		}
 
+		tokenWinners := gammaWinnerFlags(gm, outcomes)
+		marketSlug := core.SanitizeString(gm.Slug)
+		if marketSlug == "" {
+			marketSlug = eventSlug
+		}
+		marketEndTime := parseGammaEventEndTime(gm.EndDate)
+		if marketEndTime.IsZero() {
+			marketEndTime = eventEndTime
+		}
+
 		markets = append(markets, Market{
 			ConditionID: gm.ConditionID,
-			Slug:        eventSlug,
+			Slug:        marketSlug,
 			Active:      gm.Active,
 			Closed:      gm.Closed,
-			EndTime:     eventEndTime,
+			EndTime:     marketEndTime,
 			Tokens: []Token{
-				{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0])},
-				{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1])},
+				{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
+				{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
 			},
 		})
 	}
@@ -208,6 +223,47 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 	}
 
 	return markets, nil
+}
+
+func gammaWinnerFlags(market GammaMarket, outcomes []string) []bool {
+	if !strings.EqualFold(strings.TrimSpace(market.UMAResolutionStatus), "resolved") {
+		return nil
+	}
+	if len(outcomes) == 0 {
+		return nil
+	}
+
+	var rawPrices []string
+	if err := json.Unmarshal([]byte(market.OutcomePrices), &rawPrices); err != nil || len(rawPrices) != len(outcomes) {
+		return nil
+	}
+
+	winnerIdx := -1
+	winnerPrice := -1.0
+	secondBest := -1.0
+	for i, raw := range rawPrices {
+		price, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return nil
+		}
+		if price > winnerPrice+1e-9 {
+			secondBest = winnerPrice
+			winnerPrice = price
+			winnerIdx = i
+			continue
+		}
+		if price > secondBest {
+			secondBest = price
+		}
+	}
+
+	if winnerIdx < 0 || winnerPrice < 0.5 || math.Abs(winnerPrice-secondBest) <= 1e-9 {
+		return nil
+	}
+
+	flags := make([]bool, len(outcomes))
+	flags[winnerIdx] = true
+	return flags
 }
 
 func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
@@ -392,15 +448,25 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 			}
 
 			// Build Market from Gamma data
+			tokenWinners := gammaWinnerFlags(gm, outcomes)
+			marketSlug := core.SanitizeString(gm.Slug)
+			if marketSlug == "" {
+				marketSlug = core.SanitizeString(slug)
+			}
+			marketEndTime := parseGammaEventEndTime(gm.EndDate)
+			if marketEndTime.IsZero() {
+				marketEndTime = eventEndTime
+			}
+
 			market := &Market{
 				ConditionID: gm.ConditionID,
-				Slug:        core.SanitizeString(slug),
+				Slug:        marketSlug,
 				Active:      gm.Active,
 				Closed:      gm.Closed,
-				EndTime:     eventEndTime,
+				EndTime:     marketEndTime,
 				Tokens: []Token{
-					{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0])},
-					{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1])},
+					{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
+					{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
 				},
 			}
 
