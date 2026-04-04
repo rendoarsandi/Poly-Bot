@@ -661,6 +661,49 @@ func TestRenderPositionsUsesNeutralHeaderInCopytradeMode(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsUsesFullMarketResolutionForUnevenTwoSidedCarry(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), nil)
+	tui.InitSettings(TUISettings{
+		PaperArbMode: "copytrade",
+	}, nil)
+
+	positions := map[string]PositionPnL{
+		"ETH-5M#98024767:Down": {
+			Position: Position{
+				MarketID:  "ETH-5M#98024767",
+				Outcome:   "Down",
+				Quantity:  26.46,
+				AvgPrice:  0.75,
+				TotalCost: 19.845,
+			},
+			CurrentBid: 0.99,
+		},
+		"ETH-5M#98024767:Up": {
+			Position: Position{
+				MarketID:  "ETH-5M#98024767",
+				Outcome:   "Up",
+				Quantity:  13.86,
+				AvgPrice:  0.48,
+				TotalCost: 6.6528,
+			},
+			CurrentBid: 0.01,
+		},
+	}
+
+	model := tuiModel{tui: tui}
+	rendered := model.renderPositions(140, positions)
+
+	if !strings.Contains(rendered, "Now: $-0.16") {
+		t.Fatalf("expected full market current pnl, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Resolve: $-0.04/$-12.64") {
+		t.Fatalf("expected full market resolution range, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Locked: -$3.12") {
+		t.Fatalf("expected matched-pair locked pnl to stay hidden for uneven carry, got %q", rendered)
+	}
+}
+
 func TestNormalizeTUISettingsNormalizesExecutionFloorToNonPositiveDecimal(t *testing.T) {
 	cfg := normalizeTUISettings(TUISettings{BuyExecutionMarginFloorPercent: -1.0})
 	if math.Abs(cfg.BuyExecutionMarginFloorPercent-(-0.01)) > 0.000001 {

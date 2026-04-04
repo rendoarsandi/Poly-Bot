@@ -2030,57 +2030,43 @@ func detectTerminalWinnerFromPrices(outcomes []string, bids, asks, floatPrices m
 	}
 
 	bestOutcome := ""
-	bestPrice := 0.0
-	bestSource := ""
+	bestBid := 0.0
 	secondBest := 0.0
 
-	for i, outcome := range outcomes {
-		candidatePrice := 0.0
-		candidateSource := ""
+	for _, outcome := range outcomes {
+		candidateBid := bids[outcome]
+		if candidateBid > bestBid+1e-9 {
+			secondBest = bestBid
+			bestBid = candidateBid
+			bestOutcome = outcome
+		} else if candidateBid > secondBest {
+			secondBest = candidateBid
+		}
+	}
 
-		if bid := bids[outcome]; bid > candidatePrice {
-			candidatePrice = bid
-			candidateSource = "bid"
-		}
-		if ask := asks[outcome]; ask >= terminalWinnerFloor && ask > candidatePrice {
-			candidatePrice = ask
-			candidateSource = "ask"
-		}
-		if mid := floatPrices[outcome]; mid > candidatePrice {
-			candidatePrice = mid
-			candidateSource = "mid"
-		}
+	if bestOutcome == "" {
+		return "", 0, "", false
+	}
+	if math.Abs(bestBid-secondBest) <= 1e-6 {
+		return "", 0, "", false
+	}
 
-		// Binary fallback: if the peer ask is pinned near $0, this outcome is
-		// effectively pinned near $1 even when one side disappears in sparse books.
-		if len(outcomes) == 2 {
-			peer := outcomes[1-i]
-			if peerAsk := asks[peer]; peerAsk > 0 && peerAsk <= terminalAskCeil {
-				if 1.0 > candidatePrice {
-					candidatePrice = 1.0
-					candidateSource = "peer_ask"
-				}
+	if bestBid >= terminalWinnerFloor {
+		return bestOutcome, bestBid, "bid", true
+	}
+
+	if len(outcomes) == 2 && bestBid >= terminalBidFloor {
+		for _, outcome := range outcomes {
+			if outcome == bestOutcome {
+				continue
+			}
+			if peerAsk := asks[outcome]; peerAsk > 0 && peerAsk <= terminalAskCeil {
+				return bestOutcome, bestBid, "bid+peer_ask", true
 			}
 		}
-
-		if candidatePrice > bestPrice+1e-9 {
-			secondBest = bestPrice
-			bestPrice = candidatePrice
-			bestOutcome = outcome
-			bestSource = candidateSource
-		} else if candidatePrice > secondBest {
-			secondBest = candidatePrice
-		}
 	}
 
-	if bestOutcome == "" || bestPrice < terminalWinnerFloor {
-		return "", 0, "", false
-	}
-	if math.Abs(bestPrice-secondBest) <= 1e-6 {
-		return "", 0, "", false
-	}
-
-	return bestOutcome, bestPrice, bestSource, true
+	return "", 0, "", false
 }
 
 func computePaperMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
@@ -4547,8 +4533,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	}
 }
 
-// determineWinner uses authoritative resolution when available, otherwise
-// waits for a terminal post-expiry price signal (>= $0.99) before settling.
+// determineWinner uses authoritative resolution when available, otherwise waits
+// through the post-expiry watch window and only falls back to pinned bids.
 func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
 		return ""
@@ -4723,9 +4709,8 @@ func (t *MarketTrader) determineWinner() string {
 		}
 	}
 
-	// Prevent early price-based determination until 3 seconds past expiry
-	// to ensure the market has settled to its final $1.00 levels.
-	// But we continuously track the candidate even before the 3 seconds are up.
+	// Keep tracking a candidate during the post-expiry watch window, but do not
+	// settle from prices until that window has elapsed.
 	t.mu.Lock()
 	bestOutcome, highestProb, signalSource, ok := detectTerminalWinnerFromPrices(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	if ok {
@@ -4762,7 +4747,7 @@ func (t *MarketTrader) determineWinner() string {
 	}
 	t.mu.Unlock()
 
-	if !now.After(t.EndTime.Add(3 * time.Second)) {
+	if !now.After(t.EndTime.Add(paperPostExpiryWinnerWatch)) {
 		return ""
 	}
 

@@ -1276,17 +1276,8 @@ func TestDetectTerminalWinnerFromPricesUsesPeerAskNearZeroFallback(t *testing.T)
 		map[string]float64{"Down": 0, "Up": 0.01},
 		map[string]float64{"Down": 0, "Up": 0},
 	)
-	if !ok {
-		t.Fatal("expected peer ask near zero to infer opposite terminal winner")
-	}
-	if winner != "Down" {
-		t.Fatalf("winner = %q, want Down", winner)
-	}
-	if prob != 1.0 {
-		t.Fatalf("prob = %.3f, want 1.000", prob)
-	}
-	if source != "peer_ask" {
-		t.Fatalf("source = %q, want peer_ask", source)
+	if ok || winner != "" || prob != 0 || source != "" {
+		t.Fatalf("expected peer ask alone to stay unresolved, got winner=%q prob=%.3f source=%q ok=%v", winner, prob, source, ok)
 	}
 }
 
@@ -1311,6 +1302,39 @@ func TestDetectTerminalWinnerFromPricesRejectsTiesAtTerminalLevel(t *testing.T) 
 	)
 	if ok || winner != "" {
 		t.Fatalf("expected tie to be unresolved, got winner=%q ok=%v", winner, ok)
+	}
+}
+
+func TestDetectTerminalWinnerFromPricesRejectsAskOnlyTerminalLevels(t *testing.T) {
+	winner, _, source, ok := detectTerminalWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 0.99, "Up": 0.01},
+		map[string]float64{"Down": 0.995, "Up": 0.005},
+	)
+	if ok || winner != "" || source != "" {
+		t.Fatalf("expected ask/mid-only terminal signal to stay unresolved, got winner=%q source=%q ok=%v", winner, source, ok)
+	}
+}
+
+func TestDetectTerminalWinnerFromPricesUsesPinnedBidWithPeerAskConfirmation(t *testing.T) {
+	winner, prob, source, ok := detectTerminalWinnerFromPrices(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.985, "Up": 0},
+		map[string]float64{"Down": 0, "Up": 0.01},
+		map[string]float64{"Down": 0, "Up": 0},
+	)
+	if !ok {
+		t.Fatal("expected pinned bid plus peer ask confirmation to infer terminal winner")
+	}
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
+	}
+	if prob != 0.985 {
+		t.Fatalf("prob = %.3f, want 0.985", prob)
+	}
+	if source != "bid+peer_ask" {
+		t.Fatalf("source = %q, want bid+peer_ask", source)
 	}
 }
 

@@ -3421,7 +3421,7 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		}
 
 		target := core.SanitizeString(sig.TargetOutcome)
-		
+
 		// Line 1: Binance Price & Directional Signal
 		binLine := fmt.Sprintf("  BIN: $%s (%+.3f%%)", priceText, sig.DeltaPercent)
 		if target != "" {
@@ -3946,6 +3946,69 @@ func resolutionPnLRangeFromPositions(positions map[string]Position) (best float6
 	return best, worst
 }
 
+type marketPnLSummary struct {
+	currentPnL      float64
+	hasCurrentPnL   bool
+	bestResolvePnL  float64
+	worstResolvePnL float64
+}
+
+func summarizeMarketPnL(positions []PositionPnL) marketPnLSummary {
+	summary := marketPnLSummary{}
+	if len(positions) == 0 {
+		return summary
+	}
+
+	totalCost := 0.0
+	currentValue := 0.0
+	allHaveCurrent := true
+	outcomePayouts := make(map[string]float64)
+
+	for _, pos := range positions {
+		totalCost += pos.TotalCost
+		outcomePayouts[pos.Outcome] += pos.Quantity
+		if pos.CurrentBid > 0 {
+			currentValue += pos.Quantity * pos.CurrentBid
+		} else {
+			allHaveCurrent = false
+		}
+	}
+
+	if allHaveCurrent {
+		summary.hasCurrentPnL = true
+		summary.currentPnL = currentValue - totalCost
+	}
+
+	first := true
+	for _, payout := range outcomePayouts {
+		pnl := payout - totalCost
+		if first {
+			summary.bestResolvePnL = pnl
+			summary.worstResolvePnL = pnl
+			first = false
+			continue
+		}
+		if pnl > summary.bestResolvePnL {
+			summary.bestResolvePnL = pnl
+		}
+		if pnl < summary.worstResolvePnL {
+			summary.worstResolvePnL = pnl
+		}
+	}
+
+	if len(outcomePayouts) == 1 {
+		fullLoss := -totalCost
+		if fullLoss < summary.worstResolvePnL {
+			summary.worstResolvePnL = fullLoss
+		}
+		if fullLoss > summary.bestResolvePnL {
+			summary.bestResolvePnL = fullLoss
+		}
+	}
+
+	return summary
+}
+
 func displayedTradeBudgets(mode string, cash, equity, startingBalance, sizingBalance, tradeFactor, maxTradeSize, multiplier float64) (base, effective float64) {
 	return displayedTradeBudgetsWithMode(mode, cash, equity, startingBalance, sizingBalance, tradeFactor, 0, maxTradeSize, multiplier, core.TradeSizingModePercent)
 }
@@ -4006,8 +4069,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 	}
 
-	totalMarketPnL, totalLockedPnL := 0.0, 0.0
+	totalMarketPnL := 0.0
 	hasMarketPrices := false
+	totalBestResolvePnL, totalWorstResolvePnL := 0.0, 0.0
 
 	marketIDs := make([]string, 0, len(byMarket))
 	for marketID := range byMarket {
@@ -4038,35 +4102,30 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 		sb.WriteString(strings.Join(strs, "  │  "))
 
-		if len(mps) == 2 {
-			matched := mps[0].Quantity
-			if mps[1].Quantity < matched {
-				matched = mps[1].Quantity
-			}
-			if matched > 0 {
-				cost := (mps[0].AvgPrice + mps[1].AvgPrice) * matched
-				locked := matched - cost
-				totalLockedPnL += locked
+		summary := summarizeMarketPnL(mps)
+		totalBestResolvePnL += summary.bestResolvePnL
+		totalWorstResolvePnL += summary.worstResolvePnL
 
-				signOf := func(v float64) (string, lipgloss.Style) {
-					if v < 0 {
-						return "", styleRed
-					}
-					return "+", styleGreen
-				}
-
-				if mps[0].CurrentBid > 0 && mps[1].CurrentBid > 0 {
-					mktVal := (mps[0].CurrentBid + mps[1].CurrentBid) * matched
-					mktProfit := mktVal - cost
-					totalMarketPnL += mktProfit
-					hasMarketPrices = true
-					sg, pSt := signOf(mktProfit)
-					sb.WriteString("  →  " + pSt.Render(fmt.Sprintf("%s$%.2f", sg, mktProfit)))
-				} else {
-					sg, pSt := signOf(locked)
-					sb.WriteString("  →  🔒" + pSt.Render(fmt.Sprintf("%s$%.2f", sg, locked)))
-				}
+		signOf := func(v float64) (string, lipgloss.Style) {
+			if v < 0 {
+				return "", styleRed
 			}
+			return "+", styleGreen
+		}
+
+		if summary.hasCurrentPnL {
+			totalMarketPnL += summary.currentPnL
+			hasMarketPrices = true
+			sg, pSt := signOf(summary.currentPnL)
+			sb.WriteString("  →  " + pSt.Render(fmt.Sprintf("%s$%.2f", sg, summary.currentPnL)))
+		} else if math.Abs(summary.bestResolvePnL-summary.worstResolvePnL) < 0.005 {
+			sg, pSt := signOf(summary.bestResolvePnL)
+			sb.WriteString("  →  🔒" + pSt.Render(fmt.Sprintf("%s$%.2f", sg, summary.bestResolvePnL)))
+		} else if math.Abs(summary.bestResolvePnL) >= 0.005 || math.Abs(summary.worstResolvePnL) >= 0.005 {
+			bestSign, bestStyle := signOf(summary.bestResolvePnL)
+			worstSign, worstStyle := signOf(summary.worstResolvePnL)
+			sb.WriteString("  →  🏁 " + bestStyle.Render(fmt.Sprintf("%s$%.2f", bestSign, summary.bestResolvePnL)) + "/" +
+				worstStyle.Render(fmt.Sprintf("%s$%.2f", worstSign, summary.worstResolvePnL)))
 		}
 		sb.WriteString("\n")
 	}
@@ -4079,23 +4138,59 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			}
 			return "+", styleGreen
 		}()
-		lckSg, lckSt := func() (string, lipgloss.Style) {
-			if totalLockedPnL < 0 {
-				return "", styleRed
-			}
-			return "+", styleGreen
-		}()
-		sb.WriteString(styleBold.Render(fmt.Sprintf("  📊 Now: %s  ·  🔒 Locked: %s",
-			mktSt.Render(fmt.Sprintf("%s$%.2f", mktSg, totalMarketPnL)),
-			lckSt.Render(fmt.Sprintf("%s$%.2f", lckSg, totalLockedPnL)))) + "\n")
-	} else if totalLockedPnL != 0 {
+		summaryLine := styleBold.Render(fmt.Sprintf("  📊 Now: %s",
+			mktSt.Render(fmt.Sprintf("%s$%.2f", mktSg, totalMarketPnL))))
+		if math.Abs(totalBestResolvePnL-totalWorstResolvePnL) < 0.005 {
+			lckSg, lckSt := func() (string, lipgloss.Style) {
+				if totalBestResolvePnL < 0 {
+					return "", styleRed
+				}
+				return "+", styleGreen
+			}()
+			summaryLine += styleBold.Render(fmt.Sprintf("  ·  🔒 Locked: %s",
+				lckSt.Render(fmt.Sprintf("%s$%.2f", lckSg, totalBestResolvePnL))))
+		} else if math.Abs(totalBestResolvePnL) >= 0.005 || math.Abs(totalWorstResolvePnL) >= 0.005 {
+			bestSg, bestSt := func() (string, lipgloss.Style) {
+				if totalBestResolvePnL < 0 {
+					return "", styleRed
+				}
+				return "+", styleGreen
+			}()
+			worstSg, worstSt := func() (string, lipgloss.Style) {
+				if totalWorstResolvePnL < 0 {
+					return "", styleRed
+				}
+				return "+", styleGreen
+			}()
+			summaryLine += styleBold.Render(fmt.Sprintf("  ·  🏁 Resolve: %s/%s",
+				bestSt.Render(fmt.Sprintf("%s$%.2f", bestSg, totalBestResolvePnL)),
+				worstSt.Render(fmt.Sprintf("%s$%.2f", worstSg, totalWorstResolvePnL))))
+		}
+		sb.WriteString(summaryLine + "\n")
+	} else if math.Abs(totalBestResolvePnL-totalWorstResolvePnL) < 0.005 && math.Abs(totalBestResolvePnL) >= 0.005 {
 		sg, pSt := func() (string, lipgloss.Style) {
-			if totalLockedPnL < 0 {
+			if totalBestResolvePnL < 0 {
 				return "", styleRed
 			}
 			return "+", styleGreen
 		}()
-		sb.WriteString(styleBold.Render("  🔒 Locked: "+pSt.Render(fmt.Sprintf("%s$%.2f", sg, totalLockedPnL))) + "\n")
+		sb.WriteString(styleBold.Render("  🔒 Locked: "+pSt.Render(fmt.Sprintf("%s$%.2f", sg, totalBestResolvePnL))) + "\n")
+	} else if math.Abs(totalBestResolvePnL) >= 0.005 || math.Abs(totalWorstResolvePnL) >= 0.005 {
+		bestSg, bestSt := func() (string, lipgloss.Style) {
+			if totalBestResolvePnL < 0 {
+				return "", styleRed
+			}
+			return "+", styleGreen
+		}()
+		worstSg, worstSt := func() (string, lipgloss.Style) {
+			if totalWorstResolvePnL < 0 {
+				return "", styleRed
+			}
+			return "+", styleGreen
+		}()
+		sb.WriteString(styleBold.Render(fmt.Sprintf("  🏁 Resolve: %s/%s",
+			bestSt.Render(fmt.Sprintf("%s$%.2f", bestSg, totalBestResolvePnL)),
+			worstSt.Render(fmt.Sprintf("%s$%.2f", worstSg, totalWorstResolvePnL)))) + "\n")
 	}
 
 	// ── Split inventory ──
