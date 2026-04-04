@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -1308,5 +1311,72 @@ func TestDetectTerminalWinnerFromPricesRejectsTiesAtTerminalLevel(t *testing.T) 
 	)
 	if ok || winner != "" {
 		t.Fatalf("expected tie to be unresolved, got winner=%q ok=%v", winner, ok)
+	}
+}
+
+func TestPaperPostExpiryResolutionStateKeepsFastScanThroughPlusFiveSeconds(t *testing.T) {
+	endTime := time.Unix(1_700_000_000, 0)
+
+	if interval, refresh := paperPostExpiryResolutionState(endTime, endTime); interval != paperPostExpiryWinnerPoll || !refresh {
+		t.Fatalf("at expiry got interval=%v refresh=%v, want %v true", interval, refresh, paperPostExpiryWinnerPoll)
+	}
+	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(4*time.Second), endTime); interval != paperPostExpiryWinnerPoll || !refresh {
+		t.Fatalf("at +4s got interval=%v refresh=%v, want %v true", interval, refresh, paperPostExpiryWinnerPoll)
+	}
+	if interval, refresh := paperPostExpiryResolutionState(endTime.Add(5*time.Second), endTime); interval != paperResolutionRefreshInterval || refresh {
+		t.Fatalf("at +5s got interval=%v refresh=%v, want %v false", interval, refresh, paperResolutionRefreshInterval)
+	}
+}
+
+func TestRefreshWinnerQuotesFromRESTDetectsSparseTerminalWinner(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenID := r.URL.Query().Get("token_id")
+		w.Header().Set("Content-Type", "application/json")
+		switch tokenID {
+		case "token-down":
+			_, _ = w.Write([]byte(`{"market":"m1","asset_id":"token-down","timestamp":"1700000000000","bids":[{"price":"0.99","size":"100"}],"asks":[]}`))
+		case "token-up":
+			_, _ = w.Write([]byte(`{"market":"m1","asset_id":"token-up","timestamp":"1700000000000","bids":[],"asks":[{"price":"0.01","size":"100"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restClient := api.NewRestClient("polymarket")
+	restClient.BaseURL = server.URL
+
+	engine := paper.NewEngine(100.0)
+	trader := &MarketTrader{
+		ID:            "BTC#test",
+		Engine:        engine,
+		RestClient:    restClient,
+		TUI:           paper.NewTUI(engine, nil),
+		Outcomes:      []string{"Down", "Up"},
+		TokenMap:      map[string]string{"token-down": "Down", "token-up": "Up"},
+		TokenBids:     make(map[string]float64),
+		TokenAsks:     make(map[string]float64),
+		TokenFullBids: make(map[string][]paper.MarketLevel),
+		TokenFullAsks: make(map[string][]paper.MarketLevel),
+		FloatPrices:   make(map[string]float64),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := trader.refreshWinnerQuotesFromREST(ctx); err != nil {
+		t.Fatalf("refreshWinnerQuotesFromREST failed: %v", err)
+	}
+
+	if got := trader.TokenBids["Down"]; got != 0.99 {
+		t.Fatalf("Down bid = %.3f, want 0.990", got)
+	}
+	if got := trader.TokenAsks["Up"]; got != 0.01 {
+		t.Fatalf("Up ask = %.3f, want 0.010", got)
+	}
+
+	winner := trader.determineWinner()
+	if winner != "Down" {
+		t.Fatalf("winner = %q, want Down", winner)
 	}
 }

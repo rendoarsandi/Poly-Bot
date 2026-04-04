@@ -65,6 +65,9 @@ const (
 	paperHistoricalLookupInterval  = 2 * time.Second
 	paperHistoricalNotFoundRetry   = 30 * time.Second
 	paperResolutionErrorLogGap     = 5 * time.Second
+	paperPostExpiryWinnerWatch     = 5 * time.Second
+	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
+	paperExpiryResolutionBuffer    = 1 * time.Minute
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
@@ -133,6 +136,7 @@ type MarketTrader struct {
 	CopytradeLabel     string
 	CopytradePoller    *paperbotCopytradePoller
 	CopytradeState     *paperbotCopytradeState
+	BackgroundCtx      context.Context
 
 	// State
 	LaddersPlaced bool
@@ -2829,7 +2833,7 @@ func run() error {
 			// Reduced logging: Only TUI for startup info
 			// tui.LogEvent("🚀 Trading %s: %s", marketID, market.Slug)
 
-			trader := createTrader(marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache, copytradeTarget, copytradePoller)
+			trader := createTrader(ctx, marketID, market, engine, restClient, tui, outcomes, endTime, csvLogger, cfg, resolutionCache, copytradeTarget, copytradePoller)
 			wg.Add(1)
 			tradersStarted++
 			go func(id string, t *MarketTrader) {
@@ -2968,7 +2972,7 @@ func run() error {
 	}
 }
 
-func createTrader(id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache, copytradeTarget paperbotCopytradeTarget, copytradePoller *paperbotCopytradePoller) *MarketTrader {
+func createTrader(backgroundCtx context.Context, id string, market *api.Market, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, outcomes []string, endTime time.Time, csvLogger *core.CSVLogger, cfg *core.Config, resCache *api.ResolutionCache, copytradeTarget paperbotCopytradeTarget, copytradePoller *paperbotCopytradePoller) *MarketTrader {
 	tokenMap := make(map[string]string)
 	for _, token := range market.Tokens {
 		tokenMap[token.TokenID] = token.Outcome
@@ -3045,6 +3049,7 @@ func createTrader(id string, market *api.Market, engine *paper.Engine, restClien
 		CopytradeLabel:    copytradeTarget.Label,
 		CopytradePoller:   copytradePoller,
 		CopytradeState:    newPaperbotCopytradeState(),
+		BackgroundCtx:     backgroundCtx,
 	}
 }
 
@@ -3080,8 +3085,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 	// Safety timeout: based on market end time + 1 minute buffer for resolution
 	// This ensures we exit shortly after the market should have resolved
-	safetyBuffer := 1 * time.Minute
-	traderDeadline := t.EndTime.Add(safetyBuffer)
+	traderDeadline := t.EndTime.Add(paperExpiryResolutionBuffer)
 	// timeUntilDeadline := time.Until(traderDeadline)
 	// t.TUI.LogEvent("[%s] ⏰ Timeout: %v (expires + 1m)", t.ID, timeUntilDeadline.Round(time.Second))
 
@@ -3430,44 +3434,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		if isExpired && !t.MarketEnded {
 			winner := t.determineWinner()
 			if winner == "" {
+				t.MarketEnded = true
+				cancelAllPaperMakerQuotes(t, "market expired - background winner watch")
+				t.OrderBook.CancelAllOrders()
+				t.LadderMgr.CancelAllLadders()
 				if time.Since(lastResolutionPendingLog) > 1*time.Second {
-					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED_WAIT", "MARKET EXPIRED - waiting for winner confirmation")
-					t.TUI.LogEvent("[%s] ⏳ Market expired - waiting for winner confirmation (on-chain or terminal >= $0.99)", t.ID)
+					logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED_BG", "MARKET EXPIRED - moving winner confirmation to background")
+					t.TUI.LogEvent("[%s] ⏳ Market expired - scanning winner in background through -5s while foreground rotates", t.ID)
 					lastResolutionPendingLog = time.Now()
 				}
+				go t.resolveExpiredMarketInBackground()
+				finalStats := t.Engine.GetStats()
+				return &marketResult{
+					realizedPnL: finalStats.RealizedPnL - startingRealizedPnL,
+					trades:      finalStats.TotalTrades - tradesAtStart,
+				}, nil
 			} else {
-				t.MarketEnded = true
-				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "MARKET EXPIRED - resolving immediately")
-				logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
-
-				// Use detailed redemption
-				result := t.Engine.RedeemWithDetails(t.ID, winner)
-				if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
-					t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
-				}
-
-				if result.WinningShares > 0 || result.LosingShares > 0 {
-					t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
-						t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)
-					if result.LosingShares > 0 {
-						t.TUI.LogEvent("[%s] 💀 LOSS: %.0f shares → $0 (lost: $%.2f)",
-							t.ID, result.LosingShares, result.LosingCost)
-					}
-					pnlSign := "+"
-					pnlColor := "🟢"
-					if result.TotalPnL < 0 {
-						pnlSign = ""
-						pnlColor = "🔴"
-					}
-					t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
-				} else {
-					// Silenced redundant "No positions to redeem" log
-					// t.TUI.LogEvent("[%s] 📭 No positions to redeem", t.ID)
-				}
-
-				if t.CSVLogger != nil {
-					t.CSVLogger.Log("INFO", t.ID, "REDEEM", fmt.Sprintf("Winner: %s, PnL: %.2f", winner, result.TotalPnL), t.Engine.GetEquity())
-				}
+				t.redeemResolvedWinner(winner, "MARKET EXPIRED - resolving immediately")
 
 				finalStats := t.Engine.GetStats()
 				marketPnL := finalStats.RealizedPnL - startingRealizedPnL
@@ -4746,6 +4729,175 @@ func (t *MarketTrader) determineWinner() string {
 	return ""
 }
 
+func paperPostExpiryResolutionState(now, endTime time.Time) (pollInterval time.Duration, refreshTerminalQuotes bool) {
+	if endTime.IsZero() {
+		return paperResolutionRefreshInterval, false
+	}
+	if now.Before(endTime.Add(paperPostExpiryWinnerWatch)) {
+		return paperPostExpiryWinnerPoll, true
+	}
+	return paperResolutionRefreshInterval, false
+}
+
+func (t *MarketTrader) refreshWinnerQuotesFromREST(ctx context.Context) error {
+	if t.RestClient == nil {
+		return fmt.Errorf("missing rest client")
+	}
+
+	restSuccess := 0
+	var lastErr error
+	for tokenID, outcome := range t.TokenMap {
+		restCtx, restCancel := context.WithTimeout(ctx, 3*time.Second)
+		start := time.Now()
+		book, err := t.RestClient.GetOrderBook(restCtx, tokenID)
+		latency := time.Since(start)
+		restCancel()
+
+		t.TUI.UpdateRestLatency(latency)
+
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		bid, ask := 0.0, 0.0
+		for _, b := range book.Bids {
+			p, err := strconv.ParseFloat(b.Price, 64)
+			if err != nil {
+				continue
+			}
+			if p > 0 && p <= 1.0 && p > bid {
+				bid = p
+			}
+		}
+		for _, a := range book.Asks {
+			p, err := strconv.ParseFloat(a.Price, 64)
+			if err != nil {
+				continue
+			}
+			if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
+				ask = p
+			}
+		}
+
+		if bid > 0 && ask > 0 && !paperHasSaneTopOfBook(bid, ask) {
+			bid = 0
+			ask = 0
+		}
+
+		t.mu.Lock()
+		t.TokenBids[outcome] = bid
+		t.TokenAsks[outcome] = ask
+		if bid > 0 && ask > 0 && ask < 1.0 {
+			mid := (bid + ask) / 2
+			t.FloatPrices[outcome] = mid
+			t.Engine.UpdateMarketData(t.ID, outcome, mid, bid, ask)
+		} else {
+			delete(t.FloatPrices, outcome)
+		}
+		t.mu.Unlock()
+		restSuccess++
+	}
+
+	if restSuccess == 0 {
+		if lastErr != nil {
+			return lastErr
+		}
+		return fmt.Errorf("no terminal quote refresh data")
+	}
+
+	now := time.Now()
+	t.LastUpdate = now
+	syncPaperPairUpdate(t, now)
+	return nil
+}
+
+func (t *MarketTrader) redeemResolvedWinner(winner, reason string) *paper.RedemptionResult {
+	t.MarketEnded = true
+	logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "EXPIRED", "%s", reason)
+	logEvent(t.TUI, t.CSVLogger, t.Engine, "INFO", t.ID, "WINNER", "WINNER: %s", winner)
+
+	result := t.Engine.RedeemWithDetails(t.ID, winner)
+	if settled := t.Engine.SettlePendingRedemption(t.ID); settled > 0 {
+		t.TUI.LogEvent("[%s] 💸 Redeem settled: +$%.2f", t.ID, settled)
+	}
+
+	if result.WinningShares > 0 || result.LosingShares > 0 {
+		t.TUI.LogEvent("[%s] 💰 WIN: %.0f shares → $%.2f (profit: $%.2f)",
+			t.ID, result.WinningShares, result.WinningPayout, result.WinningPnL)
+		if result.LosingShares > 0 {
+			t.TUI.LogEvent("[%s] 💀 LOSS: %.0f shares → $0 (lost: $%.2f)",
+				t.ID, result.LosingShares, result.LosingCost)
+		}
+		pnlSign := "+"
+		pnlColor := "🟢"
+		if result.TotalPnL < 0 {
+			pnlSign = ""
+			pnlColor = "🔴"
+		}
+		t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
+	}
+
+	if t.CSVLogger != nil {
+		t.CSVLogger.Log("INFO", t.ID, "REDEEM", fmt.Sprintf("Winner: %s, PnL: %.2f", winner, result.TotalPnL), t.Engine.GetEquity())
+	}
+
+	return result
+}
+
+func (t *MarketTrader) resolveExpiredMarketInBackground() {
+	bgCtx := t.BackgroundCtx
+	if bgCtx == nil {
+		bgCtx = context.Background()
+	}
+
+	deadline := t.EndTime.Add(paperExpiryResolutionBuffer)
+	lastQuoteErrAt := time.Time{}
+	lastQuoteErrMsg := ""
+
+	for {
+		select {
+		case <-bgCtx.Done():
+			return
+		default:
+		}
+
+		now := time.Now()
+		pollInterval, refreshTerminalQuotes := paperPostExpiryResolutionState(now, t.EndTime)
+		if refreshTerminalQuotes {
+			refreshCtx, cancel := context.WithTimeout(bgCtx, 4*time.Second)
+			err := t.refreshWinnerQuotesFromREST(refreshCtx)
+			cancel()
+			if err != nil {
+				errMsg := err.Error()
+				if errMsg != lastQuoteErrMsg || lastQuoteErrAt.IsZero() || now.Sub(lastQuoteErrAt) >= paperResolutionErrorLogGap {
+					t.TUI.LogEvent("[%s] ⚠️ Background terminal quote refresh failed: %v", t.ID, err)
+					lastQuoteErrMsg = errMsg
+					lastQuoteErrAt = now
+				}
+			}
+		}
+
+		if winner := t.determineWinner(); winner != "" {
+			t.redeemResolvedWinner(winner, "BACKGROUND WINNER WATCH - resolving expired carry")
+			return
+		}
+
+		if !deadline.IsZero() && now.After(deadline) {
+			t.TUI.LogEvent("[%s] ⚠️ Background winner watch timed out after %s; leaving carry unresolved", t.ID, paperExpiryResolutionBuffer.Round(time.Second))
+			return
+		}
+
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-bgCtx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
 // handleRestFallback polls REST API for fresh liquidity data.
 // Returns true if any data was successfully retrieved.
 func (t *MarketTrader) handleRestFallback(ctx context.Context, tokenPrices map[string]string, staleTime time.Duration, quoteState map[string]paperQuoteState, logRecovery bool) bool {
@@ -5406,9 +5558,9 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Reason = "managing existing position"
 		bid := t.TokenBids[heldOutcome]
 		targetBid := paperbotDirectionalProfitTargetPrice(heldAvg, liveCfg.MinMarginPercent)
-		
+
 		dynamicExit := false
-		if signalReason == "" && signal.TargetOutcome != "" && signal.TargetOutcome != heldOutcome && signal.EffectiveGapPercent >= (threshold * 0.5) {
+		if signalReason == "" && signal.TargetOutcome != "" && signal.TargetOutcome != heldOutcome && signal.EffectiveGapPercent >= (threshold*0.5) {
 			dynamicExit = true
 			status.Reason = fmt.Sprintf("dynamic momentum exit (Binance flipped %s)", signal.SignalLabel)
 			logThrottled("[%s] 🚨 Binance signal reversed to %s! Dynamically cutting %s position at $%.3f", t.ID, signal.SignalLabel, heldOutcome, bid)
