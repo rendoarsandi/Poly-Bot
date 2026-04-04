@@ -149,7 +149,9 @@ func (f *BinanceFuturesPriceFeed) Snapshot(now time.Time) BinanceFuturesSignalSn
 		return snap
 	}
 
-	target := f.lastTradeAt.Add(-f.lookback)
+	// Anchor the target strictly to 'now' to ensure we measure a real-time window,
+	// preventing stale signals if the market has been quiet.
+	target := now.Add(-f.lookback)
 	baseline := f.samples[0]
 	for i := len(f.samples) - 1; i >= 0; i-- {
 		if !f.samples[i].At.After(target) {
@@ -163,8 +165,10 @@ func (f *BinanceFuturesPriceFeed) Snapshot(now time.Time) BinanceFuturesSignalSn
 	if baseline.Price > 0 {
 		snap.DeltaPercent = ((f.lastTradePrice / baseline.Price) - 1.0) * 100.0
 	}
-	baselineMinAt := target.Add(-f.lookback)
-	snap.Ready = !baseline.At.IsZero() && !baseline.At.Before(baselineMinAt) && f.lastTradeAt.Sub(baseline.At) >= f.lookback
+	// The feed is ready if the oldest sample is at least lookback time old relative to NOW.
+	// This naturally avoids needing complex stale-check logic, as true stream gaps
+	// are already handled by recordTradeSample wiping the buffer after gapResetAge.
+	snap.Ready = !baseline.At.IsZero() && now.Sub(f.samples[0].At) >= f.lookback
 	return snap
 }
 

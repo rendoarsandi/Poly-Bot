@@ -487,7 +487,6 @@ const (
 	settingsRowTradeSizingMode
 	settingsRowTradeSizingValue
 	settingsRowMinMargin
-	settingsRowBinanceThreshold
 	settingsRowBinanceExecutionDelay
 	settingsRowPaperArbMode
 	settingsRowCopytradeTarget
@@ -1908,12 +1907,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.MinMarginPercent += 0.5
 					if m.tui.settings.MinMarginPercent > 20.0 {
 						m.tui.settings.MinMarginPercent = 20.0
-					}
-					changed = true
-				case settingsRowBinanceThreshold:
-					m.tui.settings.BinanceSignalThresholdPct += 0.005
-					if m.tui.settings.BinanceSignalThresholdPct > 5.0 {
-						m.tui.settings.BinanceSignalThresholdPct = 5.0
 					}
 					changed = true
 				case settingsRowBinanceExecutionDelay:

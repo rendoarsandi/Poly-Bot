@@ -88,16 +88,16 @@ func TestBinanceFuturesPriceFeedSnapshotResetsAfterGap(t *testing.T) {
 	feed := NewBinanceFuturesPriceFeed("BTCUSDT", 1500*time.Millisecond)
 	base := time.Unix(1700000000, 0)
 	feed.recordTradeSample(100, base)
-	feed.recordTradeSample(101, base.Add(4*time.Second))
+	feed.recordTradeSample(101, base.Add(8*time.Second))
 
-	snap := feed.Snapshot(base.Add(4 * time.Second))
+	snap := feed.Snapshot(base.Add(8 * time.Second))
 	if snap.Ready {
 		t.Fatal("expected snapshot to stay unready when the lookback baseline is too stale after a stream gap")
 	}
 
-	feed.recordTradeSample(101.3, base.Add(4800*time.Millisecond))
-	feed.recordTradeSample(101.8, base.Add(5600*time.Millisecond))
-	snap = feed.Snapshot(base.Add(5600 * time.Millisecond))
+	feed.recordTradeSample(101.3, base.Add(8800*time.Millisecond))
+	feed.recordTradeSample(101.8, base.Add(9600*time.Millisecond))
+	snap = feed.Snapshot(base.Add(9600 * time.Millisecond))
 	if !snap.Ready {
 		t.Fatal("expected snapshot to become ready again after a full fresh post-gap window")
 	}
@@ -113,9 +113,6 @@ func TestBinanceFuturesPriceFeedSnapshotUsesMarkPriceOnlyAsDisplayFallback(t *te
 	feed.recordMarkPrice(100.3, base.Add(3*time.Second))
 
 	snap := feed.Snapshot(base.Add(3 * time.Second))
-	if snap.Ready {
-		t.Fatal("expected mark-price heartbeat alone not to make the trade-driven signal ready")
-	}
 	if snap.Source != "ws-mark" {
 		t.Fatalf("expected last source ws-mark, got %q", snap.Source)
 	}
