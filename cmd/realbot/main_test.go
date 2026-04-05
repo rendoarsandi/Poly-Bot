@@ -38,6 +38,36 @@ func TestPairBalancesFromPositionsMissingTokenDefaultsToZero(t *testing.T) {
 	}
 }
 
+func TestLadderedTakerAskBoundsWidensDefaultRange(t *testing.T) {
+	minAsk, maxAsk := ladderedTakerAskBounds(0.10, 0.90)
+	if minAsk != ladderedTakerMinAsk || maxAsk != ladderedTakerMaxAsk {
+		t.Fatalf("unexpected laddered bounds %.2f-%.2f", minAsk, maxAsk)
+	}
+}
+
+func TestLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
+	if !ladderedTakerEntryEligible(0.72, 0.30) {
+		t.Fatal("expected skewed pair inside ladder sum cap to be eligible")
+	}
+	if ladderedTakerEntryEligible(0.61, 0.60) {
+		t.Fatal("expected pair above ladder sum cap to be ineligible")
+	}
+	if ladderedTakerEntryEligible(0.51, 0.50) {
+		t.Fatal("expected low-skew pair to be ineligible")
+	}
+}
+
+func TestLadderedTakerBiasedBuySharesOverweightsHigherAskOutcome(t *testing.T) {
+	s0, s1 := ladderedTakerBiasedBuyShares(10, 0.72, 0.30)
+	if s0 != 10 || s1 >= s0 {
+		t.Fatalf("expected outcome0 to be primary with hedge on outcome1, got %.4f/%.4f", s0, s1)
+	}
+	s0, s1 = ladderedTakerBiasedBuyShares(10, 0.30, 0.72)
+	if s1 != 10 || s0 >= s1 {
+		t.Fatalf("expected outcome1 to be primary with hedge on outcome0, got %.4f/%.4f", s0, s1)
+	}
+}
+
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
 		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)

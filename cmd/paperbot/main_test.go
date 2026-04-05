@@ -68,6 +68,25 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	}
 }
 
+func TestPaperLadderedTakerAskBoundsWidensDefaultRange(t *testing.T) {
+	minAsk, maxAsk := ladderedTakerAskBounds(0.10, 0.90)
+	if minAsk != ladderedTakerMinAsk || maxAsk != ladderedTakerMaxAsk {
+		t.Fatalf("unexpected laddered bounds %.2f-%.2f", minAsk, maxAsk)
+	}
+}
+
+func TestPaperLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
+	if !ladderedTakerEntryEligible(0.72, 0.30) {
+		t.Fatal("expected skewed pair inside ladder sum cap to be eligible")
+	}
+	if ladderedTakerEntryEligible(0.61, 0.60) {
+		t.Fatal("expected pair above ladder sum cap to be ineligible")
+	}
+	if ladderedTakerEntryEligible(0.51, 0.50) {
+		t.Fatal("expected low-skew pair to be ineligible")
+	}
+}
+
 func TestPaperbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 

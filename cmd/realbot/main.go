@@ -77,6 +77,11 @@ const (
 	realbotMakerRequoteInterval      = 500 * time.Millisecond
 	realbotMakerMinQuoteValue        = 5.0
 	realbotMakerCashUsagePerOutcome  = 0.35
+	ladderedTakerMaxPairSum          = 1.25
+	ladderedTakerMinSkew             = 0.02
+	ladderedTakerHedgeShareRatio     = 0.35
+	ladderedTakerMinAsk              = 0.01
+	ladderedTakerMaxAsk              = 0.99
 )
 
 var globalResWatcher *api.ResolutionWatcher
@@ -3540,6 +3545,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			realbotCfg := tui.GetSettings()
 			rMinAsk := realbotCfg.MinAskPrice
 			rMaxAsk := realbotCfg.MaxAskPrice
+			ladderedMode := arbMode == paperArbModeLaddered
+			if ladderedMode {
+				rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
+			}
 
 			if ask1 >= rMinAsk && ask1 <= rMaxAsk && ask2 >= rMinAsk && ask2 <= rMaxAsk {
 				sum := ask1 + ask2
@@ -3547,8 +3556,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				executionMarginFloor := clampExecutionMarginFloor(realbotCfg.MinMarginPercent, realbotCfg.BuyExecutionMarginFloorPercent)
 				executionPriceCap := normalizedRealbotExecutionPriceCap(realbotCfg)
 				maxExecutionSum := maxExecutablePairSum(executionMarginFloor, executionPriceCap)
+				if ladderedMode {
+					maxExecutionSum = ladderedTakerMaxPairSum
+				}
 
-				if observedMargin >= realbotCfg.MinMarginPercent-1e-4 {
+				entryReady := observedMargin >= realbotCfg.MinMarginPercent-1e-4
+				if ladderedMode {
+					entryReady = ladderedTakerEntryEligible(ask1, ask2)
+				}
+				if entryReady {
 					// Evaluate risk
 					riskAction, riskReason := riskMgr.Evaluate()
 					if riskAction == paper.RiskActionKillSwitch {
@@ -3593,8 +3609,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 					sum = ask1 + ask2
 					observedMargin = pairMarginPercent(sum)
-					if observedMargin < realbotCfg.MinMarginPercent-1e-4 {
+					if !ladderedMode && observedMargin < realbotCfg.MinMarginPercent-1e-4 {
 						tui.LogEvent("[%s] ⚠️ Skipping buy: local pair margin %.2f%% below configured %.2f%%", id, observedMargin, realbotCfg.MinMarginPercent)
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
+					}
+					if ladderedMode && !ladderedTakerEntryEligible(ask1, ask2) {
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}
@@ -3606,10 +3626,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 					requestedShares = shares
 
-					if block, reason := realbotPanicBuyCompletionGuard(engine, id, outcomes[0], outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: %s", id, reason)
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-						continue
+					if !ladderedMode {
+						if block, reason := realbotPanicBuyCompletionGuard(engine, id, outcomes[0], outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
+							tui.LogEvent("[%s] ⚠️ Skipping buy: %s", id, reason)
+							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							continue
+						}
 					}
 
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across all price levels
@@ -3696,6 +3718,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					// Risk checks should use the worst price sum the bot is willing to execute through.
 					cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
+					if ladderedMode {
+						est0, est1 := ladderedTakerBiasedBuyShares(shares, ask1, ask2)
+						cost = (est0 * ask1) + (est1 * ask2)
+					}
 
 					// Use the last known cached balance here; a fresh RPC can add avoidable
 					// latency right when we need to submit the panic-buy legs.
@@ -3709,9 +3735,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Skipping conservative balance checks (costWithBuffer > currentCash) to allow max execution.
 					// If balance is insufficient, the API call will fail naturally.
 
-					// Check why we might skip trading
-					if shares < 1.0 {
-						tui.LogEvent("[%s] ⚠️ Actionable matched liquidity below 1.0 share minimum: %.2f", id, shares)
+					minEntryShares := 1.0
+					if ladderedMode {
+						minEntryShares = minOnChainActionShares
+					}
+
+					// Check why we might skip trading.
+					if shares < minEntryShares {
+						tui.LogEvent("[%s] ⚠️ Actionable matched liquidity below %.2f share minimum: %.4f", id, minEntryShares, shares)
 						continue
 					}
 					if time.Since(lastTrade) <= 2*time.Second {
@@ -3720,22 +3751,46 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 
 					if true { // Always execute if we got here
-						limitPrice1, limitPrice2, capErr := core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, executionPriceCap, executionMarginFloor)
-						if capErr != nil {
-							tui.LogEvent("[%s] ⚠️ Skipping trade: %v", id, capErr)
+						limitPrice1 := 0.0
+						limitPrice2 := 0.0
+						if ladderedMode {
+							limitPrice1 = realbotDirectionalBuyLimitPrice(ask1, rMaxAsk)
+							limitPrice2 = realbotDirectionalBuyLimitPrice(ask2, rMaxAsk)
+						} else {
+							var capErr error
+							limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, executionPriceCap, executionMarginFloor)
+							if capErr != nil {
+								tui.LogEvent("[%s] ⚠️ Skipping trade: %v", id, capErr)
+								continue
+							}
+						}
+
+						requestSize1 := shares
+						requestSize2 := shares
+						if ladderedMode {
+							requestSize1, requestSize2 = ladderedTakerBiasedBuyShares(shares, ask1, ask2)
+						}
+						if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
+							tui.LogEvent("[%s] ⚠️ Actionable laddered legs below %.2f share minimum: %s/%s", id, minEntryShares, formatShareQty(requestSize1), formatShareQty(requestSize2))
 							continue
 						}
-						budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
-						if budgetCappedShares < shares {
-							tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to stay within $%.2f trade budget at live caps", id, formatShareQty(shares), formatShareQty(budgetCappedShares), tradeSize)
-							shares = budgetCappedShares
+
+						if !ladderedMode {
+							budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
+							if budgetCappedShares < shares {
+								tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to stay within $%.2f trade budget at live caps", id, formatShareQty(shares), formatShareQty(budgetCappedShares), tradeSize)
+								shares = budgetCappedShares
+								requestSize1 = shares
+								requestSize2 = shares
+							}
+							if shares < minEntryShares {
+								tui.LogEvent("[%s] ⚠️ Actionable size fell below %.2f share after cap-based budget clamp", id, minEntryShares)
+								continue
+							}
 						}
-						if shares < 1 {
-							tui.LogEvent("[%s] ⚠️ Actionable size fell below 1 share after cap-based budget clamp", id)
-							continue
-						}
-						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f + %s@$%.3f→%.3f = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-							id, outcomes[0], ask1, limitPrice1, outcomes[1], ask2, limitPrice2, sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+
+						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+							id, outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 						// Map tokens
 						token0, token1 := "", ""
@@ -3747,15 +3802,30 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// Ensure the actual market-like buy payload still fits the latest cash snapshot.
-						safeShares := realbotClampBuySharesToBudget(shares, currentBalance, limitPrice1, limitPrice2)
-						if safeShares < shares {
-							tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", id, formatShareQty(shares), formatShareQty(safeShares), currentBalance)
-							shares = safeShares
-						}
-						if shares < 1 {
-							tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", id)
-							continue
+						// Ensure the buy payload still fits the latest balance snapshot.
+						if ladderedMode {
+							estimatedCost := (requestSize1 * limitPrice1) + (requestSize2 * limitPrice2)
+							if estimatedCost > currentBalance && estimatedCost > 0 {
+								scale := currentBalance / estimatedCost
+								requestSize1 = normalizeMarketBuyShares(requestSize1 * scale)
+								requestSize2 = normalizeMarketBuyShares(requestSize2 * scale)
+							}
+							if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
+								tui.LogEvent("[%s] ⚠️ Skipping buy: laddered legs no longer fit balance (%s/%s)", id, formatShareQty(requestSize1), formatShareQty(requestSize2))
+								continue
+							}
+						} else {
+							safeShares := realbotClampBuySharesToBudget(shares, currentBalance, limitPrice1, limitPrice2)
+							if safeShares < shares {
+								tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", id, formatShareQty(shares), formatShareQty(safeShares), currentBalance)
+								shares = safeShares
+								requestSize1 = shares
+								requestSize2 = shares
+							}
+							if shares < minEntryShares {
+								tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", id)
+								continue
+							}
 						}
 
 						if entryGate != nil && !entryGate.TryAcquire() {
@@ -3794,7 +3864,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								TokenID:        token0,
 								Outcome:        outcomes[0],
 								Price:          limitPrice1,
-								Size:           shares,
+								Size:           requestSize1,
 								FeeRateBps:     rate1,
 								InitialBalance: initialBal0,
 							},
@@ -3803,7 +3873,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								TokenID:        token1,
 								Outcome:        outcomes[1],
 								Price:          limitPrice2,
-								Size:           shares,
+								Size:           requestSize2,
 								FeeRateBps:     rate2,
 								InitialBalance: initialBal1,
 							},
@@ -3815,10 +3885,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						rawFilled1, rawFilled2 := exec1.ExecutedQty, exec2.ExecutedQty
 						filled1, filled2 := rawFilled1, rawFilled2
 						side1Success, side2Success := exec1.Success, exec2.Success
-						logDirectExecutionAudit(tui, id, "Side 1 BUY", shares, limitPrice1, exec1)
-						logDirectExecutionAudit(tui, id, "Side 2 BUY", shares, limitPrice2, exec2)
+						logDirectExecutionAudit(tui, id, "Side 1 BUY", requestSize1, limitPrice1, exec1)
+						logDirectExecutionAudit(tui, id, "Side 2 BUY", requestSize2, limitPrice2, exec2)
 						if bal0, bal1, verifySource, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr == nil {
-							tui.LogEvent("[%s] 🔍 Verify Positions (%s): %s=%.4f, %s=%.4f (Target: %.0f)", id, verifySource, outcomes[0], bal0, outcomes[1], bal1, shares)
+							tui.LogEvent("[%s] 🔍 Verify Positions (%s): %s=%.4f, %s=%.4f (Target: %s/%s)", id, verifySource, outcomes[0], bal0, outcomes[1], bal1, formatShareQty(requestSize1), formatShareQty(requestSize2))
 						} else {
 							tui.LogEvent("[%s] ⚠️ External position snapshot unavailable after direct buy: %v", id, verifyErr)
 						}
@@ -3830,8 +3900,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							cancelAttr()
 							if attrErr == nil || shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
 								attributionTrusted = true
-								filled1 = attributedBuyFill(exec1, shares, acquired0, true)
-								filled2 = attributedBuyFill(exec2, shares, acquired1, true)
+								filled1 = attributedBuyFill(exec1, requestSize1, acquired0, true)
+								filled2 = attributedBuyFill(exec2, requestSize2, acquired1, true)
 								side1Success = hasConfirmedExecutedQty(api.SideBuy, filled1)
 								side2Success = hasConfirmedExecutedQty(api.SideBuy, filled2)
 								if shouldAttemptCleanupSell(initialSnapshot0) || shouldAttemptCleanupSell(initialSnapshot1) || math.Abs(rawFilled1-filled1) > 0.01 || math.Abs(rawFilled2-filled2) > 0.01 {
@@ -3842,8 +3912,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 						if !attributionTrusted {
-							filled1 = attributedBuyFill(exec1, shares, 0, false)
-							filled2 = attributedBuyFill(exec2, shares, 0, false)
+							filled1 = attributedBuyFill(exec1, requestSize1, 0, false)
+							filled2 = attributedBuyFill(exec2, requestSize2, 0, false)
 							side1Success = side1Success && hasConfirmedExecutedQty(api.SideBuy, filled1)
 							side2Success = side2Success && hasConfirmedExecutedQty(api.SideBuy, filled2)
 						} else {
@@ -3857,8 +3927,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// Calculate costs using the observed trigger prices for reporting.
 						// Polymarket does not expose exact per-leg execution price through this path.
-						cost1 := reportedBuyCost(exec1, ask1, filled1, shares)
-						cost2 := reportedBuyCost(exec2, ask2, filled2, shares)
+						cost1 := reportedBuyCost(exec1, ask1, filled1, requestSize1)
+						cost2 := reportedBuyCost(exec2, ask2, filled2, requestSize2)
 						executionMode := paperArbModeTaker
 						if arbMode == paperArbModeLaddered {
 							executionMode = paperArbModeLaddered
@@ -3866,7 +3936,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// Log results based on VERIFIED state
 						if side1Success {
-							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, shares)
+							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, requestSize1)
 							tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
@@ -3879,11 +3949,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 							}
-							tui.RecordOrderWithMode(id, outcomes[0], "BUY", shares, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
+							tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
 						}
 
 						if side2Success {
-							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, shares)
+							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, requestSize2)
 							tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
@@ -3896,7 +3966,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 							}
-							tui.RecordOrderWithMode(id, outcomes[1], "BUY", shares, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
+							tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
 						}
 
 						// ═══════════════════════════════════════════════════════════════
@@ -4733,6 +4803,54 @@ func pairBalancesFromPositions(positions []trading.PositionInfo, token0, token1 
 
 func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
+}
+
+func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
+	if minAsk > ladderedTakerMinAsk {
+		minAsk = ladderedTakerMinAsk
+	}
+	if maxAsk < ladderedTakerMaxAsk {
+		maxAsk = ladderedTakerMaxAsk
+	}
+	if maxAsk > 0.99 {
+		maxAsk = 0.99
+	}
+	if minAsk < 0.01 {
+		minAsk = 0.01
+	}
+	if minAsk > maxAsk {
+		minAsk = 0.01
+	}
+	return minAsk, maxAsk
+}
+
+func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
+	sum := ask0 + ask1
+	if sum <= 0 || sum > ladderedTakerMaxPairSum+1e-9 {
+		return false
+	}
+	if math.Abs(ask0-ask1) < ladderedTakerMinSkew-1e-9 {
+		return false
+	}
+	return true
+}
+
+func ladderedTakerBiasedBuyShares(baseShares, ask0, ask1 float64) (float64, float64) {
+	base := normalizeMarketBuyShares(baseShares)
+	if base <= 0 {
+		return 0, 0
+	}
+	hedge := normalizeMarketBuyShares(base * ladderedTakerHedgeShareRatio)
+	if hedge < minOnChainActionShares {
+		hedge = minOnChainActionShares
+	}
+	if hedge > base {
+		hedge = base
+	}
+	if ask0 >= ask1 {
+		return base, hedge
+	}
+	return hedge, base
 }
 
 func computeRealbotMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
