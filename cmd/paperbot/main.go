@@ -5048,7 +5048,6 @@ func (t *MarketTrader) redeemResolvedWinner(winner, reason string) *paper.Redemp
 			pnlColor = "🔴"
 		}
 		t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
-		t.TUI.AttachDelayedRoundPnL(result.TotalPnL)
 	}
 
 	if t.CSVLogger != nil {
