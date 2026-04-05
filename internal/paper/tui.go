@@ -2932,28 +2932,42 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 	if len(positions) == 0 && len(redemptions) == 0 {
 		return ""
 	}
-	byOutcome := make(map[string]float64)
-	winnerOutcomes := make(map[string]bool)
 
-	// Add unresolved positions
-	for _, pos := range positions {
-		outcome := strings.TrimSpace(pos.Outcome)
+	type outcomeTotal struct {
+		shares float64
+		cost   float64
+		isWin  bool
+	}
+	byOutcome := make(map[string]*outcomeTotal)
+
+	getOt := func(outcome string) *outcomeTotal {
+		outcome = strings.TrimSpace(outcome)
 		if outcome == "" {
 			outcome = "Unknown"
 		}
-		byOutcome[outcome] += pos.Quantity
+		if _, ok := byOutcome[outcome]; !ok {
+			byOutcome[outcome] = &outcomeTotal{}
+		}
+		return byOutcome[outcome]
 	}
 
-	// Add resolved positions
+	for _, pos := range positions {
+		ot := getOt(pos.Outcome)
+		ot.shares += pos.Quantity
+		ot.cost += pos.TotalCost
+	}
+
 	for _, req := range redemptions {
 		if req.WinningShares > 0 && req.WinningOutcome != "" {
-			outcome := strings.TrimSpace(req.WinningOutcome)
-			byOutcome[outcome] += req.WinningShares
-			winnerOutcomes[strings.ToLower(outcome)] = true
+			ot := getOt(req.WinningOutcome)
+			ot.shares += req.WinningShares
+			ot.cost += req.WinningCost
+			ot.isWin = true
 		}
 		if req.LosingShares > 0 && req.LosingOutcome != "" {
-			outcome := strings.TrimSpace(req.LosingOutcome)
-			byOutcome[outcome] += req.LosingShares
+			ot := getOt(req.LosingOutcome)
+			ot.shares += req.LosingShares
+			ot.cost += req.LosingCost
 		}
 	}
 
@@ -2961,44 +2975,29 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 		return ""
 	}
 
-	type outcomeTotal struct {
+	type orderedItem struct {
 		outcome string
-		shares  float64
-		isWin   bool
+		total   *outcomeTotal
 	}
-	ordered := make([]outcomeTotal, 0, len(byOutcome))
-	for outcome, shares := range byOutcome {
-		isWin := winnerOutcomes[strings.ToLower(outcome)]
-		ordered = append(ordered, outcomeTotal{outcome: outcome, shares: shares, isWin: isWin})
+	ordered := make([]orderedItem, 0, len(byOutcome))
+	for outcome, total := range byOutcome {
+		ordered = append(ordered, orderedItem{outcome: outcome, total: total})
 	}
 	sort.Slice(ordered, func(i, j int) bool {
-		left := strings.ToLower(strings.TrimSpace(ordered[i].outcome))
-		right := strings.ToLower(strings.TrimSpace(ordered[j].outcome))
-		rank := func(name string) int {
-			switch name {
-			case "up":
-				return 0
-			case "down":
-				return 1
-			case "yes":
-				return 2
-			case "no":
-				return 3
-			default:
-				return 4
-			}
-		}
-		if rank(left) != rank(right) {
-			return rank(left) < rank(right)
-		}
-		return left < right
+		return outcomeLess(ordered[i].outcome, ordered[j].outcome)
 	})
 
 	parts := make([]string, 0, len(ordered))
 	for _, item := range ordered {
-		text := fmt.Sprintf("%s %s", core.SanitizeString(item.outcome), formatDisplayShareQty(item.shares))
-		if item.isWin {
+		avgPrice := 0.0
+		if item.total.shares > 0 {
+			avgPrice = item.total.cost / item.total.shares
+		}
+		text := fmt.Sprintf("%s %s@$%.2f", core.SanitizeString(item.outcome), formatDisplayShareQty(item.total.shares), avgPrice)
+		if item.total.isWin {
 			text += styleGreen.Render(" ✓")
+		} else if len(redemptions) > 0 {
+			text += styleRed.Render(" ✗")
 		}
 		parts = append(parts, text)
 	}
@@ -3362,29 +3361,35 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 	buyMargin := 0.0
 
 	if len(mkt.Outcomes) == 2 {
-		bid1 := mkt.Bids[mkt.Outcomes[0]]
-		ask1 := mkt.Asks[mkt.Outcomes[0]]
-		bid2 := mkt.Bids[mkt.Outcomes[1]]
-		ask2 := mkt.Asks[mkt.Outcomes[1]]
+		outStr0 := mkt.Outcomes[0]
+		outStr1 := mkt.Outcomes[1]
+		if !outcomeLess(outStr0, outStr1) {
+			outStr0, outStr1 = outStr1, outStr0
+		}
 
-		bid1 = recentDisplayQuote(bid1, mkt.RealBids[mkt.Outcomes[0]], age, mkt.ClearedBids[mkt.Outcomes[0]])
-		ask1 = recentDisplayQuote(ask1, mkt.RealAsks[mkt.Outcomes[0]], age, mkt.ClearedAsks[mkt.Outcomes[0]])
-		bid2 = recentDisplayQuote(bid2, mkt.RealBids[mkt.Outcomes[1]], age, mkt.ClearedBids[mkt.Outcomes[1]])
-		ask2 = recentDisplayQuote(ask2, mkt.RealAsks[mkt.Outcomes[1]], age, mkt.ClearedAsks[mkt.Outcomes[1]])
+		bid1 := mkt.Bids[outStr0]
+		ask1 := mkt.Asks[outStr0]
+		bid2 := mkt.Bids[outStr1]
+		ask2 := mkt.Asks[outStr1]
+
+		bid1 = recentDisplayQuote(bid1, mkt.RealBids[outStr0], age, mkt.ClearedBids[outStr0])
+		ask1 = recentDisplayQuote(ask1, mkt.RealAsks[outStr0], age, mkt.ClearedAsks[outStr0])
+		bid2 = recentDisplayQuote(bid2, mkt.RealBids[outStr1], age, mkt.ClearedBids[outStr1])
+		ask2 = recentDisplayQuote(ask2, mkt.RealAsks[outStr1], age, mkt.ClearedAsks[outStr1])
 		if looksTerminalBook(mkt.Outcomes, mkt.RealBids, mkt.RealAsks) {
 			// Preserve the last terminal-looking quotes even when the live WS feed
 			// goes sparse near expiry, so the panel does not regress to "--.-".
 			if bid1 == 0 {
-				bid1 = mkt.RealBids[mkt.Outcomes[0]]
+				bid1 = mkt.RealBids[outStr0]
 			}
 			if ask1 == 0 {
-				ask1 = mkt.RealAsks[mkt.Outcomes[0]]
+				ask1 = mkt.RealAsks[outStr0]
 			}
 			if bid2 == 0 {
-				bid2 = mkt.RealBids[mkt.Outcomes[1]]
+				bid2 = mkt.RealBids[outStr1]
 			}
 			if ask2 == 0 {
-				ask2 = mkt.RealAsks[mkt.Outcomes[1]]
+				ask2 = mkt.RealAsks[outStr1]
 			}
 		}
 
@@ -3429,8 +3434,8 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			return fmt.Sprintf("%.2f", v)
 		}
 
-		o1 := core.SanitizeString(mkt.Outcomes[0])
-		o2 := core.SanitizeString(mkt.Outcomes[1])
+		o1 := core.SanitizeString(outStr0)
+		o2 := core.SanitizeString(outStr1)
 		maxLbl := 4
 		if len(o1) > maxLbl {
 			o1 = o1[:maxLbl]
@@ -4557,7 +4562,7 @@ func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 	for oc := range byOutcome {
 		outcomes = append(outcomes, oc)
 	}
-	sort.Strings(outcomes)
+	sort.Slice(outcomes, func(i, j int) bool { return outcomeLess(outcomes[i], outcomes[j]) })
 
 	for _, oc := range outcomes {
 		ords := byOutcome[oc]
@@ -4714,11 +4719,12 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 				marginText = fmt.Sprintf("%s$%.2f (%.1f%%)", sg, math.Abs(o.Profit), o.Margin)
 			}
 		} else {
-			if o.Margin == 0.0 && modeLabel != "" {
+			if modeLabel != "" {
 				marginText = modeLabel
 				marginSt = styleDimmed
 			} else {
-				marginText = fmt.Sprintf("%.2f%%", o.Margin)
+				marginText = "BUY"
+				marginSt = styleDimmed
 			}
 		}
 
@@ -5343,4 +5349,27 @@ func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	if s.TradeScaleFactor > 0 {
 		t.tradeFactor = s.TradeScaleFactor
 	}
+}
+
+func outcomeLess(a, b string) bool {
+	aStr := strings.ToLower(strings.TrimSpace(a))
+	bStr := strings.ToLower(strings.TrimSpace(b))
+	rank := func(name string) int {
+		switch name {
+		case "up":
+			return 0
+		case "down":
+			return 1
+		case "yes":
+			return 2
+		case "no":
+			return 3
+		default:
+			return 4
+		}
+	}
+	if rank(aStr) != rank(bStr) {
+		return rank(aStr) < rank(bStr)
+	}
+	return aStr < bStr
 }
