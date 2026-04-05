@@ -1057,14 +1057,14 @@ func TestRenderSettingsShowsLadderCooldownAndHidesUnrelatedRows(t *testing.T) {
 		PaperArbMode:                   "laddered-taker",
 		LadderedTakerSizingMode:        core.LadderedTakerSizingModeShares,
 		LadderedTakerSizeShares:        3.5,
-		LadderedTakerCooldownMs:        1800,
+		LadderedTakerReentryMoveCents:  1.8,
 		MinMarginPercent:               2.0,
 		TakerCloseMarket:               true,
 		BuyExecutionMarginFloorPercent: -0.02,
 	}, nil)
 
 	view := (tuiModel{tui: tui}).renderSettings(120)
-	for _, want := range []string{"Ladder Cooldown", "1800ms"} {
+	for _, want := range []string{"Ladder Re-entry Move", "1.8c"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("renderSettings() missing %q\n%s", want, view)
 		}
@@ -1856,18 +1856,18 @@ func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
 	}
 }
 
-func TestNormalizeTUISettingsClampsLadderedTakerCooldown(t *testing.T) {
-	got := normalizeTUISettings(TUISettings{LadderedTakerCooldownMs: 0})
-	if got.LadderedTakerCooldownMs != 2000 {
-		t.Fatalf("expected default ladder cooldown 2000ms, got %d", got.LadderedTakerCooldownMs)
+func TestNormalizeTUISettingsClampsLadderedTakerReentryMove(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{LadderedTakerReentryMoveCents: 0})
+	if got.LadderedTakerReentryMoveCents != 1.0 {
+		t.Fatalf("expected default ladder reentry move 1.0c, got %.1f", got.LadderedTakerReentryMoveCents)
 	}
-	got = normalizeTUISettings(TUISettings{LadderedTakerCooldownMs: 50})
-	if got.LadderedTakerCooldownMs != 100 {
-		t.Fatalf("expected cooldown to clamp to 100ms, got %d", got.LadderedTakerCooldownMs)
+	got = normalizeTUISettings(TUISettings{LadderedTakerReentryMoveCents: 0.01})
+	if got.LadderedTakerReentryMoveCents != 0.1 {
+		t.Fatalf("expected ladder reentry move to clamp to 0.1c, got %.1f", got.LadderedTakerReentryMoveCents)
 	}
-	got = normalizeTUISettings(TUISettings{LadderedTakerCooldownMs: 70000})
-	if got.LadderedTakerCooldownMs != 60000 {
-		t.Fatalf("expected cooldown to clamp to 60000ms, got %d", got.LadderedTakerCooldownMs)
+	got = normalizeTUISettings(TUISettings{LadderedTakerReentryMoveCents: 70})
+	if got.LadderedTakerReentryMoveCents != 25.0 {
+		t.Fatalf("expected ladder reentry move to clamp to 25.0c, got %.1f", got.LadderedTakerReentryMoveCents)
 	}
 }
 

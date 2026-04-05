@@ -62,11 +62,11 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"copytradeSizeUsdc": 3.4,
 		"copytradeSizeShares": 7.5,
 		"copytradeSizePercent": 12.5,
-			"ladderedTakerSizingMode": "shares",
-			"ladderedTakerSizeUsdc": 2.2,
-			"ladderedTakerSizeShares": 4.5,
-			"ladderedTakerCooldownMs": 3500,
-			"binanceQuoteAsset": "USDT",
+		"ladderedTakerSizingMode": "shares",
+		"ladderedTakerSizeUsdc": 2.2,
+		"ladderedTakerSizeShares": 4.5,
+		"ladderedTakerReentryMoveCents": 1.6,
+		"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
 		"binanceSignalCooldownMs": 3200,
@@ -139,8 +139,8 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.LadderedTakerSizeShares != 4.5 {
 		t.Fatalf("expected JSON LadderedTakerSizeShares 4.5, got %.1f", cfg.LadderedTakerSizeShares)
 	}
-	if cfg.LadderedTakerCooldownMs != 3500 {
-		t.Fatalf("expected JSON LadderedTakerCooldownMs 3500, got %d", cfg.LadderedTakerCooldownMs)
+	if cfg.LadderedTakerReentryMoveCents != 1.6 {
+		t.Fatalf("expected JSON LadderedTakerReentryMoveCents 1.6, got %.1f", cfg.LadderedTakerReentryMoveCents)
 	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
@@ -204,7 +204,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.LadderedTakerSizingMode = LadderedTakerSizingModeShares
 	cfg.LadderedTakerSizeUSDC = 2.5
 	cfg.LadderedTakerSizeShares = 3.5
-	cfg.LadderedTakerCooldownMs = 4100
+	cfg.LadderedTakerReentryMoveCents = 1.9
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -280,8 +280,8 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.LadderedTakerSizeShares != 3.5 {
 		t.Fatalf("expected saved LadderedTakerSizeShares 3.5, got %.1f", settings.LadderedTakerSizeShares)
 	}
-	if settings.LadderedTakerCooldownMs != 4100 {
-		t.Fatalf("expected saved LadderedTakerCooldownMs 4100, got %d", settings.LadderedTakerCooldownMs)
+	if settings.LadderedTakerReentryMoveCents != 1.9 {
+		t.Fatalf("expected saved LadderedTakerReentryMoveCents 1.9, got %.1f", settings.LadderedTakerReentryMoveCents)
 	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
@@ -342,15 +342,15 @@ func TestCalculateLadderedTakerSharesForMode(t *testing.T) {
 	}
 }
 
-func TestNormalizeLadderedTakerCooldownMs(t *testing.T) {
-	if got := normalizeLadderedTakerCooldownMs(0); got != 2000 {
-		t.Fatalf("expected default ladder cooldown 2000ms, got %d", got)
+func TestNormalizeLadderedTakerReentryMoveCents(t *testing.T) {
+	if got := normalizeLadderedTakerReentryMoveCents(0); got != 1.0 {
+		t.Fatalf("expected default ladder reentry move 1.0c, got %.1f", got)
 	}
-	if got := normalizeLadderedTakerCooldownMs(50); got != 100 {
-		t.Fatalf("expected cooldown to clamp to 100ms, got %d", got)
+	if got := normalizeLadderedTakerReentryMoveCents(0.01); got != 0.1 {
+		t.Fatalf("expected ladder reentry move to clamp to 0.1c, got %.1f", got)
 	}
-	if got := normalizeLadderedTakerCooldownMs(70000); got != 60000 {
-		t.Fatalf("expected cooldown to clamp to 60000ms, got %d", got)
+	if got := normalizeLadderedTakerReentryMoveCents(80); got != 25.0 {
+		t.Fatalf("expected ladder reentry move to clamp to 25.0c, got %.1f", got)
 	}
 }
 

@@ -68,12 +68,15 @@ func TestLadderedTakerBiasedBuySharesOverweightsHigherAskOutcome(t *testing.T) {
 	}
 }
 
-func TestRealbotLadderedEntryCooldownUsesSetting(t *testing.T) {
-	if got := realbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 0}); got != 2*time.Second {
-		t.Fatalf("expected default ladder cooldown 2s, got %s", got)
+func TestLadderedTakerEntryMovedEnoughUsesMoveThreshold(t *testing.T) {
+	if !ladderedTakerEntryMovedEnough(false, 0.50, 0.40, 0.50, 0.40, 1.0) {
+		t.Fatal("expected first laddered entry with no previous anchor to be allowed")
 	}
-	if got := realbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 1300}); got != 1300*time.Millisecond {
-		t.Fatalf("expected configured ladder cooldown 1300ms, got %s", got)
+	if ladderedTakerEntryMovedEnough(true, 0.50, 0.40, 0.504, 0.404, 1.0) {
+		t.Fatal("expected sub-threshold move to block laddered re-entry")
+	}
+	if !ladderedTakerEntryMovedEnough(true, 0.50, 0.40, 0.51, 0.40, 1.0) {
+		t.Fatal("expected 1.0c move to allow laddered re-entry")
 	}
 }
 

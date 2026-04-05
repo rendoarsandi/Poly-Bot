@@ -848,7 +848,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		LadderedTakerSizingMode:        cfg.LadderedTakerSizingMode,
 		LadderedTakerSizeUSDC:          cfg.LadderedTakerSizeUSDC,
 		LadderedTakerSizeShares:        cfg.LadderedTakerSizeShares,
-		LadderedTakerCooldownMs:        cfg.LadderedTakerCooldownMs,
+		LadderedTakerReentryMoveCents:  cfg.LadderedTakerReentryMoveCents,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
@@ -892,7 +892,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.LadderedTakerSizingMode = s.LadderedTakerSizingMode
 	cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
 	cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
-	cfg.LadderedTakerCooldownMs = s.LadderedTakerCooldownMs
+	cfg.LadderedTakerReentryMoveCents = s.LadderedTakerReentryMoveCents
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -2222,6 +2222,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	polySignalTracker := paper.NewDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
+	ladderedLastEntrySet := false
+	ladderedLastEntryAsk0 := 0.0
+	ladderedLastEntryAsk1 := 0.0
 	lastBinanceLog := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -3745,12 +3748,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] ⚠️ Actionable matched liquidity below %.2f share minimum: %.4f", id, minEntryShares, shares)
 						continue
 					}
-					entryCooldown := 2 * time.Second
-					if ladderedMode {
-						entryCooldown = realbotLadderedEntryCooldown(realbotCfg)
-					}
-					if time.Since(lastTrade) <= entryCooldown {
+					if !ladderedMode && time.Since(lastTrade) <= 2*time.Second {
 						// Cooldown - don't spam logs, just skip silently
+						continue
+					}
+					if ladderedMode && !ladderedTakerEntryMovedEnough(ladderedLastEntrySet, ladderedLastEntryAsk0, ladderedLastEntryAsk1, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents) {
 						continue
 					}
 
@@ -4030,7 +4032,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							if arbMode == paperArbModeLaddered {
 								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s, %s=%s", id, outcomes[0], formatShareQty(filled1), outcomes[1], formatShareQty(filled2))
-								panicBuyCooldown = time.Now().Add(realbotLadderedEntryCooldown(realbotCfg))
+								ladderedLastEntrySet = true
+								ladderedLastEntryAsk0 = ask1
+								ladderedLastEntryAsk1 = ask2
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
@@ -4809,18 +4813,24 @@ func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
 }
 
-func realbotLadderedEntryCooldown(cfg paper.TUISettings) time.Duration {
-	cooldown := time.Duration(cfg.LadderedTakerCooldownMs) * time.Millisecond
-	switch {
-	case cooldown <= 0:
-		return 2 * time.Second
-	case cooldown < 100*time.Millisecond:
-		return 100 * time.Millisecond
-	case cooldown > 60*time.Second:
-		return 60 * time.Second
-	default:
-		return cooldown
+func ladderedTakerEntryMovedEnough(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) bool {
+	if !hasLast {
+		return true
 	}
+	moveDelta := moveCents
+	switch {
+	case moveDelta <= 0:
+		moveDelta = 1.0
+	case moveDelta < 0.1:
+		moveDelta = 0.1
+	case moveDelta > 25.0:
+		moveDelta = 25.0
+	}
+	threshold := moveDelta / 100.0
+	legMove := math.Max(math.Abs(ask0-lastAsk0), math.Abs(ask1-lastAsk1))
+	sumMove := math.Abs((ask0 + ask1) - (lastAsk0 + lastAsk1))
+	skewMove := math.Abs((ask0 - ask1) - (lastAsk0 - lastAsk1))
+	return legMove >= threshold-1e-9 || sumMove >= threshold-1e-9 || skewMove >= threshold-1e-9
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {

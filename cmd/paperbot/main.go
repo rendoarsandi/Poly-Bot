@@ -2658,44 +2658,44 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
-		Exchange:                     cfg.Exchange,
-		MarketSlug:                   cfg.MarketSlug,
-		MaxMarkets:                   cfg.MaxMarkets,
-		PaperBalance:                 cfg.PaperBalance,
-		Timeframe:                    cfg.Timeframe,
-		TradeSizingMode:              cfg.TradeSizingMode,
-		TradeScaleFactor:             cfg.TradeScaleFactor,
-		TradeSizeUSDC:                cfg.TradeSizeUSDC,
-		MinMarginPercent:             cfg.MinMarginPercent,
-		BinanceSignalThresholdPct:    cfg.BinanceSignalThresholdPct,
-		PaperBinanceExecutionDelayMs: cfg.PaperBinanceExecutionDelayMs,
-		PaperArbMode:                 normalizePaperArbMode(cfg.PaperArbMode),
-		CopytradeTarget:              cfg.CopytradeTarget,
-		CopytradePollIntervalMs:      cfg.CopytradePollIntervalMs,
-		CopytradeSizingMode:          cfg.CopytradeSizingMode,
-		CopytradeSizeUSDC:            cfg.CopytradeSizeUSDC,
-		CopytradeSizeShares:          cfg.CopytradeSizeShares,
-		CopytradeSizePercent:         cfg.CopytradeSizePercent,
-		CopytradeMaxSlippagePct:      cfg.CopytradeMaxSlippagePct,
-		LadderedTakerSizingMode:      cfg.LadderedTakerSizingMode,
-		LadderedTakerSizeUSDC:        cfg.LadderedTakerSizeUSDC,
-		LadderedTakerSizeShares:      cfg.LadderedTakerSizeShares,
-		LadderedTakerCooldownMs:      cfg.LadderedTakerCooldownMs,
-		SplitMinMarginSell:           cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:         cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:           cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:         cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds:      cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:                cfg.MakerQuoteGap,
-		MinAskPrice:                  cfg.MinAskPrice,
-		MaxAskPrice:                  cfg.MaxAskPrice,
-		MaxTradeSize:                 cfg.MaxTradeSize,
-		MaxDailyLoss:                 cfg.MaxDailyLoss,
-		TakerCloseMarket:             cfg.TakerCloseMarket,
-		TakerCloseMarketTime:         cfg.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:     cfg.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:     cfg.TakerCloseMarketMinPrice,
-		TradingHoursMode:             cfg.TradingHoursMode,
+		Exchange:                      cfg.Exchange,
+		MarketSlug:                    cfg.MarketSlug,
+		MaxMarkets:                    cfg.MaxMarkets,
+		PaperBalance:                  cfg.PaperBalance,
+		Timeframe:                     cfg.Timeframe,
+		TradeSizingMode:               cfg.TradeSizingMode,
+		TradeScaleFactor:              cfg.TradeScaleFactor,
+		TradeSizeUSDC:                 cfg.TradeSizeUSDC,
+		MinMarginPercent:              cfg.MinMarginPercent,
+		BinanceSignalThresholdPct:     cfg.BinanceSignalThresholdPct,
+		PaperBinanceExecutionDelayMs:  cfg.PaperBinanceExecutionDelayMs,
+		PaperArbMode:                  normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:               cfg.CopytradeTarget,
+		CopytradePollIntervalMs:       cfg.CopytradePollIntervalMs,
+		CopytradeSizingMode:           cfg.CopytradeSizingMode,
+		CopytradeSizeUSDC:             cfg.CopytradeSizeUSDC,
+		CopytradeSizeShares:           cfg.CopytradeSizeShares,
+		CopytradeSizePercent:          cfg.CopytradeSizePercent,
+		CopytradeMaxSlippagePct:       cfg.CopytradeMaxSlippagePct,
+		LadderedTakerSizingMode:       cfg.LadderedTakerSizingMode,
+		LadderedTakerSizeUSDC:         cfg.LadderedTakerSizeUSDC,
+		LadderedTakerSizeShares:       cfg.LadderedTakerSizeShares,
+		LadderedTakerReentryMoveCents: cfg.LadderedTakerReentryMoveCents,
+		SplitMinMarginSell:            cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:          cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:            cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:          cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:       cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:                 cfg.MakerQuoteGap,
+		MinAskPrice:                   cfg.MinAskPrice,
+		MaxAskPrice:                   cfg.MaxAskPrice,
+		MaxTradeSize:                  cfg.MaxTradeSize,
+		MaxDailyLoss:                  cfg.MaxDailyLoss,
+		TakerCloseMarket:              cfg.TakerCloseMarket,
+		TakerCloseMarketTime:          cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:      cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:      cfg.TakerCloseMarketMinPrice,
+		TradingHoursMode:              cfg.TradingHoursMode,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -2719,7 +2719,7 @@ func run() error {
 		cfg.LadderedTakerSizingMode = s.LadderedTakerSizingMode
 		cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
 		cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
-		cfg.LadderedTakerCooldownMs = s.LadderedTakerCooldownMs
+		cfg.LadderedTakerReentryMoveCents = s.LadderedTakerReentryMoveCents
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
@@ -3351,6 +3351,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	lastWsWarnTime := time.Time{}     // Rate-limit WS warnings
 	lastForceReconnect := time.Time{} // Track forced reconnection attempts
 	lastTrade := time.Time{}          // Prevent trade spam
+	ladderedLastEntrySet := false
+	ladderedLastEntryAsk0 := 0.0
+	ladderedLastEntryAsk1 := 0.0
 
 	const wsWarnInterval = 10 * time.Second   // Only warn once per 10 seconds
 	const wsForceReconnect = 10 * time.Second // Force reconnection after 10 seconds stale
@@ -4151,12 +4154,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Will use baseShares only (no scaling)
 				}
 
-				entryCooldown := 2 * time.Second
-				if arbMode == paperArbModeLaddered {
-					entryCooldown = paperbotLadderedEntryCooldown(liveCfg)
-				}
-				if time.Since(lastTrade) <= entryCooldown {
+				if arbMode != paperArbModeLaddered && time.Since(lastTrade) <= 2*time.Second {
 					// Cooldown - don't spam logs, just skip silently
+					continue
+				}
+				if arbMode == paperArbModeLaddered && !paperbotLadderedEntryMovedEnough(ladderedLastEntrySet, ladderedLastEntryAsk0, ladderedLastEntryAsk1, ask1, ask2, liveCfg.LadderedTakerReentryMoveCents) {
 					continue
 				}
 
@@ -4528,6 +4530,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					if arbMode == paperArbModeLaddered {
 						t.TUI.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%.2f @ $%.3f, %s=%.2f @ $%.3f", t.ID, t.Outcomes[0], filled1, avgPrice1, t.Outcomes[1], filled2, avgPrice2)
+						ladderedLastEntrySet = true
+						ladderedLastEntryAsk0 = ask1
+						ladderedLastEntryAsk1 = ask2
 					} else {
 						// INSTANT MERGE: Immediately merge to realize profit
 						// This matches realbot behavior and ensures round PnL is accurate
@@ -5152,18 +5157,24 @@ func paperbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) flo
 	return target
 }
 
-func paperbotLadderedEntryCooldown(cfg paper.TUISettings) time.Duration {
-	cooldown := time.Duration(cfg.LadderedTakerCooldownMs) * time.Millisecond
-	switch {
-	case cooldown <= 0:
-		return 2 * time.Second
-	case cooldown < 100*time.Millisecond:
-		return 100 * time.Millisecond
-	case cooldown > 60*time.Second:
-		return 60 * time.Second
-	default:
-		return cooldown
+func paperbotLadderedEntryMovedEnough(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) bool {
+	if !hasLast {
+		return true
 	}
+	moveDelta := moveCents
+	switch {
+	case moveDelta <= 0:
+		moveDelta = 1.0
+	case moveDelta < 0.1:
+		moveDelta = 0.1
+	case moveDelta > 25.0:
+		moveDelta = 25.0
+	}
+	threshold := moveDelta / 100.0
+	legMove := math.Max(math.Abs(ask0-lastAsk0), math.Abs(ask1-lastAsk1))
+	sumMove := math.Abs((ask0 + ask1) - (lastAsk0 + lastAsk1))
+	skewMove := math.Abs((ask0 - ask1) - (lastAsk0 - lastAsk1))
+	return legMove >= threshold-1e-9 || sumMove >= threshold-1e-9 || skewMove >= threshold-1e-9
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {

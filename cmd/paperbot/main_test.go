@@ -87,12 +87,15 @@ func TestPaperLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
-func TestPaperbotLadderedEntryCooldownUsesSetting(t *testing.T) {
-	if got := paperbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 0}); got != 2*time.Second {
-		t.Fatalf("expected default ladder cooldown 2s, got %s", got)
+func TestPaperbotLadderedEntryMovedEnoughUsesMoveThreshold(t *testing.T) {
+	if !paperbotLadderedEntryMovedEnough(false, 0.50, 0.40, 0.50, 0.40, 1.0) {
+		t.Fatal("expected first laddered entry with no previous anchor to be allowed")
 	}
-	if got := paperbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 1500}); got != 1500*time.Millisecond {
-		t.Fatalf("expected configured ladder cooldown 1500ms, got %s", got)
+	if paperbotLadderedEntryMovedEnough(true, 0.50, 0.40, 0.504, 0.404, 1.0) {
+		t.Fatal("expected sub-threshold move to block laddered re-entry")
+	}
+	if !paperbotLadderedEntryMovedEnough(true, 0.50, 0.40, 0.51, 0.40, 1.0) {
+		t.Fatal("expected 1.0c move to allow laddered re-entry")
 	}
 }
 
