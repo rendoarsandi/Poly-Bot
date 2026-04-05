@@ -62,6 +62,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"copytradeSizeUsdc": 3.4,
 		"copytradeSizeShares": 7.5,
 		"copytradeSizePercent": 12.5,
+		"ladderedTakerSizingMode": "shares",
+		"ladderedTakerSizeUsdc": 2.2,
+		"ladderedTakerSizeShares": 4.5,
 		"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
@@ -126,6 +129,15 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.CopytradeSizePercent != 12.5 {
 		t.Fatalf("expected JSON CopytradeSizePercent 12.5, got %.1f", cfg.CopytradeSizePercent)
 	}
+	if cfg.LadderedTakerSizingMode != LadderedTakerSizingModeShares {
+		t.Fatalf("expected JSON LadderedTakerSizingMode shares, got %q", cfg.LadderedTakerSizingMode)
+	}
+	if cfg.LadderedTakerSizeUSDC != 2.2 {
+		t.Fatalf("expected JSON LadderedTakerSizeUSDC 2.2, got %.1f", cfg.LadderedTakerSizeUSDC)
+	}
+	if cfg.LadderedTakerSizeShares != 4.5 {
+		t.Fatalf("expected JSON LadderedTakerSizeShares 4.5, got %.1f", cfg.LadderedTakerSizeShares)
+	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
 	}
@@ -185,6 +197,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.CopytradeSizeUSDC = 4.2
 	cfg.CopytradeSizeShares = 6.5
 	cfg.CopytradeSizePercent = 10.0
+	cfg.LadderedTakerSizingMode = LadderedTakerSizingModeShares
+	cfg.LadderedTakerSizeUSDC = 2.5
+	cfg.LadderedTakerSizeShares = 3.5
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -251,6 +266,15 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.CopytradeSizePercent != 10.0 {
 		t.Fatalf("expected saved CopytradeSizePercent 10.0, got %.1f", settings.CopytradeSizePercent)
 	}
+	if settings.LadderedTakerSizingMode != LadderedTakerSizingModeShares {
+		t.Fatalf("expected saved LadderedTakerSizingMode shares, got %q", settings.LadderedTakerSizingMode)
+	}
+	if settings.LadderedTakerSizeUSDC != 2.5 {
+		t.Fatalf("expected saved LadderedTakerSizeUSDC 2.5, got %.1f", settings.LadderedTakerSizeUSDC)
+	}
+	if settings.LadderedTakerSizeShares != 3.5 {
+		t.Fatalf("expected saved LadderedTakerSizeShares 3.5, got %.1f", settings.LadderedTakerSizeShares)
+	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
 	}
@@ -295,6 +319,18 @@ func TestCalculateCopytradeSharesForMode(t *testing.T) {
 	}
 	if got := CalculateCopytradeSharesForMode(100, 0.4, 10.0, 8.0, 10.0, 0, CopytradeSizingModePercent); got != 10.0 {
 		t.Fatalf("expected percent copytrade sizing to follow 10%% of target shares, got %.4f", got)
+	}
+}
+
+func TestCalculateLadderedTakerSharesForMode(t *testing.T) {
+	if got := CalculateLadderedTakerSharesForMode(0.8, 4.0, 8.0, 0, LadderedTakerSizingModeUSDC); got != 5.0 {
+		t.Fatalf("expected USDC ladder sizing to buy 5 shares, got %.4f", got)
+	}
+	if got := CalculateLadderedTakerSharesForMode(0.8, 4.0, 8.0, 0, LadderedTakerSizingModeShares); got != 8.0 {
+		t.Fatalf("expected share ladder sizing to use 8 shares, got %.4f", got)
+	}
+	if got := CalculateLadderedTakerSharesForMode(0.5, 10.0, 8.0, 3.0, LadderedTakerSizingModeUSDC); got != 6.0 {
+		t.Fatalf("expected max trade cap to clamp USDC ladder sizing to 6 shares, got %.4f", got)
 	}
 }
 

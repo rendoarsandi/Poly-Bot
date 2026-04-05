@@ -65,7 +65,7 @@ func normalizeStartupWizardSettings(s TUISettings) TUISettings {
 		s.PaperArbMode = "taker"
 	}
 	s.PaperArbMode = strings.ToLower(strings.TrimSpace(s.PaperArbMode))
-	if s.PaperArbMode != "maker" && s.PaperArbMode != "copytrade" {
+	if s.PaperArbMode != "maker" && s.PaperArbMode != "copytrade" && s.PaperArbMode != "laddered-taker" {
 		s.PaperArbMode = "taker"
 	}
 	if s.MaxTradeSize < 0 {
@@ -90,6 +90,9 @@ func startupStrategyProfile(s TUISettings) string {
 	if isCopytradeSettingsMode(s) {
 		return "copytrade"
 	}
+	if isLadderedTakerSettingsMode(s) {
+		return "laddered-taker"
+	}
 	if isMakerSettingsMode(s) {
 		return "maker"
 	}
@@ -103,6 +106,9 @@ func setStartupStrategyProfile(s *TUISettings, profile string) {
 		s.TakerCloseMarket = false
 	case "copytrade":
 		s.PaperArbMode = "copytrade"
+		s.TakerCloseMarket = false
+	case "laddered-taker":
+		s.PaperArbMode = "laddered-taker"
 		s.TakerCloseMarket = false
 	case "taker-close":
 		s.PaperArbMode = "taker"
@@ -241,6 +247,8 @@ func startupStrategyValue(profile string) string {
 		return styleGreen.Render(" maker ")
 	case "copytrade":
 		return styleCyan.Render(" copytrade ")
+	case "laddered-taker":
+		return styleCyan.Render(" ladder ")
 	case "taker-close":
 		return styleRed.Render(" taker-close ")
 	default:
@@ -289,7 +297,7 @@ func (m *startupWizardModel) adjustCurrent(delta int) {
 	case "timeframe":
 		m.settings.Timeframe = cycleString([]string{"15m", "5m"}, m.settings.Timeframe, delta)
 	case "profile":
-		profile := cycleString([]string{"maker", "taker", "copytrade", "taker-close"}, startupStrategyProfile(m.settings), delta)
+		profile := cycleString([]string{"maker", "taker", "laddered-taker", "copytrade", "taker-close"}, startupStrategyProfile(m.settings), delta)
 		setStartupStrategyProfile(&m.settings, profile)
 	case "split":
 		m.settings.SplitStrategyEnabled = !m.settings.SplitStrategyEnabled
@@ -433,6 +441,8 @@ func (m startupWizardModel) View() string {
 		notes = append(notes, "Maker mode keeps quoting logic clean by not mixing in startup taker-close or split toggles.")
 	case "copytrade":
 		notes = append(notes, "Copytrade mode follows a public Polymarket wallet/profile using aggressive single-leg orders. Paste the target later in the live settings panel.")
+	case "laddered-taker":
+		notes = append(notes, "Laddered taker accumulates paired entries in fixed slices instead of instant full-size taker/merge execution.")
 	case "taker-close":
 		notes = append(notes, "Taker-close starts the dedicated close-market path instead of normal maker quoting.")
 	default:

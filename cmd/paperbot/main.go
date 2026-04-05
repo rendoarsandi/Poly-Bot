@@ -28,12 +28,12 @@ import (
 const (
 	UseLiveUI              = true // Set to false for traditional logging
 	paperArbModeTaker      = "taker"
+	paperArbModeLaddered   = "laddered-taker"
 	paperArbModeBinanceGap = "binance-gap"
 	paperArbModeCopytrade  = "copytrade"
 	paperArbModeMaker      = "maker"
 	terminalBidFloor       = 0.985
 	terminalAskCeil        = 0.015
-
 
 	// Split strategy constants
 	MinSplitBuffer   = 50.0  // Minimum initial split buffer ($)
@@ -1636,6 +1636,8 @@ func paperbotUIInterval(settings paper.TUISettings) time.Duration {
 
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case paperArbModeLaddered:
+		return paperArbModeLaddered
 	case paperArbModeBinanceGap:
 		return paperArbModeBinanceGap
 	case paperArbModeCopytrade:
@@ -2069,7 +2071,6 @@ func estimatePaperWinner(outcomes []string, bids, asks, floatPrices map[string]f
 
 	return bestOutcome, highestProb
 }
-
 
 func detectExpiryWinnerFromPrices(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64, string, bool) {
 	if len(outcomes) == 0 {
@@ -2594,6 +2595,9 @@ func run() error {
 		CopytradeSizeShares:          cfg.CopytradeSizeShares,
 		CopytradeSizePercent:         cfg.CopytradeSizePercent,
 		CopytradeMaxSlippagePct:      cfg.CopytradeMaxSlippagePct,
+		LadderedTakerSizingMode:      cfg.LadderedTakerSizingMode,
+		LadderedTakerSizeUSDC:        cfg.LadderedTakerSizeUSDC,
+		LadderedTakerSizeShares:      cfg.LadderedTakerSizeShares,
 		SplitMinMarginSell:           cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:         cfg.SplitStrategyEnabled,
 		SplitInitialCapPct:           cfg.SplitInitialCapPct,
@@ -2629,6 +2633,9 @@ func run() error {
 		cfg.CopytradeSizeShares = s.CopytradeSizeShares
 		cfg.CopytradeSizePercent = s.CopytradeSizePercent
 		cfg.CopytradeMaxSlippagePct = s.CopytradeMaxSlippagePct
+		cfg.LadderedTakerSizingMode = s.LadderedTakerSizingMode
+		cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
+		cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
@@ -4061,7 +4068,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					continue
 				}
 
-				if margin >= minMarginPercent-1e-4 && t.RiskMgr.CanPlaceOrder(baseSharesPerTrade*(ask1+ask2)) {
+				entryRiskShares := baseSharesPerTrade
+				if arbMode == paperArbModeLaddered {
+					entryRiskShares = core.CalculateLadderedTakerSharesForMode(sum, liveCfg.LadderedTakerSizeUSDC, liveCfg.LadderedTakerSizeShares, liveCfg.MaxTradeSize, liveCfg.LadderedTakerSizingMode)
+				}
+				if margin >= minMarginPercent-1e-4 && entryRiskShares > 0 && t.RiskMgr.CanPlaceOrder(entryRiskShares*(ask1+ask2)) {
 					baseShares := baseSharesPerTrade
 
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
@@ -4168,20 +4179,25 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 					// Only scale if risk allows
 					shares := baseShares
-					if t.Config.EnableMarginAggression && riskAction != paper.RiskActionReduceSize {
-						multiplier := math.Floor(margin)
-						if multiplier > t.Config.MaxAggressionMultiplier {
-							multiplier = t.Config.MaxAggressionMultiplier
-						}
-						if multiplier < 1 {
-							multiplier = 1
-						}
-						shares = baseShares * multiplier
-					}
-
-					// Apply compounding multiplier from profitable rounds
 					compoundMult := t.Engine.GetCompoundMultiplier()
-					shares = shares * compoundMult
+					if arbMode == paperArbModeLaddered {
+						shares = core.CalculateLadderedTakerSharesForMode(sum, liveCfg.LadderedTakerSizeUSDC, liveCfg.LadderedTakerSizeShares, liveCfg.MaxTradeSize, liveCfg.LadderedTakerSizingMode)
+						compoundMult = 1.0
+					} else {
+						if t.Config.EnableMarginAggression && riskAction != paper.RiskActionReduceSize {
+							multiplier := math.Floor(margin)
+							if multiplier > t.Config.MaxAggressionMultiplier {
+								multiplier = t.Config.MaxAggressionMultiplier
+							}
+							if multiplier < 1 {
+								multiplier = 1
+							}
+							shares = baseShares * multiplier
+						}
+
+						// Apply compounding multiplier from profitable rounds
+						shares = shares * compoundMult
+					}
 
 					// Force at least 1 share if there's any matched liquidity and we have budget
 					if shares < 1.0 && minLiquidity >= 1.0 {
@@ -4338,21 +4354,29 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 							t.ID, t.Outcomes[0], avgPrice1, t.Outcomes[1], avgPrice2)
 					}
 
-					// Record both sides - force market orders always fill
-					t.TUI.RecordOrder(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, 0.0, "FILLED")
-					t.TUI.RecordOrder(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, 0.0, "FILLED")
-
-					// INSTANT MERGE: Immediately merge to realize profit
-					// This matches realbot behavior and ensures round PnL is accurate
-					minFilled := filled1
-					if filled2 < minFilled {
-						minFilled = filled2
+					entryMode := paperArbModeTaker
+					if arbMode == paperArbModeLaddered {
+						entryMode = paperArbModeLaddered
 					}
-					if minFilled > 0 {
-						result := t.Engine.MergeForMarket(t.ID, t.Outcomes[0], t.Outcomes[1], minFilled)
-						latency.settledAt = time.Now()
-						if result.PnL != 0 {
-							t.TUI.LogEvent("[%s] 💰 MERGED! +$%.2f profit", t.ID, result.PnL)
+					// Record both sides - force market orders always fill
+					t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, 0.0, entryMode, "FILLED")
+					t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, 0.0, entryMode, "FILLED")
+
+					if arbMode == paperArbModeLaddered {
+						t.TUI.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%.2f @ $%.3f, %s=%.2f @ $%.3f", t.ID, t.Outcomes[0], filled1, avgPrice1, t.Outcomes[1], filled2, avgPrice2)
+					} else {
+						// INSTANT MERGE: Immediately merge to realize profit
+						// This matches realbot behavior and ensures round PnL is accurate
+						minFilled := filled1
+						if filled2 < minFilled {
+							minFilled = filled2
+						}
+						if minFilled > 0 {
+							result := t.Engine.MergeForMarket(t.ID, t.Outcomes[0], t.Outcomes[1], minFilled)
+							latency.settledAt = time.Now()
+							if result.PnL != 0 {
+								t.TUI.LogEvent("[%s] 💰 MERGED! +$%.2f profit", t.ID, result.PnL)
+							}
 						}
 					}
 					logPaperExecutionLatency(t, latency)
@@ -5620,7 +5644,6 @@ func paperbotHandleBinanceGapMarket(ctx context.Context, t *MarketTrader, liveCf
 		status.Reason = fmt.Sprintf("cross-market gap %.3f%% is below the %.3f%% trigger", signal.EffectiveGapPercent, threshold)
 		return
 	}
-
 
 	targetOutcome := signal.TargetOutcome
 	ask := t.TokenAsks[targetOutcome]

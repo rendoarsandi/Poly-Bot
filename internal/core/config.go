@@ -20,11 +20,13 @@ const (
 	ModePaper TradingMode = "paper"
 	ModeReal  TradingMode = "real"
 
-	TradeSizingModePercent     = "percent"
-	TradeSizingModeUSDC        = "usdc"
-	CopytradeSizingModeUSDC    = "usdc"
-	CopytradeSizingModeShares  = "shares"
-	CopytradeSizingModePercent = "percent"
+	TradeSizingModePercent        = "percent"
+	TradeSizingModeUSDC           = "usdc"
+	CopytradeSizingModeUSDC       = "usdc"
+	CopytradeSizingModeShares     = "shares"
+	CopytradeSizingModePercent    = "percent"
+	LadderedTakerSizingModeUSDC   = "usdc"
+	LadderedTakerSizingModeShares = "shares"
 
 	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
@@ -93,7 +95,7 @@ type Config struct {
 	// Price filters
 	MinAskPrice  float64 // Minimum ask price to buy (default: 0.10)
 	MaxAskPrice  float64 // Maximum ask price to buy (default: 0.90)
-	PaperArbMode string  // Paperbot arb execution mode: taker or maker
+	PaperArbMode string  // Paperbot arb execution mode: taker, laddered-taker, maker, copytrade, or binance-gap
 	// Shared panic buy/sell execution tolerance: minimum acceptable combined pair
 	// margin while walking deeper book liquidity during execution. Can be negative
 	// to tolerate a small loss on the pair if that reduces legging risk.
@@ -129,6 +131,9 @@ type Config struct {
 	CopytradeSizeUSDC                 float64 // Fixed per-trade USDC budget when copytrade mode uses USDC sizing
 	CopytradeSizeShares               float64 // Fixed share cap per trade when copytrade mode uses share sizing
 	CopytradeSizePercent              float64 // Percent of the target/master trade size when copytrade mode uses percent sizing
+	LadderedTakerSizingMode           string  // "usdc" or "shares" for laddered paired taker entries
+	LadderedTakerSizeUSDC             float64 // Fixed per-entry USDC budget when laddered taker uses USDC sizing
+	LadderedTakerSizeShares           float64 // Fixed paired-share size per entry when laddered taker uses share sizing
 	BinanceQuoteAsset                 string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct         float64 // Percent move over the lookback window required to trigger entry
 	PaperBinanceExecutionDelayMs      int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
@@ -195,6 +200,9 @@ type RuntimeSettings struct {
 	CopytradeSizeUSDC                 float64 `json:"copytradeSizeUsdc"`
 	CopytradeSizeShares               float64 `json:"copytradeSizeShares"`
 	CopytradeSizePercent              float64 `json:"copytradeSizePercent"`
+	LadderedTakerSizingMode           string  `json:"ladderedTakerSizingMode"`
+	LadderedTakerSizeUSDC             float64 `json:"ladderedTakerSizeUsdc"`
+	LadderedTakerSizeShares           float64 `json:"ladderedTakerSizeShares"`
 	BinanceQuoteAsset                 string  `json:"binanceQuoteAsset"`
 	BinanceSignalThresholdPct         float64 `json:"binanceSignalThresholdPct"`
 	PaperBinanceExecutionDelayMs      int     `json:"paperBinanceExecutionDelayMs"`
@@ -278,6 +286,9 @@ func LoadConfig() (*Config, error) {
 		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(parseEnvFloat("COPYTRADE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
 		CopytradeSizeShares:               normalizeCopytradeSizeShares(parseEnvFloat("COPYTRADE_SIZE_SHARES", 1.0)),
 		CopytradeSizePercent:              normalizeCopytradeSizePercent(parseEnvFloat("COPYTRADE_SIZE_PERCENT", 100.0)),
+		LadderedTakerSizingMode:           normalizeLadderedTakerSizingMode(parseEnvString("LADDERED_TAKER_SIZING_MODE", LadderedTakerSizingModeUSDC)),
+		LadderedTakerSizeUSDC:             normalizeLadderedTakerSizeUSDC(parseEnvFloat("LADDERED_TAKER_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
+		LadderedTakerSizeShares:           normalizeLadderedTakerSizeShares(parseEnvFloat("LADDERED_TAKER_SIZE_SHARES", 1.0)),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
 		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
@@ -312,6 +323,15 @@ func normalizeCopytradeSizingMode(mode string) string {
 	}
 }
 
+func normalizeLadderedTakerSizingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case LadderedTakerSizingModeShares:
+		return LadderedTakerSizingModeShares
+	default:
+		return LadderedTakerSizingModeUSDC
+	}
+}
+
 func normalizeFixedTradeSizeUSDC(size float64) float64 {
 	if size <= 0 {
 		return 1.0
@@ -334,6 +354,10 @@ func normalizeCopytradeSizeUSDC(size float64) float64 {
 	return normalizeFixedTradeSizeUSDC(size)
 }
 
+func normalizeLadderedTakerSizeUSDC(size float64) float64 {
+	return normalizeFixedTradeSizeUSDC(size)
+}
+
 func normalizeCopytradeSizeShares(size float64) float64 {
 	if size <= 0 {
 		return 1.0
@@ -343,6 +367,10 @@ func normalizeCopytradeSizeShares(size float64) float64 {
 		return 0.01
 	}
 	return size
+}
+
+func normalizeLadderedTakerSizeShares(size float64) float64 {
+	return normalizeCopytradeSizeShares(size)
 }
 
 func normalizeCopytradeSizePercent(size float64) float64 {
@@ -677,6 +705,9 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(c.CopytradeSizeUSDC),
 		CopytradeSizeShares:               normalizeCopytradeSizeShares(c.CopytradeSizeShares),
 		CopytradeSizePercent:              normalizeCopytradeSizePercent(c.CopytradeSizePercent),
+		LadderedTakerSizingMode:           normalizeLadderedTakerSizingMode(c.LadderedTakerSizingMode),
+		LadderedTakerSizeUSDC:             normalizeLadderedTakerSizeUSDC(c.LadderedTakerSizeUSDC),
+		LadderedTakerSizeShares:           normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
 		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
@@ -743,6 +774,9 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.CopytradeSizeUSDC = normalizeCopytradeSizeUSDC(s.CopytradeSizeUSDC)
 	c.CopytradeSizeShares = normalizeCopytradeSizeShares(s.CopytradeSizeShares)
 	c.CopytradeSizePercent = normalizeCopytradeSizePercent(s.CopytradeSizePercent)
+	c.LadderedTakerSizingMode = normalizeLadderedTakerSizingMode(s.LadderedTakerSizingMode)
+	c.LadderedTakerSizeUSDC = normalizeLadderedTakerSizeUSDC(s.LadderedTakerSizeUSDC)
+	c.LadderedTakerSizeShares = normalizeLadderedTakerSizeShares(s.LadderedTakerSizeShares)
 	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
 	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
 	c.PaperBinanceExecutionDelayMs = normalizePaperBinanceExecutionDelayMs(s.PaperBinanceExecutionDelayMs)
@@ -801,6 +835,9 @@ func (c *Config) SaveSettings() error {
 	envMap["COPYTRADE_SIZE_USDC"] = strconv.FormatFloat(normalizeCopytradeSizeUSDC(c.CopytradeSizeUSDC), 'f', -1, 64)
 	envMap["COPYTRADE_SIZE_SHARES"] = strconv.FormatFloat(normalizeCopytradeSizeShares(c.CopytradeSizeShares), 'f', -1, 64)
 	envMap["COPYTRADE_SIZE_PERCENT"] = strconv.FormatFloat(normalizeCopytradeSizePercent(c.CopytradeSizePercent), 'f', -1, 64)
+	envMap["LADDERED_TAKER_SIZING_MODE"] = normalizeLadderedTakerSizingMode(c.LadderedTakerSizingMode)
+	envMap["LADDERED_TAKER_SIZE_USDC"] = strconv.FormatFloat(normalizeLadderedTakerSizeUSDC(c.LadderedTakerSizeUSDC), 'f', -1, 64)
+	envMap["LADDERED_TAKER_SIZE_SHARES"] = strconv.FormatFloat(normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares), 'f', -1, 64)
 	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
 	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
 	envMap["PAPER_BINANCE_EXECUTION_DELAY_MS"] = strconv.Itoa(normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs))
@@ -860,6 +897,22 @@ func CalculateCopytradeSharesForMode(targetShares, price, sizeUSDC, sizeShares, 
 			budget = maxTradeSize
 		}
 		return budget / price
+	}
+}
+
+func CalculateLadderedTakerSharesForMode(pairPrice, sizeUSDC, sizeShares, maxTradeSize float64, mode string) float64 {
+	if pairPrice <= 0 {
+		return 0
+	}
+	switch normalizeLadderedTakerSizingMode(mode) {
+	case LadderedTakerSizingModeShares:
+		return normalizeLadderedTakerSizeShares(sizeShares)
+	default:
+		budget := normalizeLadderedTakerSizeUSDC(sizeUSDC)
+		if maxTradeSize > 0 && budget > maxTradeSize {
+			budget = maxTradeSize
+		}
+		return budget / pairPrice
 	}
 }
 

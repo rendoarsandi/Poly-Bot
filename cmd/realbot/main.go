@@ -29,6 +29,7 @@ import (
 const (
 	UseLiveUI                        = true // Set to false for traditional logging
 	paperArbModeTaker                = "taker"
+	paperArbModeLaddered             = "laddered-taker"
 	paperArbModeBinanceGap           = "binance-gap"
 	paperArbModeCopytrade            = "copytrade"
 	paperArbModeMaker                = "maker"
@@ -388,6 +389,8 @@ func normalizedRealbotExecutionPriceCap(liveCfg paper.TUISettings) float64 {
 
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case paperArbModeLaddered:
+		return paperArbModeLaddered
 	case paperArbModeBinanceGap:
 		return paperArbModeBinanceGap
 	case paperArbModeCopytrade:
@@ -839,6 +842,9 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		CopytradeSizeShares:            cfg.CopytradeSizeShares,
 		CopytradeSizePercent:           cfg.CopytradeSizePercent,
 		CopytradeMaxSlippagePct:        cfg.CopytradeMaxSlippagePct,
+		LadderedTakerSizingMode:        cfg.LadderedTakerSizingMode,
+		LadderedTakerSizeUSDC:          cfg.LadderedTakerSizeUSDC,
+		LadderedTakerSizeShares:        cfg.LadderedTakerSizeShares,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
@@ -879,6 +885,9 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.CopytradeSizeShares = s.CopytradeSizeShares
 	cfg.CopytradeSizePercent = s.CopytradeSizePercent
 	cfg.CopytradeMaxSlippagePct = s.CopytradeMaxSlippagePct
+	cfg.LadderedTakerSizingMode = s.LadderedTakerSizingMode
+	cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
+	cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -3562,6 +3571,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					// Scale shares based on margin (User requested NO fee buffer deduction)
 					shares := normalizeMarketBuyShares(tradeSize / sum)
+					if arbMode == paperArbModeLaddered {
+						shares = normalizeMarketBuyShares(core.CalculateLadderedTakerSharesForMode(sum, realbotCfg.LadderedTakerSizeUSDC, realbotCfg.LadderedTakerSizeShares, realbotCfg.MaxTradeSize, realbotCfg.LadderedTakerSizingMode))
+					}
 					requestedShares := shares
 					// Fee estimation and balance check logging removed per user request.
 					executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
@@ -3589,6 +3601,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 					// Recalculate shares based on the fresh, confirmed sum to prevent over-execution from transient WS glitches
 					shares = normalizeMarketBuyShares(tradeSize / sum)
+					if arbMode == paperArbModeLaddered {
+						shares = normalizeMarketBuyShares(core.CalculateLadderedTakerSharesForMode(sum, realbotCfg.LadderedTakerSizeUSDC, realbotCfg.LadderedTakerSizeShares, realbotCfg.MaxTradeSize, realbotCfg.LadderedTakerSizingMode))
+					}
 					requestedShares = shares
 
 					if block, reason := realbotPanicBuyCompletionGuard(engine, id, outcomes[0], outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
@@ -3844,11 +3859,15 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Polymarket does not expose exact per-leg execution price through this path.
 						cost1 := reportedBuyCost(exec1, ask1, filled1, shares)
 						cost2 := reportedBuyCost(exec2, ask2, filled2, shares)
+						executionMode := paperArbModeTaker
+						if arbMode == paperArbModeLaddered {
+							executionMode = paperArbModeLaddered
+						}
 
 						// Log results based on VERIFIED state
 						if side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, shares)
-							tui.RecordOrder(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, "FILLED")
+							tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
@@ -3860,12 +3879,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 							}
-							tui.RecordOrder(id, outcomes[0], "BUY", shares, ask1, cost1, observedMargin, 0.0, "FAILED")
+							tui.RecordOrderWithMode(id, outcomes[0], "BUY", shares, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
 						}
 
 						if side2Success {
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, shares)
-							tui.RecordOrder(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, "FILLED")
+							tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
 						} else {
 							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
@@ -3877,7 +3896,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 							}
-							tui.RecordOrder(id, outcomes[1], "BUY", shares, ask2, cost2, observedMargin, 0.0, "FAILED")
+							tui.RecordOrderWithMode(id, outcomes[1], "BUY", shares, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
 						}
 
 						// ═══════════════════════════════════════════════════════════════
@@ -3935,26 +3954,37 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
 							_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
 
-							settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
-							settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", mergeCoordinator)
-							settleCancel()
-							if settleErr != nil {
-								tui.LogEvent("[%s] ⚠️ Post-buy settlement still pending: %v", id, settleErr)
-								panicBuyCooldown = time.Now().Add(10 * time.Second)
-							} else if mergeCoordinator.pendingQty(id) >= minOnChainActionShares {
-								tui.LogEvent("[%s] ✅ Buys verified. Merge continues in background while cleanup handles only the excess inventory.", id)
+							if arbMode == paperArbModeLaddered {
+								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s, %s=%s", id, outcomes[0], formatShareQty(filled1), outcomes[1], formatShareQty(filled2))
+								panicBuyCooldown = time.Now().Add(2 * time.Second)
+								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+									currentBalance = newBal
+									engine.SyncBalanceNeutral(currentBalance)
+									engine.RecalculateDrawdown()
+								}
+								refreshWalletTruth(5 * time.Second)
 							} else {
-								tui.LogEvent("[%s] ✅ Execution complete after verified buys. Applying 5s cooldown...", id)
-							}
+								settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
+								settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", mergeCoordinator)
+								settleCancel()
+								if settleErr != nil {
+									tui.LogEvent("[%s] ⚠️ Post-buy settlement still pending: %v", id, settleErr)
+									panicBuyCooldown = time.Now().Add(10 * time.Second)
+								} else if mergeCoordinator.pendingQty(id) >= minOnChainActionShares {
+									tui.LogEvent("[%s] ✅ Buys verified. Merge continues in background while cleanup handles only the excess inventory.", id)
+								} else {
+									tui.LogEvent("[%s] ✅ Execution complete after verified buys. Applying 5s cooldown...", id)
+								}
 
-							// Refresh balance for next trade
-							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-								currentBalance = newBal
-								engine.SyncBalanceNeutral(currentBalance)
-								engine.RecalculateDrawdown()
+								// Refresh balance for next trade
+								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+									currentBalance = newBal
+									engine.SyncBalanceNeutral(currentBalance)
+									engine.RecalculateDrawdown()
+								}
+								refreshWalletTruth(5 * time.Second)
+								time.Sleep(5 * time.Second)
 							}
-							refreshWalletTruth(5 * time.Second)
-							time.Sleep(5 * time.Second)
 						} else if side1Success || side2Success {
 							// Only one side filled — record the unbalanced position and
 							// temporarily block further panic buys to prevent exposure accumulation.
@@ -6692,7 +6722,6 @@ func parseCopytradeEndTime(raw string) time.Time {
 	}
 	return time.Time{}
 }
-
 
 func realbotCopytradeMarketAllowed(slug string, cfg paper.TUISettings) bool {
 	lSlug := strings.ToLower(slug)
