@@ -1862,8 +1862,8 @@ func TestNormalizeTUISettingsClampsLadderedTakerReentryMove(t *testing.T) {
 		t.Fatalf("expected default ladder reentry move 1.0c, got %.1f", got.LadderedTakerReentryMoveCents)
 	}
 	got = normalizeTUISettings(TUISettings{LadderedTakerReentryMoveCents: 0.01})
-	if got.LadderedTakerReentryMoveCents != 0.1 {
-		t.Fatalf("expected ladder reentry move to clamp to 0.1c, got %.1f", got.LadderedTakerReentryMoveCents)
+	if got.LadderedTakerReentryMoveCents != 1.0 {
+		t.Fatalf("expected ladder reentry move to clamp to 1.0c, got %.1f", got.LadderedTakerReentryMoveCents)
 	}
 	got = normalizeTUISettings(TUISettings{LadderedTakerReentryMoveCents: 70})
 	if got.LadderedTakerReentryMoveCents != 25.0 {

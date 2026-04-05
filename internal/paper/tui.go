@@ -983,8 +983,8 @@ func normalizeLadderedTakerReentryMoveCents(v float64) float64 {
 		return 1.0
 	}
 	v = math.Round(v*10.0) / 10.0
-	if v < 0.1 {
-		return 0.1
+	if v < 1.0 {
+		return 1.0
 	}
 	if v > 25.0 {
 		return 25.0
@@ -1801,9 +1801,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowLadderCooldown:
-					m.tui.settings.LadderedTakerReentryMoveCents -= 0.1
-					if m.tui.settings.LadderedTakerReentryMoveCents < 0.1 {
-						m.tui.settings.LadderedTakerReentryMoveCents = 0.1
+					m.tui.settings.LadderedTakerReentryMoveCents -= 1.0
+					if m.tui.settings.LadderedTakerReentryMoveCents < 1.0 {
+						m.tui.settings.LadderedTakerReentryMoveCents = 1.0
 					}
 					changed = true
 				case settingsRowMinMargin:
@@ -2053,7 +2053,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowLadderCooldown:
-					m.tui.settings.LadderedTakerReentryMoveCents += 0.1
+					m.tui.settings.LadderedTakerReentryMoveCents += 1.0
 					if m.tui.settings.LadderedTakerReentryMoveCents > 25.0 {
 						m.tui.settings.LadderedTakerReentryMoveCents = 25.0
 					}
@@ -3954,7 +3954,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 	tradeLine += fmt.Sprintf("Realized %s", realizedSt.Render(signedDollar(displayRealized)))
 	if !copytradeMode {
-		tradeLine += fmt.Sprintf("  ·  Arb %s", arbSt.Render(signedDollar(guaranteedProfit)))
+		arbLabel := "Arb"
+		if ladderedMode {
+			arbLabel = "MTM"
+		}
+		tradeLine += fmt.Sprintf("  ·  %s %s", arbLabel, arbSt.Render(signedDollar(guaranteedProfit)))
 	}
 	if !copytradeMode && len(positions) > 0 && (math.Abs(bestResolvePnL) >= 0.005 || math.Abs(worstResolvePnL) >= 0.005) {
 		resolveBestSt := styleGreen
@@ -3965,7 +3969,12 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		if worstResolvePnL < 0 {
 			resolveWorstSt = styleRed
 		}
-		tradeLine += fmt.Sprintf("  ·  Resolve %s/%s",
+		resolveLabel := "Resolve"
+		if ladderedMode {
+			resolveLabel = "Resolve(if held)"
+		}
+		tradeLine += fmt.Sprintf("  ·  %s %s/%s",
+			resolveLabel,
 			resolveBestSt.Render(signedDollar(bestResolvePnL)),
 			resolveWorstSt.Render(signedDollar(worstResolvePnL)),
 		)
@@ -4190,6 +4199,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	if m.tui != nil && strings.TrimSpace(settings.PaperArbMode) == "" {
 		settings = m.tui.settings
 	}
+	ladderedMode := isLadderedTakerSettingsMode(settings)
 
 	splitPositions := s.splitPositions
 	walletTruthPositions := s.walletTruth
@@ -4221,8 +4231,12 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 	// ── In-flight positions ──
 	if showInFlightPositions && !isCopytradeSettingsMode(settings) {
+		inflightStatus := styleYellow.Render("⏳ awaiting merge")
+		if ladderedMode {
+			inflightStatus = styleYellow.Render("⏳ open inventory")
+		}
 		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%d) %s",
-			len(positionsWithPnL), styleYellow.Render("⏳ awaiting merge")), clrTeal) + "\n")
+			len(positionsWithPnL), inflightStatus), clrTeal) + "\n")
 	} else {
 		sb.WriteString(sectionHeader("📦", "POSITIONS", clrTeal) + "\n")
 	}
@@ -4307,7 +4321,14 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			}
 			return "+", styleGreen
 		}()
-		summaryLine := styleBold.Render(fmt.Sprintf("  📊 Now: %s",
+		marketLabel := "Now"
+		resolveLabel := "Resolve"
+		if ladderedMode {
+			marketLabel = "MTM"
+			resolveLabel = "Resolve(if held)"
+		}
+		summaryLine := styleBold.Render(fmt.Sprintf("  📊 %s: %s",
+			marketLabel,
 			mktSt.Render(fmt.Sprintf("%s$%.2f", mktSg, totalMarketPnL))))
 		if math.Abs(totalBestResolvePnL-totalWorstResolvePnL) < 0.005 {
 			lckSg, lckSt := func() (string, lipgloss.Style) {
@@ -4331,7 +4352,8 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				}
 				return "+", styleGreen
 			}()
-			summaryLine += styleBold.Render(fmt.Sprintf("  ·  🏁 Resolve: %s/%s",
+			summaryLine += styleBold.Render(fmt.Sprintf("  ·  🏁 %s: %s/%s",
+				resolveLabel,
 				bestSt.Render(fmt.Sprintf("%s$%.2f", bestSg, totalBestResolvePnL)),
 				worstSt.Render(fmt.Sprintf("%s$%.2f", worstSg, totalWorstResolvePnL))))
 		}
@@ -4357,7 +4379,12 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			}
 			return "+", styleGreen
 		}()
-		sb.WriteString(styleBold.Render(fmt.Sprintf("  🏁 Resolve: %s/%s",
+		resolveLabel := "Resolve"
+		if ladderedMode {
+			resolveLabel = "Resolve(if held)"
+		}
+		sb.WriteString(styleBold.Render(fmt.Sprintf("  🏁 %s: %s/%s",
+			resolveLabel,
 			bestSt.Render(fmt.Sprintf("%s$%.2f", bestSg, totalBestResolvePnL)),
 			worstSt.Render(fmt.Sprintf("%s$%.2f", worstSg, totalWorstResolvePnL)))) + "\n")
 	}

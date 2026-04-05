@@ -346,8 +346,8 @@ func TestNormalizeLadderedTakerReentryMoveCents(t *testing.T) {
 	if got := normalizeLadderedTakerReentryMoveCents(0); got != 1.0 {
 		t.Fatalf("expected default ladder reentry move 1.0c, got %.1f", got)
 	}
-	if got := normalizeLadderedTakerReentryMoveCents(0.01); got != 0.1 {
-		t.Fatalf("expected ladder reentry move to clamp to 0.1c, got %.1f", got)
+	if got := normalizeLadderedTakerReentryMoveCents(0.01); got != 1.0 {
+		t.Fatalf("expected ladder reentry move to clamp to 1.0c, got %.1f", got)
 	}
 	if got := normalizeLadderedTakerReentryMoveCents(80); got != 25.0 {
 		t.Fatalf("expected ladder reentry move to clamp to 25.0c, got %.1f", got)

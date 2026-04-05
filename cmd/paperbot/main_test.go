@@ -99,6 +99,21 @@ func TestPaperbotLadderedEntryMovedEnoughUsesMoveThreshold(t *testing.T) {
 	}
 }
 
+func TestPaperbotLadderedDirectionalSide(t *testing.T) {
+	if side, ok := paperbotLadderedDirectionalSide(false, 0, 0, 0.62, 0.38, 1.0); !ok || side != 0 {
+		t.Fatalf("expected initial directional side 0, got side=%d ok=%v", side, ok)
+	}
+	if side, ok := paperbotLadderedDirectionalSide(true, 0.50, 0.40, 0.505, 0.401, 1.0); ok {
+		t.Fatalf("expected sub-threshold move to block directional entry, got side=%d", side)
+	}
+	if side, ok := paperbotLadderedDirectionalSide(true, 0.50, 0.40, 0.512, 0.401, 1.0); !ok || side != 0 {
+		t.Fatalf("expected Up-side directional entry, got side=%d ok=%v", side, ok)
+	}
+	if side, ok := paperbotLadderedDirectionalSide(true, 0.50, 0.40, 0.501, 0.412, 1.0); !ok || side != 1 {
+		t.Fatalf("expected Down-side directional entry, got side=%d ok=%v", side, ok)
+	}
+}
+
 func TestPaperbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 

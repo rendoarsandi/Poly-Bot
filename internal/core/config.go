@@ -408,8 +408,8 @@ func normalizeLadderedTakerReentryMoveCents(v float64) float64 {
 		return 1.0
 	}
 	v = math.Round(v*10.0) / 10.0
-	if v < 0.1 {
-		return 0.1
+	if v < 1.0 {
+		return 1.0
 	}
 	if v > 25.0 {
 		return 25.0

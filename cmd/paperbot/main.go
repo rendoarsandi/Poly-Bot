@@ -4155,11 +4155,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Will use baseShares only (no scaling)
 				}
 
+				ladderedDirection := -1
+				if arbMode == paperArbModeLaddered {
+					var directionalReady bool
+					ladderedDirection, directionalReady = paperbotLadderedDirectionalSide(ladderedLastEntrySet, ladderedLastEntryAsk0, ladderedLastEntryAsk1, ask1, ask2, liveCfg.LadderedTakerReentryMoveCents)
+					if !directionalReady {
+						continue
+					}
+				}
+
 				if arbMode != paperArbModeLaddered && time.Since(lastTrade) <= 2*time.Second {
 					// Cooldown - don't spam logs, just skip silently
-					continue
-				}
-				if arbMode == paperArbModeLaddered && !paperbotLadderedEntryMovedEnough(ladderedLastEntrySet, ladderedLastEntryAsk0, ladderedLastEntryAsk1, ask1, ask2, liveCfg.LadderedTakerReentryMoveCents) {
 					continue
 				}
 
@@ -4167,11 +4173,19 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 				if arbMode == paperArbModeLaddered {
 					entryRiskShares = core.CalculateLadderedTakerSharesForMode(sum, liveCfg.LadderedTakerSizeUSDC, liveCfg.LadderedTakerSizeShares, liveCfg.MaxTradeSize, liveCfg.LadderedTakerSizingMode)
 				}
+				entryRiskCost := entryRiskShares * (ask1 + ask2)
+				if arbMode == paperArbModeLaddered {
+					directionalAsk := ask1
+					if ladderedDirection == 1 {
+						directionalAsk = ask2
+					}
+					entryRiskCost = entryRiskShares * directionalAsk
+				}
 				ladderedEntryReady := margin >= minMarginPercent-1e-4
 				if arbMode == paperArbModeLaddered {
 					ladderedEntryReady = ladderedTakerEntryEligible(ask1, ask2)
 				}
-				if ladderedEntryReady && entryRiskShares > 0 && t.RiskMgr.CanPlaceOrder(entryRiskShares*(ask1+ask2)) {
+				if ladderedEntryReady && entryRiskShares > 0 && t.RiskMgr.CanPlaceOrder(entryRiskCost) {
 					baseShares := baseSharesPerTrade
 
 					// AGGREGATED LIQUIDITY: Calculate total matched liquidity across ALL price levels
@@ -4278,6 +4292,13 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Use 100% of matched liquidity - force MarketBuy guarantees atomic fills on both sides
 					// No legging risk since we walk the book simultaneously, not single-level limit orders
 					maxSafeShares := minLiquidity * 1.00
+					if arbMode == paperArbModeLaddered {
+						if ladderedDirection == 1 {
+							maxSafeShares = paperbotAskLiquidityAtOrBelow(asks2, maxAsk)
+						} else {
+							maxSafeShares = paperbotAskLiquidityAtOrBelow(asks1, maxAsk)
+						}
+					}
 
 					// Only scale if risk allows
 					shares := baseShares
@@ -4320,8 +4341,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					requestSize1 := shares
 					requestSize2 := shares
 					if arbMode == paperArbModeLaddered {
-						requestSize1, requestSize2 = ladderedTakerBiasedBuyShares(shares, ask1, ask2)
-						if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
+						requestSize1, requestSize2 = 0, 0
+						if ladderedDirection == 1 {
+							requestSize2 = paperbotNormalizeMarketBuyShares(shares)
+						} else {
+							requestSize1 = paperbotNormalizeMarketBuyShares(shares)
+						}
+						directionalSize := requestSize1
+						if ladderedDirection == 1 {
+							directionalSize = requestSize2
+						}
+						if directionalSize < minEntryShares {
 							continue
 						}
 					}
@@ -4363,7 +4393,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						if arbMode == paperArbModeLaddered {
 							requestSize1 = paperbotNormalizeMarketBuyShares(requestSize1)
 							requestSize2 = paperbotNormalizeMarketBuyShares(requestSize2)
-							if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
+							directionalSize := requestSize1
+							if ladderedDirection == 1 {
+								directionalSize = requestSize2
+							}
+							if directionalSize < minEntryShares {
 								continue
 							}
 							shares = math.Max(requestSize1, requestSize2)
@@ -4404,6 +4438,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if !t.RiskMgr.CanPlaceOrder(cost) || cost > currentCash {
 						// Scale back to what cash allows, but still respect liquidity cap
 						maxAffordableShares := currentCash / sum
+						if arbMode == paperArbModeLaddered {
+							directionalAsk := ask1
+							if ladderedDirection == 1 {
+								directionalAsk = ask2
+							}
+							if directionalAsk <= 0 {
+								continue
+							}
+							maxAffordableShares = currentCash / directionalAsk
+						}
 
 						// Apply the stricter of: cash limit OR liquidity limit
 						if maxAffordableShares > maxSafeShares {
@@ -4417,8 +4461,17 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						requestSize1 = shares
 						requestSize2 = shares
 						if arbMode == paperArbModeLaddered {
-							requestSize1, requestSize2 = ladderedTakerBiasedBuyShares(shares, ask1, ask2)
-							if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
+							requestSize1, requestSize2 = 0, 0
+							if ladderedDirection == 1 {
+								requestSize2 = paperbotNormalizeMarketBuyShares(shares)
+							} else {
+								requestSize1 = paperbotNormalizeMarketBuyShares(shares)
+							}
+							directionalSize := requestSize1
+							if ladderedDirection == 1 {
+								directionalSize = requestSize2
+							}
+							if directionalSize < minEntryShares {
 								continue
 							}
 						}
@@ -4439,8 +4492,16 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 						netProfit = 0
 					}
 					if arbMode == paperArbModeLaddered {
-						t.TUI.LogEvent("[%s] 🪜 Ladder candidate %s=%.2f @ $%.2f + %s=%.2f @ $%.2f | cost $%.2f (sum $%.2f, skew %.1f¢)",
-							t.ID, t.Outcomes[0], requestSize1, ask1, t.Outcomes[1], requestSize2, ask2, cost, sum, math.Abs(ask1-ask2)*100.0)
+						targetOutcome := t.Outcomes[0]
+						targetAsk := ask1
+						targetSize := requestSize1
+						if ladderedDirection == 1 {
+							targetOutcome = t.Outcomes[1]
+							targetAsk = ask2
+							targetSize = requestSize2
+						}
+						t.TUI.LogEvent("[%s] 🪜 Ladder candidate BUY %s=%.2f @ $%.2f | cost $%.2f (sum $%.2f, skew %.1f¢)",
+							t.ID, targetOutcome, targetSize, targetAsk, cost, sum, math.Abs(ask1-ask2)*100.0)
 					} else if compoundMult > 1.0 {
 						t.TUI.LogEvent("[%s] 🎯 ARB! %s@$%.2f + %s@$%.2f = $%.2f | %.0f shares (%.1fx), profit $%.2f (%.1f%%) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 							t.ID, t.Outcomes[0], ask1, t.Outcomes[1], ask2, sum, shares, compoundMult, netProfit, margin, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
@@ -4478,20 +4539,29 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					actualCost1, actualCost2 := 0.0, 0.0
 					avgPrice1, avgPrice2 := 0.0, 0.0
 					if arbMode == paperArbModeLaddered {
-						trade1, avg1, err1 := t.Engine.MarketBuy(t.ID, t.Outcomes[0], requestSize1, freshAsks1)
-						trade2, avg2, err2 := t.Engine.MarketBuy(t.ID, t.Outcomes[1], requestSize2, freshAsks2)
-						if err1 != nil || err2 != nil {
-							t.TUI.LogEvent("[%s] ⚠️ Laddered trade failed during execution: side1=%v side2=%v", t.ID, err1, err2)
-							continue
-						}
-						avgPrice1, avgPrice2 = avg1, avg2
-						if trade1 != nil {
-							filled1 = trade1.Quantity
-							actualCost1 = trade1.Value
-						}
-						if trade2 != nil {
-							filled2 = trade2.Quantity
-							actualCost2 = trade2.Value
+						avgPrice1, avgPrice2 = ask1, ask2
+						if ladderedDirection == 1 {
+							trade2, avg2, err2 := t.Engine.MarketBuy(t.ID, t.Outcomes[1], requestSize2, freshAsks2)
+							if err2 != nil {
+								t.TUI.LogEvent("[%s] ⚠️ Laddered trade failed during execution: %s=%v", t.ID, t.Outcomes[1], err2)
+								continue
+							}
+							avgPrice2 = avg2
+							if trade2 != nil {
+								filled2 = trade2.Quantity
+								actualCost2 = trade2.Value
+							}
+						} else {
+							trade1, avg1, err1 := t.Engine.MarketBuy(t.ID, t.Outcomes[0], requestSize1, freshAsks1)
+							if err1 != nil {
+								t.TUI.LogEvent("[%s] ⚠️ Laddered trade failed during execution: %s=%v", t.ID, t.Outcomes[0], err1)
+								continue
+							}
+							avgPrice1 = avg1
+							if trade1 != nil {
+								filled1 = trade1.Quantity
+								actualCost1 = trade1.Value
+							}
 						}
 					} else {
 						trade1, trade2, avg1, avg2, err := t.Engine.MarketBuyArb(t.ID, t.Outcomes[0], t.Outcomes[1], shares, freshAsks1, freshAsks2)
@@ -4525,12 +4595,28 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					if arbMode == paperArbModeLaddered {
 						entryMode = paperArbModeLaddered
 					}
-					// Record both sides - force market orders always fill
-					t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, 0.0, entryMode, "FILLED")
-					t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, 0.0, entryMode, "FILLED")
+					if arbMode == paperArbModeLaddered {
+						if ladderedDirection == 1 {
+							t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, 0.0, entryMode, "FILLED")
+						} else {
+							t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, 0.0, entryMode, "FILLED")
+						}
+					} else {
+						// Record both sides - force market orders always fill
+						t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[0], "BUY", filled1, avgPrice1, actualCost1, margin, 0.0, entryMode, "FILLED")
+						t.TUI.RecordOrderWithMode(t.ID, t.Outcomes[1], "BUY", filled2, avgPrice2, actualCost2, margin, 0.0, entryMode, "FILLED")
+					}
 
 					if arbMode == paperArbModeLaddered {
-						t.TUI.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%.2f @ $%.3f, %s=%.2f @ $%.3f", t.ID, t.Outcomes[0], filled1, avgPrice1, t.Outcomes[1], filled2, avgPrice2)
+						targetOutcome := t.Outcomes[0]
+						targetFill := filled1
+						targetAvg := avgPrice1
+						if ladderedDirection == 1 {
+							targetOutcome = t.Outcomes[1]
+							targetFill = filled2
+							targetAvg = avgPrice2
+						}
+						t.TUI.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%.2f @ $%.3f", t.ID, targetOutcome, targetFill, targetAvg)
 						ladderedLastEntrySet = true
 						ladderedLastEntryAsk0 = ask1
 						ladderedLastEntryAsk1 = ask2
@@ -5174,20 +5260,54 @@ func paperbotLadderedEntryMovedEnough(hasLast bool, lastAsk0, lastAsk1, ask0, as
 	if !hasLast {
 		return true
 	}
-	moveDelta := moveCents
-	switch {
-	case moveDelta <= 0:
-		moveDelta = 1.0
-	case moveDelta < 0.1:
-		moveDelta = 0.1
-	case moveDelta > 25.0:
-		moveDelta = 25.0
-	}
-	threshold := moveDelta / 100.0
+	threshold := paperbotLadderedMoveThreshold(moveCents)
 	legMove := math.Max(math.Abs(ask0-lastAsk0), math.Abs(ask1-lastAsk1))
 	sumMove := math.Abs((ask0 + ask1) - (lastAsk0 + lastAsk1))
 	skewMove := math.Abs((ask0 - ask1) - (lastAsk0 - lastAsk1))
 	return legMove >= threshold-1e-9 || sumMove >= threshold-1e-9 || skewMove >= threshold-1e-9
+}
+
+func paperbotLadderedDirectionalSide(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) (int, bool) {
+	if !hasLast {
+		switch {
+		case ask0 > ask1+1e-9:
+			return 0, true
+		case ask1 > ask0+1e-9:
+			return 1, true
+		default:
+			return -1, false
+		}
+	}
+	threshold := paperbotLadderedMoveThreshold(moveCents)
+	move0 := ask0 - lastAsk0
+	move1 := ask1 - lastAsk1
+	switch {
+	case move0 >= threshold-1e-9 && move0 > move1+1e-9:
+		return 0, true
+	case move1 >= threshold-1e-9 && move1 > move0+1e-9:
+		return 1, true
+	case move0 >= threshold-1e-9 && move1 >= threshold-1e-9:
+		if ask0 > ask1+1e-9 {
+			return 0, true
+		}
+		if ask1 > ask0+1e-9 {
+			return 1, true
+		}
+	}
+	return -1, false
+}
+
+func paperbotLadderedMoveThreshold(moveCents float64) float64 {
+	moveDelta := moveCents
+	switch {
+	case moveDelta <= 0:
+		moveDelta = 1.0
+	case moveDelta < 1.0:
+		moveDelta = 1.0
+	case moveDelta > 25.0:
+		moveDelta = 25.0
+	}
+	return moveDelta / 100.0
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
