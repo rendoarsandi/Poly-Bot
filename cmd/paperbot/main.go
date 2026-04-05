@@ -67,6 +67,8 @@ const (
 	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
 	paperExpiryResolutionBuffer    = 1 * time.Minute
 	paperExpiryWinnerFloor         = 0.97
+	paperExpiryWinnerHitFloor      = 0.99
+	paperExpiryLoserHitCeil        = 0.01
 	paperExpiryWinnerQuoteMaxAge   = 2 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
@@ -1919,15 +1921,13 @@ func capturePaperExpirySnapshot(t *MarketTrader, now time.Time) {
 		return
 	}
 
-	captureStart := t.EndTime.Add(-paperExpiryWinnerQuoteMaxAge)
 	captureEnd := t.EndTime.Add(paperExpiryWinnerQuoteMaxAge)
-	if now.Before(captureStart) || now.After(captureEnd) {
+	if now.Before(t.EndTime) || now.After(captureEnd) {
 		return
 	}
 
-	// Before expiry, keep the freshest close quote. After expiry, only fill the
-	// snapshot if we never captured a pre-expiry quote.
-	if now.After(t.EndTime) && !t.ExpirySnapshotAt.IsZero() && !t.ExpirySnapshotAt.After(t.EndTime) {
+	// Capture one terminal quote snapshot once the clock is at or below 0s.
+	if !t.ExpirySnapshotAt.IsZero() && !t.ExpirySnapshotAt.Before(t.EndTime) {
 		return
 	}
 
@@ -2126,6 +2126,72 @@ func detectExpiryWinnerFromPrices(outcomes []string, bids, asks, floatPrices map
 		return "", 0, "", false
 	}
 	if math.Abs(bestPrice-secondBest) <= 1e-6 {
+		return "", 0, "", false
+	}
+
+	return bestOutcome, bestPrice, bestSource, true
+}
+
+func paperTimestampInWinnerWindow(ts, endTime time.Time) bool {
+	if ts.IsZero() || endTime.IsZero() || ts.Before(endTime) {
+		return false
+	}
+	return !ts.After(endTime.Add(paperExpiryWinnerQuoteMaxAge))
+}
+
+func detectCapturedPaperWinner(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64, string, bool) {
+	if len(outcomes) == 0 {
+		return "", 0, "", false
+	}
+
+	bestOutcome := ""
+	bestPrice := 0.0
+	bestSource := ""
+	secondBest := 0.0
+
+	for i, outcome := range outcomes {
+		candidatePrice := 0.0
+		candidateSource := ""
+
+		if bid := bids[outcome]; bid >= paperExpiryWinnerHitFloor && bid > candidatePrice {
+			candidatePrice = bid
+			candidateSource = "bid"
+		}
+		if ask := asks[outcome]; ask >= paperExpiryWinnerHitFloor && ask > candidatePrice {
+			candidatePrice = ask
+			candidateSource = "ask"
+		}
+		if mid := floatPrices[outcome]; mid >= paperExpiryWinnerHitFloor && mid > candidatePrice {
+			candidatePrice = mid
+			candidateSource = "mid"
+		}
+
+		if len(outcomes) == 2 {
+			peer := outcomes[1-i]
+			if peerAsk := asks[peer]; peerAsk > 0 && peerAsk <= paperExpiryLoserHitCeil && 1.0 > candidatePrice {
+				candidatePrice = 1.0
+				candidateSource = "peer_ask"
+			}
+			if peerBid := bids[peer]; peerBid > 0 && peerBid <= paperExpiryLoserHitCeil && 1.0 > candidatePrice {
+				candidatePrice = 1.0
+				candidateSource = "peer_bid"
+			}
+		}
+
+		if candidatePrice > bestPrice+1e-9 {
+			secondBest = bestPrice
+			bestPrice = candidatePrice
+			bestOutcome = outcome
+			bestSource = candidateSource
+		} else if candidatePrice > secondBest {
+			secondBest = candidatePrice
+		}
+	}
+
+	if bestOutcome == "" || bestPrice < paperExpiryWinnerHitFloor {
+		return "", 0, "", false
+	}
+	if secondBest >= paperExpiryWinnerHitFloor-1e-9 {
 		return "", 0, "", false
 	}
 
@@ -4634,184 +4700,41 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	}
 }
 
-// determineWinner uses authoritative resolution when available. If that is not
-// ready yet, it waits through the short post-expiry watch before falling back
-// to strict terminal quote inference.
+// determineWinner resolves paper markets from the captured terminal quote once
+// the market clock is at or below 0s, without relying on on-chain resolution.
 func (t *MarketTrader) determineWinner() string {
 	if len(t.Outcomes) == 0 {
 		return ""
 	}
 	now := time.Now()
-
-	resolveByCondition := func(conditionID string, outcomes []string, marketEndTime time.Time) (winner string, checked bool) {
-		conditionID = strings.TrimSpace(conditionID)
-		if t.ResolutionCache == nil || conditionID == "" {
-			return "", false
-		}
-
-		if t.nextResolutionRefreshAt.IsZero() || !now.Before(t.nextResolutionRefreshAt) {
-			t.ResolutionCache.ForceRefresh(conditionID)
-			t.nextResolutionRefreshAt = now.Add(paperResolutionRefreshInterval)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		status := t.ResolutionCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
-		if status.Error != nil {
-			errMsg := status.Error.Error()
-			if errMsg != t.lastResolutionError || t.lastResolutionErrorLogAt.IsZero() || now.Sub(t.lastResolutionErrorLogAt) >= paperResolutionErrorLogGap {
-				t.TUI.LogEvent("[%s] ⚠️ Resolution check error: %v", t.ID, status.Error)
-				t.lastResolutionError = errMsg
-				t.lastResolutionErrorLogAt = now
-			}
-		}
-		if status.Resolved && status.Winner != "" {
-			return status.Winner, true
-		}
-		return "", true
+	if !t.EndTime.IsZero() && now.Before(t.EndTime) {
+		return ""
 	}
 
-	selectHistoricalMarket := func(markets []api.Market) *api.Market {
-		if len(markets) == 0 {
-			return nil
-		}
+	winner := ""
+	prob := 0.0
+	source := ""
+	ok := false
 
-		if t.Market != nil {
-			conditionID := strings.TrimSpace(t.Market.ConditionID)
-			if conditionID != "" {
-				for i := range markets {
-					if strings.TrimSpace(markets[i].ConditionID) == conditionID {
-						return &markets[i]
-					}
-				}
-			}
-		}
-
-		if len(t.Outcomes) > 0 {
-			expectedOutcomes := make(map[string]struct{}, len(t.Outcomes))
-			for _, outcome := range t.Outcomes {
-				expectedOutcomes[strings.ToLower(strings.TrimSpace(outcome))] = struct{}{}
-			}
-			for i := range markets {
-				matched := 0
-				for _, token := range markets[i].Tokens {
-					if _, ok := expectedOutcomes[strings.ToLower(strings.TrimSpace(token.Outcome))]; ok {
-						matched++
-					}
-				}
-				if matched == len(expectedOutcomes) {
-					return &markets[i]
-				}
-			}
-		}
-
-		return &markets[0]
+	switch {
+	case paperTimestampInWinnerWindow(t.ExpirySnapshotAt, t.EndTime):
+		winner, prob, source, ok = detectCapturedPaperWinner(t.Outcomes, t.ExpirySnapshotBids, t.ExpirySnapshotAsks, t.ExpirySnapshotPrices)
+	case paperTimestampInWinnerWindow(t.LastUpdate, t.EndTime):
+		winner, prob, source, ok = detectCapturedPaperWinner(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
 	}
 
-	lookupHistoricalMarket := func(ctx context.Context) (*api.Market, error) {
-		if t.Market == nil {
-			return nil, fmt.Errorf("missing market metadata")
-		}
-
-		slugs := make([]string, 0, 2)
-		if marketSlug := strings.TrimSpace(t.Market.MarketSlug); marketSlug != "" {
-			slugs = append(slugs, marketSlug)
-		}
-		if slug := strings.TrimSpace(t.Market.Slug); slug != "" {
-			duplicate := false
-			for _, s := range slugs {
-				if strings.EqualFold(s, slug) {
-					duplicate = true
-					break
-				}
-			}
-			if !duplicate {
-				slugs = append(slugs, slug)
-			}
-		}
-
-		if len(slugs) == 0 {
-			return nil, fmt.Errorf("missing market slug")
-		}
-
-		var lastErr error
-		for _, slug := range slugs {
-			historyMarket, err := t.RestClient.GetMarket(ctx, slug)
-			if err == nil {
-				return historyMarket, nil
-			}
-			lastErr = err
-
-			if !strings.Contains(err.Error(), "status 404") {
-				continue
-			}
-
-			marketsByEvent, eventErr := t.RestClient.GetMarketsByEventSlug(ctx, slug)
-			if eventErr != nil {
-				lastErr = fmt.Errorf("%v; event lookup failed: %v", err, eventErr)
-				continue
-			}
-
-			selected := selectHistoricalMarket(marketsByEvent)
-			if selected != nil {
-				return selected, nil
-			}
-		}
-
-		if lastErr == nil {
-			lastErr = fmt.Errorf("historical market lookup returned no matches")
-		}
-		return nil, lastErr
+	if !ok {
+		return ""
 	}
 
-	if t.Market != nil {
-		if winner, checked := resolveByCondition(t.Market.ConditionID, t.Outcomes, t.EndTime); checked && winner != "" {
-			t.TUI.LogEvent("[%s] 🔗 Resolution: %s", t.ID, winner)
-			return winner
-		}
+	if winner != t.TerminalWinnerCandidate || math.Abs(prob-t.TerminalWinnerProb) > 1e-9 || source != t.TerminalWinnerSource {
+		t.TerminalWinnerCandidate = winner
+		t.TerminalWinnerProb = prob
+		t.TerminalWinnerSource = source
+		t.TUI.LogEvent("[%s] 🎯 Terminal quote winner: %s (%.3f via %s)", t.ID, winner, prob, source)
 	}
 
-	if t.RestClient != nil && t.Market != nil && (t.nextHistoricalLookupAt.IsZero() || !now.Before(t.nextHistoricalLookupAt)) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		historyMarket, err := lookupHistoricalMarket(ctx)
-		cancel()
-
-		if err != nil {
-			errMsg := err.Error()
-			retryAfter := paperHistoricalLookupInterval
-			if strings.Contains(errMsg, "status 404") || strings.Contains(errMsg, "no event found for slug") {
-				retryAfter = paperHistoricalNotFoundRetry
-			}
-			t.nextHistoricalLookupAt = now.Add(retryAfter)
-			if errMsg != t.lastHistoricalLookupError || t.lastHistoricalLookupErrorLogAt.IsZero() || now.Sub(t.lastHistoricalLookupErrorLogAt) >= paperResolutionErrorLogGap {
-				t.TUI.LogEvent("[%s] ⚠️ Historical market lookup failed: %v", t.ID, err)
-				t.lastHistoricalLookupError = errMsg
-				t.lastHistoricalLookupErrorLogAt = now
-			}
-		} else {
-			t.nextHistoricalLookupAt = now.Add(paperHistoricalLookupInterval)
-			t.lastHistoricalLookupError = ""
-			historyOutcomes := make([]string, 0, len(historyMarket.Tokens))
-			for _, token := range historyMarket.Tokens {
-				if token.Outcome != "" {
-					historyOutcomes = append(historyOutcomes, token.Outcome)
-				}
-				if token.Winner {
-					t.TUI.LogEvent("[%s] 🧾 Historical slug resolution: %s", t.ID, token.Outcome)
-					return token.Outcome
-				}
-			}
-			if len(historyOutcomes) == 0 {
-				historyOutcomes = append(historyOutcomes, t.Outcomes...)
-			}
-			if winner, checked := resolveByCondition(historyMarket.ConditionID, historyOutcomes, t.EndTime); checked && winner != "" {
-				t.TUI.LogEvent("[%s] 🧾 Historical condition resolution: %s", t.ID, winner)
-				return winner
-			}
-		}
-	}
-
-	return ""
+	return winner
 }
 
 func paperPostExpiryResolutionState(now, endTime time.Time) (pollInterval time.Duration, refreshTerminalQuotes bool) {
