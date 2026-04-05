@@ -87,6 +87,15 @@ func TestPaperLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
+func TestPaperbotLadderedEntryCooldownUsesSetting(t *testing.T) {
+	if got := paperbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 0}); got != 2*time.Second {
+		t.Fatalf("expected default ladder cooldown 2s, got %s", got)
+	}
+	if got := paperbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 1500}); got != 1500*time.Millisecond {
+		t.Fatalf("expected configured ladder cooldown 1500ms, got %s", got)
+	}
+}
+
 func TestPaperbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 
@@ -142,6 +151,21 @@ func TestPaperbotCopytradeCanTradeUntilActualExpiry(t *testing.T) {
 	}
 	if paperbotCopytradeCanTrade(paper.MarketStateEnding, 0) {
 		t.Fatal("expected expired market to stop trading")
+	}
+}
+
+func TestPaperbotArbModeCanTradeAllowsEndingStateUntilActualExpiry(t *testing.T) {
+	if !paperbotArbModeCanTrade(paperArbModeTaker, paper.MarketStateActive, 10*time.Second) {
+		t.Fatal("expected active markets to remain tradable")
+	}
+	if !paperbotArbModeCanTrade(paperArbModeTaker, paper.MarketStateEnding, 10*time.Second) {
+		t.Fatal("expected taker mode to keep trading during ending state before expiry")
+	}
+	if !paperbotArbModeCanTrade(paperArbModeLaddered, paper.MarketStateEnding, 10*time.Second) {
+		t.Fatal("expected laddered mode to keep trading during ending state before expiry")
+	}
+	if paperbotArbModeCanTrade(paperArbModeLaddered, paper.MarketStateEnding, 0) {
+		t.Fatal("expected laddered mode to stop once market expiry is reached")
 	}
 }
 

@@ -62,10 +62,11 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"copytradeSizeUsdc": 3.4,
 		"copytradeSizeShares": 7.5,
 		"copytradeSizePercent": 12.5,
-		"ladderedTakerSizingMode": "shares",
-		"ladderedTakerSizeUsdc": 2.2,
-		"ladderedTakerSizeShares": 4.5,
-		"binanceQuoteAsset": "USDT",
+			"ladderedTakerSizingMode": "shares",
+			"ladderedTakerSizeUsdc": 2.2,
+			"ladderedTakerSizeShares": 4.5,
+			"ladderedTakerCooldownMs": 3500,
+			"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
 		"binanceSignalCooldownMs": 3200,
@@ -138,6 +139,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.LadderedTakerSizeShares != 4.5 {
 		t.Fatalf("expected JSON LadderedTakerSizeShares 4.5, got %.1f", cfg.LadderedTakerSizeShares)
 	}
+	if cfg.LadderedTakerCooldownMs != 3500 {
+		t.Fatalf("expected JSON LadderedTakerCooldownMs 3500, got %d", cfg.LadderedTakerCooldownMs)
+	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
 	}
@@ -200,6 +204,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.LadderedTakerSizingMode = LadderedTakerSizingModeShares
 	cfg.LadderedTakerSizeUSDC = 2.5
 	cfg.LadderedTakerSizeShares = 3.5
+	cfg.LadderedTakerCooldownMs = 4100
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -275,6 +280,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.LadderedTakerSizeShares != 3.5 {
 		t.Fatalf("expected saved LadderedTakerSizeShares 3.5, got %.1f", settings.LadderedTakerSizeShares)
 	}
+	if settings.LadderedTakerCooldownMs != 4100 {
+		t.Fatalf("expected saved LadderedTakerCooldownMs 4100, got %d", settings.LadderedTakerCooldownMs)
+	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
 	}
@@ -331,6 +339,18 @@ func TestCalculateLadderedTakerSharesForMode(t *testing.T) {
 	}
 	if got := CalculateLadderedTakerSharesForMode(0.5, 10.0, 8.0, 3.0, LadderedTakerSizingModeUSDC); got != 6.0 {
 		t.Fatalf("expected max trade cap to clamp USDC ladder sizing to 6 shares, got %.4f", got)
+	}
+}
+
+func TestNormalizeLadderedTakerCooldownMs(t *testing.T) {
+	if got := normalizeLadderedTakerCooldownMs(0); got != 2000 {
+		t.Fatalf("expected default ladder cooldown 2000ms, got %d", got)
+	}
+	if got := normalizeLadderedTakerCooldownMs(50); got != 100 {
+		t.Fatalf("expected cooldown to clamp to 100ms, got %d", got)
+	}
+	if got := normalizeLadderedTakerCooldownMs(70000); got != 60000 {
+		t.Fatalf("expected cooldown to clamp to 60000ms, got %d", got)
 	}
 }
 

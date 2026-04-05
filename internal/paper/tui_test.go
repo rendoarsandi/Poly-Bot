@@ -933,6 +933,35 @@ func TestIsRowVisibleShowsPaperBinanceDelayOnlyInPaperMode(t *testing.T) {
 	}
 }
 
+func TestIsRowVisibleHidesUnrelatedRowsInLadderedMode(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "laddered-taker"}
+	for _, idx := range []int{
+		settingsRowMinMargin,
+		settingsRowExecutionSlip,
+		settingsRowTakerCloseMarket,
+		settingsRowSplitMinMargin,
+		settingsRowSplitStrategy,
+		settingsRowSplitInitialCap,
+		settingsRowSplitReplenishCap,
+	} {
+		if isRowVisible(cfg, "Paper", idx) {
+			t.Fatalf("expected row %d to be hidden in laddered mode", idx)
+		}
+	}
+	for _, idx := range []int{
+		settingsRowLadderCooldown,
+		settingsRowTradeSizingMode,
+		settingsRowTradeSizingValue,
+		settingsRowMinAskPrice,
+		settingsRowMaxAskPrice,
+		settingsRowPaperArbMode,
+	} {
+		if !isRowVisible(cfg, "Paper", idx) {
+			t.Fatalf("expected row %d to remain visible in laddered mode", idx)
+		}
+	}
+}
+
 func TestFormatDisplayShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := formatDisplayShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)
@@ -1017,6 +1046,33 @@ func TestRenderSettingsShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
 	}
 	if strings.Contains(view, "Min Ask Price") || strings.Contains(view, "Max Ask Price") {
 		t.Fatalf("expected copytrade settings to hide generic price rows, got %q", view)
+	}
+}
+
+func TestRenderSettingsShowsLadderCooldownAndHidesUnrelatedRows(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:                   "laddered-taker",
+		LadderedTakerSizingMode:        core.LadderedTakerSizingModeShares,
+		LadderedTakerSizeShares:        3.5,
+		LadderedTakerCooldownMs:        1800,
+		MinMarginPercent:               2.0,
+		TakerCloseMarket:               true,
+		BuyExecutionMarginFloorPercent: -0.02,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	for _, want := range []string{"Ladder Cooldown", "1800ms"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("renderSettings() missing %q\n%s", want, view)
+		}
+	}
+	for _, hidden := range []string{"Ladder Min Margin %", "Taker Close Market", "Max Exec Slip %"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("renderSettings() unexpectedly showed %q\n%s", hidden, view)
+		}
 	}
 }
 
@@ -1797,6 +1853,21 @@ func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
 	}
 	if got.MaxMarkets != 2 {
 		t.Fatalf("expected two-market selection to clamp MaxMarkets to 2, got %d", got.MaxMarkets)
+	}
+}
+
+func TestNormalizeTUISettingsClampsLadderedTakerCooldown(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{LadderedTakerCooldownMs: 0})
+	if got.LadderedTakerCooldownMs != 2000 {
+		t.Fatalf("expected default ladder cooldown 2000ms, got %d", got.LadderedTakerCooldownMs)
+	}
+	got = normalizeTUISettings(TUISettings{LadderedTakerCooldownMs: 50})
+	if got.LadderedTakerCooldownMs != 100 {
+		t.Fatalf("expected cooldown to clamp to 100ms, got %d", got.LadderedTakerCooldownMs)
+	}
+	got = normalizeTUISettings(TUISettings{LadderedTakerCooldownMs: 70000})
+	if got.LadderedTakerCooldownMs != 60000 {
+		t.Fatalf("expected cooldown to clamp to 60000ms, got %d", got.LadderedTakerCooldownMs)
 	}
 }
 

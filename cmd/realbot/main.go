@@ -263,13 +263,11 @@ func refreshWalletTruthForRedemption(ctx context.Context, marketID, conditionID 
 }
 
 func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, mergeBuffer time.Duration) bool {
-	if realbotTakerCloseHoldMode(cfg) || strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeCopytrade) {
-		return false
-	}
-	if strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeBinanceGap) {
-		return false
-	}
-	return timeToExpiry > 0 && timeToExpiry <= mergeBuffer
+	_ = cfg
+	_ = timeToExpiry
+	_ = mergeBuffer
+	// Disabled intentionally: do not stop opening entries before actual expiry.
+	return false
 }
 
 func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISettings) float64 {
@@ -850,6 +848,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		LadderedTakerSizingMode:        cfg.LadderedTakerSizingMode,
 		LadderedTakerSizeUSDC:          cfg.LadderedTakerSizeUSDC,
 		LadderedTakerSizeShares:        cfg.LadderedTakerSizeShares,
+		LadderedTakerCooldownMs:        cfg.LadderedTakerCooldownMs,
 		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:             cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
@@ -893,6 +892,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.LadderedTakerSizingMode = s.LadderedTakerSizingMode
 	cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
 	cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
+	cfg.LadderedTakerCooldownMs = s.LadderedTakerCooldownMs
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -3745,7 +3745,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tui.LogEvent("[%s] ⚠️ Actionable matched liquidity below %.2f share minimum: %.4f", id, minEntryShares, shares)
 						continue
 					}
-					if time.Since(lastTrade) <= 2*time.Second {
+					entryCooldown := 2 * time.Second
+					if ladderedMode {
+						entryCooldown = realbotLadderedEntryCooldown(realbotCfg)
+					}
+					if time.Since(lastTrade) <= entryCooldown {
 						// Cooldown - don't spam logs, just skip silently
 						continue
 					}
@@ -4026,7 +4030,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							if arbMode == paperArbModeLaddered {
 								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s, %s=%s", id, outcomes[0], formatShareQty(filled1), outcomes[1], formatShareQty(filled2))
-								panicBuyCooldown = time.Now().Add(2 * time.Second)
+								panicBuyCooldown = time.Now().Add(realbotLadderedEntryCooldown(realbotCfg))
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
@@ -4803,6 +4807,20 @@ func pairBalancesFromPositions(positions []trading.PositionInfo, token0, token1 
 
 func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
+}
+
+func realbotLadderedEntryCooldown(cfg paper.TUISettings) time.Duration {
+	cooldown := time.Duration(cfg.LadderedTakerCooldownMs) * time.Millisecond
+	switch {
+	case cooldown <= 0:
+		return 2 * time.Second
+	case cooldown < 100*time.Millisecond:
+		return 100 * time.Millisecond
+	case cooldown > 60*time.Second:
+		return 60 * time.Second
+	default:
+		return cooldown
+	}
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {

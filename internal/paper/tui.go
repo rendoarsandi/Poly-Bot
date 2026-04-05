@@ -454,6 +454,7 @@ type TUISettings struct {
 	LadderedTakerSizingMode        string  // "usdc" or "shares" when PaperArbMode == laddered-taker
 	LadderedTakerSizeUSDC          float64 // fixed per-entry paired budget when laddered taker uses USDC sizing
 	LadderedTakerSizeShares        float64 // fixed paired share cap when laddered taker uses share sizing
+	LadderedTakerCooldownMs        int     // cooldown between laddered entries in milliseconds
 	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled           bool    // toggle split strategy on/off
@@ -477,9 +478,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.12, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 1.0, LadderedTakerSizeShares: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.08, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 5.0, LadderedTakerSizeShares: 5.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.05, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 10.0, LadderedTakerSizeShares: 10.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.12, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 1.0, LadderedTakerSizeShares: 1.0, LadderedTakerCooldownMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.08, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 5.0, LadderedTakerSizeShares: 5.0, LadderedTakerCooldownMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.05, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 10.0, LadderedTakerSizeShares: 10.0, LadderedTakerCooldownMs: 2000, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 const (
@@ -489,6 +490,7 @@ const (
 	settingsRowTimeframe
 	settingsRowTradeSizingMode
 	settingsRowTradeSizingValue
+	settingsRowLadderCooldown
 	settingsRowMinMargin
 	settingsRowBinanceExecutionDelay
 	settingsRowPaperArbMode
@@ -587,7 +589,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 
 	if laddered {
 		switch idx {
-		case settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
+		case settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket:
 			return false
 		}
 	}
@@ -609,6 +611,8 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	}
 
 	switch idx {
+	case settingsRowLadderCooldown:
+		return laddered
 	case settingsRowCopytradeTarget, settingsRowCopytradePoll:
 		return copytrade
 	case settingsRowBinanceExecutionDelay:
@@ -628,6 +632,26 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 
 func settingsRowEditable(cfg TUISettings, mode string, idx int) bool {
 	return isRowVisible(cfg, mode, idx)
+}
+
+func ensureVisibleSettingsCursor(cfg TUISettings, mode string, cursor int) int {
+	if settingsRowCount <= 0 {
+		return 0
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	cursor = cursor % settingsRowCount
+	if isRowVisible(cfg, mode, cursor) {
+		return cursor
+	}
+	for i := 1; i < settingsRowCount; i++ {
+		idx := (cursor + i) % settingsRowCount
+		if isRowVisible(cfg, mode, idx) {
+			return idx
+		}
+	}
+	return 0
 }
 
 func settingsRowLabel(cfg TUISettings, idx int) string {
@@ -666,6 +690,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 			return "Trade Size (USDC)"
 		}
 		return "Trade Scale Factor"
+	case settingsRowLadderCooldown:
+		return "Ladder Cooldown"
 	case settingsRowMinMargin:
 		if maker {
 			return "Maker Min Sell Edge %"
@@ -879,6 +905,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	if s.LadderedTakerSizeShares < 0.01 {
 		s.LadderedTakerSizeShares = 0.01
 	}
+	s.LadderedTakerCooldownMs = normalizeLadderedTakerCooldownMs(s.LadderedTakerCooldownMs)
 	if s.BinanceSignalThresholdPct <= 0 {
 		s.BinanceSignalThresholdPct = 0.02
 	}
@@ -949,6 +976,19 @@ func normalizeTakerClosePriceSetting(v, fallback float64) float64 {
 		return 0.99
 	}
 	return v
+}
+
+func normalizeLadderedTakerCooldownMs(v int) int {
+	switch {
+	case v <= 0:
+		return 2000
+	case v < 100:
+		return 100
+	case v > 60000:
+		return 60000
+	default:
+		return v
+	}
 }
 
 func normalizeExecutionFloorSetting(v float64) float64 {
@@ -1759,6 +1799,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					changed = true
+				case settingsRowLadderCooldown:
+					m.tui.settings.LadderedTakerCooldownMs -= 100
+					if m.tui.settings.LadderedTakerCooldownMs < 100 {
+						m.tui.settings.LadderedTakerCooldownMs = 100
+					}
+					changed = true
 				case settingsRowMinMargin:
 					m.tui.settings.MinMarginPercent -= 0.5
 					if m.tui.settings.MinMarginPercent < 0.5 {
@@ -1919,6 +1965,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+				m.settingsCursor = ensureVisibleSettingsCursor(m.tui.settings, m.tui.mode, m.settingsCursor)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -2002,6 +2049,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.tui.settings.TradeScaleFactor = 1.0
 							}
 						}
+					}
+					changed = true
+				case settingsRowLadderCooldown:
+					m.tui.settings.LadderedTakerCooldownMs += 100
+					if m.tui.settings.LadderedTakerCooldownMs > 60000 {
+						m.tui.settings.LadderedTakerCooldownMs = 60000
 					}
 					changed = true
 				case settingsRowMinMargin:
@@ -2158,6 +2211,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+				m.settingsCursor = ensureVisibleSettingsCursor(m.tui.settings, m.tui.mode, m.settingsCursor)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed && m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -4895,6 +4949,11 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return renderBar(cfg.TradeScaleFactor, 20)
 			}(),
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowLadderCooldown),
+			value: fmt.Sprintf(" %4dms ", cfg.LadderedTakerCooldownMs),
+			bar:   renderBar(float64(cfg.LadderedTakerCooldownMs)/10000.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMinMargin),

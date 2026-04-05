@@ -68,6 +68,15 @@ func TestLadderedTakerBiasedBuySharesOverweightsHigherAskOutcome(t *testing.T) {
 	}
 }
 
+func TestRealbotLadderedEntryCooldownUsesSetting(t *testing.T) {
+	if got := realbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 0}); got != 2*time.Second {
+		t.Fatalf("expected default ladder cooldown 2s, got %s", got)
+	}
+	if got := realbotLadderedEntryCooldown(paper.TUISettings{LadderedTakerCooldownMs: 1300}); got != 1300*time.Millisecond {
+		t.Fatalf("expected configured ladder cooldown 1300ms, got %s", got)
+	}
+}
+
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
 		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)
@@ -615,12 +624,15 @@ func TestRealbotLooksLikeTerminalBookRejectsNormalOneSidedBook(t *testing.T) {
 	}
 }
 
-func TestRealbotShouldRunNearExpiryCleanupSkipsTakerCloseMode(t *testing.T) {
+func TestRealbotShouldRunNearExpiryCleanupIsDisabled(t *testing.T) {
 	if realbotShouldRunNearExpiryCleanup(paper.TUISettings{TakerCloseMarket: true}, 5*time.Second, 30*time.Second) {
 		t.Fatal("expected taker-close mode to bypass near-expiry cleanup")
 	}
-	if !realbotShouldRunNearExpiryCleanup(paper.TUISettings{}, 5*time.Second, 30*time.Second) {
-		t.Fatal("expected normal mode to allow near-expiry cleanup inside merge buffer")
+	if realbotShouldRunNearExpiryCleanup(paper.TUISettings{PaperArbMode: paperArbModeLaddered}, 5*time.Second, 30*time.Second) {
+		t.Fatal("expected laddered mode to bypass near-expiry cleanup")
+	}
+	if realbotShouldRunNearExpiryCleanup(paper.TUISettings{}, 5*time.Second, 30*time.Second) {
+		t.Fatal("expected near-expiry cleanup to be disabled in normal mode too")
 	}
 }
 

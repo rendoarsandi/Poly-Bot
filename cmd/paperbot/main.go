@@ -644,6 +644,17 @@ func paperbotCopytradeCanTrade(marketState paper.MarketState, timeToEnd time.Dur
 	return marketState == paper.MarketStateActive || marketState == paper.MarketStateEnding
 }
 
+func paperbotArbModeCanTrade(arbMode string, marketState paper.MarketState, timeToEnd time.Duration) bool {
+	_ = arbMode
+	if marketState == paper.MarketStateActive {
+		return true
+	}
+	if timeToEnd <= 0 {
+		return false
+	}
+	return marketState == paper.MarketStateEnding
+}
+
 func buildPaperbotCopytradeMarketFromPosition(pos api.Position) *api.Market {
 	if pos.ConditionID == "" || pos.TokenID == "" || pos.Outcome == "" {
 		return nil
@@ -2669,6 +2680,7 @@ func run() error {
 		LadderedTakerSizingMode:      cfg.LadderedTakerSizingMode,
 		LadderedTakerSizeUSDC:        cfg.LadderedTakerSizeUSDC,
 		LadderedTakerSizeShares:      cfg.LadderedTakerSizeShares,
+		LadderedTakerCooldownMs:      cfg.LadderedTakerCooldownMs,
 		SplitMinMarginSell:           cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:         cfg.SplitStrategyEnabled,
 		SplitInitialCapPct:           cfg.SplitInitialCapPct,
@@ -2707,6 +2719,7 @@ func run() error {
 		cfg.LadderedTakerSizingMode = s.LadderedTakerSizingMode
 		cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
 		cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
+		cfg.LadderedTakerCooldownMs = s.LadderedTakerCooldownMs
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct
@@ -4058,7 +4071,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			cancelAllPaperMakerQuotes(t, "taker close market enabled")
 		} else if arbMode != paperArbModeMaker {
 			cancelAllPaperMakerQuotes(t, "maker mode disabled")
-		} else if marketState != paper.MarketStateActive || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
+		} else if !paperbotArbModeCanTrade(arbMode, marketState, timeToEnd) || len(tokenPrices) != 2 || len(t.Outcomes) != 2 {
 			cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 		}
 		if arbMode == paperArbModeCopytrade && paperbotCopytradeCanTrade(marketState, timeToEnd) && len(t.Outcomes) > 0 {
@@ -4068,7 +4081,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			paperbotHandleCopytradeMarket(ctx, t, liveCfg)
 			continue
 		}
-		if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketState == paper.MarketStateActive {
+		marketTradableForArb := paperbotArbModeCanTrade(arbMode, marketState, timeToEnd)
+		if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketTradableForArb {
 			if !weekdayTradingAllowed {
 				continue
 			}
@@ -4137,7 +4151,11 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					// Will use baseShares only (no scaling)
 				}
 
-				if time.Since(lastTrade) <= 2*time.Second {
+				entryCooldown := 2 * time.Second
+				if arbMode == paperArbModeLaddered {
+					entryCooldown = paperbotLadderedEntryCooldown(liveCfg)
+				}
+				if time.Since(lastTrade) <= entryCooldown {
 					// Cooldown - don't spam logs, just skip silently
 					continue
 				}
@@ -5132,6 +5150,20 @@ func paperbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) flo
 		return 0.99
 	}
 	return target
+}
+
+func paperbotLadderedEntryCooldown(cfg paper.TUISettings) time.Duration {
+	cooldown := time.Duration(cfg.LadderedTakerCooldownMs) * time.Millisecond
+	switch {
+	case cooldown <= 0:
+		return 2 * time.Second
+	case cooldown < 100*time.Millisecond:
+		return 100 * time.Millisecond
+	case cooldown > 60*time.Second:
+		return 60 * time.Second
+	default:
+		return cooldown
+	}
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {

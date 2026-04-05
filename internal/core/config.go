@@ -134,6 +134,7 @@ type Config struct {
 	LadderedTakerSizingMode           string  // "usdc" or "shares" for laddered paired taker entries
 	LadderedTakerSizeUSDC             float64 // Fixed per-entry USDC budget when laddered taker uses USDC sizing
 	LadderedTakerSizeShares           float64 // Fixed paired-share size per entry when laddered taker uses share sizing
+	LadderedTakerCooldownMs           int     // Cooldown between laddered entries in milliseconds
 	BinanceQuoteAsset                 string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct         float64 // Percent move over the lookback window required to trigger entry
 	PaperBinanceExecutionDelayMs      int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
@@ -203,6 +204,7 @@ type RuntimeSettings struct {
 	LadderedTakerSizingMode           string  `json:"ladderedTakerSizingMode"`
 	LadderedTakerSizeUSDC             float64 `json:"ladderedTakerSizeUsdc"`
 	LadderedTakerSizeShares           float64 `json:"ladderedTakerSizeShares"`
+	LadderedTakerCooldownMs           int     `json:"ladderedTakerCooldownMs"`
 	BinanceQuoteAsset                 string  `json:"binanceQuoteAsset"`
 	BinanceSignalThresholdPct         float64 `json:"binanceSignalThresholdPct"`
 	PaperBinanceExecutionDelayMs      int     `json:"paperBinanceExecutionDelayMs"`
@@ -289,6 +291,7 @@ func LoadConfig() (*Config, error) {
 		LadderedTakerSizingMode:           normalizeLadderedTakerSizingMode(parseEnvString("LADDERED_TAKER_SIZING_MODE", LadderedTakerSizingModeUSDC)),
 		LadderedTakerSizeUSDC:             normalizeLadderedTakerSizeUSDC(parseEnvFloat("LADDERED_TAKER_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
 		LadderedTakerSizeShares:           normalizeLadderedTakerSizeShares(parseEnvFloat("LADDERED_TAKER_SIZE_SHARES", 1.0)),
+		LadderedTakerCooldownMs:           normalizeLadderedTakerCooldownMs(parseEnvInt("LADDERED_TAKER_COOLDOWN_MS", 2000)),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
 		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
@@ -395,6 +398,19 @@ func normalizeCopytradePollIntervalMs(v int) int {
 		return 100
 	case v > 30000:
 		return 30000
+	default:
+		return v
+	}
+}
+
+func normalizeLadderedTakerCooldownMs(v int) int {
+	switch {
+	case v <= 0:
+		return 2000
+	case v < 100:
+		return 100
+	case v > 60000:
+		return 60000
 	default:
 		return v
 	}
@@ -708,6 +724,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		LadderedTakerSizingMode:           normalizeLadderedTakerSizingMode(c.LadderedTakerSizingMode),
 		LadderedTakerSizeUSDC:             normalizeLadderedTakerSizeUSDC(c.LadderedTakerSizeUSDC),
 		LadderedTakerSizeShares:           normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares),
+		LadderedTakerCooldownMs:           normalizeLadderedTakerCooldownMs(c.LadderedTakerCooldownMs),
 		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
 		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
 		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
@@ -777,6 +794,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.LadderedTakerSizingMode = normalizeLadderedTakerSizingMode(s.LadderedTakerSizingMode)
 	c.LadderedTakerSizeUSDC = normalizeLadderedTakerSizeUSDC(s.LadderedTakerSizeUSDC)
 	c.LadderedTakerSizeShares = normalizeLadderedTakerSizeShares(s.LadderedTakerSizeShares)
+	c.LadderedTakerCooldownMs = normalizeLadderedTakerCooldownMs(s.LadderedTakerCooldownMs)
 	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
 	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
 	c.PaperBinanceExecutionDelayMs = normalizePaperBinanceExecutionDelayMs(s.PaperBinanceExecutionDelayMs)
@@ -838,6 +856,7 @@ func (c *Config) SaveSettings() error {
 	envMap["LADDERED_TAKER_SIZING_MODE"] = normalizeLadderedTakerSizingMode(c.LadderedTakerSizingMode)
 	envMap["LADDERED_TAKER_SIZE_USDC"] = strconv.FormatFloat(normalizeLadderedTakerSizeUSDC(c.LadderedTakerSizeUSDC), 'f', -1, 64)
 	envMap["LADDERED_TAKER_SIZE_SHARES"] = strconv.FormatFloat(normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares), 'f', -1, 64)
+	envMap["LADDERED_TAKER_COOLDOWN_MS"] = strconv.Itoa(normalizeLadderedTakerCooldownMs(c.LadderedTakerCooldownMs))
 	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
 	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
 	envMap["PAPER_BINANCE_EXECUTION_DELAY_MS"] = strconv.Itoa(normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs))
