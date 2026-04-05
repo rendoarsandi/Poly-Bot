@@ -69,13 +69,14 @@ func TestLadderedTakerBiasedBuySharesOverweightsHigherAskOutcome(t *testing.T) {
 }
 
 func TestLadderedTakerEntryMovedEnoughUsesMoveThreshold(t *testing.T) {
-	if !ladderedTakerEntryMovedEnough(false, 0.50, 0.40, 0.50, 0.40, 1.0) {
+	if !ladderedTakerEntryMovedEnough(nil, 0.50, 0.40, 1.0) {
 		t.Fatal("expected first laddered entry with no previous anchor to be allowed")
 	}
-	if ladderedTakerEntryMovedEnough(true, 0.50, 0.40, 0.504, 0.404, 1.0) {
+	history := []struct{ ask0, ask1 float64 }{{0.50, 0.40}}
+	if ladderedTakerEntryMovedEnough(history, 0.504, 0.404, 1.0) {
 		t.Fatal("expected sub-threshold move to block laddered re-entry")
 	}
-	if !ladderedTakerEntryMovedEnough(true, 0.50, 0.40, 0.51, 0.40, 1.0) {
+	if !ladderedTakerEntryMovedEnough(history, 0.51, 0.40, 1.0) {
 		t.Fatal("expected 1.0c move to allow laddered re-entry")
 	}
 }

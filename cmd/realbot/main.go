@@ -2222,9 +2222,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	polySignalTracker := paper.NewDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
-	ladderedLastEntrySet := false
-	ladderedLastEntryAsk0 := 0.0
-	ladderedLastEntryAsk1 := 0.0
+	var ladderedEntries []struct {
+		ask0 float64
+		ask1 float64
+	}
 	lastBinanceLog := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -3752,7 +3753,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Cooldown - don't spam logs, just skip silently
 						continue
 					}
-					if ladderedMode && !ladderedTakerEntryMovedEnough(ladderedLastEntrySet, ladderedLastEntryAsk0, ladderedLastEntryAsk1, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents) {
+					if ladderedMode && !ladderedTakerEntryMovedEnough(ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents) {
 						continue
 					}
 
@@ -4032,9 +4033,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							if arbMode == paperArbModeLaddered {
 								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s, %s=%s", id, outcomes[0], formatShareQty(filled1), outcomes[1], formatShareQty(filled2))
-								ladderedLastEntrySet = true
-								ladderedLastEntryAsk0 = ask1
-								ladderedLastEntryAsk1 = ask2
+								ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
@@ -4813,8 +4812,8 @@ func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
 }
 
-func ladderedTakerEntryMovedEnough(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) bool {
-	if !hasLast {
+func ladderedTakerEntryMovedEnough(entries []struct{ ask0, ask1 float64 }, ask0, ask1, moveCents float64) bool {
+	if len(entries) == 0 {
 		return true
 	}
 	moveDelta := moveCents
@@ -4827,10 +4826,15 @@ func ladderedTakerEntryMovedEnough(hasLast bool, lastAsk0, lastAsk1, ask0, ask1,
 		moveDelta = 25.0
 	}
 	threshold := moveDelta / 100.0
-	legMove := math.Max(math.Abs(ask0-lastAsk0), math.Abs(ask1-lastAsk1))
-	sumMove := math.Abs((ask0 + ask1) - (lastAsk0 + lastAsk1))
-	skewMove := math.Abs((ask0 - ask1) - (lastAsk0 - lastAsk1))
-	return legMove >= threshold-1e-9 || sumMove >= threshold-1e-9 || skewMove >= threshold-1e-9
+	for _, e := range entries {
+		legMove := math.Max(math.Abs(ask0-e.ask0), math.Abs(ask1-e.ask1))
+		sumMove := math.Abs((ask0 + ask1) - (e.ask0 + e.ask1))
+		skewMove := math.Abs((ask0 - ask1) - (e.ask0 - e.ask1))
+		if legMove < threshold-1e-9 && sumMove < threshold-1e-9 && skewMove < threshold-1e-9 {
+			return false
+		}
+	}
+	return true
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
