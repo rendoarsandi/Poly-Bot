@@ -67,9 +67,9 @@ const (
 	paperPostExpiryWinnerPoll      = 250 * time.Millisecond
 	paperExpiryResolutionBuffer    = 1 * time.Minute
 	paperExpiryWinnerFloor         = 0.97
-	paperExpiryWinnerHitFloor      = 0.99
+	paperExpiryWinnerHitFloor      = 1.00
 	paperExpiryLoserHitCeil        = 0.01
-	paperExpiryWinnerQuoteMaxAge   = 2 * time.Second
+	paperExpiryWinnerQuoteMaxAge   = 5 * time.Second
 	paperMaxSaneOutcomeSpread      = 0.10
 	paperMaxSaneAskPairSum         = 1.10
 	paperMinSaneBidPairSum         = 0.90
