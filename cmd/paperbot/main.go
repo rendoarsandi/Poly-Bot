@@ -5050,6 +5050,10 @@ func (t *MarketTrader) redeemResolvedWinner(winner, reason string) *paper.Redemp
 		t.TUI.LogEvent("[%s] %s NET PnL: %s$%.2f", t.ID, pnlColor, pnlSign, result.TotalPnL)
 	}
 
+	if strings.HasPrefix(reason, "BACKGROUND WINNER WATCH") {
+		t.TUI.AmendLatestRound(result.TotalPnL, []*paper.RedemptionResult{result})
+	}
+
 	if t.CSVLogger != nil {
 		t.CSVLogger.Log("INFO", t.ID, "REDEEM", fmt.Sprintf("Winner: %s, PnL: %.2f", winner, result.TotalPnL), t.Engine.GetEquity())
 	}

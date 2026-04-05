@@ -427,6 +427,9 @@ type RoundHistoryEntry struct {
 	PnL            float64
 	Trades         int
 	ShareSummary   string
+
+	positions   map[string]Position
+	redemptions []*RedemptionResult
 }
 
 // TUISettings holds runtime-adjustable trading parameters.
@@ -3007,6 +3010,17 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int, positions map[string]Position, redemptions []*RedemptionResult) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Clone positions map
+	posClone := make(map[string]Position, len(positions))
+	for k, v := range positions {
+		posClone[k] = v
+	}
+
+	// Clone redemptions slice
+	redClone := make([]*RedemptionResult, len(redemptions))
+	copy(redClone, redemptions)
+
 	entry := RoundHistoryEntry{
 		Number:         len(t.roundHistory) + 1,
 		Timestamp:      time.Now(),
@@ -3015,6 +3029,8 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 		PnL:            pnl,
 		Trades:         trades,
 		ShareSummary:   roundHistoryShareSummary(positions, redemptions),
+		positions:      posClone,
+		redemptions:    redClone,
 	}
 	t.roundHistory = append(t.roundHistory, entry)
 	if len(t.roundHistory) > t.maxRoundHistory {
@@ -3023,6 +3039,30 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 			t.roundHistory[i].Number = i + 1
 		}
 	}
+	t.markDirtyLocked()
+}
+
+// AmendLatestRound updates the most recent round history entry with late background redemptions
+func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionResult) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.roundHistory) == 0 {
+		return
+	}
+
+	lastIdx := len(t.roundHistory) - 1
+	entry := &t.roundHistory[lastIdx]
+
+	entry.EndingEquity += pnlDelta
+	entry.PnL += pnlDelta
+
+	// Append new redemptions
+	entry.redemptions = append(entry.redemptions, newRedemptions...)
+
+	// Update share summary with combined view
+	entry.ShareSummary = roundHistoryShareSummary(entry.positions, entry.redemptions)
+
 	t.markDirtyLocked()
 }
 

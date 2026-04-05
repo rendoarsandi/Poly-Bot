@@ -6457,7 +6457,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		})
 	}
 
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	checkRound := 0
 

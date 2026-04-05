@@ -1049,6 +1049,8 @@ func (e *Engine) getUnrealizedValue() float64 {
 		// This is more conservative and realistic
 		if bid, ok := e.marketBids[key]; ok && bid > 0 {
 			value += pos.Quantity * bid
+		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
+			value += pos.Quantity * bid
 		} else {
 			// Use cost basis if no current price
 			value += pos.TotalCost
@@ -1069,6 +1071,9 @@ func (e *Engine) getUnrealizedPnL() float64 {
 	for key, pos := range e.positions {
 		// Use BID price for valuation (what we could sell for)
 		if bid, ok := e.marketBids[key]; ok && bid > 0 {
+			currentValue := pos.Quantity * bid
+			unrealized += currentValue - pos.TotalCost
+		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
 			currentValue := pos.Quantity * bid
 			unrealized += currentValue - pos.TotalCost
 		}
