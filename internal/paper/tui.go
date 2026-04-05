@@ -550,7 +550,7 @@ func isBinanceGapSettingsMode(cfg TUISettings) bool {
 }
 
 func TakerCloseModeActive(cfg TUISettings) bool {
-	return cfg.TakerCloseMarket && !isMakerSettingsMode(cfg) && !isCopytradeSettingsMode(cfg) && !isBinanceGapSettingsMode(cfg)
+	return cfg.TakerCloseMarket && !isMakerSettingsMode(cfg) && !isCopytradeSettingsMode(cfg) && !isBinanceGapSettingsMode(cfg) && !isLadderedTakerSettingsMode(cfg)
 }
 
 func settingsArbModes() []string {
