@@ -1942,8 +1942,9 @@ func capturePaperExpirySnapshot(t *MarketTrader, now time.Time) {
 		return
 	}
 
-	// Capture one terminal quote snapshot once the clock is at or below 0s.
-	if !t.ExpirySnapshotAt.IsZero() && !t.ExpirySnapshotAt.Before(t.EndTime) {
+	// Keep refreshing the terminal quote snapshot throughout the capture window so
+	// post-expiry winner detection can use the strongest/latest local evidence.
+	if !t.ExpirySnapshotAt.IsZero() && !now.After(t.ExpirySnapshotAt) {
 		return
 	}
 
@@ -4814,19 +4815,31 @@ func (t *MarketTrader) determineWinner() string {
 		return ""
 	}
 
+	snapshotWinner, snapshotProb, snapshotSource, snapshotOK := "", 0.0, "", false
+	if paperTimestampInWinnerWindow(t.ExpirySnapshotAt, t.EndTime) {
+		snapshotWinner, snapshotProb, snapshotSource, snapshotOK = detectCapturedPaperWinner(t.Outcomes, t.ExpirySnapshotBids, t.ExpirySnapshotAsks, t.ExpirySnapshotPrices)
+	}
+
+	liveWinner, liveProb, liveSource, liveOK := "", 0.0, "", false
+	if paperTimestampInWinnerWindow(t.LastUpdate, t.EndTime) {
+		liveWinner, liveProb, liveSource, liveOK = detectCapturedPaperWinner(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
+	}
+
 	winner := ""
 	prob := 0.0
 	source := ""
-	ok := false
-
 	switch {
-	case paperTimestampInWinnerWindow(t.ExpirySnapshotAt, t.EndTime):
-		winner, prob, source, ok = detectCapturedPaperWinner(t.Outcomes, t.ExpirySnapshotBids, t.ExpirySnapshotAsks, t.ExpirySnapshotPrices)
-	case paperTimestampInWinnerWindow(t.LastUpdate, t.EndTime):
-		winner, prob, source, ok = detectCapturedPaperWinner(t.Outcomes, t.TokenBids, t.TokenAsks, t.FloatPrices)
-	}
-
-	if !ok {
+	case liveOK && snapshotOK:
+		if t.LastUpdate.After(t.ExpirySnapshotAt) || liveProb > snapshotProb+1e-9 {
+			winner, prob, source = liveWinner, liveProb, liveSource
+		} else {
+			winner, prob, source = snapshotWinner, snapshotProb, snapshotSource
+		}
+	case liveOK:
+		winner, prob, source = liveWinner, liveProb, liveSource
+	case snapshotOK:
+		winner, prob, source = snapshotWinner, snapshotProb, snapshotSource
+	default:
 		return ""
 	}
 

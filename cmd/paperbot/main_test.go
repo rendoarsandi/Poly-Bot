@@ -1343,6 +1343,39 @@ func TestDetermineWinnerUsesCapturedTerminalSnapshot(t *testing.T) {
 	}
 }
 
+func TestDetermineWinnerFallsBackToLiveWhenCapturedSnapshotIsInconclusive(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	trader := &MarketTrader{
+		ID:               "ETH#fallback",
+		Engine:           engine,
+		TUI:              paper.NewTUI(engine, nil),
+		Outcomes:         []string{"Down", "Up"},
+		EndTime:          time.Now().Add(-100 * time.Millisecond),
+		ExpirySnapshotAt: time.Now().Add(-80 * time.Millisecond),
+		ExpirySnapshotBids: map[string]float64{
+			"Down": 0.45,
+			"Up":   0.55,
+		},
+		ExpirySnapshotAsks: map[string]float64{"Down": 0.48, "Up": 0.58},
+		ExpirySnapshotPrices: map[string]float64{
+			"Down": 0.465,
+			"Up":   0.565,
+		},
+		LastUpdate: time.Now().Add(-20 * time.Millisecond),
+		TokenBids:  map[string]float64{"Down": 0.01, "Up": 0.99},
+		TokenAsks:  map[string]float64{"Down": 0.01, "Up": 1.00},
+		FloatPrices: map[string]float64{
+			"Down": 0.01,
+			"Up":   0.995,
+		},
+	}
+
+	winner := trader.determineWinner()
+	if winner != "Up" {
+		t.Fatalf("winner = %q, want live terminal Up", winner)
+	}
+}
+
 func TestDetermineWinnerRejectsStaleCloseSnapshot(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	trader := &MarketTrader{
@@ -1391,6 +1424,46 @@ func TestCapturePaperExpirySnapshotOnlyStartsAtExpiry(t *testing.T) {
 	}
 	if got := trader.ExpirySnapshotBids["Up"]; got != 0.99 {
 		t.Fatalf("captured Up bid = %.3f, want 0.990", got)
+	}
+}
+
+func TestCapturePaperExpirySnapshotRefreshesWithinWinnerWindow(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	endTime := time.Now().Add(-500 * time.Millisecond)
+	trader := &MarketTrader{
+		ID:          "BTC#refresh",
+		Engine:      engine,
+		TUI:         paper.NewTUI(engine, nil),
+		Outcomes:    []string{"Down", "Up"},
+		EndTime:     endTime,
+		TokenBids:   map[string]float64{"Down": 0.45, "Up": 0.55},
+		TokenAsks:   map[string]float64{"Down": 0.48, "Up": 0.58},
+		FloatPrices: map[string]float64{"Down": 0.465, "Up": 0.565},
+	}
+
+	firstCapture := endTime.Add(100 * time.Millisecond)
+	capturePaperExpirySnapshot(trader, firstCapture)
+	if trader.ExpirySnapshotAt.IsZero() {
+		t.Fatal("expected initial snapshot")
+	}
+	if got := trader.ExpirySnapshotBids["Up"]; got != 0.55 {
+		t.Fatalf("first captured Up bid = %.3f, want 0.550", got)
+	}
+
+	trader.TokenBids["Down"] = 0.01
+	trader.TokenBids["Up"] = 0.99
+	trader.TokenAsks["Down"] = 0.01
+	trader.TokenAsks["Up"] = 1.00
+	trader.FloatPrices["Down"] = 0.01
+	trader.FloatPrices["Up"] = 0.995
+
+	secondCapture := endTime.Add(1200 * time.Millisecond)
+	capturePaperExpirySnapshot(trader, secondCapture)
+	if !trader.ExpirySnapshotAt.Equal(secondCapture) {
+		t.Fatalf("expected snapshot timestamp to refresh to %v, got %v", secondCapture, trader.ExpirySnapshotAt)
+	}
+	if got := trader.ExpirySnapshotBids["Up"]; got != 0.99 {
+		t.Fatalf("refreshed Up bid = %.3f, want 0.990", got)
 	}
 }
 
