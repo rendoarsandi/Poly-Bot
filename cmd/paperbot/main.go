@@ -50,11 +50,11 @@ const (
 	paperMakerMinQuoteValue        = 1.0
 	paperMakerCashUsagePerOutcome  = 0.35
 	paperExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
-	paperUIRefreshInterval         = 100 * time.Millisecond
+	paperUIRefreshInterval         = 500 * time.Millisecond
 	paperMainLoopInterval          = 10 * time.Millisecond
 	paperCopytradeLoopIntervalMin  = 100 * time.Millisecond
 	paperCopytradeLoopIntervalMax  = 250 * time.Millisecond
-	paperCopytradeUIRefreshMin     = 250 * time.Millisecond
+	paperCopytradeUIRefreshMin     = 500 * time.Millisecond
 	paperCopytradeUIRefreshMax     = 500 * time.Millisecond
 	paperCopytradeRetryQueueCap    = 256
 	paperCopytradeRetryMaxAge      = 20 * time.Second

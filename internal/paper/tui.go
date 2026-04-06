@@ -3060,6 +3060,63 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 	// Append new redemptions
 	entry.redemptions = append(entry.redemptions, newRedemptions...)
 
+	// Deduct the newly redeemed shares from the snapshot so they aren't double counted
+	for _, req := range newRedemptions {
+		winShares := req.WinningShares
+		winCost := req.WinningCost
+		loseShares := req.LosingShares
+		loseCost := req.LosingCost
+
+		for k, pos := range entry.positions {
+			if winShares > 0 && strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(req.WinningOutcome)) {
+				deductShares := winShares
+				if deductShares > pos.Quantity {
+					deductShares = pos.Quantity
+				}
+				// Pro-rate cost based on shares deducted, or use actual?
+				// Since all shares in a position typically have the same average cost,
+				// we just deduct whatever req says, capped at pos.TotalCost.
+				deductCost := winCost
+				if deductCost > pos.TotalCost {
+					deductCost = pos.TotalCost
+				}
+				
+				pos.Quantity -= deductShares
+				pos.TotalCost -= deductCost
+				winShares -= deductShares
+				winCost -= deductCost
+
+				if pos.Quantity <= 0.0001 {
+					delete(entry.positions, k)
+				} else {
+					entry.positions[k] = pos
+				}
+			}
+			
+			if loseShares > 0 && strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(req.LosingOutcome)) {
+				deductShares := loseShares
+				if deductShares > pos.Quantity {
+					deductShares = pos.Quantity
+				}
+				deductCost := loseCost
+				if deductCost > pos.TotalCost {
+					deductCost = pos.TotalCost
+				}
+				
+				pos.Quantity -= deductShares
+				pos.TotalCost -= deductCost
+				loseShares -= deductShares
+				loseCost -= deductCost
+
+				if pos.Quantity <= 0.0001 {
+					delete(entry.positions, k)
+				} else {
+					entry.positions[k] = pos
+				}
+			}
+		}
+	}
+
 	// Update share summary with combined view
 	entry.ShareSummary = roundHistoryShareSummary(entry.positions, entry.redemptions)
 

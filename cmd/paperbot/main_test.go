@@ -983,8 +983,8 @@ func TestPaperbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 }
 
 func TestPaperbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
-	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 250*time.Millisecond {
-		t.Fatalf("expected copytrade UI interval 250ms, got %s", got)
+	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 500*time.Millisecond {
+		t.Fatalf("expected copytrade UI interval 500ms, got %s", got)
 	}
 	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "maker"}); got != paperUIRefreshInterval {
 		t.Fatalf("expected default UI interval %s, got %s", paperUIRefreshInterval, got)

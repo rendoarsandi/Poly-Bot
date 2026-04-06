@@ -50,7 +50,7 @@ const (
 	realbotCopytradeLoopIntervalMin  = 100 * time.Millisecond
 	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	realbotCopytradeUIRefreshMin     = 500 * time.Millisecond
-	realbotCopytradeUIRefreshMax     = 1 * time.Second
+	realbotCopytradeUIRefreshMax     = 500 * time.Millisecond
 	realbotCopytradeRetryQueueCap    = 256
 	realbotCopytradeRetryMaxAge      = 20 * time.Second
 	realbotFillPollInterval          = 50 * time.Millisecond
