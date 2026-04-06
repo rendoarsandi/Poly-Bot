@@ -3089,7 +3089,26 @@ func run() error {
 		// Log market rotation from the shared engine state rather than summing
 		// overlapping per-trader deltas from concurrent goroutines.
 		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
-		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades, engine.GetPositions(), allRedemptions)
+		
+		displayPositions := engine.GetPositions()
+		if len(displayPositions) == 0 && len(allRedemptions) == 0 {
+			// Reconstruct gross bought positions from the round's trades
+			// This ensures the round history consistently shows the shares the bot
+			// accumulated during the round, even if they were sold or merged before the end.
+			roundTradesList := engine.GetRecentTrades(roundTrades)
+			for _, t := range roundTradesList {
+				if strings.ToLower(t.Side) == "buy" {
+					key := "reconstructed:" + t.Outcome
+					p := displayPositions[key]
+					p.Outcome = t.Outcome
+					p.Quantity += t.Quantity
+					p.TotalCost += t.Value
+					displayPositions[key] = p
+				}
+			}
+		}
+
+		tui.RecordRound(startingEquity, roundEquity, roundPnL, roundTrades, displayPositions, allRedemptions)
 		tui.LogEvent("📊 Round PnL: $%.2f | Total Equity: $%.2f | Trades: %d | Rotating...", roundPnL, roundEquity, roundTrades)
 
 		// Update compounding multiplier based on round performance
