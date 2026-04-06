@@ -3177,7 +3177,7 @@ func createTrader(backgroundCtx context.Context, id string, market *api.Market, 
 	polySignalTracker := paper.NewDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
 	var binanceFeed *api.BinanceFuturesPriceFeed
 	symbol := getPaperBinanceSymbol(id, cfg)
-	if symbol != "" {
+	if symbol != "" && tui.GetSettings().PaperArbMode == paperArbModeBinanceGap {
 		binanceFeed = api.NewBinanceFuturesPriceFeed(symbol, core.ResolveBinanceSignalLookback(cfg))
 	}
 

@@ -363,11 +363,11 @@ func normalizeLadderedTakerSizeUSDC(size float64) float64 {
 
 func normalizeCopytradeSizeShares(size float64) float64 {
 	if size <= 0 {
-		return 1.0
+		return 1.02
 	}
 	size = math.Round(size*100.0) / 100.0
-	if size < 0.01 {
-		return 0.01
+	if size < 1.02 {
+		return 1.02
 	}
 	return size
 }

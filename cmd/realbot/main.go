@@ -2254,9 +2254,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	}
 
 	var binanceFeed *api.BinanceFuturesPriceFeed
-	if symbol := realbotBinanceSymbolForMarket(id, cfg); symbol != "" {
-		binanceFeed = api.NewBinanceFuturesPriceFeed(symbol, core.ResolveBinanceSignalLookback(cfg))
-		binanceFeed.Start(ctx)
+	if tui.GetSettings().PaperArbMode == paperArbModeBinanceGap {
+		if symbol := realbotBinanceSymbolForMarket(id, cfg); symbol != "" {
+			binanceFeed = api.NewBinanceFuturesPriceFeed(symbol, core.ResolveBinanceSignalLookback(cfg))
+			binanceFeed.Start(ctx)
+		}
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════
