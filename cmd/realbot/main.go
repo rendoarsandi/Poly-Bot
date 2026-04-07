@@ -2331,6 +2331,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	restFallbackPollInterval := core.ResolveRestFallbackPollInterval(cfg)
 
 	for {
+		currentBalance = engine.GetBalance()
 		select {
 		case <-ctx.Done():
 			isShutdown := globalCtx.Err() != nil
@@ -3613,9 +3614,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
 					freshLocalBuyQuote, _, localBuyQuoteReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullAsks, quoteState, executionQuoteMaxAge)
 					if !freshLocalBuyQuote {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: awaiting fresh local quote (%s)", id, localBuyQuoteReason)
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-						continue
+						// Disabled per user request: stationary prices can cause false-positive stale quotes
+						_ = localBuyQuoteReason
+						// tui.LogEvent("[%s] ⚠️ Skipping buy: awaiting fresh local quote (%s)", id, localBuyQuoteReason)
+						// panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						// continue
 					}
 
 					ask1 = tokenAsks[outcomes[0]]
@@ -3834,19 +3837,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-							id, outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-
-						// Map tokens
-						token0, token1 := "", ""
-						for tid, out := range tokenToOutcome {
-							if out == outcomes[0] {
-								token0 = tid
-							} else if out == outcomes[1] {
-								token1 = tid
-							}
-						}
-
 						// Ensure the buy payload still fits the latest balance snapshot.
 						if ladderedMode {
 							estimatedCost := requestSize1 * limitPrice1
@@ -3866,7 +3856,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								activeSize = requestSize2
 							}
 							if activeSize < minEntryShares {
-								tui.LogEvent("[%s] ⚠️ Skipping buy: laddered leg no longer fits balance (%s)", id, formatShareQty(activeSize))
+								if time.Since(lastDustRecoveryNotice) > 60*time.Second {
+									tui.LogEvent("[%s] ⚠️ Skipping buy: laddered leg no longer fits balance (%s)", id, formatShareQty(activeSize))
+									lastDustRecoveryNotice = time.Now()
+								}
 								continue
 							}
 						} else {
@@ -3878,8 +3871,24 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								requestSize2 = shares
 							}
 							if shares < minEntryShares {
-								tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", id)
+								if time.Since(lastDustRecoveryNotice) > 60*time.Second {
+									tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", id)
+									lastDustRecoveryNotice = time.Now()
+								}
 								continue
+							}
+						}
+
+						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+							id, outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+
+						// Map tokens
+						token0, token1 := "", ""
+						for tid, out := range tokenToOutcome {
+							if out == outcomes[0] {
+								token0 = tid
+							} else if out == outcomes[1] {
+								token1 = tid
 							}
 						}
 
