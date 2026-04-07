@@ -227,7 +227,7 @@ func TestTakerCloseModeActiveOnlyInTakerMode(t *testing.T) {
 		t.Fatal("expected taker-close to be active in taker mode")
 	}
 
-	for _, mode := range []string{"maker", "copytrade", "binance-gap"} {
+	for _, mode := range []string{"maker", "copytrade", "binance-gap", "laddered-taker"} {
 		if TakerCloseModeActive(TUISettings{PaperArbMode: mode, TakerCloseMarket: true}) {
 			t.Fatalf("expected taker-close to be inactive in %s mode", mode)
 		}
@@ -737,6 +737,55 @@ func TestNormalizeTUISettingsRoundsTakerClosePricesToDisplayPrecision(t *testing
 	}
 	if math.Abs(cfg.TakerCloseMarketSlippage-0.90) > 0.000001 {
 		t.Fatalf("expected slippage to clamp up to normalized min 0.90, got %.6f", cfg.TakerCloseMarketSlippage)
+	}
+}
+
+func TestNormalizeTUISettingsDisablesSplitOutsidePlainTakerMode(t *testing.T) {
+	tests := []struct {
+		name string
+		in   TUISettings
+		want bool
+	}{
+		{name: "plain taker keeps split", in: TUISettings{Exchange: "polymarket", PaperArbMode: "taker", SplitStrategyEnabled: true}, want: true},
+		{name: "laddered disables split", in: TUISettings{Exchange: "polymarket", PaperArbMode: "laddered-taker", SplitStrategyEnabled: true}},
+		{name: "copytrade disables split", in: TUISettings{Exchange: "polymarket", PaperArbMode: "copytrade", SplitStrategyEnabled: true}},
+		{name: "maker disables split", in: TUISettings{Exchange: "polymarket", PaperArbMode: "maker", SplitStrategyEnabled: true}},
+		{name: "binance gap disables split", in: TUISettings{Exchange: "polymarket", PaperArbMode: "binance-gap", SplitStrategyEnabled: true}},
+		{name: "taker close disables split", in: TUISettings{Exchange: "polymarket", PaperArbMode: "taker", TakerCloseMarket: true, SplitStrategyEnabled: true}},
+		{name: "kalshi disables split", in: TUISettings{Exchange: "kalshi", PaperArbMode: "taker", SplitStrategyEnabled: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeTUISettings(tt.in)
+			if got.SplitStrategyEnabled != tt.want {
+				t.Fatalf("normalizeTUISettings(%+v).SplitStrategyEnabled = %v, want %v", tt.in, got.SplitStrategyEnabled, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitRowsVisibleOnlyForPlainTakerMode(t *testing.T) {
+	visible := TUISettings{Exchange: "polymarket", PaperArbMode: "taker"}
+	for _, row := range []int{settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
+		if !isRowVisible(visible, "Paper", row) {
+			t.Fatalf("expected split row %d to be visible in plain taker mode", row)
+		}
+	}
+
+	for _, cfg := range []TUISettings{
+		{Exchange: "polymarket", PaperArbMode: "copytrade"},
+		{Exchange: "polymarket", PaperArbMode: "laddered-taker"},
+		{Exchange: "polymarket", PaperArbMode: "maker"},
+		{Exchange: "polymarket", PaperArbMode: "binance-gap"},
+		{Exchange: "polymarket", PaperArbMode: "taker", TakerCloseMarket: true},
+		{Exchange: "kalshi", PaperArbMode: "taker"},
+	} {
+		for _, row := range []int{settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
+			if isRowVisible(cfg, "Paper", row) {
+				t.Fatalf("expected split row %d hidden for cfg %+v", row, cfg)
+			}
+		}
 	}
 }
 

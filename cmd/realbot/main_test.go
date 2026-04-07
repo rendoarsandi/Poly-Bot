@@ -11,10 +11,51 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/copytradeutil"
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 )
+
+func realbotCopytradePositionSyncTrades(state *realbotCopytradeState, conditionID string, outcomes []string, positions []api.Position, pollTime time.Time, freshTrades []api.PublicTrade, sizingMode string) ([]api.PublicTrade, map[string]float64) {
+	return state.PositionSyncTrades(conditionID, outcomes, positions, pollTime, freshTrades, sizingMode)
+}
+
+func realbotCopytradeTargetDelta(state *realbotCopytradeState, outcome string, targetQty float64, pollTime time.Time) (float64, bool, bool) {
+	return state.TargetDelta(outcome, targetQty, pollTime)
+}
+
+func realbotCopytradeTakeRetryTrades(state *realbotCopytradeState, now time.Time) []api.PublicTrade {
+	return state.TakeRetryTrades(now, realbotCopytradeRetryMaxAge)
+}
+
+func realbotCopytradeQueueRetryTrades(state *realbotCopytradeState, retries []api.PublicTrade) {
+	state.QueueRetryTrades(retries, realbotCopytradeRetryQueueCap)
+}
+
+func realbotObserveCopytradeBuySignal(state *realbotCopytradeState, trade api.PublicTrade) {
+	state.ObserveBuySignal(trade)
+}
+
+func realbotEstimatedPositionBuySignals(state *realbotCopytradeState, conditionID, outcome string, delta float64, mode string) []api.PublicTrade {
+	return state.EstimatedPositionBuySignals(conditionID, outcome, delta, mode)
+}
+
+func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.PublicTrade, conditionID string, sizingMode string) []api.PublicTrade {
+	allowBelowMin := strings.EqualFold(sizingMode, core.CopytradeSizingModeShares) || strings.EqualFold(sizingMode, core.CopytradeSizingModeUSDC)
+	return state.FreshTrades(trades, copytradeutil.FreshTradeOptions{
+		Now:                     time.Now(),
+		ConditionID:             conditionID,
+		MinSize:                 minOnChainActionShares,
+		DropBelowMinBeforeDedup: false,
+		AllowBelowMin:           allowBelowMin,
+		BootstrapMaxAge:         realbotCopytradeRetryMaxAge,
+	})
+}
+
+func realbotCopytradeSignalSummary(trade api.PublicTrade) string {
+	return copytradeutil.SignalSummary(trade, formatShareQty)
+}
 
 func TestPairBalancesFromPositions(t *testing.T) {
 	positions := []trading.PositionInfo{
@@ -90,31 +131,31 @@ func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 
-	if !realbotCopytradeShouldUsePublicActivityAPI(nil) {
+	if !copytradeutil.ShouldUsePublicActivityAPI(nil) {
 		t.Fatal("expected nil poller to allow public activity api")
 	}
 
 	minedOnly := &realbotCopytradePoller{
-		minedWatcher: api.NewPolymarketMinedWatcher(
+		MinedWatcher: api.NewPolymarketMinedWatcher(
 			"https://polygon-mainnet.infura.io/v3/test",
 			&api.PolygonClient{},
 			&api.RestClient{},
 			wallet,
 		),
 	}
-	if realbotCopytradeShouldUsePublicActivityAPI(minedOnly) {
+	if copytradeutil.ShouldUsePublicActivityAPI(minedOnly) {
 		t.Fatal("expected mined-only watcher to disable public activity api")
 	}
 
 	pending := &realbotCopytradePoller{
-		pendingWatcher: api.NewPolymarketPendingWatcher(
+		PendingWatcher: api.NewPolymarketPendingWatcher(
 			"https://polygon-mainnet.g.alchemy.com/v2/test",
 			&api.RestClient{},
 			&api.PolygonClient{},
 			wallet,
 		),
 	}
-	if realbotCopytradeShouldUsePublicActivityAPI(pending) {
+	if copytradeutil.ShouldUsePublicActivityAPI(pending) {
 		t.Fatal("expected pending watcher to disable public activity api")
 	}
 }
@@ -146,13 +187,13 @@ func TestRealbotCopytradeSignalSummaryDefaultsToPositionSource(t *testing.T) {
 func TestRealbotCopytradeMarketSelectableAllowsFinalSeconds(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 
-	if !realbotCopytradeMarketSelectable(now, time.Time{}) {
+	if !copytradeutil.MarketSelectable(now, time.Time{}) {
 		t.Fatal("expected zero end time to remain selectable")
 	}
-	if !realbotCopytradeMarketSelectable(now, now.Add(10*time.Second)) {
+	if !copytradeutil.MarketSelectable(now, now.Add(10*time.Second)) {
 		t.Fatal("expected market with 10 seconds left to remain selectable")
 	}
-	if realbotCopytradeMarketSelectable(now, now.Add(-time.Second)) {
+	if copytradeutil.MarketSelectable(now, now.Add(-time.Second)) {
 		t.Fatal("expected expired market to be rejected")
 	}
 }
@@ -708,7 +749,7 @@ func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 }
 
 func TestRealbotCopytradeTargetSharesAggregatesByOutcome(t *testing.T) {
-	shares := realbotCopytradeTargetShares([]api.Position{
+	shares := copytradeutil.TargetShares([]api.Position{
 		{Outcome: "Up", Size: 3.5},
 		{Outcome: "Up", Size: 1.25},
 		{Outcome: "Down", Size: 2.0},
@@ -826,7 +867,7 @@ func TestRealbotBestBidFromLevels(t *testing.T) {
 }
 
 func TestRealbotCopytradeTargetSharesForConditionFiltersOtherMarkets(t *testing.T) {
-	shares := realbotCopytradeTargetSharesForCondition([]api.Position{
+	shares := copytradeutil.TargetSharesForCondition([]api.Position{
 		{ConditionID: "cond-1", Outcome: "Up", Size: 2.25},
 		{ConditionID: "cond-2", Outcome: "Up", Size: 9.0},
 		{ConditionID: "cond-1", Outcome: "Down", Size: 4.0},
@@ -840,7 +881,7 @@ func TestRealbotCopytradeTargetSharesForConditionFiltersOtherMarkets(t *testing.
 }
 
 func TestRealbotCopytradeSharesByConditionAggregatesPerMarket(t *testing.T) {
-	sharesByCondition := realbotCopytradeSharesByCondition([]api.Position{
+	sharesByCondition := copytradeutil.SharesByCondition([]api.Position{
 		{ConditionID: "cond-1", Outcome: "Up", Size: 2.25},
 		{ConditionID: "cond-1", Outcome: "Up", Size: 0.75},
 		{ConditionID: "cond-1", Outcome: "Down", Size: 4.0},
@@ -881,7 +922,7 @@ func TestRealbotCopytradeTargetDeltaSkipsInitialSnapshotThenTracksNetChange(t *t
 
 func TestRealbotCopytradeTargetDeltaSeedsVisiblePositionAfterTradesSeeded(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.tradesSeeded = true
+	state.TradesSeeded = true
 	t0 := time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)
 
 	if delta, ready, pending := realbotCopytradeTargetDelta(state, "Up", 7.25, t0); !ready || pending || math.Abs(delta-7.25) > 0.000001 {
@@ -1128,7 +1169,7 @@ func TestRealbotCopytradePositionSyncTradesIgnoresFixedSizeModes(t *testing.T) {
 
 func TestRealbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1500, 0)
+	state.StartedAt = time.Unix(1500, 0)
 	initial := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 5.51, Timestamp: 1000, TransactionHash: "0x1"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "SELL", Size: 5.51, Timestamp: 2000, TransactionHash: "0x2"},
@@ -1155,17 +1196,17 @@ func TestRealbotCopytradeFreshTradesIgnoresPreStartHistoryThenDedupes(t *testing
 }
 
 func TestRealbotCopytradeBootstrapStartTimestamp(t *testing.T) {
-	if got := realbotCopytradeBootstrapStartTimestamp(time.Unix(1500, 0)); got != 1500 {
+	if got := copytradeutil.BootstrapStartTimestamp(time.Unix(1500, 0)); got != 1500 {
 		t.Fatalf("exact-second bootstrap timestamp = %d, want 1500", got)
 	}
-	if got := realbotCopytradeBootstrapStartTimestamp(time.Unix(1500, 250_000_000)); got != 1499 {
+	if got := copytradeutil.BootstrapStartTimestamp(time.Unix(1500, 250_000_000)); got != 1499 {
 		t.Fatalf("sub-second bootstrap timestamp = %d, want 1499", got)
 	}
 }
 
 func TestRealbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 500_000_000)
+	state.StartedAt = time.Unix(1000, 500_000_000)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 1001, TransactionHash: "0xb"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 1000, TransactionHash: "0xc"},
@@ -1189,7 +1230,7 @@ func TestRealbotCopytradeFreshTradesSortsUnorderedHistoryChronologically(t *test
 
 func TestRealbotCopytradeFreshTradesBootstrapUsesObservedAtForOnchainSignals(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 0)
+	state.StartedAt = time.Unix(1000, 0)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 999, ObservedAt: 1001, TransactionHash: "0xtx", Source: "onchain"},
 	}
@@ -1202,7 +1243,7 @@ func TestRealbotCopytradeFreshTradesBootstrapUsesObservedAtForOnchainSignals(t *
 
 func TestRealbotCopytradeFreshTradesBootstrapKeepsRecentWatcherSignalsBeforeStart(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 500_000_000)
+	state.StartedAt = time.Unix(1000, 500_000_000)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Down", Side: "BUY", Size: 2, Timestamp: 981, TransactionHash: "0xon", Source: "onchain"},
 		{ConditionID: "cond-1", Outcome: "Down", Side: "BUY", Size: 2, Timestamp: 981, TransactionHash: "0xmem", Source: "mempool", SignalID: "0xmem:1"},
@@ -1216,7 +1257,7 @@ func TestRealbotCopytradeFreshTradesBootstrapKeepsRecentWatcherSignalsBeforeStar
 
 func TestRealbotCopytradeFreshTradesBootstrapDropsRecentPublicSignalsBeforeStart(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 500_000_000)
+	state.StartedAt = time.Unix(1000, 500_000_000)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Down", Side: "BUY", Size: 2, Timestamp: 981, TransactionHash: "0xpub", Source: "public"},
 	}
@@ -1229,7 +1270,7 @@ func TestRealbotCopytradeFreshTradesBootstrapDropsRecentPublicSignalsBeforeStart
 
 func TestRealbotCopytradeFreshTradesKeepsDistinctMempoolSignalsSameTx(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 0)
+	state.StartedAt = time.Unix(1000, 0)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:1"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:2"},
@@ -1245,11 +1286,11 @@ func TestRealbotMergeCopytradeTradesDedupesWatcherAndPublicSameTx(t *testing.T) 
 	watcherTrades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx", Source: "mempool", SignalID: "0xtx:asset-a:BUY"},
 	}
-	publicTrades := realbotPrepareCopytradeTrades([]api.PublicTrade{
+	publicTrades := copytradeutil.PrepareTrades([]api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Asset: "asset-a", Timestamp: 1002, TransactionHash: "0xtx"},
-	}, "public", paper.TUISettings{})
+	}, "public")
 
-	got := realbotMergeCopytradeTrades(watcherTrades, publicTrades)
+	got := copytradeutil.MergeTrades(watcherTrades, publicTrades)
 	if len(got) != 1 {
 		t.Fatalf("expected watcher/public duplicate tx to merge into one trade, got %d", len(got))
 	}
@@ -1260,19 +1301,19 @@ func TestRealbotMergeCopytradeTradesDedupesWatcherAndPublicSameTx(t *testing.T) 
 
 func TestRealbotCopytradeFreshTradesDetectsAdditionalPublicFillSameSignalAcrossPolls(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 0)
+	state.StartedAt = time.Unix(1000, 0)
 
-	poll1 := realbotMergeCopytradeTrades(realbotPrepareCopytradeTrades([]api.PublicTrade{
+	poll1 := copytradeutil.MergeTrades(copytradeutil.PrepareTrades([]api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
-	}, "public", paper.TUISettings{}))
+	}, "public"))
 	if got := realbotCopytradeFreshTrades(state, poll1, "cond-1", "shares"); len(got) != 1 {
 		t.Fatalf("Poll 1: expected 1 fresh trade, got %d", len(got))
 	}
 
-	poll2 := realbotMergeCopytradeTrades(realbotPrepareCopytradeTrades([]api.PublicTrade{
+	poll2 := copytradeutil.MergeTrades(copytradeutil.PrepareTrades([]api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 3, Price: 0.46, Asset: "asset-a", Timestamp: 1002, TransactionHash: "0xtx"},
-	}, "public", paper.TUISettings{}))
+	}, "public"))
 	got := realbotCopytradeFreshTrades(state, poll2, "cond-1", "shares")
 	if len(got) != 1 {
 		t.Fatalf("Poll 2: expected 1 newly backfilled trade, got %d", len(got))
@@ -1284,7 +1325,7 @@ func TestRealbotCopytradeFreshTradesDetectsAdditionalPublicFillSameSignalAcrossP
 
 func TestRealbotCopytradeFreshTradesKeepsDistinctPublicTradesSameTx(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 0)
+	state.StartedAt = time.Unix(1000, 0)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.45, Asset: "asset-b", Timestamp: 1001, TransactionHash: "0xtx"},
@@ -1298,7 +1339,7 @@ func TestRealbotCopytradeFreshTradesKeepsDistinctPublicTradesSameTx(t *testing.T
 
 func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesSameTx(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 0)
+	state.StartedAt = time.Unix(1000, 0)
 	trades := []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 2, Price: 0.44, Asset: "asset-a", Timestamp: 1001, TransactionHash: "0xtx"},
@@ -1315,7 +1356,7 @@ func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesSameTx(t *testing.
 
 func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *testing.T) {
 	state := newRealbotCopytradeState()
-	state.startedAt = time.Unix(1000, 0)
+	state.StartedAt = time.Unix(1000, 0)
 
 	// Poll 1: sees 3 identical trades
 	trades1 := []api.PublicTrade{
@@ -1347,7 +1388,7 @@ func TestRealbotCopytradeFreshTradesKeepsIdenticalPublicTradesAcrossPolls(t *tes
 func TestRealbotCopytradeTakeRetryTradesDropsStaleTimestampedSignals(t *testing.T) {
 	state := newRealbotCopytradeState()
 	now := time.Unix(5000, 0)
-	state.retryTrades = []api.PublicTrade{
+	state.RetryTrades = []api.PublicTrade{
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: now.Add(-25 * time.Second).Unix()},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: now.Add(-5 * time.Second).Unix()},
 		{ConditionID: "cond-1", Outcome: "Up", Side: "BUY", Size: 1, Timestamp: 0},
@@ -1357,8 +1398,8 @@ func TestRealbotCopytradeTakeRetryTradesDropsStaleTimestampedSignals(t *testing.
 	if len(got) != 2 {
 		t.Fatalf("expected stale retries to be filtered, got %d", len(got))
 	}
-	if len(state.retryTrades) != 0 {
-		t.Fatalf("expected retry queue to be drained after take, got %d", len(state.retryTrades))
+	if len(state.RetryTrades) != 0 {
+		t.Fatalf("expected retry queue to be drained after take, got %d", len(state.RetryTrades))
 	}
 }
 
@@ -1376,12 +1417,12 @@ func TestRealbotCopytradeQueueRetryTradesCapsQueueLength(t *testing.T) {
 	}
 
 	realbotCopytradeQueueRetryTrades(state, retries)
-	if len(state.retryTrades) != realbotCopytradeRetryQueueCap {
-		t.Fatalf("expected retry queue cap %d, got %d", realbotCopytradeRetryQueueCap, len(state.retryTrades))
+	if len(state.RetryTrades) != realbotCopytradeRetryQueueCap {
+		t.Fatalf("expected retry queue cap %d, got %d", realbotCopytradeRetryQueueCap, len(state.RetryTrades))
 	}
 	wantFirst := retries[len(retries)-realbotCopytradeRetryQueueCap].Timestamp
-	if state.retryTrades[0].Timestamp != wantFirst {
-		t.Fatalf("expected queue to keep newest retries starting at %d, got %d", wantFirst, state.retryTrades[0].Timestamp)
+	if state.RetryTrades[0].Timestamp != wantFirst {
+		t.Fatalf("expected queue to keep newest retries starting at %d, got %d", wantFirst, state.RetryTrades[0].Timestamp)
 	}
 }
 
@@ -1395,7 +1436,7 @@ func TestRealbotCopytradeTradeKeyPrefersSignalID(t *testing.T) {
 		Source:          "onchain",
 		SignalID:        "0xtx:1",
 	}
-	if got := realbotCopytradeTradeKey(trade); got != "signal|0xtx:1" {
+	if got := copytradeutil.TradeKey(trade); got != "signal|0xtx:1" {
 		t.Fatalf("unexpected trade key %q", got)
 	}
 }
@@ -1433,31 +1474,31 @@ func TestRealbotEstimatedPositionBuySignalsKeepsSinglePercentSignal(t *testing.T
 }
 
 func TestRealbotCopytradeIsRateLimited(t *testing.T) {
-	if !realbotCopytradeIsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
+	if !copytradeutil.IsRateLimited(errors.New("get public trades failed with status 429: error code: 1015")) {
 		t.Fatal("expected 429/1015 error to be treated as rate limit")
 	}
-	if realbotCopytradeIsRateLimited(errors.New("context deadline exceeded")) {
+	if copytradeutil.IsRateLimited(errors.New("context deadline exceeded")) {
 		t.Fatal("expected non-429 timeout error not to be treated as rate limit")
 	}
 }
 
 func TestRealbotCopytradeRateLimitBackoffCaps(t *testing.T) {
-	if got := realbotCopytradeRateLimitBackoff(1); got != time.Second {
+	if got := copytradeutil.RateLimitBackoff(1); got != time.Second {
 		t.Fatalf("first backoff = %v, want 1s", got)
 	}
-	if got := realbotCopytradeRateLimitBackoff(2); got != 2*time.Second {
+	if got := copytradeutil.RateLimitBackoff(2); got != 2*time.Second {
 		t.Fatalf("second backoff = %v, want 2s", got)
 	}
-	if got := realbotCopytradeRateLimitBackoff(5); got != 8*time.Second {
+	if got := copytradeutil.RateLimitBackoff(5); got != 8*time.Second {
 		t.Fatalf("capped backoff = %v, want 8s", got)
 	}
 }
 
 func TestRealbotCopytradeHoldsBothOutcomes(t *testing.T) {
-	if !realbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 5}) {
+	if !copytradeutil.HoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 5}) {
 		t.Fatal("expected both-sided target inventory to be detected")
 	}
-	if realbotCopytradeHoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 0.009}) {
+	if copytradeutil.HoldsBothOutcomes(map[string]float64{"Up": 10, "Down": 0.009}) {
 		t.Fatal("expected dust on second side not to count as both-sided inventory")
 	}
 }
@@ -1467,10 +1508,10 @@ func TestRealbotCopytradeHasAmbiguousPositionExit(t *testing.T) {
 		{ConditionID: "cond-1", Outcome: "Up", Size: 10, Mergeable: true},
 		{ConditionID: "cond-2", Outcome: "Down", Size: 10},
 	}
-	if !realbotCopytradeHasAmbiguousPositionExit(positions, "cond-1") {
+	if !copytradeutil.HasAmbiguousPositionExit(positions, "cond-1") {
 		t.Fatal("expected mergeable target inventory to block position-only sell fallback")
 	}
-	if realbotCopytradeHasAmbiguousPositionExit(positions, "cond-2") {
+	if copytradeutil.HasAmbiguousPositionExit(positions, "cond-2") {
 		t.Fatal("expected unrelated non-mergeable market not to be blocked")
 	}
 }
@@ -1485,8 +1526,11 @@ func TestRealbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 }
 
 func TestRealbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
-	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 500*time.Millisecond {
-		t.Fatalf("expected copytrade UI interval 500ms, got %s", got)
+	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != realbotCopytradeUIRefreshMin {
+		t.Fatalf("expected copytrade UI interval min clamp %s, got %s", realbotCopytradeUIRefreshMin, got)
+	}
+	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 5000}); got != realbotCopytradeUIRefreshMax {
+		t.Fatalf("expected copytrade UI interval max clamp %s, got %s", realbotCopytradeUIRefreshMax, got)
 	}
 	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "maker"}); got != realbotUIRefreshInterval {
 		t.Fatalf("expected default UI interval %s, got %s", realbotUIRefreshInterval, got)

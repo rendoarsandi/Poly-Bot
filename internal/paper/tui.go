@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"Market-bot/internal/botmode"
 	"Market-bot/internal/core"
 )
 
@@ -539,27 +540,27 @@ func (m tuiModel) toggleExchange() (tea.Model, tea.Cmd) {
 }
 
 func isMakerSettingsMode(cfg TUISettings) bool {
-	return strings.EqualFold(cfg.PaperArbMode, "maker")
+	return botmode.IsMaker(cfg.PaperArbMode)
 }
 
 func isCopytradeSettingsMode(cfg TUISettings) bool {
-	return strings.EqualFold(cfg.PaperArbMode, "copytrade")
+	return botmode.IsCopytrade(cfg.PaperArbMode)
 }
 
 func isLadderedTakerSettingsMode(cfg TUISettings) bool {
-	return strings.EqualFold(cfg.PaperArbMode, "laddered-taker")
+	return botmode.IsLadderedTaker(cfg.PaperArbMode)
 }
 
 func isBinanceGapSettingsMode(cfg TUISettings) bool {
-	return strings.EqualFold(cfg.PaperArbMode, "binance-gap")
+	return botmode.IsBinanceGap(cfg.PaperArbMode)
 }
 
 func TakerCloseModeActive(cfg TUISettings) bool {
-	return cfg.TakerCloseMarket && !isMakerSettingsMode(cfg) && !isCopytradeSettingsMode(cfg) && !isBinanceGapSettingsMode(cfg) && !isLadderedTakerSettingsMode(cfg)
+	return botmode.TakerCloseModeActive(cfg.PaperArbMode, cfg.TakerCloseMarket)
 }
 
 func settingsArbModes() []string {
-	return []string{"taker", "laddered-taker", "binance-gap", "copytrade", "maker"}
+	return botmode.Modes()
 }
 
 func isRowVisible(cfg TUISettings, mode string, idx int) bool {
@@ -578,28 +579,28 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
 		switch idx {
-		case settingsRowTimeframe, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowCopytradeTarget, settingsRowCopytradePoll:
+		case settingsRowTimeframe, settingsRowCopytradeTarget, settingsRowCopytradePoll:
 			return false
 		}
 	}
 
 	if copytrade {
 		switch idx {
-		case settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
+		case settingsRowMinMargin, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
 			return false
 		}
 	}
 
 	if laddered {
 		switch idx {
-		case settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket:
+		case settingsRowMinMargin, settingsRowExecutionSlip, settingsRowTakerCloseMarket:
 			return false
 		}
 	}
 
 	if binanceGap {
 		switch idx {
-		case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowCopytradeTarget, settingsRowCopytradePoll:
+		case settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowCopytradeTarget, settingsRowCopytradePoll:
 			return false
 		}
 	}
@@ -608,7 +609,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 		// Taker-close mode bypasses the normal split/panic-buy paths, so hide
 		// controls that do not affect the dedicated close-market execution flow.
 		switch idx {
-		case settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowMinAskPrice, settingsRowMaxAskPrice:
+		case settingsRowMinMargin, settingsRowMinAskPrice, settingsRowMaxAskPrice:
 			return false
 		}
 	}
@@ -623,7 +624,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	case settingsRowExecutionSlip:
 		return !maker && !binanceGap
 	case settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
-		return !maker && !binanceGap && !copytrade && !laddered
+		return botmode.SplitStrategyAllowed(cfg.PaperArbMode, cfg.TakerCloseMarket, cfg.Exchange)
 	case settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue:
 		return maker
 	case settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
@@ -797,18 +798,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		s.PaperBalance = 100.0
 	}
 	s.PaperBalance = math.Round(s.PaperBalance*100.0) / 100.0
-	switch strings.ToLower(strings.TrimSpace(s.PaperArbMode)) {
-	case "maker":
-		s.PaperArbMode = "maker"
-	case "copytrade":
-		s.PaperArbMode = "copytrade"
-	case "laddered-taker":
-		s.PaperArbMode = "laddered-taker"
-	case "binance-gap":
-		s.PaperArbMode = "binance-gap"
-	default:
-		s.PaperArbMode = "taker"
-	}
+	s.PaperArbMode = botmode.NormalizeArbMode(s.PaperArbMode)
 	if strings.EqualFold(strings.TrimSpace(s.TradeSizingMode), core.TradeSizingModeUSDC) {
 		s.TradeSizingMode = core.TradeSizingModeUSDC
 	} else {
@@ -926,6 +916,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	if s.PaperBinanceExecutionDelayMs > 5000 {
 		s.PaperBinanceExecutionDelayMs = 5000
 	}
+	s.SplitStrategyEnabled = botmode.SplitStrategyActive(s.PaperArbMode, s.TakerCloseMarket, s.Exchange, s.SplitStrategyEnabled)
 	if s.TakerCloseMarketSlippage < s.TakerCloseMarketMinPrice {
 		s.TakerCloseMarketSlippage = s.TakerCloseMarketMinPrice
 	}
@@ -3080,7 +3071,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 				if deductCost > pos.TotalCost {
 					deductCost = pos.TotalCost
 				}
-				
+
 				pos.Quantity -= deductShares
 				pos.TotalCost -= deductCost
 				winShares -= deductShares
@@ -3092,7 +3083,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 					entry.positions[k] = pos
 				}
 			}
-			
+
 			if loseShares > 0 && strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(req.LosingOutcome)) {
 				deductShares := loseShares
 				if deductShares > pos.Quantity {
@@ -3102,7 +3093,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 				if deductCost > pos.TotalCost {
 					deductCost = pos.TotalCost
 				}
-				
+
 				pos.Quantity -= deductShares
 				pos.TotalCost -= deductCost
 				loseShares -= deductShares
