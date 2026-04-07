@@ -477,6 +477,8 @@ type TUISettings struct {
 	TakerCloseMarketTime           int     // e.g. 5 seconds
 	TakerCloseMarketSlippage       float64 // e.g. 0.99 limit price
 	TakerCloseMarketMinPrice       float64 // e.g. 0.60 min spike price
+	PolygonRPC                     string  // Editable RPC URL
+	PolygonPrivateKey              string  // Editable Private Key
 }
 
 // Preset quick-select settings.
@@ -519,6 +521,8 @@ const (
 	settingsRowTakerCloseSlippage
 	settingsRowTakerCloseMinPrice
 	settingsRowTradingHoursMode
+	settingsRowRPCEdit
+	settingsRowPrivateKeyEdit
 	settingsRowCount
 )
 
@@ -764,6 +768,10 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Taker Close Min Price"
 	case settingsRowTradingHoursMode:
 		return "Trading Hours Mode"
+	case settingsRowRPCEdit:
+		return "RPC URL (Press Enter to edit)"
+	case settingsRowPrivateKeyEdit:
+		return "Private Key (Press Enter to edit)"
 	default:
 		return ""
 	}
@@ -1033,6 +1041,24 @@ func renderCopytradeTargetValue(raw string, editing bool, buffer string) string 
 	}
 	if target == "" {
 		return styleMuted.Render(" paste target ")
+	}
+	if len(target) > 28 {
+		target = target[:25] + "..."
+	}
+	return styleCyan.Render(" " + target + " ")
+}
+
+func renderStringValue(raw string, editing bool, buffer string, placeholder string) string {
+	target := strings.TrimSpace(raw)
+	if editing {
+		value := strings.TrimSpace(buffer)
+		if value == "" {
+			value = placeholder
+		}
+		return styleCyan.Render(" " + value + " _ ")
+	}
+	if target == "" {
+		return styleMuted.Render(" " + placeholder + " ")
 	}
 	if len(target) > 28 {
 		target = target[:25] + "..."
@@ -1620,6 +1646,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								}
 							}
 						}
+					} else if m.settingsCursor == settingsRowRPCEdit {
+						if m.tui.settings.PolygonRPC != strings.TrimSpace(m.settingsInput) {
+							m.tui.settings.PolygonRPC = strings.TrimSpace(m.settingsInput)
+							changed = true
+						}
+					} else if m.settingsCursor == settingsRowPrivateKeyEdit {
+						if m.tui.settings.PolygonPrivateKey != strings.TrimSpace(m.settingsInput) {
+							m.tui.settings.PolygonPrivateKey = strings.TrimSpace(m.settingsInput)
+							changed = true
+						}
 					}
 					if changed {
 						m.tui.settings = normalizeTUISettings(m.tui.settings)
@@ -1701,6 +1737,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.settingsInput = fmt.Sprintf("%.3f", m.tui.settings.TradeScaleFactor)
 						}
 					}
+					m.tui.mu.Unlock()
+					m.settingsEdit = true
+				} else if m.settingsCursor == settingsRowRPCEdit {
+					m.tui.mu.Lock()
+					m.settingsInput = m.tui.settings.PolygonRPC
+					m.tui.mu.Unlock()
+					m.settingsEdit = true
+				} else if m.settingsCursor == settingsRowPrivateKeyEdit {
+					m.tui.mu.Lock()
+					m.settingsInput = m.tui.settings.PolygonPrivateKey
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
 				}
@@ -4992,6 +5038,7 @@ func (m tuiModel) renderSettings(w int) string {
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
 
 	type row struct {
+		idx      int
 		label    string
 		value    string
 		bar      string
@@ -5297,6 +5344,40 @@ func (m tuiModel) renderSettings(w int) string {
 					return styleYellow.Render(" US OPEN ")
 				}
 				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+		{
+			idx:   settingsRowRPCEdit,
+			label: settingsRowLabel(cfg, settingsRowRPCEdit),
+			value: renderStringValue(
+				cfg.PolygonRPC,
+				m.settingsEdit && m.settingsCursor == settingsRowRPCEdit,
+				m.settingsInput,
+				"paste RPC URL",
+			),
+			bar: "",
+		},
+		{
+			idx:   settingsRowPrivateKeyEdit,
+			label: settingsRowLabel(cfg, settingsRowPrivateKeyEdit),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowPrivateKeyEdit {
+					value := strings.TrimSpace(m.settingsInput)
+					if value == "" {
+						value = "paste Private Key"
+					} else {
+						// Mask during editing if it's long enough, else show typing
+						if len(value) > 4 {
+							value = "..." + value[len(value)-4:]
+						}
+					}
+					return styleCyan.Render(" " + value + " _ ")
+				}
+				if cfg.PolygonPrivateKey == "" {
+					return styleMuted.Render(" paste Private Key ")
+				}
+				return styleCyan.Render(" ******************************** ")
 			}(),
 			bar: "",
 		},

@@ -217,3 +217,91 @@ func updateEnvFile(pk string, creds *APICredentials) error {
 
 	return os.WriteFile(envFile, []byte(strings.Join(lines, "\n")), 0600)
 }
+
+func UpdatePolymarketCredentials(rpc, pk string) error {
+	envFile := ".env"
+	var creds *APICredentials
+	var err error
+	
+	if pk != "" {
+		creds, err = deriveOrBuildAPIKey(pk)
+		if err != nil {
+			return fmt.Errorf("failed to derive keys: %w", err)
+		}
+	}
+
+	lines := []string{}
+	if _, err := os.Stat(envFile); err == nil {
+		content, err := os.ReadFile(envFile)
+		if err == nil {
+			lines = strings.Split(string(content), "\n")
+		}
+	}
+
+	updated := map[string]bool{
+		"POLYGON_RPC_URL": false,
+		"POLY_PK":         false,
+		"POLY_API_KEY":    false,
+		"POLY_API_SECRET": false,
+		"POLY_PASSPHRASE": false,
+	}
+
+	for i, line := range lines {
+		for key := range updated {
+			if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+				switch key {
+				case "POLYGON_RPC_URL":
+					if rpc != "" {
+						lines[i] = key + "=" + rpc
+					}
+				case "POLY_PK":
+					if pk != "" {
+						lines[i] = key + "=" + pk
+					}
+				case "POLY_API_KEY":
+					if pk != "" && creds != nil {
+						lines[i] = key + "=" + creds.APIKey
+					}
+				case "POLY_API_SECRET":
+					if pk != "" && creds != nil {
+						lines[i] = key + "=" + creds.Secret
+					}
+				case "POLY_PASSPHRASE":
+					if pk != "" && creds != nil {
+						lines[i] = key + "=" + creds.Passphrase
+					}
+				}
+				updated[key] = true
+			}
+		}
+	}
+
+	for key, isUpdated := range updated {
+		if !isUpdated {
+			switch key {
+			case "POLYGON_RPC_URL":
+				if rpc != "" {
+					lines = append(lines, key+"="+rpc)
+				}
+			case "POLY_PK":
+				if pk != "" {
+					lines = append(lines, key+"="+pk)
+				}
+			case "POLY_API_KEY":
+				if pk != "" && creds != nil {
+					lines = append(lines, key+"="+creds.APIKey)
+				}
+			case "POLY_API_SECRET":
+				if pk != "" && creds != nil {
+					lines = append(lines, key+"="+creds.Secret)
+				}
+			case "POLY_PASSPHRASE":
+				if pk != "" && creds != nil {
+					lines = append(lines, key+"="+creds.Passphrase)
+				}
+			}
+		}
+	}
+
+	return os.WriteFile(envFile, []byte(strings.Join(lines, "\n")), 0600)
+}

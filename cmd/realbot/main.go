@@ -868,6 +868,8 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
 		TradingHoursMode:               cfg.TradingHoursMode,
+		PolygonRPC:                     cfg.PolygonRPCURL,
+		PolygonPrivateKey:              cfg.PK,
 	}
 }
 
@@ -1764,6 +1766,16 @@ func run() error {
 		}
 
 		_ = cfg.SaveSettings()
+
+		if s.PolygonRPC != cfg.PolygonRPCURL || s.PolygonPrivateKey != cfg.PK {
+			if err := setup.UpdatePolymarketCredentials(s.PolygonRPC, s.PolygonPrivateKey); err != nil {
+				tui.LogEvent("⚠️ Failed to update credentials: %v", err)
+			} else {
+				tui.LogEvent("✅ Credentials updated in .env! Restarting bot...")
+				time.Sleep(1 * time.Second) // Let the message render
+				os.Exit(0)
+			}
+		}
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 	tui.SetMode("Real")
