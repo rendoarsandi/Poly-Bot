@@ -1871,6 +1871,21 @@ func TestNormalizeTUISettingsClampsLadderedTakerReentryMove(t *testing.T) {
 	}
 }
 
+func TestNormalizeTUISettingsClampsLadderedTakerMaxSlippagePct(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{LadderedTakerMaxSlippagePct: 0})
+	if got.LadderedTakerMaxSlippagePct != 0 {
+		t.Fatalf("expected ladder max slip to clamp to 0, got %.1f", got.LadderedTakerMaxSlippagePct)
+	}
+	got = normalizeTUISettings(TUISettings{LadderedTakerMaxSlippagePct: -5})
+	if got.LadderedTakerMaxSlippagePct != 0 {
+		t.Fatalf("expected negative ladder max slip to clamp to 0, got %.1f", got.LadderedTakerMaxSlippagePct)
+	}
+	got = normalizeTUISettings(TUISettings{LadderedTakerMaxSlippagePct: 150})
+	if got.LadderedTakerMaxSlippagePct != 99.0 {
+		t.Fatalf("expected ladder max slip to clamp to 99.0, got %.1f", got.LadderedTakerMaxSlippagePct)
+	}
+}
+
 func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

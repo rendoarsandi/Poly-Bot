@@ -487,11 +487,11 @@ func realbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) floa
 	return target
 }
 
-func realbotDirectionalBuyLimitPrice(ask, maxAskPrice float64) float64 {
+func realbotDirectionalBuyLimitPrice(ask, maxAskPrice, maxSlippagePct float64) float64 {
 	if ask <= 0 {
 		return 0
 	}
-	limit := ask + 0.01
+	limit := ask + (maxSlippagePct / 100.0)
 	if maxAskPrice > 0 && maxAskPrice < limit {
 		limit = maxAskPrice
 	}
@@ -735,7 +735,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		// SILENCED: Do not log spammy range errors
 		return
 	}
-	limitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice)
+	limitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice, liveCfg.LadderedTakerMaxSlippagePct)
 	if limitPrice <= 0 {
 		return
 	}
@@ -3731,8 +3731,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Require local WS depth inside the configured execution floor to cover the
 					// requested trade size before we attempt entry. This avoids late REST requotes
 					// and prevents entering on incomplete BBO-only depth.
-					if requestedShares > minLiquidity+1e-6 {
-						tui.LogEvent("[%s] ⚠️ WS executable ask depth inside %.1f%% window covers %s/%s shares — skipping", id, executionMarginFloor, formatShareQty(minLiquidity), formatShareQty(requestedShares))
+					if !ladderedMode && requestedShares > minLiquidity+1e-6 {
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
 					}
@@ -3779,8 +3778,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						limitPrice1 := 0.0
 						limitPrice2 := 0.0
 						if ladderedMode {
-							limitPrice1 = realbotDirectionalBuyLimitPrice(ask1, rMaxAsk)
-							limitPrice2 = realbotDirectionalBuyLimitPrice(ask2, rMaxAsk)
+							limitPrice1 = realbotDirectionalBuyLimitPrice(ask1, rMaxAsk, realbotCfg.LadderedTakerMaxSlippagePct)
+							limitPrice2 = realbotDirectionalBuyLimitPrice(ask2, rMaxAsk, realbotCfg.LadderedTakerMaxSlippagePct)
 						} else {
 							var capErr error
 							limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, executionPriceCap, executionMarginFloor)

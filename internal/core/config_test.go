@@ -205,6 +205,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.LadderedTakerSizeUSDC = 2.5
 	cfg.LadderedTakerSizeShares = 3.5
 	cfg.LadderedTakerReentryMoveCents = 1.9
+	cfg.LadderedTakerMaxSlippagePct = 2.0
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -282,6 +283,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.LadderedTakerReentryMoveCents != 1.9 {
 		t.Fatalf("expected saved LadderedTakerReentryMoveCents 1.9, got %.1f", settings.LadderedTakerReentryMoveCents)
+	}
+	if settings.LadderedTakerMaxSlippagePct != 2.0 {
+		t.Fatalf("expected saved LadderedTakerMaxSlippagePct 2.0, got %.1f", settings.LadderedTakerMaxSlippagePct)
 	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
