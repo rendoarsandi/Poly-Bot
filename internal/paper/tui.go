@@ -1678,6 +1678,31 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.PaperBalance)
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
+				} else if m.settingsCursor == settingsRowTradeSizingValue {
+					m.tui.mu.Lock()
+					if isCopytradeSettingsMode(m.tui.settings) {
+						if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.CopytradeSizeShares)
+						} else if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModePercent) {
+							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.CopytradeSizePercent)
+						} else {
+							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.CopytradeSizeUSDC)
+						}
+					} else if isLadderedTakerSettingsMode(m.tui.settings) {
+						if strings.EqualFold(m.tui.settings.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.LadderedTakerSizeShares)
+						} else {
+							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.LadderedTakerSizeUSDC)
+						}
+					} else {
+						if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
+							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.TradeSizeUSDC)
+						} else {
+							m.settingsInput = fmt.Sprintf("%.3f", m.tui.settings.TradeScaleFactor)
+						}
+					}
+					m.tui.mu.Unlock()
+					m.settingsEdit = true
 				}
 				return m, nil
 			case "esc":
@@ -3080,7 +3105,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 				if deductCost > pos.TotalCost {
 					deductCost = pos.TotalCost
 				}
-				
+
 				pos.Quantity -= deductShares
 				pos.TotalCost -= deductCost
 				winShares -= deductShares
@@ -3092,7 +3117,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 					entry.positions[k] = pos
 				}
 			}
-			
+
 			if loseShares > 0 && strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(req.LosingOutcome)) {
 				deductShares := loseShares
 				if deductShares > pos.Quantity {
@@ -3102,7 +3127,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 				if deductCost > pos.TotalCost {
 					deductCost = pos.TotalCost
 				}
-				
+
 				pos.Quantity -= deductShares
 				pos.TotalCost -= deductCost
 				loseShares -= deductShares
