@@ -3737,8 +3737,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Risk checks should use the worst price sum the bot is willing to execute through.
 					cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
 					if ladderedMode {
-						est0, est1 := ladderedTakerBiasedBuyShares(shares, ask1, ask2)
-						cost = (est0 * ask1) + (est1 * ask2)
+						if ask1 > ask2 {
+							cost = shares * ask1
+						} else {
+							cost = shares * ask2
+						}
 					}
 
 					// Use the last known cached balance here; a fresh RPC can add avoidable
@@ -3767,9 +3770,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Cooldown - don't spam logs, just skip silently
 						continue
 					}
-					if ladderedMode && !ladderedTakerEntryMovedEnough(ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents) {
-						continue
-					}
+
 
 					if true { // Always execute if we got here
 						limitPrice1 := 0.0
@@ -4889,30 +4890,6 @@ func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
 }
 
-func ladderedTakerEntryMovedEnough(entries []struct{ ask0, ask1 float64 }, ask0, ask1, moveCents float64) bool {
-	if len(entries) == 0 {
-		return true
-	}
-	moveDelta := moveCents
-	switch {
-	case moveDelta <= 0:
-		moveDelta = 1.0
-	case moveDelta < 0.1:
-		moveDelta = 0.1
-	case moveDelta > 25.0:
-		moveDelta = 25.0
-	}
-	threshold := moveDelta / 100.0
-	for _, e := range entries {
-		legMove := math.Max(math.Abs(ask0-e.ask0), math.Abs(ask1-e.ask1))
-		sumMove := math.Abs((ask0 + ask1) - (e.ask0 + e.ask1))
-		skewMove := math.Abs((ask0 - ask1) - (e.ask0 - e.ask1))
-		if legMove < threshold-1e-9 && sumMove < threshold-1e-9 && skewMove < threshold-1e-9 {
-			return false
-		}
-	}
-	return true
-}
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
 	if minAsk > ladderedTakerMinAsk {
@@ -4944,23 +4921,6 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 	return true
 }
 
-func ladderedTakerBiasedBuyShares(baseShares, ask0, ask1 float64) (float64, float64) {
-	base := normalizeMarketBuyShares(baseShares)
-	if base <= 0 {
-		return 0, 0
-	}
-	hedge := normalizeMarketBuyShares(base * ladderedTakerHedgeShareRatio)
-	if hedge < minOnChainActionShares {
-		hedge = minOnChainActionShares
-	}
-	if hedge > base {
-		hedge = base
-	}
-	if ask0 >= ask1 {
-		return base, hedge
-	}
-	return hedge, base
-}
 
 func computeRealbotMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
 	return strategy.ComputeMakerInventorySkew(positionShares, peerShares, targetShares)

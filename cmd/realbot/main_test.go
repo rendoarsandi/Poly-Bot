@@ -57,29 +57,7 @@ func TestLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
-func TestLadderedTakerBiasedBuySharesOverweightsHigherAskOutcome(t *testing.T) {
-	s0, s1 := ladderedTakerBiasedBuyShares(10, 0.72, 0.30)
-	if s0 != 10 || s1 >= s0 {
-		t.Fatalf("expected outcome0 to be primary with hedge on outcome1, got %.4f/%.4f", s0, s1)
-	}
-	s0, s1 = ladderedTakerBiasedBuyShares(10, 0.30, 0.72)
-	if s1 != 10 || s0 >= s1 {
-		t.Fatalf("expected outcome1 to be primary with hedge on outcome0, got %.4f/%.4f", s0, s1)
-	}
-}
 
-func TestLadderedTakerEntryMovedEnoughUsesMoveThreshold(t *testing.T) {
-	if !ladderedTakerEntryMovedEnough(nil, 0.50, 0.40, 1.0) {
-		t.Fatal("expected first laddered entry with no previous anchor to be allowed")
-	}
-	history := []struct{ ask0, ask1 float64 }{{0.50, 0.40}}
-	if ladderedTakerEntryMovedEnough(history, 0.504, 0.404, 1.0) {
-		t.Fatal("expected sub-threshold move to block laddered re-entry")
-	}
-	if !ladderedTakerEntryMovedEnough(history, 0.51, 0.40, 1.0) {
-		t.Fatal("expected 1.0c move to allow laddered re-entry")
-	}
-}
 
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
@@ -1485,8 +1463,8 @@ func TestRealbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 }
 
 func TestRealbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
-	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 500*time.Millisecond {
-		t.Fatalf("expected copytrade UI interval 500ms, got %s", got)
+	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 1000*time.Millisecond {
+		t.Fatalf("expected copytrade UI interval 1000ms, got %s", got)
 	}
 	if got := realbotUIInterval(paper.TUISettings{PaperArbMode: "maker"}); got != realbotUIRefreshInterval {
 		t.Fatalf("expected default UI interval %s, got %s", realbotUIRefreshInterval, got)

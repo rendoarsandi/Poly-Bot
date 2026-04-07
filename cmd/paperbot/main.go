@@ -5290,16 +5290,6 @@ func paperbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) flo
 	return target
 }
 
-func paperbotLadderedEntryMovedEnough(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) bool {
-	if !hasLast {
-		return true
-	}
-	threshold := paperbotLadderedMoveThreshold(moveCents)
-	legMove := math.Max(math.Abs(ask0-lastAsk0), math.Abs(ask1-lastAsk1))
-	sumMove := math.Abs((ask0 + ask1) - (lastAsk0 + lastAsk1))
-	skewMove := math.Abs((ask0 - ask1) - (lastAsk0 - lastAsk1))
-	return legMove >= threshold-1e-9 || sumMove >= threshold-1e-9 || skewMove >= threshold-1e-9
-}
 
 func paperbotLadderedDirectionalSide(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) (int, bool) {
 	if !hasLast {
@@ -5374,23 +5364,6 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 	return true
 }
 
-func ladderedTakerBiasedBuyShares(baseShares, ask0, ask1 float64) (float64, float64) {
-	base := paperbotNormalizeMarketBuyShares(baseShares)
-	if base <= 0 {
-		return 0, 0
-	}
-	hedge := paperbotNormalizeMarketBuyShares(base * ladderedTakerHedgeShareRatio)
-	if hedge < paperbotMinActionShares {
-		hedge = paperbotMinActionShares
-	}
-	if hedge > base {
-		hedge = base
-	}
-	if ask0 >= ask1 {
-		return base, hedge
-	}
-	return hedge, base
-}
 
 func paperbotAskLiquidityAtOrBelow(levels []paper.MarketLevel, maxPrice float64) float64 {
 	total := 0.0

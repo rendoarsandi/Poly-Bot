@@ -87,17 +87,6 @@ func TestPaperLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
-func TestPaperbotLadderedEntryMovedEnoughUsesMoveThreshold(t *testing.T) {
-	if !paperbotLadderedEntryMovedEnough(false, 0.50, 0.40, 0.50, 0.40, 1.0) {
-		t.Fatal("expected first laddered entry with no previous anchor to be allowed")
-	}
-	if paperbotLadderedEntryMovedEnough(true, 0.50, 0.40, 0.504, 0.404, 1.0) {
-		t.Fatal("expected sub-threshold move to block laddered re-entry")
-	}
-	if !paperbotLadderedEntryMovedEnough(true, 0.50, 0.40, 0.51, 0.40, 1.0) {
-		t.Fatal("expected 1.0c move to allow laddered re-entry")
-	}
-}
 
 func TestPaperbotLadderedDirectionalSide(t *testing.T) {
 	if side, ok := paperbotLadderedDirectionalSide(false, 0, 0, 0.62, 0.38, 1.0); !ok || side != 0 {
@@ -983,8 +972,8 @@ func TestPaperbotTraderLoopIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 }
 
 func TestPaperbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
-	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 500*time.Millisecond {
-		t.Fatalf("expected copytrade UI interval 500ms, got %s", got)
+	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "copytrade", CopytradePollIntervalMs: 250}); got != 1000*time.Millisecond {
+		t.Fatalf("expected copytrade UI interval 1000ms, got %s", got)
 	}
 	if got := paperbotUIInterval(paper.TUISettings{PaperArbMode: "maker"}); got != paperUIRefreshInterval {
 		t.Fatalf("expected default UI interval %s, got %s", paperUIRefreshInterval, got)
