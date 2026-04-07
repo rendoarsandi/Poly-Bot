@@ -49,22 +49,29 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 				}
 			}
 
-			fmt.Println("🔄 Deriving API credentials from your private key...")
-			creds, deriveErr := deriveOrBuildAPIKey(pk)
-			if deriveErr != nil {
-				return nil, fmt.Errorf("failed to derive API credentials: %w", deriveErr)
+			rpcURL := cfg.PolygonRPCURL
+			if rpcURL == "" {
+				fmt.Print("Please enter your Polygon RPC URL (or press Enter for default): ")
+				reader := bufio.NewReader(os.Stdin)
+				input, _ := reader.ReadString('\n')
+				rpcURL = strings.TrimSpace(input)
+				if rpcURL == "" {
+					rpcURL = "https://polygon-rpc.com/"
+				}
 			}
 
-			fmt.Println("✅ Credentials derived successfully. Saving to .env...")
-			err = updateEnvFile(pk, creds)
+			fmt.Println("🔄 Deriving API credentials from your private key and saving to .env...")
+			err = UpdatePolymarketCredentials(rpcURL, pk)
 			if err != nil {
 				return nil, fmt.Errorf("failed to save .env file: %w", err)
 			}
+			fmt.Println("✅ Credentials derived successfully.")
 
 			// Reload env-backed credentials while preserving any bot/profile-specific
 			// runtime settings already loaded from JSON.
-			_ = godotenv.Load()
+			_ = godotenv.Overload()
 			cfg.ReloadSecretsFromEnv()
+			cfg.PolygonRPCURL = rpcURL // Guarantee it's in memory for the current run
 			break
 		}
 	}
@@ -160,62 +167,6 @@ func UpdateKalshiEnvFile(kalshiKey, kalshiPK string) error {
 	}
 
 	return godotenv.Write(envMap, envFile)
-}
-
-func updateEnvFile(pk string, creds *APICredentials) error {
-	envFile := ".env"
-	lines := []string{}
-
-	if _, err := os.Stat(envFile); err == nil {
-		content, err := os.ReadFile(envFile)
-		if err == nil {
-			lines = strings.Split(string(content), "\n")
-		}
-	}
-
-	// Update or add lines
-	updated := map[string]bool{
-		"POLY_PK":         false,
-		"POLY_API_KEY":    false,
-		"POLY_API_SECRET": false,
-		"POLY_PASSPHRASE": false,
-	}
-
-	for i, line := range lines {
-		for key := range updated {
-			if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
-				switch key {
-				case "POLY_PK":
-					lines[i] = key + "=" + pk
-				case "POLY_API_KEY":
-					lines[i] = key + "=" + creds.APIKey
-				case "POLY_API_SECRET":
-					lines[i] = key + "=" + creds.Secret
-				case "POLY_PASSPHRASE":
-					lines[i] = key + "=" + creds.Passphrase
-				}
-				updated[key] = true
-			}
-		}
-	}
-
-	// Add missing keys
-	for key, isUpdated := range updated {
-		if !isUpdated {
-			switch key {
-			case "POLY_PK":
-				lines = append(lines, key+"="+pk)
-			case "POLY_API_KEY":
-				lines = append(lines, key+"="+creds.APIKey)
-			case "POLY_API_SECRET":
-				lines = append(lines, key+"="+creds.Secret)
-			case "POLY_PASSPHRASE":
-				lines = append(lines, key+"="+creds.Passphrase)
-			}
-		}
-	}
-
-	return os.WriteFile(envFile, []byte(strings.Join(lines, "\n")), 0600)
 }
 
 func UpdatePolymarketCredentials(rpc, pk string) error {
