@@ -1222,6 +1222,52 @@ func TestSettingsExecutionSlipSupportsDirectTypedEditInCopytradeMode(t *testing.
 	}
 }
 
+func TestSettingsLadderSlippageSupportsArrowAndTypedEdit(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode:                "laddered-taker",
+		LadderedTakerMaxSlippagePct: 99,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowLadderSlippage,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated := next.(tuiModel)
+	if got := tui.GetSettings().LadderedTakerMaxSlippagePct; got != 98 {
+		t.Fatalf("expected left arrow to reduce ladder slippage to 98c, got %.2f", got)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRight})
+	updated = next.(tuiModel)
+	if got := tui.GetSettings().LadderedTakerMaxSlippagePct; got != 99 {
+		t.Fatalf("expected right arrow to restore ladder slippage to 99c, got %.2f", got)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected enter on ladder slippage row to start edit mode")
+	}
+
+	updated.settingsInput = ""
+	for _, r := range []rune{'1', '7'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if updated.settingsEdit {
+		t.Fatal("expected enter to commit the typed ladder slippage edit")
+	}
+	if got := tui.GetSettings().LadderedTakerMaxSlippagePct; got != 17 {
+		t.Fatalf("expected typed ladder slippage 17c, got %.2f", got)
+	}
+}
+
 func TestSettingsMaxAskPriceSupportsEnterTypedEdit(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{

@@ -2072,6 +2072,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tui.settings.LadderedTakerReentryMoveCents = 1.0
 					}
 					changed = true
+				case settingsRowLadderSlippage:
+					m.tui.settings.LadderedTakerMaxSlippagePct -= 1.0
+					if m.tui.settings.LadderedTakerMaxSlippagePct < 0 {
+						m.tui.settings.LadderedTakerMaxSlippagePct = 0
+					}
+					changed = true
 				case settingsRowMinMargin:
 					m.tui.settings.MinMarginPercent -= 0.5
 					if m.tui.settings.MinMarginPercent < 0.5 {
