@@ -1167,6 +1167,9 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 		attempt := 0
 		pendingTxHash := ""
 		lastConfirmedAt := time.Time{}
+		redeemStartBalance := engine.GetBalance()
+		highestObservedBalance := redeemStartBalance
+		winnerDepletedAt := time.Time{}
 		for {
 			attempt++
 			skipSubmit := false
@@ -1233,6 +1236,9 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			if newBal, balErr := trader.ForceRefreshBalance(balanceCtx); balErr != nil {
 				tui.LogEvent("[%s] ⚠️ Post-redeem balance refresh failed: %v", marketID, balErr)
 			} else {
+				if newBal > highestObservedBalance {
+					highestObservedBalance = newBal
+				}
 				engine.SyncBalanceNeutral(newBal)
 				engine.RecalculateDrawdown()
 				if walletCash, cashErr := trader.ForceRefreshOnChainUSDCBalance(balanceCtx); cashErr == nil {
@@ -1242,8 +1248,26 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			balanceCancel()
 
 			if positionsErr == nil && realbotWinningOnChainShares(positions, winner) <= 0.000001 {
-				engine.ClearPendingRedemption(marketID)
-				return
+				if winnerDepletedAt.IsZero() {
+					winnerDepletedAt = time.Now()
+				}
+				pendingPayout := engine.GetPendingRedemptions()[marketID]
+				if pendingPayout <= 0.000001 {
+					return
+				}
+				cashReflectsPayout := highestObservedBalance+0.01 >= redeemStartBalance+pendingPayout
+				waitedLongEnough := time.Since(winnerDepletedAt) >= 45*time.Second
+				if cashReflectsPayout || waitedLongEnough {
+					if !cashReflectsPayout {
+						tui.LogEvent("[%s] ⚠️ Clearing pending redemption after timeout without explicit balance confirmation (start=%.2f peak=%.2f expected +%.2f)",
+							marketID, redeemStartBalance, highestObservedBalance, pendingPayout)
+					}
+					engine.ClearPendingRedemption(marketID)
+					return
+				}
+				if time.Since(winnerDepletedAt) <= realbotRedeemRetryInterval {
+					tui.LogEvent("[%s] ⏳ Winner shares depleted; waiting for wallet USDC to reflect redemption before clearing pending payout (+%.2f expected)", marketID, pendingPayout)
+				}
 			}
 
 			time.Sleep(realbotRedeemRetryInterval)
@@ -1970,6 +1994,7 @@ func run() error {
 
 		// Track starting equity for this round's PnL calculation
 		startingEquity := engine.GetBookEquity()
+		roundStartTrades := engine.GetStats().TotalTrades
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		tui.LogEvent("📊 Balance $%.2f | %.2fx", currentBalance, compoundMultiplier)
 
@@ -2209,7 +2234,13 @@ func run() error {
 
 		// Calculate round PnL from settled/book equity so unresolved carry stays neutral
 		// until it is actually sold, merged, or redeemed.
-		roundPnL := realbotNeutralRoundPnL(startingEquity, engine.GetBookEquity(), reconciliationDelta+balanceSyncDelta)
+		endingBookEquity := engine.GetBookEquity()
+		roundPnL := realbotNeutralRoundPnL(startingEquity, endingBookEquity, reconciliationDelta+balanceSyncDelta)
+		roundTrades := engine.GetStats().TotalTrades - roundStartTrades
+		if roundTrades < 0 {
+			roundTrades = 0
+		}
+		tui.RecordRound(startingEquity, endingBookEquity, roundPnL, roundTrades, engine.GetPositions(), nil)
 		engine.UpdateCompoundMultiplier(roundPnL, startingEquity)
 		if roundPnL > 0 {
 			tui.LogEvent("📈 PROFIT! Round PnL: +$%.2f", roundPnL)

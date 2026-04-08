@@ -874,11 +874,11 @@ func (e *Engine) recalculateDrawdown() {
 	}
 }
 
-// GetEquity returns total equity (balance + unrealized value)
+// GetEquity returns total equity (balance + unrealized value + pending redemption receivables)
 func (e *Engine) GetEquity() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue()
+	return e.currentBalance + e.getUnrealizedValue() + e.getSplitInventoryValue() + e.getPendingRedemptionValue()
 }
 
 // GetBookEquity returns cash plus cost basis for open positions and split inventory.
