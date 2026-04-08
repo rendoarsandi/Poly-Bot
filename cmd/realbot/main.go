@@ -337,36 +337,90 @@ func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, sp
 	}
 
 	currentMarketID = strings.TrimSpace(currentMarketID)
+	inventoryByMarket := make(map[string]map[string]float64)
 	for _, pos := range engine.GetPositions() {
 		if pos.Quantity <= minOnChainActionShares {
 			continue
 		}
-		if strings.TrimSpace(pos.MarketID) == "" || strings.EqualFold(strings.TrimSpace(pos.MarketID), currentMarketID) {
+		marketID := strings.TrimSpace(pos.MarketID)
+		if marketID == "" || strings.EqualFold(marketID, currentMarketID) {
 			continue
 		}
-		return fmt.Sprintf("prior-round inventory %s %s still open (%.4f shares)", pos.MarketID, pos.Outcome, pos.Quantity), true
+		if inventoryByMarket[marketID] == nil {
+			inventoryByMarket[marketID] = make(map[string]float64)
+		}
+		inventoryByMarket[marketID][pos.Outcome] += pos.Quantity
+	}
+	if len(inventoryByMarket) > 0 {
+		marketIDs := make([]string, 0, len(inventoryByMarket))
+		for marketID := range inventoryByMarket {
+			marketIDs = append(marketIDs, marketID)
+		}
+		sort.Strings(marketIDs)
+		marketID := marketIDs[0]
+		outcomes := make([]string, 0, len(inventoryByMarket[marketID]))
+		for outcome := range inventoryByMarket[marketID] {
+			outcomes = append(outcomes, outcome)
+		}
+		sort.Strings(outcomes)
+		parts := make([]string, 0, len(outcomes))
+		for _, outcome := range outcomes {
+			parts = append(parts, fmt.Sprintf("%s=%.4f", outcome, inventoryByMarket[marketID][outcome]))
+		}
+		return fmt.Sprintf("prior-round inventory %s still open (%s shares)", marketID, strings.Join(parts, ", ")), true
 	}
 
 	if splitInventory != nil {
+		splitByMarket := make(map[string]map[string]float64)
 		for _, pos := range splitInventory.GetAllPositions() {
 			if pos.Shares <= minOnChainActionShares {
 				continue
 			}
-			if strings.TrimSpace(pos.MarketID) == "" || strings.EqualFold(strings.TrimSpace(pos.MarketID), currentMarketID) {
+			marketID := strings.TrimSpace(pos.MarketID)
+			if marketID == "" || strings.EqualFold(marketID, currentMarketID) {
 				continue
 			}
-			return fmt.Sprintf("prior-round split inventory %s %s still open (%.4f shares)", pos.MarketID, pos.Outcome, pos.Shares), true
+			if splitByMarket[marketID] == nil {
+				splitByMarket[marketID] = make(map[string]float64)
+			}
+			splitByMarket[marketID][pos.Outcome] += pos.Shares
+		}
+		if len(splitByMarket) > 0 {
+			marketIDs := make([]string, 0, len(splitByMarket))
+			for marketID := range splitByMarket {
+				marketIDs = append(marketIDs, marketID)
+			}
+			sort.Strings(marketIDs)
+			marketID := marketIDs[0]
+			outcomes := make([]string, 0, len(splitByMarket[marketID]))
+			for outcome := range splitByMarket[marketID] {
+				outcomes = append(outcomes, outcome)
+			}
+			sort.Strings(outcomes)
+			parts := make([]string, 0, len(outcomes))
+			for _, outcome := range outcomes {
+				parts = append(parts, fmt.Sprintf("%s=%.4f", outcome, splitByMarket[marketID][outcome]))
+			}
+			return fmt.Sprintf("prior-round split inventory %s still open (%s shares)", marketID, strings.Join(parts, ", ")), true
 		}
 	}
 
-	for marketID, payout := range engine.GetPendingRedemptions() {
+	pendingRedemptions := engine.GetPendingRedemptions()
+	pendingMarkets := make([]string, 0, len(pendingRedemptions))
+	for marketID, payout := range pendingRedemptions {
 		if payout <= 0.000001 {
 			continue
 		}
-		if strings.TrimSpace(marketID) == "" || strings.EqualFold(strings.TrimSpace(marketID), currentMarketID) {
+		marketID = strings.TrimSpace(marketID)
+		if marketID == "" || strings.EqualFold(marketID, currentMarketID) {
 			continue
 		}
-		return fmt.Sprintf("prior-round payout %s still pending redemption ($%.2f)", marketID, payout), true
+		pendingMarkets = append(pendingMarkets, marketID)
+	}
+	if len(pendingMarkets) > 0 {
+		sort.Strings(pendingMarkets)
+		marketID := pendingMarkets[0]
+		return fmt.Sprintf("prior-round payout %s still pending redemption ($%.2f)", marketID, pendingRedemptions[marketID]), true
 	}
 
 	return "", false

@@ -365,6 +365,9 @@ func TestRealbotNewEntryBlockReasonBlocksPriorRoundInventory(t *testing.T) {
 	if !strings.Contains(reason, "prior-round inventory") {
 		t.Fatalf("expected inventory block reason, got %q", reason)
 	}
+	if !strings.Contains(reason, "BTC-older still open") {
+		t.Fatalf("expected grouped market reason, got %q", reason)
+	}
 
 	if reason, blocked = realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{}); blocked || reason != "" {
 		t.Fatalf("expected toggle-off mode not to block, got blocked=%v reason=%q", blocked, reason)
@@ -389,6 +392,29 @@ func TestRealbotNewEntryBlockReasonBlocksPendingRedemptionPayout(t *testing.T) {
 	}
 	if !strings.Contains(reason, "pending redemption") {
 		t.Fatalf("expected pending redemption reason, got %q", reason)
+	}
+}
+
+func TestRealbotNewEntryBlockReasonGroupsInventoryDeterministically(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	if _, err := engine.BuyForMarket("BTC-older", "Down", 0.18, 22.1457); err != nil {
+		t.Fatalf("seed down buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("BTC-older", "Up", 0.89, 2.2405); err != nil {
+		t.Fatalf("seed up buy failed: %v", err)
+	}
+
+	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+		BlockNewEntriesOnPendingRedemption: true,
+	})
+	if !blocked {
+		t.Fatal("expected grouped prior-round inventory to block")
+	}
+	if !strings.Contains(reason, "BTC-older still open") {
+		t.Fatalf("expected grouped market label, got %q", reason)
+	}
+	if !strings.Contains(reason, "Down=22.1457") || !strings.Contains(reason, "Up=2.2405") {
+		t.Fatalf("expected grouped outcome quantities, got %q", reason)
 	}
 }
 
