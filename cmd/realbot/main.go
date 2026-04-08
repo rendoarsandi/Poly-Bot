@@ -192,7 +192,8 @@ func realbotPrimaryExecutionMode(cfg paper.TUISettings) string {
 }
 
 func realbotShouldAutoMergeBalancedInventory(cfg paper.TUISettings) bool {
-	return !realbotLadderedHoldMode(cfg)
+	_ = cfg
+	return false
 }
 
 func realbotHasEnginePositionsForMarket(engine *paper.Engine, marketID string) bool {
@@ -1828,17 +1829,8 @@ func run() error {
 					wg.Add(1)
 					go func(cID string, mq float64, numOutcomes int) {
 						defer wg.Done()
-						fmt.Printf("💰 Merging %.6f pairs for market %s...\n", mq, cID[:10])
-						// Independent 30s timeout per merge
-						mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer mergeCancel()
-
-						_, err := realTrader.MergeOnChain(mergeCtx, cID, mq, numOutcomes)
-						if err != nil {
-							fmt.Printf("❌ Merge failed for %s: %v\n", cID[:10], err)
-						} else {
-							fmt.Printf("✅ Merge successful for %s\n", cID[:10])
-						}
+						_ = numOutcomes
+						fmt.Printf("ℹ️ Auto-merge disabled; leaving %.6f balanced pairs parked for market %s\n", mq, cID[:10])
 					}(condID, minQty, len(mInfo.Tokens))
 				}
 			}
@@ -2691,7 +2683,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			if time.Now().After(nextNearCloseCleanup) {
 				if !nearExpiryNoticeSent {
 					if takerCloseCooldownActive {
-						tui.LogEvent("[%s] ⏳ Near expiry: merge-only (taker close cooldown active)", id)
+						tui.LogEvent("[%s] ⏳ Near expiry: cleanup sell paused during taker close cooldown", id)
 					} else {
 						tui.LogEvent("[%s] ⏳ Near expiry: settling only", id)
 					}
@@ -4613,15 +4605,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 
 								if acquired0 >= minOnChainActionShares && acquired1 >= minOnChainActionShares {
-									tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Attempting Merge!", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
-									mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(acquired0, acquired1), shares), len(market.Tokens))
-									if err != nil {
-										tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
-										// Fallback to sell below using the live WS position cache.
-									} else {
-										tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
-										acquired0, acquired1 = subtractMergedPairBalances(acquired0, acquired1, mergeQty)
-									}
+									tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Auto-merge disabled; proceeding to sell cleanup only.", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
 								}
 
 								// If not settled via merge, or if dust remains, clean it up via Market Sell
@@ -5722,17 +5706,6 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 	shares0, avg0 := localBoughtPositionAvg(engine, marketID, outcomes[0])
 	shares1, avg1 := localBoughtPositionAvg(engine, marketID, outcomes[1])
 
-	// Auto-merge delta-neutral inventory to free up capital and permanently lock in the spread profit
-	if shares0 > 0 && shares1 > 0 {
-		mergeQty := math.Min(shares0, shares1)
-		if mergeQty >= 1.0 {
-			engine.MergeForMarket(marketID, outcomes[0], outcomes[1], mergeQty)
-			// Re-fetch after merge
-			shares0, avg0 = localBoughtPositionAvg(engine, marketID, outcomes[0])
-			shares1, avg1 = localBoughtPositionAvg(engine, marketID, outcomes[1])
-		}
-	}
-
 	currentCash := engine.GetBalance()
 	reservedBuyNotional := realbotMakerReservedBuyNotional(makerQuotes)
 	quoteCash := math.Max(0, currentCash-reservedBuyNotional)
@@ -6826,7 +6799,7 @@ func settleMarketInventory(
 		tui.LogEvent("[%s] 🔍 %s inventory snapshot (%s): %s=%.6f, %s=%.6f", id, reason, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
 		if !allowMerge {
 			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, minQty)
-			tui.LogEvent("[%s] 🪜 %s keeping %.6f balanced shares parked; laddered mode merge is disabled", id, reason, minQty)
+			tui.LogEvent("[%s] 🪜 %s keeping %.6f balanced shares parked; auto-merge is disabled", id, reason, minQty)
 		} else if launchBackgroundMerge(id, reason, outcomes, market.ConditionID, minQty, len(market.Tokens), trader, engine, splitInventory, tui, mergeCoordinator) {
 			pendingMergeQty += minQty
 			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, minQty)
