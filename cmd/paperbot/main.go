@@ -4393,10 +4393,22 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 					requestSize2 := shares
 					if arbMode == paperArbModeLaddered {
 						requestSize1, requestSize2 = 0, 0
-						if ladderedDirection == 1 {
-							requestSize2 = paperbotNormalizeMarketBuyShares(shares)
+						if strings.EqualFold(strings.TrimSpace(liveCfg.LadderedTakerSizingMode), core.LadderedTakerSizingModeUSDC) {
+							budget := liveCfg.LadderedTakerSizeUSDC
+							if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
+								budget = liveCfg.MaxTradeSize
+							}
+							if ladderedDirection == 1 {
+								requestSize2 = paperbotAffordableBuySharesForBudget(paperbotFilterAsksAtOrBelow(asks2, maxAsk), budget)
+							} else {
+								requestSize1 = paperbotAffordableBuySharesForBudget(paperbotFilterAsksAtOrBelow(asks1, maxAsk), budget)
+							}
 						} else {
-							requestSize1 = paperbotNormalizeMarketBuyShares(shares)
+							if ladderedDirection == 1 {
+								requestSize2 = paperbotNormalizeMarketBuyShares(shares)
+							} else {
+								requestSize1 = paperbotNormalizeMarketBuyShares(shares)
+							}
 						}
 						directionalSize := requestSize1
 						if ladderedDirection == 1 {
@@ -5493,6 +5505,45 @@ func paperbotBuyCostForShares(qty float64, asks []paper.MarketLevel) float64 {
 	return cost
 }
 
+func paperbotAffordableBuySharesForBudget(asks []paper.MarketLevel, budget float64) float64 {
+	if budget <= 0 || len(asks) == 0 {
+		return 0
+	}
+
+	remainingBudget := budget
+	rawShares := 0.0
+	for _, level := range asks {
+		if level.Size <= 0 || level.Price <= 0 {
+			continue
+		}
+
+		maxAffordable := remainingBudget / level.Price
+		if maxAffordable <= 0 {
+			break
+		}
+
+		take := math.Min(level.Size, maxAffordable)
+		if take <= 0 {
+			continue
+		}
+
+		rawShares += take
+		remainingBudget -= take * level.Price
+		if remainingBudget <= 1e-9 {
+			break
+		}
+	}
+
+	qty := paperbotNormalizeMarketBuyShares(rawShares)
+	for qty >= 0.0001 {
+		if cost := paperbotBuyCostForShares(qty, asks); cost <= budget+1e-9 {
+			return qty
+		}
+		qty = paperbotNormalizeMarketBuyShares(qty - 0.0001)
+	}
+	return 0
+}
+
 func paperbotCopytradeRequestedQty(targetDelta, price float64, liveCfg paper.TUISettings) float64 {
 	return core.CalculateCopytradeSharesForMode(
 		targetDelta,
@@ -5620,7 +5671,19 @@ func paperbotHandleCopytradeMarket(ctx context.Context, t *MarketTrader, liveCfg
 				continue
 			}
 
-			requestedQty := paperbotNormalizeMarketBuyShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			requestedQty := 0.0
+			if strings.EqualFold(strings.TrimSpace(liveCfg.CopytradeSizingMode), core.CopytradeSizingModeUSDC) {
+				budget := liveCfg.CopytradeSizeUSDC
+				if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
+					budget = liveCfg.MaxTradeSize
+				}
+				if balance := t.Engine.GetBalance(); balance > 0 && balance < budget {
+					budget = balance
+				}
+				requestedQty = paperbotAffordableBuySharesForBudget(asks, budget)
+			} else {
+				requestedQty = paperbotNormalizeMarketBuyShares(core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode))
+			}
 			liq := paperbotAskLiquidityAtOrBelow(asks, submitPrice)
 			if liq > 0 && requestedQty > liq {
 				requestedQty = paperbotNormalizeMarketBuyShares(liq)

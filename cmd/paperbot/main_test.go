@@ -87,7 +87,6 @@ func TestPaperLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
-
 func TestPaperbotLadderedDirectionalSide(t *testing.T) {
 	if side, ok := paperbotLadderedDirectionalSide(false, 0, 0, 0.62, 0.38, 1.0); !ok || side != 0 {
 		t.Fatalf("expected initial directional side 0, got side=%d ok=%v", side, ok)
@@ -959,6 +958,35 @@ func TestPaperbotCopytradeHasAmbiguousPositionExit(t *testing.T) {
 func TestPaperbotFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := paperbotFormatShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)
+	}
+}
+
+func TestPaperbotAffordableBuySharesForBudgetWalksBook(t *testing.T) {
+	asks := []paper.MarketLevel{
+		{Price: 0.40, Size: 1.0},
+		{Price: 0.50, Size: 10.0},
+	}
+
+	qty := paperbotAffordableBuySharesForBudget(asks, 1.00)
+	if qty != 2.2 {
+		t.Fatalf("expected 2.2 shares, got %.4f", qty)
+	}
+	if cost := paperbotBuyCostForShares(qty, asks); math.Abs(cost-1.0) > 1e-9 {
+		t.Fatalf("expected exact $1.00 spend, got %.6f", cost)
+	}
+}
+
+func TestPaperbotAffordableBuySharesForBudgetRespectsFourDecimalRounding(t *testing.T) {
+	asks := []paper.MarketLevel{
+		{Price: 0.33, Size: 10.0},
+	}
+
+	qty := paperbotAffordableBuySharesForBudget(asks, 1.00)
+	if qty != 3.0303 {
+		t.Fatalf("expected rounded quantity 3.0303, got %.4f", qty)
+	}
+	if cost := paperbotBuyCostForShares(qty, asks); cost > 1.0+1e-9 {
+		t.Fatalf("expected spend to stay within budget, got %.6f", cost)
 	}
 }
 
