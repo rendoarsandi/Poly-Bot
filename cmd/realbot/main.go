@@ -6330,6 +6330,26 @@ func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string
 	)
 }
 
+func syncWalletTruthOutcomePosition(engine *paper.Engine, tui *paper.TUI, marketID, outcome string, localBoughtShares, onChainShares, splitShares float64) (float64, bool) {
+	desiredBoughtShares := math.Max(0, onChainShares-splitShares)
+	deltaShares := desiredBoughtShares - localBoughtShares
+	if math.Abs(deltaShares) <= 1e-6 {
+		return desiredBoughtShares, false
+	}
+
+	markPrice := walletTruthSyncMarkPrice(engine, marketID, outcome)
+	if !engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, markPrice) {
+		return desiredBoughtShares, false
+	}
+
+	action := "restored"
+	if deltaShares < 0 {
+		action = "trimmed"
+	}
+	realbotRecordWalletTruthAdjustment(tui, marketID, outcome, deltaShares, localBoughtShares, onChainShares, splitShares, markPrice, action)
+	return desiredBoughtShares, true
+}
+
 func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) (bool, error) {
 	enginePositions := engine.GetPositions()
 	localByOutcome := make(map[string]float64)
@@ -6355,15 +6375,10 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		if splitInventory != nil {
 			splitShares = splitInventory.GetSplitShares(marketID, outcome)
 		}
-		desiredBoughtShares := math.Max(0, onChainShares-splitShares)
-		if desiredBoughtShares > localBoughtShares+1e-6 {
-			addQty := desiredBoughtShares - localBoughtShares
-			markPrice := walletTruthSyncMarkPrice(engine, marketID, outcome)
-			if engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, markPrice) {
-				realbotRecordWalletTruthAdjustment(tui, marketID, outcome, addQty, localBoughtShares, onChainShares, splitShares, markPrice, "restored")
-				changed = true
-			}
-			localBoughtShares = desiredBoughtShares
+		var adjusted bool
+		localBoughtShares, adjusted = syncWalletTruthOutcomePosition(engine, tui, marketID, outcome, localBoughtShares, onChainShares, splitShares)
+		if adjusted {
+			changed = true
 		}
 		localShares := localBoughtShares + splitShares
 		positions = append(positions, paper.WalletTruthPosition{

@@ -1324,6 +1324,43 @@ func TestRealbotCopytradeFreshTradesBootstrapKeepsRecentWatcherSignalsBeforeStar
 	}
 }
 
+func TestSyncWalletTruthOutcomePositionTrimsExcessLocalInventory(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	engine.UpdateMarketBidAsk("m1", "Down", 0.09, 0.10)
+	if !engine.SyncExternalPosition("m1", "Down", 17.0297, 0.42) {
+		t.Fatal("expected seed position to sync into engine")
+	}
+
+	desired, changed := syncWalletTruthOutcomePosition(engine, tui, "m1", "Down", 17.0297, 16.60494, 0)
+	if !changed {
+		t.Fatal("expected wallet-truth trim to change local inventory")
+	}
+	if math.Abs(desired-16.60494) > 0.000001 {
+		t.Fatalf("unexpected desired shares %.5f", desired)
+	}
+
+	positions := engine.GetPositions()
+	pos, ok := positions["m1:Down"]
+	if !ok {
+		t.Fatal("expected trimmed position to remain in engine")
+	}
+	if math.Abs(pos.Quantity-16.60494) > 0.000001 {
+		t.Fatalf("expected engine quantity 16.60494, got %.5f", pos.Quantity)
+	}
+
+	history := tui.GetOrderHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected one wallet-sync history entry, got %d", len(history))
+	}
+	if history[0].Side != "ADJ-" {
+		t.Fatalf("expected trim history side ADJ-, got %q", history[0].Side)
+	}
+	if history[0].ExecutionMode != "wallet-sync" {
+		t.Fatalf("expected wallet-sync execution mode, got %q", history[0].ExecutionMode)
+	}
+}
+
 func TestRealbotCopytradeFreshTradesBootstrapDropsRecentPublicSignalsBeforeStart(t *testing.T) {
 	state := newRealbotCopytradeState()
 	state.startedAt = time.Unix(1000, 500_000_000)

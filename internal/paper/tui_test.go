@@ -1850,6 +1850,35 @@ func TestRenderAccountStatusShowsResolutionEstimateForUnresolvedInventory(t *tes
 	}
 }
 
+func TestRenderAccountStatusUsesMatchedLabelInLadderedMode(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode: "Real",
+			settings: TUISettings{
+				PaperArbMode:                "laddered-taker",
+				LadderedTakerSizingMode:     core.LadderedTakerSizingModeUSDC,
+				LadderedTakerSizeUSDC:       1.0,
+				LadderedTakerMaxSlippagePct: 5.0,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  65.0,
+		StartingBalance: 100.0,
+	}, 35.0, 92.25, 92.25, 1.0, 100.0, 0, 0, 0, map[string]Position{
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 27.1186, AvgPrice: 0.74, TotalCost: 20.067764},
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 40.5598, AvgPrice: 0.37, TotalCost: 15.007126},
+	})
+
+	if !strings.Contains(rendered, "Matched ") {
+		t.Fatalf("expected laddered account status to label matched-pair pnl clearly, got %q", rendered)
+	}
+	if strings.Contains(rendered, " MTM ") {
+		t.Fatalf("expected laddered account status not to label matched-pair pnl as MTM, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusHidesArbAndResolveInCopytradeMode(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

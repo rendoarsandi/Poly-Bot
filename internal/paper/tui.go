@@ -4299,7 +4299,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	if !copytradeMode {
 		arbLabel := "Arb"
 		if ladderedMode {
-			arbLabel = "MTM"
+			arbLabel = "Matched"
 		}
 		tradeLine += fmt.Sprintf("  ·  %s %s", arbLabel, arbSt.Render(signedDollar(guaranteedProfit)))
 	}
