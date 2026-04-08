@@ -5366,20 +5366,14 @@ func paperbotLadderedMoveThreshold(moveCents float64) float64 {
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
-	if minAsk > ladderedTakerMinAsk {
-		minAsk = ladderedTakerMinAsk
-	}
-	if maxAsk < ladderedTakerMaxAsk {
+	if maxAsk > ladderedTakerMaxAsk || maxAsk <= 0 {
 		maxAsk = ladderedTakerMaxAsk
 	}
-	if maxAsk > 0.99 {
-		maxAsk = 0.99
-	}
-	if minAsk < 0.01 {
-		minAsk = 0.01
+	if minAsk < ladderedTakerMinAsk {
+		minAsk = ladderedTakerMinAsk
 	}
 	if minAsk > maxAsk {
-		minAsk = 0.01
+		minAsk = maxAsk
 	}
 	return minAsk, maxAsk
 }

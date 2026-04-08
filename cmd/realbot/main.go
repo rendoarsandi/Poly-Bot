@@ -1408,6 +1408,14 @@ type realbotQuoteState struct {
 	Source    string
 }
 
+type realbotAsyncEntryResult struct {
+	lastTradeAt      time.Time
+	cooldownUntil    time.Time
+	addLadderedEntry bool
+	ladderAsk0       float64
+	ladderAsk1       float64
+}
+
 type realbotMakerQuote struct {
 	OrderID       string
 	TokenID       string
@@ -2390,6 +2398,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
 	var nextLiveRecoveryAttempt time.Time
 	var lastDustRecoveryNotice time.Time
+	entryExecutionDone := make(chan realbotAsyncEntryResult, 1)
+	entryExecutionInFlight := false
 	makerQuotes := make(map[string]*realbotMakerQuote)
 	lastMakerSync := time.Time{}
 	mergeCoordinator := newRealbotMergeCoordinator()
@@ -2483,6 +2493,23 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 	for {
 		currentBalance = engine.GetBalance()
+		select {
+		case result := <-entryExecutionDone:
+			entryExecutionInFlight = false
+			if !result.lastTradeAt.IsZero() {
+				lastTrade = result.lastTradeAt
+			}
+			if !result.cooldownUntil.IsZero() && panicBuyCooldown.Before(result.cooldownUntil) {
+				panicBuyCooldown = result.cooldownUntil
+			}
+			if result.addLadderedEntry {
+				ladderedEntries = append(ladderedEntries, struct {
+					ask0 float64
+					ask1 float64
+				}{ask0: result.ladderAsk0, ask1: result.ladderAsk1})
+			}
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			isShutdown := globalCtx.Err() != nil
@@ -3827,6 +3854,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					entryReady = ladderedTakerEntryEligible(ask1, ask2)
 				}
 				if entryReady {
+					if entryExecutionInFlight {
+						continue
+					}
 					if blockNewEntries {
 						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
 						continue
@@ -4191,416 +4221,482 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							continue
 						}
 
-						// Sync CLOB allowance with on-chain state right before trading.
-						// Root cause of "insufficient balance/allowance" errors in realbot:
-						// allowance synced once at startup can go stale by the time an arb opportunity arrives.
-						// Background ticker keeps allowance synced.
-						var res1, res2 *trading.TradeResult
-						var err1, err2 error
-						// Capture an instant websocket-backed baseline so the panic-buy legs can
-						// be submitted immediately without waiting on slow on-chain snapshots.
-						initialSnapshot0 := trader.GetLivePositionSize(token0)
-						initialSnapshot1 := trader.GetLivePositionSize(token1)
-						initialSnapshotSource := "live WS cache"
-						haveInitialSnapshot := true
-						initialBal0 := initialSnapshot0
-						initialBal1 := initialSnapshot1
+						entryExecutionInFlight = true
+						workerOutcomes := append([]string(nil), outcomes...)
+						go func(
+							ctx context.Context,
+							id string,
+							market *api.Market,
+							outcomes []string,
+							ask1, ask2 float64,
+							requestSize1, requestSize2 float64,
+							limitPrice1, limitPrice2 float64,
+							observedMargin float64,
+							ladderedMode bool,
+							ladderedDirection int,
+							token0, token1 string,
+							trader *trading.RealTrader,
+							engine *paper.Engine,
+							tui *paper.TUI,
+							cfg *core.Config,
+							realbotCfg paper.TUISettings,
+							rMinAsk float64,
+							splitInventory *paper.SplitInventory,
+							restClient *api.RestClient,
+							mergeCoordinator *realbotMergeCoordinator,
+							refreshWalletTruth func(time.Duration),
+							entryGate *realbotEntryGate,
+							entryExecutionDone chan<- realbotAsyncEntryResult,
+							shares float64,
+						) {
+							asyncResult := realbotAsyncEntryResult{}
+							defer func() {
+								asyncResult.lastTradeAt = time.Now()
+								if entryGate != nil {
+									entryGate.Release()
+								}
+								select {
+								case entryExecutionDone <- asyncResult:
+								default:
+								}
+							}()
 
-						rate1 := tokenFeeRates[outcomes[0]]
-						if rate1 == 0 {
-							rate1 = 1000
-						}
-						rate2 := tokenFeeRates[outcomes[1]]
-						if rate2 == 0 {
-							rate2 = 1000
-						}
+							// Sync CLOB allowance with on-chain state right before trading.
+							// Root cause of "insufficient balance/allowance" errors in realbot:
+							// allowance synced once at startup can go stale by the time an arb opportunity arrives.
+							// Background ticker keeps allowance synced.
+							var res1, res2 *trading.TradeResult
+							var err1, err2 error
+							// Capture an instant websocket-backed baseline so the panic-buy legs can
+							// be submitted immediately without waiting on slow on-chain snapshots.
+							initialSnapshot0 := trader.GetLivePositionSize(token0)
+							initialSnapshot1 := trader.GetLivePositionSize(token1)
+							initialSnapshotSource := "live WS cache"
+							haveInitialSnapshot := true
+							initialBal0 := initialSnapshot0
+							initialBal1 := initialSnapshot1
 
-						var requests []directMarketOrderSignalRequest
-						side1Requested := !ladderedMode || ladderedDirection == 0
-						side2Requested := !ladderedMode || ladderedDirection == 1
-						if side1Requested {
-							requests = append(requests, directMarketOrderSignalRequest{
-								Side:           api.SideBuy,
-								TokenID:        token0,
-								Outcome:        outcomes[0],
-								Price:          limitPrice1,
-								Size:           requestSize1,
-								FeeRateBps:     rate1,
-								InitialBalance: initialBal0,
-								ExactShares:    true,
-							})
-						}
-						if side2Requested {
-							requests = append(requests, directMarketOrderSignalRequest{
-								Side:           api.SideBuy,
-								TokenID:        token1,
-								Outcome:        outcomes[1],
-								Price:          limitPrice2,
-								Size:           requestSize2,
-								FeeRateBps:     rate2,
-								InitialBalance: initialBal1,
-								ExactShares:    true,
-							})
-						}
-
-						batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, requests, 2*time.Second)
-						var exec1, exec2 directMarketExecution
-						if ladderedMode {
-							if ladderedDirection == 0 {
-								exec1 = batchExecs[0]
-								exec2 = directMarketExecution{Success: false}
-							} else {
-								exec1 = directMarketExecution{Success: false}
-								exec2 = batchExecs[0]
+							rate1 := tokenFeeRates[outcomes[0]]
+							if rate1 == 0 {
+								rate1 = 1000
 							}
-						} else {
-							exec1, exec2 = batchExecs[0], batchExecs[1]
-						}
+							rate2 := tokenFeeRates[outcomes[1]]
+							if rate2 == 0 {
+								rate2 = 1000
+							}
 
-						res1, err1 = exec1.Result, exec1.Err
-						res2, err2 = exec2.Result, exec2.Err
-						rawFilled1, rawFilled2 := exec1.ExecutedQty, exec2.ExecutedQty
-						filled1, filled2 := rawFilled1, rawFilled2
-						side1Success, side2Success := exec1.Success, exec2.Success
-						logDirectExecutionAudit(tui, id, "Side 1 BUY", requestSize1, limitPrice1, exec1)
-						logDirectExecutionAudit(tui, id, "Side 2 BUY", requestSize2, limitPrice2, exec2)
-						if _, _, _, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr != nil {
-							tui.LogEvent("[%s] ⚠️ External position snapshot unavailable after direct buy: %v", id, verifyErr)
-						}
+							var requests []directMarketOrderSignalRequest
+							side1Requested := !ladderedMode || ladderedDirection == 0
+							side2Requested := !ladderedMode || ladderedDirection == 1
+							if side1Requested {
+								requests = append(requests, directMarketOrderSignalRequest{
+									Side:           api.SideBuy,
+									TokenID:        token0,
+									Outcome:        outcomes[0],
+									Price:          limitPrice1,
+									Size:           requestSize1,
+									FeeRateBps:     rate1,
+									InitialBalance: initialBal0,
+									ExactShares:    true,
+								})
+							}
+							if side2Requested {
+								requests = append(requests, directMarketOrderSignalRequest{
+									Side:           api.SideBuy,
+									TokenID:        token1,
+									Outcome:        outcomes[1],
+									Price:          limitPrice2,
+									Size:           requestSize2,
+									FeeRateBps:     rate2,
+									InitialBalance: initialBal1,
+									ExactShares:    true,
+								})
+							}
 
-						attributionTrusted := false
-						if haveInitialSnapshot {
-							attrCtx, cancelAttr := context.WithTimeout(ctx, 8*time.Second)
-							acquired0, acquired1, absBal0, absBal1, attrSource, attrErr := reconcileBoughtPairBalances(attrCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, true)
-							cancelAttr()
-							if attrErr == nil || shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
-								attributionTrusted = true
-								filled1 = attributedBuyFill(exec1, requestSize1, acquired0, true)
-								filled2 = attributedBuyFill(exec2, requestSize2, acquired1, true)
-								side1Success = hasConfirmedExecutedQty(api.SideBuy, filled1)
-								side2Success = hasConfirmedExecutedQty(api.SideBuy, filled2)
-								if math.Abs(rawFilled1-filled1) > 0.25 || math.Abs(rawFilled2-filled2) > 0.25 {
-									tui.LogEvent("[%s] 🧾 PANIC BUY attribution (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, attrSource, outcomes[0], absBal0, filled1, outcomes[1], absBal1, filled2)
+							batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, requests, 500*time.Millisecond)
+							var exec1, exec2 directMarketExecution
+							if ladderedMode {
+								if ladderedDirection == 0 {
+									exec1 = batchExecs[0]
+									exec2 = directMarketExecution{Success: false}
+								} else {
+									exec1 = directMarketExecution{Success: false}
+									exec2 = batchExecs[0]
 								}
 							} else {
-								tui.LogEvent("[%s] ⚠️ PANIC BUY attribution unavailable; using capped order confirmation only: %v", id, attrErr)
+								exec1, exec2 = batchExecs[0], batchExecs[1]
 							}
-						}
-						if !attributionTrusted {
-							filled1 = attributedBuyFill(exec1, requestSize1, 0, false)
-							filled2 = attributedBuyFill(exec2, requestSize2, 0, false)
-							side1Success = side1Success && hasConfirmedExecutedQty(api.SideBuy, filled1)
-							side2Success = side2Success && hasConfirmedExecutedQty(api.SideBuy, filled2)
-						} else {
-							if !side1Success && exec1.Success && res1 != nil && strings.TrimSpace(res1.Message) == "" {
-								res1.Message = "No fresh buy delta attributable after snapshot verification"
-							}
-							if !side2Success && exec2.Success && res2 != nil && strings.TrimSpace(res2.Message) == "" {
-								res2.Message = "No fresh buy delta attributable after snapshot verification"
-							}
-						}
 
-						// Calculate costs using the observed trigger prices for reporting.
-						// Polymarket does not expose exact per-leg execution price through this path.
-						cost1 := reportedBuyCost(exec1, ask1, filled1, requestSize1)
-						cost2 := reportedBuyCost(exec2, ask2, filled2, requestSize2)
-						executionMode := paperArbModeTaker
-						if arbMode == paperArbModeLaddered {
-							executionMode = paperArbModeLaddered
-						}
+							res1, err1 = exec1.Result, exec1.Err
+							res2, err2 = exec2.Result, exec2.Err
+							rawFilled1, rawFilled2 := exec1.ExecutedQty, exec2.ExecutedQty
+							filled1, filled2 := rawFilled1, rawFilled2
+							side1Success, side2Success := exec1.Success, exec2.Success
+							logDirectExecutionAudit(tui, id, "Side 1 BUY", requestSize1, limitPrice1, exec1)
+							logDirectExecutionAudit(tui, id, "Side 2 BUY", requestSize2, limitPrice2, exec2)
+							if _, _, _, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr != nil {
+								tui.LogEvent("[%s] ⚠️ External position snapshot unavailable after direct buy: %v", id, verifyErr)
+							}
 
-						// Log results based on VERIFIED state
-						if side1Requested && side1Success {
-							if !ladderedMode {
-								tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, requestSize1)
-							}
-							tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
-						} else if side1Requested {
-							// Log the actual failure reason (err or res.Message)
-							if err1 != nil {
-								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
-							} else if res1 != nil && res1.Message != "" {
-								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, res1.Message)
-							} else if res1 == nil {
-								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: nil response", id)
-							} else {
-								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
-							}
-							tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
-						}
-
-						if side2Requested && side2Success {
-							if !ladderedMode {
-								tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, requestSize2)
-							}
-							tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
-						} else if side2Requested {
-							// Log the actual failure reason (err or res.Message)
-							if err2 != nil {
-								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
-							} else if res2 != nil && res2.Message != "" {
-								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, res2.Message)
-							} else if res2 == nil {
-								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: nil response", id)
-							} else {
-								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
-							}
-							tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
-						}
-
-						// ═══════════════════════════════════════════════════════════════
-						// LEGGED SHARE VERIFICATION: If one side filled and the other didn't,
-						// wait 2 seconds for late settlement and re-verify only.
-						// Do not retry buys here to avoid accidental spam-buys.
-						// ═══════════════════════════════════════════════════════════════
-						if !ladderedMode && side1Success != side2Success {
+							attributionTrusted := false
 							if haveInitialSnapshot {
-								tui.LogEvent("[%s] 🧾 Pre-trade share snapshot (%s): %s=%.4f, %s=%.4f", id, initialSnapshotSource, outcomes[0], initialSnapshot0, outcomes[1], initialSnapshot1)
-							}
-							tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then re-verifying...",
-								id, outcomes[0], side1Success, outcomes[1], side2Success)
-							time.Sleep(2 * time.Second)
-
-							var leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1 float64
-							var leggedSource string
-							reverifyCtx, cancelReverify := context.WithTimeout(ctx, 12*time.Second)
-							var leggedErr error
-							leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1, leggedSource, leggedErr = reconcileBoughtPairBalances(reverifyCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
-							cancelReverify()
-							if leggedErr != nil {
-								tui.LogEvent("[%s] ⚠️ Re-verify failed: %v", id, leggedErr)
-							}
-							prevSide1, prevSide2 := side1Success, side2Success
-							side1Success = prevSide1 || shouldAttemptCleanupSell(leggedAcquired0)
-							side2Success = prevSide2 || shouldAttemptCleanupSell(leggedAcquired1)
-							if shouldAttemptCleanupSell(leggedAcquired0) {
-								filled1 = math.Max(filled1, leggedAcquired0)
-							}
-							if shouldAttemptCleanupSell(leggedAcquired1) {
-								filled2 = math.Max(filled2, leggedAcquired1)
-							}
-							tui.LogEvent("[%s] 🔍 Re-verify after delay (%s): %s abs=%.4f Δ=%.4f (%v→%v), %s abs=%.4f Δ=%.4f (%v→%v)",
-								id, leggedSource,
-								outcomes[0], leggedBal0, leggedAcquired0, prevSide1, side1Success,
-								outcomes[1], leggedBal1, leggedAcquired1, prevSide2, side2Success)
-
-							// Final status after verification
-							if side1Success != side2Success {
-								failedSide := outcomes[1]
-								if !side1Success {
-									failedSide = outcomes[0]
+								attrCtx, cancelAttr := context.WithTimeout(ctx, 8*time.Second)
+								acquired0, acquired1, absBal0, absBal1, attrSource, attrErr := reconcileBoughtPairBalances(attrCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, true)
+								cancelAttr()
+								if attrErr == nil || shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
+									attributionTrusted = true
+									filled1 = attributedBuyFill(exec1, requestSize1, acquired0, true)
+									filled2 = attributedBuyFill(exec2, requestSize2, acquired1, true)
+									side1Success = hasConfirmedExecutedQty(api.SideBuy, filled1)
+									side2Success = hasConfirmedExecutedQty(api.SideBuy, filled2)
+									if math.Abs(rawFilled1-filled1) > 0.25 || math.Abs(rawFilled2-filled2) > 0.25 {
+										tui.LogEvent("[%s] 🧾 PANIC BUY attribution (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, attrSource, outcomes[0], absBal0, filled1, outcomes[1], absBal1, filled2)
+									}
+								} else {
+									tui.LogEvent("[%s] ⚠️ PANIC BUY attribution unavailable; using capped order confirmation only: %v", id, attrErr)
 								}
-								tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: %s still not filled (legging to auto-cleanup)", id, failedSide)
+							}
+							if !attributionTrusted {
+								filled1 = attributedBuyFill(exec1, requestSize1, 0, false)
+								filled2 = attributedBuyFill(exec2, requestSize2, 0, false)
+								side1Success = side1Success && hasConfirmedExecutedQty(api.SideBuy, filled1)
+								side2Success = side2Success && hasConfirmedExecutedQty(api.SideBuy, filled2)
+							} else {
+								if !side1Success && exec1.Success && res1 != nil && strings.TrimSpace(res1.Message) == "" {
+									res1.Message = "No fresh buy delta attributable after snapshot verification"
+								}
+								if !side2Success && exec2.Success && res2 != nil && strings.TrimSpace(res2.Message) == "" {
+									res2.Message = "No fresh buy delta attributable after snapshot verification"
+								}
+							}
+
+							// Calculate costs using the observed trigger prices for reporting.
+							// Polymarket does not expose exact per-leg execution price through this path.
+							cost1 := reportedBuyCost(exec1, ask1, filled1, requestSize1)
+							cost2 := reportedBuyCost(exec2, ask2, filled2, requestSize2)
+							executionMode := paperArbModeTaker
+							if ladderedMode {
+								executionMode = paperArbModeLaddered
+							}
+
+							// Log results based on VERIFIED state
+							if side1Requested && side1Success {
+								if !ladderedMode {
+									tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, requestSize1)
+								}
+								tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
+							} else if side1Requested {
+								// Log the actual failure reason (err or res.Message)
+								if err1 != nil {
+									tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
+								} else if res1 != nil && res1.Message != "" {
+									tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, res1.Message)
+								} else if res1 == nil {
+									tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: nil response", id)
+								} else {
+									tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
+								}
+								tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
+							}
+
+							if side2Requested && side2Success {
+								if !ladderedMode {
+									tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, requestSize2)
+								}
+								tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
+							} else if side2Requested {
+								// Log the actual failure reason (err or res.Message)
+								if err2 != nil {
+									tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
+								} else if res2 != nil && res2.Message != "" {
+									tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, res2.Message)
+								} else if res2 == nil {
+									tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: nil response", id)
+								} else {
+									tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
+								}
+								tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
+							}
+
+							// ═══════════════════════════════════════════════════════════════
+							// LEGGED SHARE VERIFICATION: If one side filled and the other didn't,
+							// wait 2 seconds for late settlement and re-verify only.
+							// Do not retry buys here to avoid accidental spam-buys.
+							// ═══════════════════════════════════════════════════════════════
+							if !ladderedMode && side1Success != side2Success {
+								if haveInitialSnapshot {
+									tui.LogEvent("[%s] 🧾 Pre-trade share snapshot (%s): %s=%.4f, %s=%.4f", id, initialSnapshotSource, outcomes[0], initialSnapshot0, outcomes[1], initialSnapshot1)
+								}
+								tui.LogEvent("[%s] ⚠️ ARB LEGGED: %s=%v %s=%v — waiting 2s then re-verifying...",
+									id, outcomes[0], side1Success, outcomes[1], side2Success)
+								time.Sleep(2 * time.Second)
+
+								var leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1 float64
+								var leggedSource string
+								reverifyCtx, cancelReverify := context.WithTimeout(ctx, 12*time.Second)
+								var leggedErr error
+								leggedAcquired0, leggedAcquired1, leggedBal0, leggedBal1, leggedSource, leggedErr = reconcileBoughtPairBalances(reverifyCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+								cancelReverify()
+								if leggedErr != nil {
+									tui.LogEvent("[%s] ⚠️ Re-verify failed: %v", id, leggedErr)
+								}
+								prevSide1, prevSide2 := side1Success, side2Success
+								side1Success = prevSide1 || shouldAttemptCleanupSell(leggedAcquired0)
+								side2Success = prevSide2 || shouldAttemptCleanupSell(leggedAcquired1)
+								if shouldAttemptCleanupSell(leggedAcquired0) {
+									filled1 = math.Max(filled1, leggedAcquired0)
+								}
+								if shouldAttemptCleanupSell(leggedAcquired1) {
+									filled2 = math.Max(filled2, leggedAcquired1)
+								}
+								tui.LogEvent("[%s] 🔍 Re-verify after delay (%s): %s abs=%.4f Δ=%.4f (%v→%v), %s abs=%.4f Δ=%.4f (%v→%v)",
+									id, leggedSource,
+									outcomes[0], leggedBal0, leggedAcquired0, prevSide1, side1Success,
+									outcomes[1], leggedBal1, leggedAcquired1, prevSide2, side2Success)
+
+								// Final status after verification
+								if side1Success != side2Success {
+									failedSide := outcomes[1]
+									if !side1Success {
+										failedSide = outcomes[0]
+									}
+									tui.LogEvent("[%s] ⚠️ ARB UNBALANCED: %s still not filled (legging to auto-cleanup)", id, failedSide)
+								} else if side1Success && side2Success {
+									tui.LogEvent("[%s] ✅ Legged position recovered via delayed settlement — both sides now filled (%.2f vs %.2f)", id, filled1, filled2)
+								}
+							}
+
+							// NOW record to engine - only record positions that actually succeeded
+							// This ensures engine state matches reality for accurate drawdown calculation
+							if ladderedMode {
+								if ladderedDirection == 0 && side1Success {
+									_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
+									advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize1, filled1)
+									anchorNote := "anchor advanced"
+									if !advancedAnchor {
+										anchorNote = "anchor unchanged"
+									}
+									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[0], formatShareQty(filled1), formatShareQty(requestSize1), ask1, anchorNote)
+									if advancedAnchor {
+										asyncResult.addLadderedEntry = true
+										asyncResult.ladderAsk0 = ask1
+										asyncResult.ladderAsk1 = ask2
+									}
+									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+										engine.SyncBalanceNeutral(newBal)
+										engine.RecalculateDrawdown()
+										realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
+									}
+									refreshWalletTruth(5 * time.Second)
+								} else if ladderedDirection == 1 && side2Success {
+									_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
+									advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize2, filled2)
+									anchorNote := "anchor advanced"
+									if !advancedAnchor {
+										anchorNote = "anchor unchanged"
+									}
+									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[1], formatShareQty(filled2), formatShareQty(requestSize2), ask2, anchorNote)
+									if advancedAnchor {
+										asyncResult.addLadderedEntry = true
+										asyncResult.ladderAsk0 = ask1
+										asyncResult.ladderAsk1 = ask2
+									}
+									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+										engine.SyncBalanceNeutral(newBal)
+										engine.RecalculateDrawdown()
+										realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
+									}
+									refreshWalletTruth(5 * time.Second)
+								}
 							} else if side1Success && side2Success {
-								tui.LogEvent("[%s] ✅ Legged position recovered via delayed settlement — both sides now filled (%.2f vs %.2f)", id, filled1, filled2)
-							}
-						}
-
-						// NOW record to engine - only record positions that actually succeeded
-						// This ensures engine state matches reality for accurate drawdown calculation
-						if ladderedMode {
-							if ladderedDirection == 0 && side1Success {
+								// Both sides filled (either initially or via recovery) - record both
 								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
-								advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize1, filled1)
-								anchorNote := "anchor advanced"
-								if !advancedAnchor {
-									anchorNote = "anchor unchanged"
-								}
-								tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[0], formatShareQty(filled1), formatShareQty(requestSize1), ask1, anchorNote)
-								if advancedAnchor {
-									ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
-								}
-								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-									currentBalance = newBal
-									engine.SyncBalanceNeutral(currentBalance)
-									engine.RecalculateDrawdown()
-									realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
-								}
-								refreshWalletTruth(5 * time.Second)
-							} else if ladderedDirection == 1 && side2Success {
 								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
-								advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize2, filled2)
-								anchorNote := "anchor advanced"
-								if !advancedAnchor {
-									anchorNote = "anchor unchanged"
-								}
-								tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[1], formatShareQty(filled2), formatShareQty(requestSize2), ask2, anchorNote)
-								if advancedAnchor {
-									ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
-								}
-								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-									currentBalance = newBal
-									engine.SyncBalanceNeutral(currentBalance)
-									engine.RecalculateDrawdown()
-									realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
-								}
-								refreshWalletTruth(5 * time.Second)
-							}
-						} else if side1Success && side2Success {
-							// Both sides filled (either initially or via recovery) - record both
-							_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
-							_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
 
-							if false { // replaced block
-							} else {
-								settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
-								settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", realbotShouldAutoMergeBalancedInventory(realbotCfg), mergeCoordinator)
-								settleCancel()
-								if settleErr != nil {
-									tui.LogEvent("[%s] ⚠️ Post-buy settlement still pending: %v", id, settleErr)
-									panicBuyCooldown = time.Now().Add(10 * time.Second)
-								} else if mergeCoordinator.pendingQty(id) >= minOnChainActionShares {
-									tui.LogEvent("[%s] ✅ Buys verified. Merge continues in background while cleanup handles only the excess inventory.", id)
+								if false { // replaced block
 								} else {
-									tui.LogEvent("[%s] ✅ Execution complete after verified buys. Applying 5s cooldown...", id)
+									settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
+									settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", realbotShouldAutoMergeBalancedInventory(realbotCfg), mergeCoordinator)
+									settleCancel()
+									if settleErr != nil {
+										tui.LogEvent("[%s] ⚠️ Post-buy settlement still pending: %v", id, settleErr)
+										asyncResult.cooldownUntil = time.Now().Add(10 * time.Second)
+									} else if mergeCoordinator.pendingQty(id) >= minOnChainActionShares {
+										tui.LogEvent("[%s] ✅ Buys verified. Merge continues in background while cleanup handles only the excess inventory.", id)
+									} else {
+										tui.LogEvent("[%s] ✅ Execution complete after verified buys. Applying 5s cooldown...", id)
+									}
+
+									// Refresh balance for next trade
+									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+										engine.SyncBalanceNeutral(newBal)
+										engine.RecalculateDrawdown()
+										realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
+									}
+									refreshWalletTruth(5 * time.Second)
+									time.Sleep(5 * time.Second)
+								}
+							} else if side1Success || side2Success {
+								// Only one side filled — record the unbalanced position and
+								// temporarily block further panic buys to prevent exposure accumulation.
+								if side1Success {
+									_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
+									tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
+								}
+								if side2Success {
+									_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
+									tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 								}
 
-								// Refresh balance for next trade
-								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-									currentBalance = newBal
-									engine.SyncBalanceNeutral(currentBalance)
-									engine.RecalculateDrawdown()
-									realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
+								cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 60*time.Second)
+
+								tui.LogEvent("[%s] ⚠️ Legged trade detected! Re-checking live/on-chain balances before cleanup...", id)
+
+								acquired0, acquired1, bal0, bal1, balanceSource, balanceErr := reconcileBoughtPairBalances(cleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+								if balanceErr != nil {
+									tui.LogEvent("[%s] ⚠️ Cleanup balance reconciliation warning: %v", id, balanceErr)
 								}
-								refreshWalletTruth(5 * time.Second)
-								time.Sleep(5 * time.Second)
-							}
-						} else if side1Success || side2Success {
-							// Only one side filled — record the unbalanced position and
-							// temporarily block further panic buys to prevent exposure accumulation.
-							if side1Success {
-								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
-								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
-							}
-							if side2Success {
-								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
-								tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
-							}
 
-							cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 60*time.Second)
+								if acquired0 >= minOnChainActionShares && acquired1 >= minOnChainActionShares {
+									tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Attempting Merge!", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
+									mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(acquired0, acquired1), shares), len(market.Tokens))
+									if err != nil {
+										tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
+										// Fallback to sell below using the live WS position cache.
+									} else {
+										tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
+										acquired0, acquired1 = subtractMergedPairBalances(acquired0, acquired1, mergeQty)
+									}
+								}
 
-							tui.LogEvent("[%s] ⚠️ Legged trade detected! Re-checking live/on-chain balances before cleanup...", id)
+								// If not settled via merge, or if dust remains, clean it up via Market Sell
+								tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking newly acquired shares to sell (%s)... %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
 
-							acquired0, acquired1, bal0, bal1, balanceSource, balanceErr := reconcileBoughtPairBalances(cleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
-							if balanceErr != nil {
-								tui.LogEvent("[%s] ⚠️ Cleanup balance reconciliation warning: %v", id, balanceErr)
-							}
+								cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
+								var sell0Exec, sell1Exec directMarketExecution
+								attemptSell0 := hasActionableCleanupRemainder(acquired0)
+								attemptSell1 := hasActionableCleanupRemainder(acquired1)
+								if attemptSell0 {
+									quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
+									cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token0, acquired0, rMinAsk)
+									cancelQuote()
+									if quoteErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[0], quoteErr)
+									} else {
+										if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
+											tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+										}
+										if cleanupQuote.ExecutableQty+1e-9 < acquired0 {
+											tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[0], formatShareQty(acquired0), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+										}
+										tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[0])
+										sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, acquired0, 2*time.Second)
+									}
+								}
+								if attemptSell1 {
+									quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
+									cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token1, acquired1, rMinAsk)
+									cancelQuote()
+									if quoteErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[1], quoteErr)
+									} else {
+										if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
+											tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
+										}
+										if cleanupQuote.ExecutableQty+1e-9 < acquired1 {
+											tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[1], formatShareQty(acquired1), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
+										}
+										tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[1])
+										sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, acquired1, 2*time.Second)
+									}
+								}
 
-							if acquired0 >= minOnChainActionShares && acquired1 >= minOnChainActionShares {
-								tui.LogEvent("[%s] 🟢 Cleanup balances ready (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Attempting Merge!", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
-								mergeQty, _, _, _, err := mergeBalancedPositionWSFirst(cleanupCtx, trader, market.ConditionID, token0, token1, math.Min(math.Min(acquired0, acquired1), shares), len(market.Tokens))
-								if err != nil {
-									tui.LogEvent("[%s] ⚠️ Delayed Merge failed: %v", id, err)
-									// Fallback to sell below using the live WS position cache.
+								verifyCleanupCtx, cancelVerifyCleanup := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
+								remaining0, remaining1, resolvedBal0, resolvedBal1, resolvedSource, resolvedErr := waitForAcquiredCleanupResolution(verifyCleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
+								cancelVerifyCleanup()
+								actualSold0 := math.Max(0, acquired0-remaining0)
+								actualSold1 := math.Max(0, acquired1-remaining1)
+
+								if hasActionableCleanupRemainder(actualSold0) {
+									if _, sellErr := engine.SellForMarket(id, outcomes[0], cleanupSellPrice, actualSold0); sellErr != nil {
+										tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
+									}
+								}
+								if hasActionableCleanupRemainder(actualSold1) {
+									if _, sellErr := engine.SellForMarket(id, outcomes[1], cleanupSellPrice, actualSold1); sellErr != nil {
+										tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
+									}
+								}
+
+								cleanupLoss := 0.0
+								if hasActionableCleanupRemainder(actualSold0) {
+									cleanupLoss += actualSold0 * (ask1 - cleanupSellPrice)
+								}
+								if hasActionableCleanupRemainder(actualSold1) {
+									cleanupLoss += actualSold1 * (ask2 - cleanupSellPrice)
+								}
+								if cleanupLoss > 0 {
+									trader.RecordLoss(cleanupLoss)
+									tui.LogEvent("[%s] 📉 Cleanup loss recorded: $%.2f", id, cleanupLoss)
+								}
+
+								if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
+									if attemptSell0 && !sell0Exec.Success && sell0Exec.Result != nil && sell0Exec.Result.Message != "" {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[0], sell0Exec.Result.Message)
+									}
+									if attemptSell1 && !sell1Exec.Success && sell1Exec.Result != nil && sell1Exec.Result.Message != "" {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[1], sell1Exec.Result.Message)
+									}
+									if resolvedErr != nil {
+										tui.LogEvent("[%s] ⚠️ Auto-cleanup balance recheck warning: %v", id, resolvedErr)
+									}
+									tui.LogEvent("[%s] 🚫 Auto-cleanup unresolved (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Applying 2m cooldown.", id, resolvedSource, outcomes[0], resolvedBal0, remaining0, outcomes[1], resolvedBal1, remaining1)
+									asyncResult.cooldownUntil = time.Now().Add(120 * time.Second)
 								} else {
-									tui.LogEvent("[%s] ✅ Delayed Merge successful! Applying 30s cooldown.", id)
-									acquired0, acquired1 = subtractMergedPairBalances(acquired0, acquired1, mergeQty)
+									tui.LogEvent("[%s] ✅ Auto-cleanup verified flat (%s). Applying 30s cooldown before unblocking.", id, resolvedSource)
+									asyncResult.cooldownUntil = time.Now().Add(30 * time.Second)
 								}
-							}
+								cancelCleanup() // Release cleanup context resources
+							} // If both failed, nothing to record
 
-							// If not settled via merge, or if dust remains, clean it up via Market Sell
-							tui.LogEvent("[%s] 🧹 Auto-cleanup: Checking newly acquired shares to sell (%s)... %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, balanceSource, outcomes[0], bal0, acquired0, outcomes[1], bal1, acquired1)
-
-							cleanupSellPrice := core.CleanupSellLimitPrice(rMinAsk)
-							var sell0Exec, sell1Exec directMarketExecution
-							attemptSell0 := hasActionableCleanupRemainder(acquired0)
-							attemptSell1 := hasActionableCleanupRemainder(acquired1)
-							if attemptSell0 {
-								quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
-								cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token0, acquired0, rMinAsk)
-								cancelQuote()
-								if quoteErr != nil {
-									tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[0], quoteErr)
-								} else {
-									if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
-										tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
-									}
-									if cleanupQuote.ExecutableQty+1e-9 < acquired0 {
-										tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[0], formatShareQty(acquired0), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
-									}
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[0])
-									sell0Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token0, outcomes[0], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, acquired0, 2*time.Second)
-								}
+							// Force refresh balance after trade to ensure accurate tracking
+							if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
+								engine.SyncBalanceNeutral(newBal)
+								engine.RecalculateDrawdown()
+								realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 							}
-							if attemptSell1 {
-								quoteCtx, cancelQuote := context.WithTimeout(cleanupCtx, realbotExecQuoteTimeout)
-								cleanupQuote, quoteErr := realbotBuildCleanupSellQuote(quoteCtx, restClient, token1, acquired1, rMinAsk)
-								cancelQuote()
-								if quoteErr != nil {
-									tui.LogEvent("[%s] ⚠️ Auto-cleanup quote unavailable for %s: %v", id, outcomes[1], quoteErr)
-								} else {
-									if cleanupQuote.SubmitPrice+1e-9 < cleanupSellPrice {
-										tui.LogEvent("[%s] 📡 Auto-cleanup repriced %s to live bid floor $%.3f (best bid $%.3f, age %s)", id, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.BestBid, cleanupQuote.BookAge.Round(time.Millisecond))
-									}
-									if cleanupQuote.ExecutableQty+1e-9 < acquired1 {
-										tui.LogEvent("[%s] ⚡ Auto-cleanup capped %s %s→%s on live bid liquidity %s", id, outcomes[1], formatShareQty(acquired1), formatShareQty(cleanupQuote.ExecutableQty), formatShareQty(cleanupQuote.TotalBidLiquidity))
-									}
-									tui.LogEvent("[%s] 🧹 Auto-cleanup: Market selling %s %s shares", id, formatShareQty(cleanupQuote.ExecutableQty), outcomes[1])
-									sell1Exec = executeMarketOrderWithSignals(cleanupCtx, trader, api.SideSell, token1, outcomes[1], cleanupQuote.SubmitPrice, cleanupQuote.ExecutableQty, cfg.FeeRateBps, acquired1, 2*time.Second)
-								}
-							}
-
-							verifyCleanupCtx, cancelVerifyCleanup := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
-							remaining0, remaining1, resolvedBal0, resolvedBal1, resolvedSource, resolvedErr := waitForAcquiredCleanupResolution(verifyCleanupCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, haveInitialSnapshot)
-							cancelVerifyCleanup()
-							actualSold0 := math.Max(0, acquired0-remaining0)
-							actualSold1 := math.Max(0, acquired1-remaining1)
-
-							if hasActionableCleanupRemainder(actualSold0) {
-								if _, sellErr := engine.SellForMarket(id, outcomes[0], cleanupSellPrice, actualSold0); sellErr != nil {
-									tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
-								}
-							}
-							if hasActionableCleanupRemainder(actualSold1) {
-								if _, sellErr := engine.SellForMarket(id, outcomes[1], cleanupSellPrice, actualSold1); sellErr != nil {
-									tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
-								}
-							}
-
-							cleanupLoss := 0.0
-							if hasActionableCleanupRemainder(actualSold0) {
-								cleanupLoss += actualSold0 * (ask1 - cleanupSellPrice)
-							}
-							if hasActionableCleanupRemainder(actualSold1) {
-								cleanupLoss += actualSold1 * (ask2 - cleanupSellPrice)
-							}
-							if cleanupLoss > 0 {
-								trader.RecordLoss(cleanupLoss)
-								tui.LogEvent("[%s] 📉 Cleanup loss recorded: $%.2f", id, cleanupLoss)
-							}
-
-							if hasActionableCleanupRemainder(remaining0) || hasActionableCleanupRemainder(remaining1) {
-								if attemptSell0 && !sell0Exec.Success && sell0Exec.Result != nil && sell0Exec.Result.Message != "" {
-									tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[0], sell0Exec.Result.Message)
-								}
-								if attemptSell1 && !sell1Exec.Success && sell1Exec.Result != nil && sell1Exec.Result.Message != "" {
-									tui.LogEvent("[%s] ⚠️ Auto-cleanup sell still pending for %s: %s", id, outcomes[1], sell1Exec.Result.Message)
-								}
-								if resolvedErr != nil {
-									tui.LogEvent("[%s] ⚠️ Auto-cleanup balance recheck warning: %v", id, resolvedErr)
-								}
-								tui.LogEvent("[%s] 🚫 Auto-cleanup unresolved (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f. Applying 2m cooldown.", id, resolvedSource, outcomes[0], resolvedBal0, remaining0, outcomes[1], resolvedBal1, remaining1)
-								panicBuyCooldown = time.Now().Add(120 * time.Second)
-							} else {
-								tui.LogEvent("[%s] ✅ Auto-cleanup verified flat (%s). Applying 30s cooldown before unblocking.", id, resolvedSource)
-								panicBuyCooldown = time.Now().Add(30 * time.Second)
-							}
-							cancelCleanup() // Release cleanup context resources
-						} // If both failed, nothing to record
-
-						// Force refresh balance after trade to ensure accurate tracking
-						if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-							currentBalance = newBal
-							engine.SyncBalanceNeutral(currentBalance)
-							engine.RecalculateDrawdown()
-							realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
-						}
-						refreshWalletTruth(5 * time.Second)
-						if entryGate != nil {
-							entryGate.Release()
-						}
-
-						lastTrade = time.Now()
+							refreshWalletTruth(5 * time.Second)
+						}(
+							ctx,
+							id,
+							market,
+							workerOutcomes,
+							ask1,
+							ask2,
+							requestSize1,
+							requestSize2,
+							limitPrice1,
+							limitPrice2,
+							observedMargin,
+							ladderedMode,
+							ladderedDirection,
+							token0,
+							token1,
+							trader,
+							engine,
+							tui,
+							cfg,
+							realbotCfg,
+							rMinAsk,
+							splitInventory,
+							restClient,
+							mergeCoordinator,
+							refreshWalletTruth,
+							entryGate,
+							entryExecutionDone,
+							shares,
+						)
+						continue
 					}
 				}
 			}
@@ -5279,20 +5375,14 @@ func pairMarginPercent(sum float64) float64 {
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
-	if minAsk > ladderedTakerMinAsk {
-		minAsk = ladderedTakerMinAsk
-	}
-	if maxAsk < ladderedTakerMaxAsk {
+	if maxAsk > ladderedTakerMaxAsk || maxAsk <= 0 {
 		maxAsk = ladderedTakerMaxAsk
 	}
-	if maxAsk > 0.99 {
-		maxAsk = 0.99
-	}
-	if minAsk < 0.01 {
-		minAsk = 0.01
+	if minAsk < ladderedTakerMinAsk {
+		minAsk = ladderedTakerMinAsk
 	}
 	if minAsk > maxAsk {
-		minAsk = 0.01
+		minAsk = maxAsk
 	}
 	return minAsk, maxAsk
 }

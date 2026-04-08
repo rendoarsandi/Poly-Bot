@@ -38,10 +38,22 @@ func TestPairBalancesFromPositionsMissingTokenDefaultsToZero(t *testing.T) {
 	}
 }
 
-func TestLadderedTakerAskBoundsWidensDefaultRange(t *testing.T) {
+func TestLadderedTakerAskBoundsPreservesConfiguredRange(t *testing.T) {
 	minAsk, maxAsk := ladderedTakerAskBounds(0.10, 0.90)
-	if minAsk != ladderedTakerMinAsk || maxAsk != ladderedTakerMaxAsk {
+	if minAsk != 0.10 || maxAsk != 0.90 {
 		t.Fatalf("unexpected laddered bounds %.2f-%.2f", minAsk, maxAsk)
+	}
+}
+
+func TestLadderedTakerAskBoundsClampsToTradeableRange(t *testing.T) {
+	minAsk, maxAsk := ladderedTakerAskBounds(0.001, 1.50)
+	if minAsk != ladderedTakerMinAsk || maxAsk != ladderedTakerMaxAsk {
+		t.Fatalf("unexpected clamped laddered bounds %.2f-%.2f", minAsk, maxAsk)
+	}
+
+	minAsk, maxAsk = ladderedTakerAskBounds(0.95, 0.40)
+	if minAsk != 0.40 || maxAsk != 0.40 {
+		t.Fatalf("expected inverted bounds to collapse at max ask, got %.2f-%.2f", minAsk, maxAsk)
 	}
 }
 
