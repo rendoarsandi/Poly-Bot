@@ -1357,6 +1357,21 @@ func settingsEditValue(cfg TUISettings, row int) string {
 			return fmt.Sprintf("%.2f", cfg.TradeSizeUSDC)
 		}
 		return fmt.Sprintf("%.3f", cfg.TradeScaleFactor)
+	case settingsRowExecutionSlip:
+		if isCopytradeSettingsMode(cfg) {
+			return fmt.Sprintf("%.0f", cfg.CopytradeMaxSlippagePct)
+		}
+		return fmt.Sprintf("%.1f", executionFloorDisplayPercent(cfg.BuyExecutionMarginFloorPercent))
+	case settingsRowLadderSlippage:
+		return fmt.Sprintf("%.0f", cfg.LadderedTakerMaxSlippagePct)
+	case settingsRowMinAskPrice:
+		return fmt.Sprintf("%.2f", cfg.MinAskPrice)
+	case settingsRowMaxAskPrice:
+		return fmt.Sprintf("%.2f", cfg.MaxAskPrice)
+	case settingsRowTakerCloseSlippage:
+		return fmt.Sprintf("%.2f", cfg.TakerCloseMarketSlippage)
+	case settingsRowTakerCloseMinPrice:
+		return fmt.Sprintf("%.2f", cfg.TakerCloseMarketMinPrice)
 	case settingsRowRPCEdit:
 		return cfg.PolygonRPC
 	case settingsRowPrivateKeyEdit:
@@ -1366,12 +1381,22 @@ func settingsEditValue(cfg TUISettings, row int) string {
 	}
 }
 
-func settingsRowSupportsTypedEdit(cfg TUISettings, row int) bool {
-	if !settingsRowEditable(cfg, "", row) {
+func settingsRowSupportsTypedEdit(cfg TUISettings, mode string, row int) bool {
+	if !settingsRowEditable(cfg, mode, row) {
 		return false
 	}
 	switch row {
-	case settingsRowPaperBalance, settingsRowTradeSizingValue:
+	case settingsRowCopytradeTarget,
+		settingsRowPaperBalance,
+		settingsRowTradeSizingValue,
+		settingsRowExecutionSlip,
+		settingsRowLadderSlippage,
+		settingsRowMinAskPrice,
+		settingsRowMaxAskPrice,
+		settingsRowTakerCloseSlippage,
+		settingsRowTakerCloseMinPrice,
+		settingsRowRPCEdit,
+		settingsRowPrivateKeyEdit:
 		return true
 	default:
 		return false
@@ -1383,7 +1408,146 @@ func settingsKeyStartsTypedEdit(msg tea.KeyMsg) bool {
 		return false
 	}
 	r := msg.Runes[0]
-	return (r >= '0' && r <= '9') || r == '.'
+	return (r >= '0' && r <= '9') || r == '.' || r == '-'
+}
+
+func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
+	if cfg == nil {
+		return false
+	}
+	input = strings.TrimSpace(input)
+	switch row {
+	case settingsRowCopytradeTarget:
+		value := normalizeCopytradeTargetInput(input)
+		if normalizeCopytradeTargetInput(cfg.CopytradeTarget) == value {
+			return false
+		}
+		cfg.CopytradeTarget = value
+		return true
+	case settingsRowRPCEdit:
+		if cfg.PolygonRPC == input {
+			return false
+		}
+		cfg.PolygonRPC = input
+		return true
+	case settingsRowPrivateKeyEdit:
+		if cfg.PolygonPrivateKey == input {
+			return false
+		}
+		cfg.PolygonPrivateKey = input
+		return true
+	}
+
+	value, err := strconv.ParseFloat(input, 64)
+	if err != nil {
+		return false
+	}
+
+	switch row {
+	case settingsRowPaperBalance:
+		if value <= 0 || cfg.PaperBalance == value {
+			return false
+		}
+		cfg.PaperBalance = value
+		return true
+	case settingsRowTradeSizingValue:
+		if value <= 0 {
+			return false
+		}
+		if isCopytradeSettingsMode(*cfg) {
+			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+				if cfg.CopytradeSizeShares == value {
+					return false
+				}
+				cfg.CopytradeSizeShares = value
+				return true
+			}
+			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModePercent) {
+				if cfg.CopytradeSizePercent == value {
+					return false
+				}
+				cfg.CopytradeSizePercent = value
+				return true
+			}
+			if cfg.CopytradeSizeUSDC == value {
+				return false
+			}
+			cfg.CopytradeSizeUSDC = value
+			return true
+		}
+		if isLadderedTakerSettingsMode(*cfg) {
+			if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+				if cfg.LadderedTakerSizeShares == value {
+					return false
+				}
+				cfg.LadderedTakerSizeShares = value
+				return true
+			}
+			if cfg.LadderedTakerSizeUSDC == value {
+				return false
+			}
+			cfg.LadderedTakerSizeUSDC = value
+			return true
+		}
+		if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+			if cfg.TradeSizeUSDC == value {
+				return false
+			}
+			cfg.TradeSizeUSDC = value
+			return true
+		}
+		if cfg.TradeScaleFactor == value {
+			return false
+		}
+		cfg.TradeScaleFactor = value
+		return true
+	case settingsRowExecutionSlip:
+		if isCopytradeSettingsMode(*cfg) {
+			if cfg.CopytradeMaxSlippagePct == value {
+				return false
+			}
+			cfg.CopytradeMaxSlippagePct = value
+			return true
+		}
+		value = value / 100.0
+		if cfg.BuyExecutionMarginFloorPercent == value {
+			return false
+		}
+		cfg.BuyExecutionMarginFloorPercent = value
+		return true
+	case settingsRowLadderSlippage:
+		if cfg.LadderedTakerMaxSlippagePct == value {
+			return false
+		}
+		cfg.LadderedTakerMaxSlippagePct = value
+		return true
+	case settingsRowMinAskPrice:
+		if value <= 0 || cfg.MinAskPrice == value {
+			return false
+		}
+		cfg.MinAskPrice = value
+		return true
+	case settingsRowMaxAskPrice:
+		if value <= 0 || cfg.MaxAskPrice == value {
+			return false
+		}
+		cfg.MaxAskPrice = value
+		return true
+	case settingsRowTakerCloseSlippage:
+		if value <= 0 || cfg.TakerCloseMarketSlippage == value {
+			return false
+		}
+		cfg.TakerCloseMarketSlippage = value
+		return true
+	case settingsRowTakerCloseMinPrice:
+		if value <= 0 || cfg.TakerCloseMarketMinPrice == value {
+			return false
+		}
+		cfg.TakerCloseMarketMinPrice = value
+		return true
+	default:
+		return false
+	}
 }
 
 func walletTruthOutcomeKey(outcome string) string {
@@ -1715,74 +1879,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.mu.Lock()
 					changed := false
 					prevPaperBalance := m.tui.settings.PaperBalance
-					if m.settingsCursor == settingsRowCopytradeTarget {
-						if normalizeCopytradeTargetInput(m.tui.settings.CopytradeTarget) != normalizeCopytradeTargetInput(m.settingsInput) {
-							m.tui.settings.CopytradeTarget = normalizeCopytradeTargetInput(m.settingsInput)
-							changed = true
-						}
-					} else if m.settingsCursor == settingsRowPaperBalance {
-						if val, err := strconv.ParseFloat(strings.TrimSpace(m.settingsInput), 64); err == nil && val > 0 {
-							if m.tui.settings.PaperBalance != val {
-								m.tui.settings.PaperBalance = val
-								changed = true
-							}
-						}
-					} else if m.settingsCursor == settingsRowTradeSizingValue {
-						if val, err := strconv.ParseFloat(strings.TrimSpace(m.settingsInput), 64); err == nil && val > 0 {
-							if isCopytradeSettingsMode(m.tui.settings) {
-								if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
-									if m.tui.settings.CopytradeSizeShares != val {
-										m.tui.settings.CopytradeSizeShares = val
-										changed = true
-									}
-								} else if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModePercent) {
-									if m.tui.settings.CopytradeSizePercent != val {
-										m.tui.settings.CopytradeSizePercent = val
-										changed = true
-									}
-								} else {
-									if m.tui.settings.CopytradeSizeUSDC != val {
-										m.tui.settings.CopytradeSizeUSDC = val
-										changed = true
-									}
-								}
-							} else if isLadderedTakerSettingsMode(m.tui.settings) {
-								if strings.EqualFold(m.tui.settings.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
-									if m.tui.settings.LadderedTakerSizeShares != val {
-										m.tui.settings.LadderedTakerSizeShares = val
-										changed = true
-									}
-								} else {
-									if m.tui.settings.LadderedTakerSizeUSDC != val {
-										m.tui.settings.LadderedTakerSizeUSDC = val
-										changed = true
-									}
-								}
-							} else {
-								if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
-									if m.tui.settings.TradeSizeUSDC != val {
-										m.tui.settings.TradeSizeUSDC = val
-										changed = true
-									}
-								} else {
-									if m.tui.settings.TradeScaleFactor != val {
-										m.tui.settings.TradeScaleFactor = val
-										changed = true
-									}
-								}
-							}
-						}
-					} else if m.settingsCursor == settingsRowRPCEdit {
-						if m.tui.settings.PolygonRPC != strings.TrimSpace(m.settingsInput) {
-							m.tui.settings.PolygonRPC = strings.TrimSpace(m.settingsInput)
-							changed = true
-						}
-					} else if m.settingsCursor == settingsRowPrivateKeyEdit {
-						if m.tui.settings.PolygonPrivateKey != strings.TrimSpace(m.settingsInput) {
-							m.tui.settings.PolygonPrivateKey = strings.TrimSpace(m.settingsInput)
-							changed = true
-						}
-					}
+					changed = applySettingsEditValue(&m.tui.settings, m.settingsCursor, m.settingsInput)
 					if changed {
 						m.tui.settings = normalizeTUISettings(m.tui.settings)
 						if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
@@ -1817,7 +1914,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			if settingsRowSupportsTypedEdit(m.tui.settings, m.settingsCursor) && settingsKeyStartsTypedEdit(msg) {
+			if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) && settingsKeyStartsTypedEdit(msg) {
 				m.settingsEdit = true
 				m.settingsInput = string(msg.Runes)
 				return m, nil
@@ -1839,27 +1936,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshScrollMetrics()
 				return m, nil
 			case "enter":
-				if m.settingsCursor == settingsRowCopytradeTarget && isCopytradeSettingsMode(m.tui.settings) {
-					m.tui.mu.Lock()
-					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
-					m.tui.mu.Unlock()
-					m.settingsEdit = true
-				} else if m.settingsCursor == settingsRowPaperBalance {
-					m.tui.mu.Lock()
-					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
-					m.tui.mu.Unlock()
-					m.settingsEdit = true
-				} else if m.settingsCursor == settingsRowTradeSizingValue {
-					m.tui.mu.Lock()
-					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
-					m.tui.mu.Unlock()
-					m.settingsEdit = true
-				} else if m.settingsCursor == settingsRowRPCEdit {
-					m.tui.mu.Lock()
-					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
-					m.tui.mu.Unlock()
-					m.settingsEdit = true
-				} else if m.settingsCursor == settingsRowPrivateKeyEdit {
+				if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Lock()
 					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()

@@ -627,6 +627,42 @@ func realbotDirectionalBuyLimitPrice(ask, maxAskPrice, maxSlippagePct float64) f
 	return limit
 }
 
+func realbotConfiguredPriceRange(liveCfg paper.TUISettings) (float64, float64) {
+	minPrice := liveCfg.MinAskPrice
+	maxPrice := liveCfg.MaxAskPrice
+	if minPrice <= 0 {
+		minPrice = 0.01
+	}
+	if maxPrice <= 0 || maxPrice > 0.99 {
+		maxPrice = 0.99
+	}
+	if minPrice > maxPrice {
+		minPrice = maxPrice
+	}
+	return minPrice, maxPrice
+}
+
+func realbotPriceWithinConfiguredRange(price float64, liveCfg paper.TUISettings) bool {
+	minPrice, maxPrice := realbotConfiguredPriceRange(liveCfg)
+	return price >= minPrice-1e-9 && price <= maxPrice+1e-9
+}
+
+func realbotConfiguredRangeReason(label string, price float64, liveCfg paper.TUISettings) string {
+	minPrice, maxPrice := realbotConfiguredPriceRange(liveCfg)
+	return fmt.Sprintf("%s $%.3f outside configured range %.3f-%.3f", label, price, minPrice, maxPrice)
+}
+
+func realbotDirectionalSellFloorPrice(bid, minPrice, maxSlippagePct float64) float64 {
+	floor := core.CopytradeSellFloorPrice(bid, maxSlippagePct)
+	if minPrice > floor {
+		floor = minPrice
+	}
+	if floor > bid {
+		floor = bid
+	}
+	return floor
+}
+
 func realbotBinanceGapBuyLimitPrice(ask, maxAskPrice float64) float64 {
 	return realbotDirectionalBuyLimitPrice(ask, maxAskPrice, binanceGapMaxSlippageCents)
 }
@@ -8519,13 +8555,17 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				requeueTrade(trade)
 				continue
 			}
+			if !realbotPriceWithinConfiguredRange(ask, liveCfg) {
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: "+realbotConfiguredRangeReason("ask", ask, liveCfg))
+				continue
+			}
 			if entryGate != nil && !entryGate.TryAcquire() {
 				realbotLogCopytradeSignalResult(tui, marketID, trade, "↩", "requeued: another market is executing a live entry")
 				requeueTrade(trade)
 				continue
 			}
 
-			submitPrice := core.CopytradeBuyLimitPrice(ask, liveCfg.CopytradeMaxSlippagePct)
+			submitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice, liveCfg.CopytradeMaxSlippagePct)
 			if submitPrice <= 0 || submitPrice >= 1.0 {
 				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: invalid slippage cap from ask $%.3f", ask))
 				if entryGate != nil {
@@ -8618,7 +8658,11 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				requeueTrade(trade)
 				continue
 			}
-			submitPrice := core.CopytradeSellFloorPrice(bid, liveCfg.CopytradeMaxSlippagePct)
+			if !realbotPriceWithinConfiguredRange(bid, liveCfg) {
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: "+realbotConfiguredRangeReason("bid", bid, liveCfg))
+				continue
+			}
+			submitPrice := realbotDirectionalSellFloorPrice(bid, liveCfg.MinAskPrice, liveCfg.CopytradeMaxSlippagePct)
 			if submitPrice <= 0 || submitPrice >= 1.0 {
 				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: invalid slippage floor from bid $%.3f", bid))
 				continue

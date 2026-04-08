@@ -1188,6 +1188,76 @@ func TestSettingsTradeSizingValueSupportsDirectTypedEdit(t *testing.T) {
 	}
 }
 
+func TestSettingsExecutionSlipSupportsDirectTypedEditInCopytradeMode(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "copytrade",
+		CopytradeMaxSlippagePct: 5,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowExecutionSlip,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
+	updated := next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected typing on the copytrade slippage row to enter edit mode")
+	}
+
+	for _, r := range []rune{'9'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if updated.settingsEdit {
+		t.Fatal("expected enter to commit the typed slippage edit")
+	}
+	if got := tui.GetSettings().CopytradeMaxSlippagePct; got != 99 {
+		t.Fatalf("expected typed copytrade slippage 99c, got %.2f", got)
+	}
+}
+
+func TestSettingsMaxAskPriceSupportsEnterTypedEdit(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode: "taker",
+		MinAskPrice:  0.10,
+		MaxAskPrice:  0.90,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowMaxAskPrice,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected enter on max ask row to start edit mode")
+	}
+
+	updated.settingsInput = ""
+	for _, r := range []rune{'0', '.', '9', '5'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if updated.settingsEdit {
+		t.Fatal("expected enter to commit the typed max ask edit")
+	}
+	if got := tui.GetSettings().MaxAskPrice; math.Abs(got-0.95) > 0.000001 {
+		t.Fatalf("expected typed max ask 0.95, got %.2f", got)
+	}
+}
+
 func TestSettingsEnterDoesNotRequestRestart(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)

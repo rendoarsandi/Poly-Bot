@@ -75,6 +75,31 @@ func TestRealbotBinanceGapBuyLimitPriceUsesFixedOneCentCap(t *testing.T) {
 	}
 }
 
+func TestRealbotPriceWithinConfiguredRange(t *testing.T) {
+	cfg := paper.TUISettings{MinAskPrice: 0.10, MaxAskPrice: 0.95}
+	if !realbotPriceWithinConfiguredRange(0.95, cfg) {
+		t.Fatal("expected upper bound to remain executable")
+	}
+	if realbotPriceWithinConfiguredRange(0.96, cfg) {
+		t.Fatal("expected price above configured max to be rejected")
+	}
+	if realbotPriceWithinConfiguredRange(0.09, cfg) {
+		t.Fatal("expected price below configured min to be rejected")
+	}
+}
+
+func TestRealbotDirectionalBuyLimitPriceRespectsConfiguredMax(t *testing.T) {
+	if got := realbotDirectionalBuyLimitPrice(0.95, 0.95, 99); math.Abs(got-0.95) > 0.000001 {
+		t.Fatalf("expected buy cap to stay at configured max 0.95, got %.3f", got)
+	}
+}
+
+func TestRealbotDirectionalSellFloorPriceRespectsConfiguredMin(t *testing.T) {
+	if got := realbotDirectionalSellFloorPrice(0.96, 0.95, 99); math.Abs(got-0.95) > 0.000001 {
+		t.Fatalf("expected sell floor to stay at configured min 0.95, got %.3f", got)
+	}
+}
+
 func TestRealbotLadderedMoveThresholdMatchesPaperbotClamp(t *testing.T) {
 	if got := realbotLadderedMoveThreshold(0.01); got != 0.01 {
 		t.Fatalf("expected sub-1c threshold to clamp to 1c, got %.4f", got)
