@@ -105,6 +105,24 @@ func TestRealbotLadderedHoldMode(t *testing.T) {
 	}
 }
 
+func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
+	cfg := &core.Config{
+		PaperArbMode:                paperArbModeLaddered,
+		LadderedTakerMaxSlippagePct: 7,
+	}
+
+	settings := realbotTUISettingsFromConfig(cfg)
+	if settings.LadderedTakerMaxSlippagePct != 7 {
+		t.Fatalf("expected TUI settings to include laddered slippage, got %.0f", settings.LadderedTakerMaxSlippagePct)
+	}
+
+	settings.LadderedTakerMaxSlippagePct = 13
+	applyRealbotTUISettings(cfg, settings)
+	if cfg.LadderedTakerMaxSlippagePct != 13 {
+		t.Fatalf("expected config to receive updated laddered slippage, got %.0f", cfg.LadderedTakerMaxSlippagePct)
+	}
+}
+
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
 		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)

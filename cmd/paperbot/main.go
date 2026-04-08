@@ -2682,6 +2682,7 @@ func run() error {
 		LadderedTakerSizeUSDC:              cfg.LadderedTakerSizeUSDC,
 		LadderedTakerSizeShares:            cfg.LadderedTakerSizeShares,
 		LadderedTakerReentryMoveCents:      cfg.LadderedTakerReentryMoveCents,
+		LadderedTakerMaxSlippagePct:        cfg.LadderedTakerMaxSlippagePct,
 		SplitMinMarginSell:                 cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:               cfg.SplitStrategyEnabled,
 		SplitInitialCapPct:                 cfg.SplitInitialCapPct,
@@ -2724,6 +2725,7 @@ func run() error {
 		cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
 		cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
 		cfg.LadderedTakerReentryMoveCents = s.LadderedTakerReentryMoveCents
+		cfg.LadderedTakerMaxSlippagePct = s.LadderedTakerMaxSlippagePct
 		cfg.SplitMinMarginSell = s.SplitMinMarginSell
 		cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
 		cfg.SplitInitialCapPct = s.SplitInitialCapPct

@@ -1204,6 +1204,18 @@ func TestTUIToggleTradingPause(t *testing.T) {
 	}
 }
 
+func TestTUISetTradingPaused(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetTradingPaused(true)
+	if !tui.IsTradingPaused() {
+		t.Fatal("expected SetTradingPaused(true) to pause trading")
+	}
+	tui.SetTradingPaused(false)
+	if tui.IsTradingPaused() {
+		t.Fatal("expected SetTradingPaused(false) to resume trading")
+	}
+}
+
 func TestPauseHotkeyTogglesTradingPause(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	model := tuiModel{tui: tui}

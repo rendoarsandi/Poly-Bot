@@ -2602,6 +2602,16 @@ func (t *TUI) ToggleTradingPause() bool {
 	return t.manualTradingPause
 }
 
+func (t *TUI) SetTradingPaused(paused bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.manualTradingPause == paused {
+		return
+	}
+	t.manualTradingPause = paused
+	t.markDirtyLocked()
+}
+
 func (t *TUI) IsTradingPaused() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

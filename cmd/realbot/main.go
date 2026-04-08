@@ -895,6 +895,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		LadderedTakerSizeUSDC:              cfg.LadderedTakerSizeUSDC,
 		LadderedTakerSizeShares:            cfg.LadderedTakerSizeShares,
 		LadderedTakerReentryMoveCents:      cfg.LadderedTakerReentryMoveCents,
+		LadderedTakerMaxSlippagePct:        cfg.LadderedTakerMaxSlippagePct,
 		BuyExecutionMarginFloorPercent:     cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:                 cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:               cfg.SplitStrategyEnabled,
@@ -942,6 +943,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.LadderedTakerSizeUSDC = s.LadderedTakerSizeUSDC
 	cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
 	cfg.LadderedTakerReentryMoveCents = s.LadderedTakerReentryMoveCents
+	cfg.LadderedTakerMaxSlippagePct = s.LadderedTakerMaxSlippagePct
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled
@@ -1830,6 +1832,7 @@ func run() error {
 	})
 	tui.SetTradeFactor(cfg.TradeScaleFactor)
 	tui.SetMode("Real")
+	tui.SetTradingPaused(true)
 
 	// Start TUI — pass stop so a single Ctrl+C / [q] quits cleanly.
 	if UseLiveUI {
