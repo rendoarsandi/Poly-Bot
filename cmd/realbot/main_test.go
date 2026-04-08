@@ -887,6 +887,20 @@ func TestRealbotShouldReconnectWSOnlyForInvalidStaleBook(t *testing.T) {
 	}
 }
 
+func TestRealbotShouldPollRestFallbackOnStaleSaneBook(t *testing.T) {
+	now := time.Now()
+	if !realbotShouldPollRestFallback(
+		now.Add(-5*time.Second),
+		now.Add(-2*time.Second),
+		now,
+		3*time.Second,
+		time.Second,
+		false,
+	) {
+		t.Fatal("expected stale sane book to trigger REST fallback polling")
+	}
+}
+
 func TestComputeRealbotMakerProtectedSellQuoteIgnoresCostFloor(t *testing.T) {
 	price, ok := computeRealbotMakerProtectedSellQuote(0.54, 0.60, 0.56, 0.02, 0, 0.008, 1000, time.Hour, realbotMakerStrategyParams)
 	if !ok {

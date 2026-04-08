@@ -387,6 +387,29 @@ func TestRenderMarketPanelUsesRecentLastGoodQuotesDuringBriefGap(t *testing.T) {
 	}
 }
 
+func TestRenderMarketPanelKeepsQuotesVisibleAcrossShortQuietWindow(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "btc-market",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now().Add(-2500 * time.Millisecond),
+		Bids:       map[string]float64{"Yes": 0.41, "No": 0.57},
+		Asks:       map[string]float64{"Yes": 0.43, "No": 0.59},
+		RealBids:   map[string]float64{"Yes": 0.41, "No": 0.57},
+		RealAsks:   map[string]float64{"Yes": 0.43, "No": 0.59},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "awaiting price data") {
+		t.Fatalf("expected short quiet window to keep quotes visible, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Buy $") {
+		t.Fatalf("expected spread line to remain visible, got %q", rendered)
+	}
+}
+
 func TestRenderMarketPanelDoesNotReuseExplicitlyClearedQuotes(t *testing.T) {
 	model := tuiModel{}
 	mkt := &MarketData{
@@ -1710,11 +1733,11 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 		RealizedPnL:     1.08,
 	}, 0.0, 66.35, 66.35, 1.0, 72.01, 2, 2, 0, nil)
 
-	if !strings.Contains(rendered, "(+$1.08)") {
-		t.Fatalf("expected real-mode account change to follow realized pnl, got %q", rendered)
+	if !strings.Contains(rendered, "Realized +$1.08") {
+		t.Fatalf("expected real-mode account status to show realized pnl explicitly, got %q", rendered)
 	}
-	if strings.Contains(rendered, "(-$5.66)") {
-		t.Fatalf("expected baseline drift to be hidden from real-mode account change, got %q", rendered)
+	if !strings.Contains(rendered, "BookEq $66.35") || !strings.Contains(rendered, "MTM $66.35") {
+		t.Fatalf("expected real-mode account status to show book and mtm equity, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "($3.60/trade)") {
 		t.Fatalf("expected 5%% trade budget to keep the real-mode high-water floor, got %q", rendered)
@@ -1740,8 +1763,8 @@ func TestRenderAccountStatusRealModeShowsWalletCashSeparatelyFromSpendableBalanc
 	if !strings.Contains(rendered, "Cash $18.00 ($9.93 spendable)") {
 		t.Fatalf("expected wallet cash and spendable cash in real-mode account status, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Equity $18.00") {
-		t.Fatalf("expected real-mode equity to follow wallet cash when flat, got %q", rendered)
+	if !strings.Contains(rendered, "BookEq $18.00") || !strings.Contains(rendered, "MTM $18.00") {
+		t.Fatalf("expected real-mode equity labels to follow wallet cash when flat, got %q", rendered)
 	}
 }
 
@@ -1926,8 +1949,8 @@ func TestRenderAccountStatusUsesMatchedLabelInLadderedMode(t *testing.T) {
 	if !strings.Contains(rendered, "Matched ") {
 		t.Fatalf("expected laddered account status to label matched-pair pnl clearly, got %q", rendered)
 	}
-	if strings.Contains(rendered, " MTM ") {
-		t.Fatalf("expected laddered account status not to label matched-pair pnl as MTM, got %q", rendered)
+	if !strings.Contains(rendered, "BookEq ") || !strings.Contains(rendered, " MTM ") {
+		t.Fatalf("expected real account status to show both book and mtm equity labels, got %q", rendered)
 	}
 }
 

@@ -1565,6 +1565,16 @@ func realbotShouldUseLocalPair(outcomes []string, tokenBids, tokenAsks map[strin
 	return realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) && realbotPairQuoteAge(lastPairUpdate, now) <= maxAge
 }
 
+func realbotShouldPollRestFallback(lastPairUpdate, lastRestPoll, now time.Time, restFallbackQuoteAge, restFallbackPollInterval time.Duration, terminalBookState bool) bool {
+	if terminalBookState {
+		return false
+	}
+	if realbotPairQuoteAge(lastPairUpdate, now) <= restFallbackQuoteAge {
+		return false
+	}
+	return now.Sub(lastRestPoll) >= restFallbackPollInterval
+}
+
 func realbotSyncPairUpdate(outcomes []string, tokenBids, tokenAsks map[string]float64, lastPairUpdate *time.Time, now time.Time) {
 	if lastPairUpdate == nil {
 		return
@@ -2932,14 +2942,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		wsTimeSinceMsg := wsMgr.TimeSinceLastDataMessage()
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
+		now := time.Now()
 		terminalBookState := realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks)
-		pairQuoteAge := realbotPairQuoteAge(lastPairUpdate, time.Now())
+		pairQuoteAge := realbotPairQuoteAge(lastPairUpdate, now)
 		needsWSReconnect := realbotShouldReconnectWS(outcomes, tokenBids, tokenAsks, pairQuoteAge, restFallbackQuoteAge, terminalBookState)
-		localPairSane := realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks)
-		shouldRestFallback := !terminalBookState &&
-			!localPairSane &&
-			pairQuoteAge > restFallbackQuoteAge &&
-			time.Since(lastRestFallbackPoll) >= restFallbackPollInterval
+		shouldRestFallback := realbotShouldPollRestFallback(lastPairUpdate, lastRestFallbackPoll, now, restFallbackQuoteAge, restFallbackPollInterval, terminalBookState)
 
 		if shouldRestFallback {
 			wasFallbackActive := restFallbackActive
@@ -3851,13 +3858,26 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 					requestedShares := shares
 					// Fee estimation and balance check logging removed per user request.
-					freshLocalBuyQuote, _, localBuyQuoteReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullAsks, lastPairUpdate, executionQuoteMaxAge)
-					if !freshLocalBuyQuote {
-						// Disabled per user request: stationary prices can cause false-positive stale quotes
-						_ = localBuyQuoteReason
-						// tui.LogEvent("[%s] ⚠️ Skipping buy: awaiting fresh local quote (%s)", id, localBuyQuoteReason)
-						// panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
-						// continue
+					buyQuoteCtx, cancelBuyQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+					_, _, _, buyQuoteErr := realbotEnsureFreshBuyExecutionQuote(
+						buyQuoteCtx,
+						restClient,
+						market,
+						outcomes,
+						tokenBids,
+						tokenAsks,
+						tokenFullBids,
+						tokenFullAsks,
+						quoteState,
+						lastPairUpdate,
+						executionQuoteMaxAge,
+						&lastPairUpdate,
+					)
+					cancelBuyQuote()
+					if buyQuoteErr != nil {
+						tui.LogEvent("[%s] ⚠️ Skipping buy: fresh execution quote unavailable (%v)", id, buyQuoteErr)
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
 					}
 
 					ask1 = tokenAsks[outcomes[0]]

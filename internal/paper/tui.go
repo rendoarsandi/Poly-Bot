@@ -69,7 +69,7 @@ const (
 	defaultOneColOrderRows  = 10
 	defaultTwoColEventRows  = 6
 	defaultOneColEventRows  = 5
-	recentQuoteDisplayGrace = 1500 * time.Millisecond
+	recentQuoteDisplayGrace = 10 * time.Second
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
 	showOnChainInventory    = true
@@ -4215,9 +4215,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		displayEquity = bookEquity
 	}
 	displayCash := stats.CurrentBalance
+	displayMTMEquity := equity
 	if isRealMode && s.hasWalletCash {
 		displayCash = s.walletCash
 		displayEquity += s.walletCash - stats.CurrentBalance
+		displayMTMEquity += s.walletCash - stats.CurrentBalance
 	}
 	sizingEquity := bookEquity
 
@@ -4408,13 +4410,24 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	if isRealMode && s.hasWalletCash && math.Abs(displayCash-stats.CurrentBalance) >= 0.005 {
 		cashText = fmt.Sprintf("$%.2f ($%.2f spendable)", displayCash, stats.CurrentBalance)
 	}
-	row1 := fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
-		styleBold.Render(cashText),
-		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
-		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
-		changeSt.Render(signedDollar(displayNetChange)),
-		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
-	)
+	row1 := ""
+	if isRealMode {
+		row1 = fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  BookEq %s  ·  MTM %s  ·  DD %s",
+			styleBold.Render(cashText),
+			styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
+			styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
+			styleWhite.Render(fmt.Sprintf("$%.2f", displayMTMEquity)),
+			drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
+		)
+	} else {
+		row1 = fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
+			styleBold.Render(cashText),
+			styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
+			styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
+			changeSt.Render(signedDollar(displayNetChange)),
+			drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
+		)
+	}
 	row3 := tradeLine
 	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L %d/%d  ·  ⏱ %s",
 		multSt.Render(fmt.Sprintf("%.2f×", multiplier)),

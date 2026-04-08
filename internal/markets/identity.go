@@ -6,9 +6,10 @@ import (
 	"Market-bot/internal/api"
 )
 
-// ScopedMarketID returns a stable per-market identifier that still preserves the
-// human-readable asset prefix. This prevents consecutive rounds of the same
-// asset from sharing the same local position/pricing bucket.
+// ScopedMarketID returns the full market slug when available so logs, local
+// inventory, and UI state all use the canonical round identifier instead of a
+// shortened asset fingerprint. If the slug is unavailable, it falls back to a
+// scoped asset fingerprint to keep rounds separated.
 func ScopedMarketID(assetID string, market *api.Market) string {
 	base := strings.ToUpper(strings.TrimSpace(assetID))
 	if base == "" {
@@ -18,11 +19,12 @@ func ScopedMarketID(assetID string, market *api.Market) string {
 		return base
 	}
 
+	if slug := strings.TrimSpace(market.Slug); slug != "" {
+		return slug
+	}
+
 	fingerprint := strings.TrimSpace(market.ConditionID)
 	fingerprint = strings.TrimPrefix(strings.TrimPrefix(fingerprint, "0x"), "0X")
-	if fingerprint == "" {
-		fingerprint = strings.TrimSpace(market.Slug)
-	}
 	if fingerprint == "" {
 		return base
 	}
