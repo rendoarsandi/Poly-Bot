@@ -47,9 +47,9 @@ const (
 	realbotFastVerifyTTL             = 6 * time.Second
 	minOnChainActionShares           = 0.01
 	realbotUIRefreshInterval         = 1000 * time.Millisecond
-	realbotMainLoopInterval          = 50 * time.Millisecond
-	realbotCopytradeLoopIntervalMin  = 100 * time.Millisecond
-	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
+	realbotMainLoopInterval          = 125 * time.Millisecond
+	realbotCopytradeLoopIntervalMin  = 200 * time.Millisecond
+	realbotCopytradeLoopIntervalMax  = 500 * time.Millisecond
 	realbotCopytradeUIRefreshMin     = 1000 * time.Millisecond
 	realbotCopytradeUIRefreshMax     = 1000 * time.Millisecond
 	realbotCopytradeRetryQueueCap    = 256
@@ -69,6 +69,8 @@ const (
 	realbotExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 	realbotBalanceSyncInterval       = 60 * time.Second
 	realbotBalanceSyncTimeout        = 8 * time.Second
+	realbotHealthProbeInterval       = 20 * time.Second
+	realbotHealthProbeTimeout        = 3 * time.Second
 	realbotMakerQuoteStep            = 0.001
 	realbotMakerBaseOffset           = 0.008
 	realbotMakerInventorySkewStep    = 0.020
@@ -158,6 +160,12 @@ func realbotRefreshWalletCashDisplay(ctx context.Context, trader *trading.RealTr
 	defer cancel()
 	if walletCash, err := trader.ForceRefreshOnChainUSDCBalance(cashCtx); err == nil {
 		tui.SetWalletCash(walletCash)
+		return
+	}
+	if spendable, err := trader.GetBalance(cashCtx); err == nil {
+		// Fall back to the freshest spendable balance so the UI stays authoritative
+		// even when the separate on-chain USDC read is temporarily unavailable.
+		tui.SetWalletCash(spendable)
 	}
 }
 
@@ -1968,7 +1976,7 @@ func run() error {
 
 	// Network health monitor
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(realbotHealthProbeInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -1977,7 +1985,7 @@ func run() error {
 			case <-ticker.C:
 				start := time.Now()
 				// Use a lightweight check for latency
-				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				pingCtx, cancel := context.WithTimeout(ctx, realbotHealthProbeTimeout)
 				_, err := restClient.GetMarketsByTimeframe(pingCtx, []string{"btc"}, "15m")
 				cancel()
 				if err == nil {

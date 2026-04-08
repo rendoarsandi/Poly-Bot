@@ -4489,13 +4489,19 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
+	cashLabel := "Cash"
 	cashText := fmt.Sprintf("$%.2f", displayCash)
-	if isRealMode && s.hasWalletCash && math.Abs(displayCash-stats.CurrentBalance) >= 0.005 {
-		cashText = fmt.Sprintf("$%.2f ($%.2f spendable)", displayCash, stats.CurrentBalance)
+	if isRealMode {
+		cashLabel = "Spendable"
+		cashText = fmt.Sprintf("$%.2f", stats.CurrentBalance)
+		if s.hasWalletCash && math.Abs(s.walletCash-stats.CurrentBalance) >= 0.005 {
+			cashText = fmt.Sprintf("$%.2f (wallet USDC $%.2f)", stats.CurrentBalance, s.walletCash)
+		}
 	}
 	row1 := ""
 	if isRealMode {
-		row1 = fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  BookEq %s  ·  MTM %s  ·  DD %s",
+		row1 = fmt.Sprintf("  %s %s  ·  Exposure %s  ·  BookEq %s  ·  MTM %s  ·  DD %s",
+			cashLabel,
 			styleBold.Render(cashText),
 			styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 			styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
