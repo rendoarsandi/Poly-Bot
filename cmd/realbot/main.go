@@ -78,6 +78,9 @@ const (
 	realbotMakerRequoteInterval      = 500 * time.Millisecond
 	realbotMakerMinQuoteValue        = 5.0
 	realbotMakerCashUsagePerOutcome  = 0.35
+	realbotBatchBuyConfirmTimeout    = 1500 * time.Millisecond
+	realbotBuyAttributionTimeout     = 12 * time.Second
+	realbotMinDirectOrderValue       = 1.0
 	binanceGapMaxSlippageCents       = 1.0
 	ladderedTakerMaxPairSum          = 1.25
 	ladderedTakerMinSkew             = 0.02
@@ -4223,6 +4226,19 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
+						side1Requested := !ladderedMode || ladderedDirection == 0
+						side2Requested := !ladderedMode || ladderedDirection == 1
+						if side1Requested && !hasActionableDirectOrderValue(limitPrice1, requestSize1) {
+							tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg cap notional $%.3f is below $%.2f minimum (%s @ $%.3f)",
+								id, outcomes[0], directOrderNotional(limitPrice1, requestSize1), realbotMinDirectOrderValue, formatShareQty(requestSize1), limitPrice1)
+							continue
+						}
+						if side2Requested && !hasActionableDirectOrderValue(limitPrice2, requestSize2) {
+							tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg cap notional $%.3f is below $%.2f minimum (%s @ $%.3f)",
+								id, outcomes[1], directOrderNotional(limitPrice2, requestSize2), realbotMinDirectOrderValue, formatShareQty(requestSize2), limitPrice2)
+							continue
+						}
+
 						if ladderedMode {
 							targetOutcome := outcomes[0]
 							targetAsk := ask1
@@ -4322,8 +4338,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							var requests []directMarketOrderSignalRequest
-							side1Requested := !ladderedMode || ladderedDirection == 0
-							side2Requested := !ladderedMode || ladderedDirection == 1
 							if side1Requested {
 								requests = append(requests, directMarketOrderSignalRequest{
 									Side:           api.SideBuy,
@@ -4349,7 +4363,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								})
 							}
 
-							batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, requests, 500*time.Millisecond)
+							batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, requests, realbotBatchBuyConfirmTimeout)
 							var exec1, exec2 directMarketExecution
 							if ladderedMode {
 								if ladderedDirection == 0 {
@@ -4376,7 +4390,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 							attributionTrusted := false
 							if haveInitialSnapshot {
-								attrCtx, cancelAttr := context.WithTimeout(ctx, 8*time.Second)
+								prevSide1Success, prevSide2Success := side1Success, side2Success
+								rawAttribution1 := attributedBuyFill(exec1, requestSize1, 0, false)
+								rawAttribution2 := attributedBuyFill(exec2, requestSize2, 0, false)
+								attrCtx, cancelAttr := context.WithTimeout(ctx, realbotBuyAttributionTimeout)
 								acquired0, acquired1, absBal0, absBal1, attrSource, attrErr := reconcileBoughtPairBalances(attrCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, true)
 								cancelAttr()
 								if attrErr == nil || shouldAttemptCleanupSell(acquired0) || shouldAttemptCleanupSell(acquired1) {
@@ -4385,6 +4402,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									filled2 = attributedBuyFill(exec2, requestSize2, acquired1, true)
 									side1Success = hasConfirmedExecutedQty(api.SideBuy, filled1)
 									side2Success = hasConfirmedExecutedQty(api.SideBuy, filled2)
+									if !side1Success && prevSide1Success && hasConfirmedExecutedQty(api.SideBuy, rawAttribution1) {
+										filled1 = rawAttribution1
+										side1Success = true
+										tui.LogEvent("[%s] ℹ️ Side 1 buy confirmation fell back to venue/WS ack while balance attribution lagged (%s)", id, attrSource)
+									}
+									if !side2Success && prevSide2Success && hasConfirmedExecutedQty(api.SideBuy, rawAttribution2) {
+										filled2 = rawAttribution2
+										side2Success = true
+										tui.LogEvent("[%s] ℹ️ Side 2 buy confirmation fell back to venue/WS ack while balance attribution lagged (%s)", id, attrSource)
+									}
 									if math.Abs(rawFilled1-filled1) > 0.25 || math.Abs(rawFilled2-filled2) > 0.25 {
 										tui.LogEvent("[%s] 🧾 PANIC BUY attribution (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, attrSource, outcomes[0], absBal0, filled1, outcomes[1], absBal1, filled2)
 									}
@@ -4779,6 +4806,17 @@ func cleanupRejectionMessage(qty float64, outcome, venueMessage string) string {
 
 func shouldAttemptCleanupSell(qty float64) bool {
 	return qty > 0.000001
+}
+
+func directOrderNotional(price, size float64) float64 {
+	if price <= 0 || size <= 0 {
+		return 0
+	}
+	return price * size
+}
+
+func hasActionableDirectOrderValue(price, size float64) bool {
+	return directOrderNotional(price, size) >= realbotMinDirectOrderValue-1e-9
 }
 
 func isDustCleanupRemainder(qty float64) bool {

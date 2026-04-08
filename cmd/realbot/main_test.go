@@ -2466,6 +2466,21 @@ func TestBuildDirectMarketOrderRequestBuyExactSharesUsesGTC(t *testing.T) {
 	}
 }
 
+func TestDirectOrderNotional(t *testing.T) {
+	if got := directOrderNotional(0.95, 1.02); math.Abs(got-0.969) > 0.000001 {
+		t.Fatalf("expected direct order notional 0.969, got %.6f", got)
+	}
+}
+
+func TestHasActionableDirectOrderValueRequiresOneDollarMinimum(t *testing.T) {
+	if hasActionableDirectOrderValue(0.95, 1.02) {
+		t.Fatal("expected sub-$1 direct order value to be rejected")
+	}
+	if !hasActionableDirectOrderValue(0.99, 1.02) {
+		t.Fatal("expected >=$1 direct order value to pass")
+	}
+}
+
 func TestBuildDirectMarketOrderRequestSellKeepsFAK(t *testing.T) {
 	req := buildDirectMarketOrderRequest(directMarketOrderSignalRequest{
 		Side:       api.SideSell,
