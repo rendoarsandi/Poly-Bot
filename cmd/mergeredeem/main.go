@@ -17,6 +17,24 @@ import (
 )
 
 const minOnChainActionShares = 0.01
+const redeemSkipOnlyLosingBalance = "only losing-side balance remains"
+
+type marketInfoFetcher interface {
+	GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error)
+}
+
+type marketResolutionReader interface {
+	IsMarketResolved(ctx context.Context, conditionID string) (bool, error)
+	GetWinningOutcome(ctx context.Context, conditionID string, outcomes []string) (string, error)
+}
+
+type redeemDecision struct {
+	winnerOutcome string
+	shouldRedeem  bool
+	resolved      bool
+	source        string
+	reason        string
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -149,27 +167,30 @@ func main() {
 
 		// Logic 2: REDEEM
 		if remainingBalances[0] >= 0.01 || remainingBalances[1] >= 0.01 {
-			info, err := trader.GetMarketInfo(ctx, m.ConditionID)
+			decision, err := resolveRedeemDecision(ctx, trader, polygon, m, remainingBalances)
 			if err != nil {
 				printMarketHeader()
 				fmt.Printf("   ⚠️ Resolution status pending or unavailable.\n")
 				continue
 			}
 
-			winnerOutcome, shouldRedeem := autoRedeemDecision(info, outcomes, remainingBalances)
-			if !shouldRedeem {
-				if !info.Closed {
+			if !decision.shouldRedeem {
+				if decision.reason != "" {
+					if decision.reason == redeemSkipOnlyLosingBalance {
+						continue
+					}
 					printMarketHeader()
-					fmt.Printf("   ⏭️ Skip redeem: market not decided yet.\n")
-				} else if winnerOutcome == "" {
-					printMarketHeader()
-					fmt.Printf("   ⏭️ Skip redeem: winner not decided yet.\n")
+					fmt.Printf("   ⏭️ Skip redeem: %s.\n", decision.reason)
 				}
 				continue
 			}
 
 			printMarketHeader()
-			fmt.Printf("   🏁 Result: %s Won\n", winnerOutcome)
+			if decision.source == "on-chain" {
+				fmt.Printf("   🏁 Result: %s Won (on-chain)\n", decision.winnerOutcome)
+			} else {
+				fmt.Printf("   🏁 Result: %s Won\n", decision.winnerOutcome)
+			}
 			fmt.Printf("   👉 ACTION: Auto redeem winning shares (forced).\n")
 
 			redeemCtx, cancelRedeem := context.WithTimeout(ctx, 20*time.Second)
@@ -222,6 +243,107 @@ func autoRedeemDecision(info *api.MarketInfo, outcomes []string, balances []floa
 		}
 	}
 	return winnerOutcome, false
+}
+
+func resolveRedeemDecision(ctx context.Context, infoFetcher marketInfoFetcher, resolutionReader marketResolutionReader, market api.Market, balances []float64) (redeemDecision, error) {
+	outcomes := marketOutcomes(market)
+
+	info, err := infoFetcher.GetMarketInfo(ctx, market.ConditionID)
+	if err == nil {
+		winnerOutcome, shouldRedeem := autoRedeemDecision(info, outcomes, balances)
+		if shouldRedeem {
+			return redeemDecision{
+				winnerOutcome: winnerOutcome,
+				shouldRedeem:  true,
+				resolved:      true,
+				source:        "clob",
+			}, nil
+		}
+		if info.Closed {
+			if winnerOutcome == "" {
+				return resolveRedeemDecisionOnChain(ctx, resolutionReader, market, outcomes, balances)
+			}
+			return redeemDecision{
+				winnerOutcome: winnerOutcome,
+				resolved:      true,
+				source:        "clob",
+				reason:        redeemSkipOnlyLosingBalance,
+			}, nil
+		}
+	}
+
+	if !market.EndTime.IsZero() && time.Now().Before(market.EndTime) {
+		return redeemDecision{source: "clob", reason: "market not decided yet"}, nil
+	}
+
+	onChainDecision, onChainErr := resolveRedeemDecisionOnChain(ctx, resolutionReader, market, outcomes, balances)
+	if onChainErr == nil {
+		return onChainDecision, nil
+	}
+	if err != nil {
+		return redeemDecision{}, fmt.Errorf("clob resolution lookup failed: %w", err)
+	}
+	return redeemDecision{}, onChainErr
+}
+
+func resolveRedeemDecisionOnChain(ctx context.Context, resolutionReader marketResolutionReader, market api.Market, outcomes []string, balances []float64) (redeemDecision, error) {
+	if resolutionReader == nil {
+		return redeemDecision{source: "on-chain", reason: "market not decided yet"}, nil
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	resolved, err := resolutionReader.IsMarketResolved(checkCtx, market.ConditionID)
+	if err != nil {
+		return redeemDecision{}, err
+	}
+	if !resolved {
+		return redeemDecision{source: "on-chain", reason: "market not decided yet"}, nil
+	}
+
+	winnerOutcome, err := resolutionReader.GetWinningOutcome(checkCtx, market.ConditionID, outcomes)
+	if err != nil {
+		return redeemDecision{}, err
+	}
+	if winnerOutcome == "" {
+		return redeemDecision{
+			resolved: true,
+			source:   "on-chain",
+			reason:   "winner not decided yet",
+		}, nil
+	}
+	if hasWinningBalance(winnerOutcome, outcomes, balances) {
+		return redeemDecision{
+			winnerOutcome: winnerOutcome,
+			shouldRedeem:  true,
+			resolved:      true,
+			source:        "on-chain",
+		}, nil
+	}
+	return redeemDecision{
+		winnerOutcome: winnerOutcome,
+		resolved:      true,
+		source:        "on-chain",
+		reason:        redeemSkipOnlyLosingBalance,
+	}, nil
+}
+
+func marketOutcomes(market api.Market) []string {
+	outcomes := make([]string, 0, len(market.Tokens))
+	for _, token := range market.Tokens {
+		outcomes = append(outcomes, token.Outcome)
+	}
+	return outcomes
+}
+
+func hasWinningBalance(winnerOutcome string, outcomes []string, balances []float64) bool {
+	for i, outcome := range outcomes {
+		if strings.EqualFold(strings.TrimSpace(outcome), strings.TrimSpace(winnerOutcome)) && i < len(balances) && balances[i] >= minOnChainActionShares {
+			return true
+		}
+	}
+	return false
 }
 
 func isSkippableRedeemError(err error) bool {

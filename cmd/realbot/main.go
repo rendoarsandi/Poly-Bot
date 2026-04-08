@@ -3903,8 +3903,23 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-							id, outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+						if ladderedMode {
+							targetOutcome := outcomes[0]
+							targetAsk := ask1
+							targetLimit := limitPrice1
+							targetSize := requestSize1
+							if ladderedDirection == 1 {
+								targetOutcome = outcomes[1]
+								targetAsk = ask2
+								targetLimit = limitPrice2
+								targetSize = requestSize2
+							}
+							tui.LogEvent("[%s] 🪜 LADDER candidate %s@$%.3f→%.3f (%s sh) | pair sum $%.3f | skew %.1f¢ [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+								id, targetOutcome, targetAsk, targetLimit, formatShareQty(targetSize), sum, math.Abs(ask1-ask2)*100.0, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+						} else {
+							tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+								id, outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
+						}
 
 						// Map tokens
 						token0, token1 := "", ""

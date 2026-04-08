@@ -1,12 +1,38 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"Market-bot/internal/api"
 )
+
+type stubMarketInfoFetcher struct {
+	info *api.MarketInfo
+	err  error
+}
+
+func (s stubMarketInfoFetcher) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
+	return s.info, s.err
+}
+
+type stubMarketResolutionReader struct {
+	resolved   bool
+	winner     string
+	resolveErr error
+	winnerErr  error
+}
+
+func (s stubMarketResolutionReader) IsMarketResolved(ctx context.Context, conditionID string) (bool, error) {
+	return s.resolved, s.resolveErr
+}
+
+func (s stubMarketResolutionReader) GetWinningOutcome(ctx context.Context, conditionID string, outcomes []string) (string, error) {
+	return s.winner, s.winnerErr
+}
 
 func TestMergeablePairsAllowsDecimalPairs(t *testing.T) {
 	got := mergeablePairs([]float64{0.966094, 1.250000})
@@ -85,5 +111,67 @@ func TestAutoRedeemDecisionRedeemsOnlyWinningShares(t *testing.T) {
 
 	if winner, ok := autoRedeemDecision(info, []string{"Up", "Down"}, []float64{0, 1.0}); ok || winner != "Up" {
 		t.Fatalf("expected only losing balance to skip redeem, got winner=%q ok=%v", winner, ok)
+	}
+}
+
+func TestResolveRedeemDecisionFallsBackToOnChainWinner(t *testing.T) {
+	market := api.Market{
+		ConditionID: "0xabc",
+		EndTime:     time.Now().Add(-time.Minute),
+		Tokens: []api.Token{
+			{Outcome: "Up"},
+			{Outcome: "Down"},
+		},
+	}
+	infoFetcher := stubMarketInfoFetcher{
+		info: &api.MarketInfo{Closed: false},
+	}
+	resolutionReader := stubMarketResolutionReader{
+		resolved: true,
+		winner:   "Up",
+	}
+
+	decision, err := resolveRedeemDecision(context.Background(), infoFetcher, resolutionReader, market, []float64{1, 0})
+	if err != nil {
+		t.Fatalf("resolveRedeemDecision() error = %v", err)
+	}
+	if !decision.shouldRedeem || decision.winnerOutcome != "Up" || decision.source != "on-chain" {
+		t.Fatalf("expected on-chain winning redeem decision, got %+v", decision)
+	}
+}
+
+func TestResolveRedeemDecisionSkipsLosingBalanceQuietly(t *testing.T) {
+	market := api.Market{
+		ConditionID: "0xabc",
+		EndTime:     time.Now().Add(-time.Minute),
+		Tokens: []api.Token{
+			{Outcome: "Up"},
+			{Outcome: "Down"},
+		},
+	}
+	infoFetcher := stubMarketInfoFetcher{
+		info: &api.MarketInfo{
+			Closed: true,
+			Tokens: []struct {
+				TokenID string      `json:"token_id"`
+				Outcome string      `json:"outcome"`
+				Winner  bool        `json:"winner"`
+				Price   interface{} `json:"price"`
+			}{
+				{Outcome: "Up", Winner: true},
+				{Outcome: "Down", Winner: false},
+			},
+		},
+	}
+
+	decision, err := resolveRedeemDecision(context.Background(), infoFetcher, stubMarketResolutionReader{}, market, []float64{0, 1})
+	if err != nil {
+		t.Fatalf("resolveRedeemDecision() error = %v", err)
+	}
+	if decision.shouldRedeem {
+		t.Fatalf("expected losing-only balance to skip redeem, got %+v", decision)
+	}
+	if decision.reason != redeemSkipOnlyLosingBalance {
+		t.Fatalf("expected losing-only skip reason, got %+v", decision)
 	}
 }

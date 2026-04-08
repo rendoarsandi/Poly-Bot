@@ -1076,6 +1076,46 @@ func TestRenderSettingsShowsLadderCooldownAndHidesUnrelatedRows(t *testing.T) {
 	}
 }
 
+func TestSettingsTradeSizingValueSupportsDirectTypedEdit(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "laddered-taker",
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeShares,
+		LadderedTakerSizeShares: 3.5,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowTradeSizingValue,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	updated := next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected typing on the size row to enter edit mode")
+	}
+	if updated.settingsInput != "4" {
+		t.Fatalf("expected typed input to seed edit buffer, got %q", updated.settingsInput)
+	}
+
+	for _, r := range []rune{'.', '2', '5'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if updated.settingsEdit {
+		t.Fatal("expected enter to commit the typed size edit")
+	}
+	if got := tui.GetSettings().LadderedTakerSizeShares; got != 4.25 {
+		t.Fatalf("expected typed ladder share size 4.25, got %.2f", got)
+	}
+}
+
 func TestSettingsEnterDoesNotRequestRestart(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)

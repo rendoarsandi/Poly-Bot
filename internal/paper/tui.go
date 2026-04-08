@@ -1273,6 +1273,61 @@ type WalletTruthPosition struct {
 	ResolutionStatus string // "unresolved", "resolved", "redeemable"
 }
 
+func settingsEditValue(cfg TUISettings, row int) string {
+	switch row {
+	case settingsRowCopytradeTarget:
+		return cfg.CopytradeTarget
+	case settingsRowPaperBalance:
+		return fmt.Sprintf("%.2f", cfg.PaperBalance)
+	case settingsRowTradeSizingValue:
+		if isCopytradeSettingsMode(cfg) {
+			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
+				return fmt.Sprintf("%.2f", cfg.CopytradeSizeShares)
+			}
+			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModePercent) {
+				return fmt.Sprintf("%.2f", cfg.CopytradeSizePercent)
+			}
+			return fmt.Sprintf("%.2f", cfg.CopytradeSizeUSDC)
+		}
+		if isLadderedTakerSettingsMode(cfg) {
+			if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+				return fmt.Sprintf("%.2f", cfg.LadderedTakerSizeShares)
+			}
+			return fmt.Sprintf("%.2f", cfg.LadderedTakerSizeUSDC)
+		}
+		if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+			return fmt.Sprintf("%.2f", cfg.TradeSizeUSDC)
+		}
+		return fmt.Sprintf("%.3f", cfg.TradeScaleFactor)
+	case settingsRowRPCEdit:
+		return cfg.PolygonRPC
+	case settingsRowPrivateKeyEdit:
+		return cfg.PolygonPrivateKey
+	default:
+		return ""
+	}
+}
+
+func settingsRowSupportsTypedEdit(cfg TUISettings, row int) bool {
+	if !settingsRowEditable(cfg, "", row) {
+		return false
+	}
+	switch row {
+	case settingsRowPaperBalance, settingsRowTradeSizingValue:
+		return true
+	default:
+		return false
+	}
+}
+
+func settingsKeyStartsTypedEdit(msg tea.KeyMsg) bool {
+	if len(msg.Runes) != 1 {
+		return false
+	}
+	r := msg.Runes[0]
+	return (r >= '0' && r <= '9') || r == '.'
+}
+
 func walletTruthOutcomeKey(outcome string) string {
 	return strings.ToLower(strings.TrimSpace(outcome))
 }
@@ -1701,6 +1756,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			if settingsRowSupportsTypedEdit(m.tui.settings, m.settingsCursor) && settingsKeyStartsTypedEdit(msg) {
+				m.settingsEdit = true
+				m.settingsInput = string(msg.Runes)
+				return m, nil
+			}
+
 			switch key {
 			case "s", "S":
 				m.showSettings = false
@@ -1716,47 +1777,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				if m.settingsCursor == settingsRowCopytradeTarget && isCopytradeSettingsMode(m.tui.settings) {
 					m.tui.mu.Lock()
-					m.settingsInput = m.tui.settings.CopytradeTarget
+					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
 				} else if m.settingsCursor == settingsRowPaperBalance {
 					m.tui.mu.Lock()
-					m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.PaperBalance)
+					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
 				} else if m.settingsCursor == settingsRowTradeSizingValue {
 					m.tui.mu.Lock()
-					if isCopytradeSettingsMode(m.tui.settings) {
-						if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
-							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.CopytradeSizeShares)
-						} else if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModePercent) {
-							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.CopytradeSizePercent)
-						} else {
-							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.CopytradeSizeUSDC)
-						}
-					} else if isLadderedTakerSettingsMode(m.tui.settings) {
-						if strings.EqualFold(m.tui.settings.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
-							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.LadderedTakerSizeShares)
-						} else {
-							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.LadderedTakerSizeUSDC)
-						}
-					} else {
-						if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
-							m.settingsInput = fmt.Sprintf("%.2f", m.tui.settings.TradeSizeUSDC)
-						} else {
-							m.settingsInput = fmt.Sprintf("%.3f", m.tui.settings.TradeScaleFactor)
-						}
-					}
+					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
 				} else if m.settingsCursor == settingsRowRPCEdit {
 					m.tui.mu.Lock()
-					m.settingsInput = m.tui.settings.PolygonRPC
+					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
 				} else if m.settingsCursor == settingsRowPrivateKeyEdit {
 					m.tui.mu.Lock()
-					m.settingsInput = m.tui.settings.PolygonPrivateKey
+					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()
 					m.settingsEdit = true
 				}
