@@ -164,6 +164,14 @@ func realbotCopytradeHoldMode(cfg paper.TUISettings) bool {
 	return strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeCopytrade)
 }
 
+func realbotLadderedHoldMode(cfg paper.TUISettings) bool {
+	return strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeLaddered)
+}
+
+func realbotShouldAutoMergeBalancedInventory(cfg paper.TUISettings) bool {
+	return !realbotLadderedHoldMode(cfg)
+}
+
 func realbotHasEnginePositionsForMarket(engine *paper.Engine, marketID string) bool {
 	if engine == nil || marketID == "" {
 		return false
@@ -2403,6 +2411,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 				return
 			}
+			if realbotLadderedHoldMode(liveCfg) {
+				if realbotHasEnginePositionsForMarket(engine, id) {
+					preserveWalletTruth = true
+					refreshWalletTruth(5 * time.Second)
+					tui.LogEvent("[%s] ⏳ Trader stopping: preserving laddered inventory for resolution/redemption", id)
+				}
+				return
+			}
 
 			// TUI Restart logic: Preserve inventory if active
 			if !isShutdown && timeToExpiry > 30*time.Second {
@@ -2412,7 +2428,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancelCleanup()
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT", mergeCoordinator); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, timeToExpiry > 2*time.Second, tui.GetSettings().MinAskPrice, "EMERGENCY EXIT", realbotShouldAutoMergeBalancedInventory(tui.GetSettings()), mergeCoordinator); err != nil {
 				tui.LogEvent("[%s] ⚠️ Emergency cleanup failed: %v", id, err)
 			}
 			return
@@ -2437,6 +2453,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
 				return
 			}
+			if realbotLadderedHoldMode(liveCfg) {
+				if realbotHasEnginePositionsForMarket(engine, id) {
+					preserveWalletTruth = true
+					refreshWalletTruth(5 * time.Second)
+					tui.LogEvent("[%s] ⏳ Laddered inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", id)
+				}
+				go func(marketID, condID string, marketOutcomes []string, marketEndTime time.Time) {
+					checkRedemption(context.Background(), marketID, condID, marketOutcomes, marketEndTime, trader, engine, tui, resolutionCache)
+				}(id, market.ConditionID, append([]string(nil), outcomes...), endTime)
+				return
+			}
 			if realbotCopytradeHoldMode(liveCfg) {
 				if realbotHasEnginePositionsForMarket(engine, id) {
 					preserveWalletTruth = true
@@ -2449,7 +2476,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				return
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
-			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, false, tui.GetSettings().MinAskPrice, "POST CLOSE", mergeCoordinator); err != nil {
+			if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, false, tui.GetSettings().MinAskPrice, "POST CLOSE", realbotShouldAutoMergeBalancedInventory(tui.GetSettings()), mergeCoordinator); err != nil {
 				tui.LogEvent("[%s] ⚠️ Post-close cleanup skipped: %v", id, err)
 			}
 			cleanupCancel()
@@ -2492,7 +2519,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 		entryTradingAllowed := weekdayTradingAllowed && !manualTradingPaused
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
-		if weekdayTradingAllowed && !realbotCopytradeHoldMode(liveCfg) && realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
+		if weekdayTradingAllowed && !realbotCopytradeHoldMode(liveCfg) && !realbotLadderedHoldMode(liveCfg) && realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
 			// If taker close just fired, suppress sell actions for 15s to prevent racing
 			// against the just-placed GTC buy order. The merge buffer cleanup would
 			// otherwise sell the shares we just bought before the order fully fills.
@@ -2508,7 +2535,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					nearExpiryNoticeSent = true
 				}
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, allowCleanupSell, tui.GetSettings().MinAskPrice, "NEAR EXPIRY", mergeCoordinator); err != nil {
+				if err := settleMarketInventory(cleanupCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, allowCleanupSell, tui.GetSettings().MinAskPrice, "NEAR EXPIRY", realbotShouldAutoMergeBalancedInventory(tui.GetSettings()), mergeCoordinator); err != nil {
 					tui.LogEvent("[%s] ⚠️ Near-expiry cleanup failed: %v", id, err)
 				}
 				cleanupCancel()
@@ -3109,14 +3136,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		manualTradingPaused = tui.IsTradingPaused()
 		entryTradingAllowed = weekdayTradingAllowed && !manualTradingPaused
 
-		if arbMode != paperArbModeCopytrade && !takerCloseMode && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
+		if arbMode != paperArbModeCopytrade && arbMode != paperArbModeLaddered && !takerCloseMode && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
 			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
 			cancelRecoveryCheck()
 			if recoveryCheckErr == nil && (hasActionableCleanupRemainder(pendingRecovery0) || hasActionableCleanupRemainder(pendingRecovery1)) {
 				tui.LogEvent("[%s] 🔄 Pending inventory detected (%s): %s=%.4f, %s=%.4f — attempting live recovery...", id, recoverySource, outcomes[0], pendingRecovery0, outcomes[1], pendingRecovery1)
 				recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
-				recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY", mergeCoordinator)
+				recoveryErr := settleMarketInventory(recoveryCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, liveCfg.MinAskPrice, "LIVE RECOVERY", realbotShouldAutoMergeBalancedInventory(liveCfg), mergeCoordinator)
 				trimmed, trimErr := reconcileLocalBoughtPositionsToWalletTruth(recoveryCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory, tui)
 				cancelRecovery()
 				refreshWalletTruth(5 * time.Second)
@@ -4292,7 +4319,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if false { // replaced block
 							} else {
 								settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
-								settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", mergeCoordinator)
+								settleErr := settleMarketInventory(settleCtx, id, market, outcomes, tokenFeeRates, trader, engine, splitInventory, tui, restClient, true, rMinAsk, "POST BUY", realbotShouldAutoMergeBalancedInventory(realbotCfg), mergeCoordinator)
 								settleCancel()
 								if settleErr != nil {
 									tui.LogEvent("[%s] ⚠️ Post-buy settlement still pending: %v", id, settleErr)
@@ -6389,6 +6416,7 @@ func settleMarketInventory(
 	allowSell bool,
 	sellCap float64,
 	reason string,
+	allowMerge bool,
 	mergeCoordinator *realbotMergeCoordinator,
 ) error {
 	if len(outcomes) != 2 || len(market.Tokens) != 2 {
@@ -6402,7 +6430,7 @@ func settleMarketInventory(
 		return err
 	}
 	pendingMergeQty := 0.0
-	if mergeCoordinator != nil {
+	if allowMerge && mergeCoordinator != nil {
 		pendingMergeQty = mergeCoordinator.pendingQty(id)
 		if pendingMergeQty >= minOnChainActionShares {
 			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, pendingMergeQty)
@@ -6413,7 +6441,10 @@ func settleMarketInventory(
 	minQty := math.Min(bal0, bal1)
 	if minQty >= minOnChainActionShares {
 		tui.LogEvent("[%s] 🔍 %s inventory snapshot (%s): %s=%.6f, %s=%.6f", id, reason, balanceSource, outcomes[0], bal0, outcomes[1], bal1)
-		if launchBackgroundMerge(id, reason, outcomes, market.ConditionID, minQty, len(market.Tokens), trader, engine, splitInventory, tui, mergeCoordinator) {
+		if !allowMerge {
+			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, minQty)
+			tui.LogEvent("[%s] 🪜 %s keeping %.6f balanced shares parked; laddered mode merge is disabled", id, reason, minQty)
+		} else if launchBackgroundMerge(id, reason, outcomes, market.ConditionID, minQty, len(market.Tokens), trader, engine, splitInventory, tui, mergeCoordinator) {
 			pendingMergeQty += minQty
 			bal0, bal1 = subtractMergedPairBalances(bal0, bal1, minQty)
 		} else if pendingMergeQty < minOnChainActionShares {
@@ -6490,7 +6521,11 @@ func settleMarketInventory(
 	remaining0, remaining1, verifySource, verifyErr := waitForPairFlatBalances(verifyCtx, trader, token0, token1)
 	cancelVerify()
 	effectiveRemaining0, effectiveRemaining1 := remaining0, remaining1
-	if pendingVerifyQty := mergeCoordinator.pendingQty(id); pendingVerifyQty >= minOnChainActionShares {
+	if !allowMerge {
+		if parkedQty := math.Min(remaining0, remaining1); parkedQty >= minOnChainActionShares {
+			effectiveRemaining0, effectiveRemaining1 = subtractMergedPairBalances(remaining0, remaining1, parkedQty)
+		}
+	} else if pendingVerifyQty := mergeCoordinator.pendingQty(id); pendingVerifyQty >= minOnChainActionShares {
 		effectiveRemaining0, effectiveRemaining1 = subtractMergedPairBalances(remaining0, remaining1, pendingVerifyQty)
 	}
 	if (hasActionableCleanupRemainder(effectiveRemaining0) || hasActionableCleanupRemainder(effectiveRemaining1)) && verifyErr != nil {

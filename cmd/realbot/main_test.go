@@ -84,6 +84,27 @@ func TestRealbotShouldAdvanceLadderedEntryRequiresMaterialFill(t *testing.T) {
 	}
 }
 
+func TestRealbotShouldAutoMergeBalancedInventory(t *testing.T) {
+	if realbotShouldAutoMergeBalancedInventory(paper.TUISettings{PaperArbMode: paperArbModeLaddered}) {
+		t.Fatal("expected laddered mode to keep balanced inventory parked")
+	}
+	if !realbotShouldAutoMergeBalancedInventory(paper.TUISettings{PaperArbMode: paperArbModeTaker}) {
+		t.Fatal("expected taker mode to keep cleanup merge enabled")
+	}
+	if !realbotShouldAutoMergeBalancedInventory(paper.TUISettings{PaperArbMode: paperArbModeMaker}) {
+		t.Fatal("expected maker mode to keep cleanup merge enabled")
+	}
+}
+
+func TestRealbotLadderedHoldMode(t *testing.T) {
+	if !realbotLadderedHoldMode(paper.TUISettings{PaperArbMode: paperArbModeLaddered}) {
+		t.Fatal("expected laddered mode to preserve inventory for redemption")
+	}
+	if realbotLadderedHoldMode(paper.TUISettings{PaperArbMode: paperArbModeTaker}) {
+		t.Fatal("expected taker mode to avoid laddered hold behavior")
+	}
+}
+
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
 		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)
