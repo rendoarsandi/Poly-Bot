@@ -39,7 +39,7 @@
   "splitReplenishCapPct": 0.5,
   "tradingHoursMode": "off",
   "takerCloseMarket": true,
-  "blockNewEntriesOnPendingRedemption": true,
+  "blockNewEntriesOnPendingRedemption": false,
   "takerCloseMarketTime": 10,
   "takerCloseMarketSlippage": 0.99,
   "takerCloseMarketMinPrice": 0.8,

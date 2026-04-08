@@ -38,7 +38,6 @@ const (
 	terminalAskCeil                  = 0.015
 	realbotExecQuoteTimeout          = 1500 * time.Millisecond
 	realbotOrderWarmTimeout          = 1500 * time.Millisecond
-	realbotRestBookMaxAge            = 2 * time.Second
 	realbotTakerCloseRESTTimeout     = 1200 * time.Millisecond
 	realbotWSWarnInterval            = 10 * time.Second
 	realbotWSForceReconnect          = 10 * time.Second
@@ -364,97 +363,8 @@ func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISetting
 }
 
 func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
-	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil {
-		return "", false
-	}
-
-	currentMarketID = strings.TrimSpace(currentMarketID)
-	inventoryByMarket := make(map[string]map[string]float64)
-	for _, pos := range engine.GetPositions() {
-		if pos.Quantity <= minOnChainActionShares {
-			continue
-		}
-		marketID := strings.TrimSpace(pos.MarketID)
-		if marketID == "" || strings.EqualFold(marketID, currentMarketID) {
-			continue
-		}
-		if inventoryByMarket[marketID] == nil {
-			inventoryByMarket[marketID] = make(map[string]float64)
-		}
-		inventoryByMarket[marketID][pos.Outcome] += pos.Quantity
-	}
-	if len(inventoryByMarket) > 0 {
-		marketIDs := make([]string, 0, len(inventoryByMarket))
-		for marketID := range inventoryByMarket {
-			marketIDs = append(marketIDs, marketID)
-		}
-		sort.Strings(marketIDs)
-		marketID := marketIDs[0]
-		outcomes := make([]string, 0, len(inventoryByMarket[marketID]))
-		for outcome := range inventoryByMarket[marketID] {
-			outcomes = append(outcomes, outcome)
-		}
-		sort.Strings(outcomes)
-		parts := make([]string, 0, len(outcomes))
-		for _, outcome := range outcomes {
-			parts = append(parts, fmt.Sprintf("%s=%.4f", outcome, inventoryByMarket[marketID][outcome]))
-		}
-		return fmt.Sprintf("prior-round inventory %s still open (%s shares)", marketID, strings.Join(parts, ", ")), true
-	}
-
-	if splitInventory != nil {
-		splitByMarket := make(map[string]map[string]float64)
-		for _, pos := range splitInventory.GetAllPositions() {
-			if pos.Shares <= minOnChainActionShares {
-				continue
-			}
-			marketID := strings.TrimSpace(pos.MarketID)
-			if marketID == "" || strings.EqualFold(marketID, currentMarketID) {
-				continue
-			}
-			if splitByMarket[marketID] == nil {
-				splitByMarket[marketID] = make(map[string]float64)
-			}
-			splitByMarket[marketID][pos.Outcome] += pos.Shares
-		}
-		if len(splitByMarket) > 0 {
-			marketIDs := make([]string, 0, len(splitByMarket))
-			for marketID := range splitByMarket {
-				marketIDs = append(marketIDs, marketID)
-			}
-			sort.Strings(marketIDs)
-			marketID := marketIDs[0]
-			outcomes := make([]string, 0, len(splitByMarket[marketID]))
-			for outcome := range splitByMarket[marketID] {
-				outcomes = append(outcomes, outcome)
-			}
-			sort.Strings(outcomes)
-			parts := make([]string, 0, len(outcomes))
-			for _, outcome := range outcomes {
-				parts = append(parts, fmt.Sprintf("%s=%.4f", outcome, splitByMarket[marketID][outcome]))
-			}
-			return fmt.Sprintf("prior-round split inventory %s still open (%s shares)", marketID, strings.Join(parts, ", ")), true
-		}
-	}
-
-	pendingRedemptions := engine.GetPendingRedemptions()
-	pendingMarkets := make([]string, 0, len(pendingRedemptions))
-	for marketID, payout := range pendingRedemptions {
-		if payout <= 0.000001 {
-			continue
-		}
-		marketID = strings.TrimSpace(marketID)
-		if marketID == "" || strings.EqualFold(marketID, currentMarketID) {
-			continue
-		}
-		pendingMarkets = append(pendingMarkets, marketID)
-	}
-	if len(pendingMarkets) > 0 {
-		sort.Strings(pendingMarkets)
-		marketID := pendingMarkets[0]
-		return fmt.Sprintf("prior-round payout %s still pending redemption ($%.2f)", marketID, pendingRedemptions[marketID]), true
-	}
-
+	// Disabled by request: never block fresh entries because of pending
+	// redemptions or prior-round inventory.
 	return "", false
 }
 
@@ -727,9 +637,6 @@ func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenB
 	ask := tokenAsks[outcome]
 	if ask <= 0 || ask >= 1.0 {
 		return false, fmt.Sprintf("missing local ask for %s", outcome)
-	}
-	if len(tokenFullAsks[outcome]) == 0 {
-		return false, fmt.Sprintf("missing local ask depth for %s", outcome)
 	}
 	age := realbotPairQuoteAge(lastPairUpdate, now)
 	if age > maxAge {
@@ -3856,9 +3763,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if skipPanicBuy {
 			continue
 		}
-		if time.Now().Before(panicBuyCooldown) {
-			continue
-		}
 		if len(tokenAsks) >= 2 && len(outcomes) == 2 {
 			ask1 := tokenAsks[outcomes[0]]
 			ask2 := tokenAsks[outcomes[1]]
@@ -3877,6 +3781,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			ladderedMode := arbMode == paperArbModeLaddered
 			if ladderedMode {
 				rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
+			}
+			setEntryCooldown := func(d time.Duration) {
+				if !ladderedMode {
+					panicBuyCooldown = time.Now().Add(d)
+				}
+			}
+			if !ladderedMode && time.Now().Before(panicBuyCooldown) {
+				continue
 			}
 
 			if ask1 >= rMinAsk && ask1 <= rMaxAsk && ask2 >= rMinAsk && ask2 <= rMaxAsk {
@@ -3898,7 +3810,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 					if blockNewEntries {
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						setEntryCooldown(500 * time.Millisecond)
 						continue
 					}
 					// Evaluate risk
@@ -3946,7 +3858,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					cancelBuyQuote()
 					if buyQuoteErr != nil {
 						tui.LogEvent("[%s] ⚠️ Skipping buy: fresh execution quote unavailable (%v)", id, buyQuoteErr)
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						setEntryCooldown(500 * time.Millisecond)
 						continue
 					}
 
@@ -3954,18 +3866,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					ask2 = tokenAsks[outcomes[1]]
 					if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
 						// SILENCED: Do not log spammy range errors
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						setEntryCooldown(500 * time.Millisecond)
 						continue
 					}
 					sum = ask1 + ask2
 					observedMargin = pairMarginPercent(sum)
 					if !ladderedMode && observedMargin < realbotCfg.MinMarginPercent-1e-4 {
 						tui.LogEvent("[%s] ⚠️ Skipping buy: local pair margin %.2f%% below configured %.2f%%", id, observedMargin, realbotCfg.MinMarginPercent)
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						setEntryCooldown(500 * time.Millisecond)
 						continue
 					}
 					if ladderedMode && !ladderedTakerEntryEligible(ask1, ask2) {
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						setEntryCooldown(500 * time.Millisecond)
 						continue
 					}
 
@@ -3979,7 +3891,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					if !ladderedMode {
 						if block, reason := realbotPanicBuyCompletionGuard(engine, id, outcomes[0], outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
 							tui.LogEvent("[%s] ⚠️ Skipping buy: %s", id, reason)
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							setEntryCooldown(500 * time.Millisecond)
 							continue
 						}
 					}
@@ -4061,7 +3973,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// requested trade size before we attempt entry. This avoids late REST requotes
 					// and prevents entering on incomplete BBO-only depth.
 					if !ladderedMode && requestedShares > minLiquidity+1e-6 {
-						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						setEntryCooldown(500 * time.Millisecond)
 						continue
 					}
 
@@ -4139,7 +4051,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 							if activeSize < minEntryShares {
 								tui.LogEvent("[%s] ⚠️ Visible laddered depth through cap $%.3f is below %.2f share minimum: %s", id, directionalLimitPrice, minEntryShares, formatShareQty(activeSize))
-								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								setEntryCooldown(500 * time.Millisecond)
 								continue
 							}
 							shares = activeSize
@@ -4256,7 +4168,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						if entryGate != nil && !entryGate.TryAcquire() {
-							panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+							setEntryCooldown(500 * time.Millisecond)
 							tui.LogEvent("[%s] ⏳ Skipping buy: another market is executing a live entry", id)
 							continue
 						}
@@ -6097,9 +6009,6 @@ func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenBids, tok
 		if tokenAsks[out] <= 0 {
 			return false, 0, fmt.Sprintf("missing local ask for %s", out)
 		}
-		if len(tokenFullAsks[out]) == 0 {
-			return false, 0, fmt.Sprintf("missing local ask depth for %s", out)
-		}
 	}
 	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
 		return false, 0, reason
@@ -6191,15 +6100,6 @@ func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClien
 				results <- quoteResult{outcome: outcome, latency: latency, err: err}
 				return
 			}
-			age, ageErr := api.OrderBookAgeAt(book, time.Now())
-			if ageErr != nil {
-				results <- quoteResult{outcome: outcome, latency: latency, err: fmt.Errorf("invalid order book timestamp: %w", ageErr)}
-				return
-			}
-			if age > realbotRestBookMaxAge {
-				results <- quoteResult{outcome: outcome, latency: latency, err: fmt.Errorf("stale order book age %s > %s", age.Round(time.Millisecond), realbotRestBookMaxAge)}
-				return
-			}
 			results <- quoteResult{
 				outcome: outcome,
 				bids:    mkt.LevelsToPriceDepth(book.Bids, true),
@@ -6281,12 +6181,9 @@ func realbotBuildCleanupSellQuote(ctx context.Context, restClient *api.RestClien
 	if err != nil {
 		return realbotCleanupSellQuote{}, err
 	}
-	age, err := api.OrderBookAgeAt(book, time.Now())
-	if err != nil {
-		return realbotCleanupSellQuote{}, err
-	}
-	if age > realbotRestBookMaxAge {
-		return realbotCleanupSellQuote{}, fmt.Errorf("stale order book age %s > %s", age.Round(time.Millisecond), realbotRestBookMaxAge)
+	age := time.Duration(0)
+	if parsedAge, ageErr := api.OrderBookAgeAt(book, time.Now()); ageErr == nil {
+		age = parsedAge
 	}
 	bids := mkt.LevelsToPriceDepth(book.Bids, true)
 	bestBid, hasBid := realbotBestBidFromLevels(bids)

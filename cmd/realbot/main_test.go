@@ -405,7 +405,7 @@ func TestRealbotSizingCapitalForTradeUsesCurrentEquityInTakerClose(t *testing.T)
 	}
 }
 
-func TestRealbotNewEntryBlockReasonBlocksPriorRoundInventory(t *testing.T) {
+func TestRealbotNewEntryBlockReasonDisabledForPriorRoundInventory(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	if _, err := engine.BuyForMarket("BTC-older", "Up", 0.50, 5.0); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
@@ -414,43 +414,29 @@ func TestRealbotNewEntryBlockReasonBlocksPriorRoundInventory(t *testing.T) {
 	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
-	if !blocked {
-		t.Fatal("expected prior-round inventory to block new entries")
+	if blocked || reason != "" {
+		t.Fatalf("expected no block when gate is disabled, got blocked=%v reason=%q", blocked, reason)
 	}
-	if !strings.Contains(reason, "prior-round inventory") {
-		t.Fatalf("expected inventory block reason, got %q", reason)
-	}
-	if !strings.Contains(reason, "BTC-older still open") {
-		t.Fatalf("expected grouped market reason, got %q", reason)
-	}
-
-	if reason, blocked = realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{}); blocked || reason != "" {
-		t.Fatalf("expected toggle-off mode not to block, got blocked=%v reason=%q", blocked, reason)
-	}
-
 	if reason, blocked = realbotNewEntryBlockReason("BTC-older", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	}); blocked || reason != "" {
-		t.Fatalf("expected current market inventory not to block itself, got blocked=%v reason=%q", blocked, reason)
+		t.Fatalf("expected no block on current market, got blocked=%v reason=%q", blocked, reason)
 	}
 }
 
-func TestRealbotNewEntryBlockReasonBlocksPendingRedemptionPayout(t *testing.T) {
+func TestRealbotNewEntryBlockReasonDisabledForPendingRedemptionPayout(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.SetPendingRedemption("BTC-older", 12.0)
 
 	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
-	if !blocked {
-		t.Fatal("expected pending redemption payout to block new entries")
-	}
-	if !strings.Contains(reason, "pending redemption") {
-		t.Fatalf("expected pending redemption reason, got %q", reason)
+	if blocked || reason != "" {
+		t.Fatalf("expected no block when gate is disabled, got blocked=%v reason=%q", blocked, reason)
 	}
 }
 
-func TestRealbotNewEntryBlockReasonGroupsInventoryDeterministically(t *testing.T) {
+func TestRealbotNewEntryBlockReasonDisabledForGroupedInventory(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	if _, err := engine.BuyForMarket("BTC-older", "Down", 0.18, 22.1457); err != nil {
 		t.Fatalf("seed down buy failed: %v", err)
@@ -462,14 +448,8 @@ func TestRealbotNewEntryBlockReasonGroupsInventoryDeterministically(t *testing.T
 	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
-	if !blocked {
-		t.Fatal("expected grouped prior-round inventory to block")
-	}
-	if !strings.Contains(reason, "BTC-older still open") {
-		t.Fatalf("expected grouped market label, got %q", reason)
-	}
-	if !strings.Contains(reason, "Down=22.1457") || !strings.Contains(reason, "Up=2.2405") {
-		t.Fatalf("expected grouped outcome quantities, got %q", reason)
+	if blocked || reason != "" {
+		t.Fatalf("expected no block when gate is disabled, got blocked=%v reason=%q", blocked, reason)
 	}
 }
 
@@ -1804,7 +1784,7 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 	client.BaseURL = server.URL
 	market := &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}}
 	outcomes := []string{"Down", "Up"}
-	tokenBids := map[string]float64{"Down": 0.30, "Up": 0.60}
+	tokenBids := map[string]float64{"Down": 0.20, "Up": 0.60}
 	tokenAsks := map[string]float64{"Down": 0.31, "Up": 0.61}
 	tokenFullBids := map[string][]paper.MarketLevel{}
 	tokenFullAsks := map[string][]paper.MarketLevel{}
@@ -1821,7 +1801,7 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 	if source != "rest" {
 		t.Fatalf("expected REST source, got %q", source)
 	}
-	if !strings.Contains(detail, "local ask depth") {
+	if strings.TrimSpace(detail) == "" {
 		t.Fatalf("expected stale-local detail, got %q", detail)
 	}
 	if math.Abs(tokenAsks["Down"]-0.35) > 0.000001 || math.Abs(tokenAsks["Up"]-0.62) > 0.000001 {
