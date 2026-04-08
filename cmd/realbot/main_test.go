@@ -105,6 +105,24 @@ func TestRealbotLadderedHoldMode(t *testing.T) {
 	}
 }
 
+func TestRealbotPrimaryExecutionMode(t *testing.T) {
+	if got := realbotPrimaryExecutionMode(paper.TUISettings{PaperArbMode: paperArbModeMaker}); got != paperArbModeMaker {
+		t.Fatalf("expected maker mode, got %q", got)
+	}
+	if got := realbotPrimaryExecutionMode(paper.TUISettings{PaperArbMode: paperArbModeBinanceGap}); got != paperArbModeBinanceGap {
+		t.Fatalf("expected binance-gap mode, got %q", got)
+	}
+	if got := realbotPrimaryExecutionMode(paper.TUISettings{PaperArbMode: paperArbModeCopytrade}); got != paperArbModeCopytrade {
+		t.Fatalf("expected copytrade mode, got %q", got)
+	}
+	if got := realbotPrimaryExecutionMode(paper.TUISettings{PaperArbMode: paperArbModeTaker, TakerCloseMarket: true}); got != realbotExecutionModeTakerClose {
+		t.Fatalf("expected taker-close to override arb mode, got %q", got)
+	}
+	if got := realbotPrimaryExecutionMode(paper.TUISettings{PaperArbMode: paperArbModeMaker, TakerCloseMarket: true}); got != paperArbModeMaker {
+		t.Fatalf("expected maker mode to stay exclusive even when taker-close is toggled, got %q", got)
+	}
+}
+
 func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	cfg := &core.Config{
 		PaperArbMode:                paperArbModeLaddered,

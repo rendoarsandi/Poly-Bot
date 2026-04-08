@@ -33,6 +33,7 @@ const (
 	paperArbModeBinanceGap           = "binance-gap"
 	paperArbModeCopytrade            = "copytrade"
 	paperArbModeMaker                = "maker"
+	realbotExecutionModeTakerClose   = "taker-close"
 	terminalBidFloor                 = 0.985
 	terminalAskCeil                  = 0.015
 	realbotExecQuoteTimeout          = 1500 * time.Millisecond
@@ -177,6 +178,13 @@ func realbotCopytradeHoldMode(cfg paper.TUISettings) bool {
 
 func realbotLadderedHoldMode(cfg paper.TUISettings) bool {
 	return strings.EqualFold(normalizePaperArbMode(cfg.PaperArbMode), paperArbModeLaddered)
+}
+
+func realbotPrimaryExecutionMode(cfg paper.TUISettings) string {
+	if realbotTakerCloseHoldMode(cfg) {
+		return realbotExecutionModeTakerClose
+	}
+	return normalizePaperArbMode(cfg.PaperArbMode)
 }
 
 func realbotShouldAutoMergeBalancedInventory(cfg paper.TUISettings) bool {
@@ -3193,7 +3201,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		liveCfg = tui.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
-		takerCloseMode := paper.TakerCloseModeActive(liveCfg)
+		primaryMode := realbotPrimaryExecutionMode(liveCfg)
 		executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
 		executionPairFresh := realbotShouldUseLocalPair(outcomes, tokenBids, tokenAsks, lastPairUpdate, executionQuoteMaxAge, time.Now())
 		weekdayTradingAllowed = true
@@ -3212,7 +3220,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		manualTradingPaused = tui.IsTradingPaused()
 		entryTradingAllowed = weekdayTradingAllowed && !manualTradingPaused
 
-		if arbMode != paperArbModeCopytrade && arbMode != paperArbModeLaddered && !takerCloseMode && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
+		if primaryMode != paperArbModeCopytrade && primaryMode != paperArbModeLaddered && primaryMode != realbotExecutionModeTakerClose && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
 			pendingRecovery0, pendingRecovery1, recoverySource, recoveryCheckErr := pendingPairRecoveryBalances(recoveryCheckCtx, id, market.Tokens[0].TokenID, market.Tokens[1].TokenID, outcomes, trader, engine, splitInventory)
 			cancelRecoveryCheck()
@@ -3264,7 +3272,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		// Skip normal trading completely if TakerCloseMarket is enabled
-		if takerCloseMode {
+		if primaryMode == realbotExecutionModeTakerClose {
 			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 			realbotCancelAllMakerQuotes(cancelMakerCtx, id, "taker close market enabled", trader, engine, tui, makerQuotes)
 			cancelMaker()
@@ -3272,7 +3280,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			continue
 		}
 
-		if arbMode == paperArbModeMaker {
+		if primaryMode == paperArbModeMaker {
 			if !executionPairFresh {
 				cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 				realbotCancelAllMakerQuotes(cancelMakerCtx, id, "waiting for fresh pair quotes", trader, engine, tui, makerQuotes)
@@ -3296,7 +3304,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 		realbotCancelAllMakerQuotes(cancelMakerCtx, id, "maker mode disabled", trader, engine, tui, makerQuotes)
 		cancelMaker()
-		if arbMode == paperArbModeCopytrade {
+		if primaryMode == paperArbModeCopytrade {
 			if blockNewEntries {
 				time.Sleep(realbotTraderLoopInterval(liveCfg))
 				continue
@@ -3305,7 +3313,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
-		if arbMode == paperArbModeBinanceGap {
+		if primaryMode == paperArbModeBinanceGap {
 			if !executionPairFresh {
 				time.Sleep(realbotTraderLoopInterval(liveCfg))
 				continue
@@ -3315,6 +3323,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				continue
 			}
 			realbotHandleBinanceGapMarket(ctx, id, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastPairUpdate, polySignalTracker, tokenFeeRates, trader, engine, tui, liveCfg, cfg, currentBalance, binanceFeed, getTokenID, entryGate, &lastTrade, &lastBinanceLog)
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
+			continue
+		}
+		if primaryMode != paperArbModeTaker && primaryMode != paperArbModeLaddered {
 			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
@@ -3471,6 +3483,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				}
 
 				if sellMargin >= cfg.SplitMinMarginSell-1e-4 && time.Since(lastSplitSell) > 2*time.Second {
+					// Prevent the default taker/laddered buy path from firing in the same loop
+					// pass once the split strategy has its own actionable sell trigger.
+					skipPanicBuy = true
+
 					// DETERMINISTIC AGGRESSION
 					// Use SplitInitialCapPct to determine the number of shares to sell
 					requestedShares := currentBalance * cfg.SplitInitialCapPct
