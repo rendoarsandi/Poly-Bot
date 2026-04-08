@@ -582,6 +582,34 @@ func TestRenderPositionsShowsOnChainInventoryFromWalletTruth(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsOrdersUpBeforeDown(t *testing.T) {
+	engine := NewEngine(1000.0)
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.90, 0.91)
+	engine.UpdateMarketBidAsk("BTC", "Down", 0.10, 0.11)
+	_, _ = engine.BuyForMarket("BTC", "Down", 0.13, 2.87128)
+	_, _ = engine.BuyForMarket("BTC", "Up", 0.88, 6.07744)
+
+	tui := NewTUI(engine, nil)
+	model := tuiModel{
+		tui: tui,
+		snap: tuiSnapshot{
+			mode:      "Real",
+			settings:  TUISettings{PaperArbMode: "laddered-taker"},
+			positions: engine.GetPositionsWithPnL(),
+		},
+	}
+
+	rendered := model.renderPositions(120, engine.GetPositionsWithPnL())
+	upIdx := strings.Index(rendered, "Up: 6.07744")
+	downIdx := strings.Index(rendered, "Down: 2.87128")
+	if upIdx == -1 || downIdx == -1 {
+		t.Fatalf("expected both Up and Down inventory rows, got %q", rendered)
+	}
+	if upIdx > downIdx {
+		t.Fatalf("expected Up to render before Down, got %q", rendered)
+	}
+}
+
 func TestRenderPositionsShowsSyncingInventoryUntilChainCatchesUp(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, nil)
@@ -1690,6 +1718,30 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	}
 	if !strings.Contains(rendered, "($3.60/trade)") {
 		t.Fatalf("expected 5%% trade budget to keep the real-mode high-water floor, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusRealModeShowsWalletCashSeparatelyFromSpendableBalance(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:          "Real",
+			tradeFactor:   0.05,
+			walletCash:    18.00,
+			hasWalletCash: true,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  9.93,
+		StartingBalance: 18.00,
+		RealizedPnL:     -4.08,
+	}, 0.0, 9.93, 9.93, 1.0, 18.00, 3, 1, 1, nil)
+
+	if !strings.Contains(rendered, "Cash $18.00 ($9.93 spendable)") {
+		t.Fatalf("expected wallet cash and spendable cash in real-mode account status, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Equity $18.00") {
+		t.Fatalf("expected real-mode equity to follow wallet cash when flat, got %q", rendered)
 	}
 }
 

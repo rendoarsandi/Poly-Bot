@@ -863,6 +863,15 @@ func (t *RealTrader) getOnChainUSDCBalance(ctx context.Context) (float64, error)
 	return bal, nil
 }
 
+func (t *RealTrader) GetOnChainUSDCBalance(ctx context.Context) (float64, error) {
+	return t.getOnChainUSDCBalance(ctx)
+}
+
+func (t *RealTrader) ForceRefreshOnChainUSDCBalance(ctx context.Context) (float64, error) {
+	t.invalidateOnChainBalanceCache()
+	return t.getOnChainUSDCBalance(ctx)
+}
+
 func (t *RealTrader) invalidateOnChainBalanceCache() {
 	t.mu.Lock()
 	t.cachedOnChainUSDC = 0

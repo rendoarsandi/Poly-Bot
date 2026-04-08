@@ -123,6 +123,26 @@ func marketSortRank(id string) int {
 	}
 }
 
+func outcomeSortRank(outcome string) int {
+	switch strings.ToLower(strings.TrimSpace(outcome)) {
+	case "up", "yes":
+		return 0
+	case "down", "no":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func outcomeSortLess(a, b string) bool {
+	rankA := outcomeSortRank(a)
+	rankB := outcomeSortRank(b)
+	if rankA != rankB {
+		return rankA < rankB
+	}
+	return strings.TrimSpace(a) < strings.TrimSpace(b)
+}
+
 func orderedMarketIDs(ids []string) []string {
 	sorted := append([]string(nil), ids...)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -1177,6 +1197,8 @@ type TUI struct {
 
 	splitInventories []*SplitInventory
 	walletTruth      map[string][]WalletTruthPosition
+	walletCash       float64
+	hasWalletCash    bool
 
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
 	settings         TUISettings
@@ -1237,6 +1259,8 @@ type tuiSnapshot struct {
 	latencySource      string
 	splitPositions     []SplitPosition
 	walletTruth        []WalletTruthPosition
+	walletCash         float64
+	hasWalletCash      bool
 
 	stats           Stats
 	exposure        float64
@@ -1254,6 +1278,31 @@ type tuiSnapshot struct {
 
 func (t *TUI) markDirtyLocked() {
 	t.snapshotVersion++
+}
+
+func (t *TUI) SetWalletCash(balance float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if balance < 0 {
+		balance = 0
+	}
+	if t.hasWalletCash && math.Abs(t.walletCash-balance) < 0.000001 {
+		return
+	}
+	t.walletCash = balance
+	t.hasWalletCash = true
+	t.markDirtyLocked()
+}
+
+func (t *TUI) ClearWalletCash() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.hasWalletCash && math.Abs(t.walletCash) < 0.000001 {
+		return
+	}
+	t.walletCash = 0
+	t.hasWalletCash = false
+	t.markDirtyLocked()
 }
 
 type tuiModel struct {
@@ -1632,6 +1681,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.latencySource = m.tui.latencySource
 		m.snap.splitPositions = splitPositions
 		m.snap.walletTruth = walletTruth
+		m.snap.walletCash = m.tui.walletCash
+		m.snap.hasWalletCash = m.tui.hasWalletCash
 		m.snap.stats = stats
 		m.snap.exposure = exposure
 		m.snap.equity = equity
@@ -4157,15 +4208,20 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 	copytradeMode := isCopytradeSettingsMode(settings)
 	ladderedMode := isLadderedTakerSettingsMode(settings)
+	isRealMode := strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live")
 
 	displayEquity := equity
-	if strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live") {
+	if isRealMode {
 		displayEquity = bookEquity
+	}
+	displayCash := stats.CurrentBalance
+	if isRealMode && s.hasWalletCash {
+		displayCash = s.walletCash
+		displayEquity += s.walletCash - stats.CurrentBalance
 	}
 	sizingEquity := bookEquity
 
 	netChange := displayEquity - stats.StartingBalance
-	isRealMode := strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live")
 
 	hasWalletTruthInventory := false
 	for _, wt := range s.walletTruth {
@@ -4348,8 +4404,12 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
+	cashText := fmt.Sprintf("$%.2f", displayCash)
+	if isRealMode && s.hasWalletCash && math.Abs(displayCash-stats.CurrentBalance) >= 0.005 {
+		cashText = fmt.Sprintf("$%.2f ($%.2f spendable)", displayCash, stats.CurrentBalance)
+	}
 	row1 := fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
-		styleBold.Render(fmt.Sprintf("$%.2f", stats.CurrentBalance)),
+		styleBold.Render(cashText),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(signedDollar(displayNetChange)),
@@ -4612,7 +4672,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		aStyle := getAssetStyle(marketID)
 		sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  ")
 
-		sort.Slice(mps, func(i, j int) bool { return mps[i].Outcome < mps[j].Outcome })
+		sort.Slice(mps, func(i, j int) bool { return outcomeSortLess(mps[i].Outcome, mps[j].Outcome) })
 
 		strs := make([]string, 0, len(mps))
 		for _, pos := range mps {
@@ -4752,7 +4812,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			aStyle := getAssetStyle(marketID)
 			sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  ")
 
-			sort.Slice(sps, func(i, j int) bool { return sps[i].Outcome < sps[j].Outcome })
+			sort.Slice(sps, func(i, j int) bool { return outcomeSortLess(sps[i].Outcome, sps[j].Outcome) })
 			strs := make([]string, 0, len(sps))
 			for _, sp := range sps {
 				strs = append(strs, fmt.Sprintf("%s: %s@$%.4f",
@@ -4795,7 +4855,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					continue
 				}
 				aStyle := getAssetStyle(marketID)
-				sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
+				sort.Slice(positions, func(i, j int) bool { return outcomeSortLess(positions[i].Outcome, positions[j].Outcome) })
 				parts := make([]string, 0, len(positions))
 				for _, wt := range positions {
 					displayShares, _ := walletTruthInventoryDisplayShares(wt)
@@ -4832,7 +4892,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				continue
 			}
 			aStyle := getAssetStyle(marketID)
-			sort.Slice(positions, func(i, j int) bool { return positions[i].Outcome < positions[j].Outcome })
+			sort.Slice(positions, func(i, j int) bool { return outcomeSortLess(positions[i].Outcome, positions[j].Outcome) })
 			parts := make([]string, 0, len(positions))
 			marketWarning := false
 			for _, wt := range positions {

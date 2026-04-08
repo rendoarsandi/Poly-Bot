@@ -145,6 +145,17 @@ func primeRealbotOrderPath(parentCtx context.Context, warmer realbotOrderPathWar
 	}()
 }
 
+func realbotRefreshWalletCashDisplay(ctx context.Context, trader *trading.RealTrader, tui *paper.TUI, timeout time.Duration) {
+	if trader == nil || tui == nil {
+		return
+	}
+	cashCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if walletCash, err := trader.ForceRefreshOnChainUSDCBalance(cashCtx); err == nil {
+		tui.SetWalletCash(walletCash)
+	}
+}
+
 func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge, staleThreshold time.Duration, terminalBookState bool) bool {
 	if staleThreshold <= 0 {
 		staleThreshold = 15 * time.Second
@@ -1260,6 +1271,9 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			} else {
 				engine.SyncBalanceNeutral(newBal)
 				engine.RecalculateDrawdown()
+				if walletCash, cashErr := trader.ForceRefreshOnChainUSDCBalance(balanceCtx); cashErr == nil {
+					tui.SetWalletCash(walletCash)
+				}
 			}
 			balanceCancel()
 
@@ -1915,6 +1929,8 @@ func run() error {
 		}
 	}()
 
+	realbotRefreshWalletCashDisplay(ctx, realTrader, tui, 8*time.Second)
+
 	// Balance sync heartbeat keeps UI cash/equity aligned with live wallet state
 	// even during quiet periods with no recent executions.
 	go func() {
@@ -1933,6 +1949,7 @@ func run() error {
 				}
 				engine.SyncBalanceNeutral(newBal)
 				engine.RecalculateDrawdown()
+				realbotRefreshWalletCashDisplay(ctx, realTrader, tui, realbotBalanceSyncTimeout)
 			}
 		}
 	}()
@@ -1974,6 +1991,7 @@ func run() error {
 				currentBalance = newBal
 				engine.SyncBalanceNeutral(currentBalance)
 				engine.RecalculateDrawdown()
+				realbotRefreshWalletCashDisplay(ctx, realTrader, tui, 8*time.Second)
 			}
 		}
 
@@ -2194,6 +2212,7 @@ func run() error {
 			if endBal, endBalErr := realTrader.ForceRefreshBalance(endBalCtx); endBalErr == nil {
 				balanceSyncDelta = engine.SyncBalanceNeutral(endBal)
 				engine.RecalculateDrawdown()
+				realbotRefreshWalletCashDisplay(ctx, realTrader, tui, 8*time.Second)
 			} else {
 				tui.LogEvent("⚠️ Round-end balance sync failed: %v", endBalErr)
 			}
@@ -2356,7 +2375,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	makerQuotes := make(map[string]*realbotMakerQuote)
 	lastMakerSync := time.Time{}
 	mergeCoordinator := newRealbotMergeCoordinator()
-	lastEntryBlockNoticeAt := time.Time{}
 	lastEntryBlockReason := ""
 
 	// Initial balance tracking
@@ -2970,13 +2988,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		blockNewEntriesReason, blockNewEntries := realbotNewEntryBlockReason(id, engine, splitInventory, liveCfg)
 		if blockNewEntries {
-			if blockNewEntriesReason != lastEntryBlockReason || lastEntryBlockNoticeAt.IsZero() || time.Since(lastEntryBlockNoticeAt) >= 5*time.Second {
+			if blockNewEntriesReason != lastEntryBlockReason {
 				tui.LogEvent("[%s] ⏸️ New entries blocked: %s", id, blockNewEntriesReason)
-				lastEntryBlockNoticeAt = time.Now()
 				lastEntryBlockReason = blockNewEntriesReason
 			}
 		} else {
-			lastEntryBlockNoticeAt = time.Time{}
 			lastEntryBlockReason = ""
 		}
 
@@ -3211,6 +3227,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					currentBalance = newBal
 					engine.SyncBalanceNeutral(currentBalance)
 					engine.RecalculateDrawdown()
+					realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 				}
 				switch {
 				case trimErr != nil:
@@ -4361,6 +4378,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
 									engine.RecalculateDrawdown()
+									realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 								}
 								refreshWalletTruth(5 * time.Second)
 							} else if ladderedDirection == 1 && side2Success {
@@ -4378,6 +4396,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
 									engine.RecalculateDrawdown()
+									realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 								}
 								refreshWalletTruth(5 * time.Second)
 							}
@@ -4405,6 +4424,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
 									engine.RecalculateDrawdown()
+									realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 								}
 								refreshWalletTruth(5 * time.Second)
 								time.Sleep(5 * time.Second)
@@ -4537,6 +4557,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							currentBalance = newBal
 							engine.SyncBalanceNeutral(currentBalance)
 							engine.RecalculateDrawdown()
+							realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 						}
 						refreshWalletTruth(5 * time.Second)
 						if entryGate != nil {
@@ -6857,6 +6878,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	checkRound := 0
+	lastResolutionState := ""
 
 	for {
 		if checkRound > 0 {
@@ -6953,7 +6975,10 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh during resolved-pending state failed: %v", id, err)
 			}
 			tui.UpdateWalletTruthResolution(id, true, "")
-			tui.LogEvent("[%s] ⏳ Market resolved on-chain, winner still pending...", id)
+			if lastResolutionState != "resolved-pending-winner" {
+				tui.LogEvent("[%s] ⏳ Market resolved on-chain, winner still pending...", id)
+				lastResolutionState = "resolved-pending-winner"
+			}
 			continue
 		}
 
@@ -6962,7 +6987,10 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			tui.LogEvent("[%s] ⚠️ Wallet-truth refresh during pending resolution failed: %v", id, err)
 		}
 		tui.UpdateWalletTruthResolution(id, false, "")
-		tui.LogEvent("[%s] ⏳ Resolution pending...", id)
+		if lastResolutionState != "pending" {
+			tui.LogEvent("[%s] ⏳ Resolution pending...", id)
+			lastResolutionState = "pending"
+		}
 	}
 
 }
