@@ -4174,6 +4174,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								Size:           requestSize1,
 								FeeRateBps:     rate1,
 								InitialBalance: initialBal0,
+								ExactShares:    true,
 							})
 						}
 						if side2Requested {
@@ -4185,6 +4186,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								Size:           requestSize2,
 								FeeRateBps:     rate2,
 								InitialBalance: initialBal1,
+								ExactShares:    true,
 							})
 						}
 
@@ -4571,6 +4573,7 @@ type directMarketOrderSignalRequest struct {
 	Size           float64
 	FeeRateBps     int
 	InitialBalance float64
+	ExactShares    bool
 }
 
 func isMinSizeRejectionMessage(message string) bool {
@@ -4892,13 +4895,20 @@ func logDirectExecutionAudit(tui *paper.TUI, id, label string, requestedQty, lim
 }
 
 func buildDirectMarketOrderRequest(req directMarketOrderSignalRequest) *api.OrderRequest {
+	timeInForce := api.TIFFillAndKill
+	if req.Side == api.SideBuy && req.ExactShares {
+		// Polymarket treats FAK/FOK BUY size as notional dollars, not shares.
+		// Use a marketable limit order so `Size` remains share-quantity, then
+		// cancel any unfilled remainder after the immediate match window.
+		timeInForce = api.TIFGoodTilCancelled
+	}
 	return &api.OrderRequest{
 		TokenID:     req.TokenID,
 		Price:       req.Price,
 		Size:        req.Size,
 		Side:        req.Side,
 		OrderType:   api.OrderTypeLimit,
-		TimeInForce: api.TIFFillAndKill,
+		TimeInForce: timeInForce,
 		FeeRateBps:  req.FeeRateBps,
 	}
 }
@@ -4917,6 +4927,25 @@ func hydrateDirectMarketTradeResult(req directMarketOrderSignalRequest, result *
 		result.Timestamp = time.Now()
 	}
 	return result
+}
+
+func shouldCancelResidualBuyOrder(req directMarketOrderSignalRequest, executedQty float64) bool {
+	if req.Side != api.SideBuy || !req.ExactShares || req.Size <= 0 {
+		return false
+	}
+	return executedQty < req.Size-0.0001
+}
+
+func isIgnorableCancelOrderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "status 404") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "already canceled") ||
+		strings.Contains(msg, "already cancelled") ||
+		strings.Contains(msg, "already filled")
 }
 
 func shouldSkipImmediateExecutionConfirmation(result *trading.TradeResult, err error) bool {
@@ -4966,7 +4995,7 @@ func finalizeDirectMarketExecutionWithSignals(ctx context.Context, trader *tradi
 		}
 	}
 
-	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, req.Side, orderID, req.TokenID, req.InitialBalance, confirmTimeout)
+	executedQty, wsConfirmed, orderConfirmed, verifyErr := confirmMarketOrderExecution(ctx, trader, req, orderID, confirmTimeout)
 	if acknowledgedQty > executedQty {
 		executedQty = acknowledgedQty
 	}
@@ -5043,6 +5072,7 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 		Size:           size,
 		FeeRateBps:     feeRateBps,
 		InitialBalance: initialBalance,
+		ExactShares:    side == api.SideBuy,
 	}
 	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
 	return finalizeDirectMarketExecutionWithSignals(ctx, trader, req, confirmTimeout, result, err)
@@ -5054,10 +5084,10 @@ func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, si
 	if side == api.SideSell {
 		return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
 	}
-	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
+	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, feeRateBps)
 }
 
-func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, side api.Side, orderID, tokenID string, initialBalance float64, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {
+func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, req directMarketOrderSignalRequest, orderID string, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {
 	if orderID != "" {
 		defer trader.ResetConfirmedFill(orderID)
 	}
@@ -5092,23 +5122,35 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 		if orderID != "" {
 			if wsQty := trader.GetConfirmedFillSize(orderID); wsQty > executedQty {
 				executedQty = wsQty
-				wsConfirmed = hasConfirmedExecutedQty(side, wsQty)
+				wsConfirmed = hasConfirmedExecutedQty(req.Side, wsQty)
 			}
 		}
 
-		liveBalance := trader.GetLivePositionSize(tokenID)
-		if delta := executionDeltaFromLiveBalance(liveBalance, initialBalance, side); delta > executedQty {
+		liveBalance := trader.GetLivePositionSize(req.TokenID)
+		if delta := executionDeltaFromLiveBalance(liveBalance, req.InitialBalance, req.Side); delta > executedQty {
 			executedQty = delta
 		}
 
-		if hasConfirmedExecutedQty(side, executedQty) || time.Now().After(deadline) {
+		if hasConfirmedExecutedQty(req.Side, executedQty) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(realbotFillPollInterval)
 	}
 
-	if positions, err := trader.ForceRefreshPositions(ctx); err == nil {
-		if delta := executionDeltaFromPositions(positions, tokenID, initialBalance, side); delta > executedQty {
+	if shouldCancelResidualBuyOrder(req, executedQty) && orderID != "" {
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		cancelErr := trader.CancelOrderByID(cancelCtx, orderID)
+		cancel()
+		if cancelErr != nil && verifyErr == nil && !isIgnorableCancelOrderError(cancelErr) {
+			verifyErr = fmt.Errorf("cancel residual buy failed: %w", cancelErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer refreshCancel()
+	if positions, err := trader.ForceRefreshPositions(refreshCtx); err == nil {
+		if delta := executionDeltaFromPositions(positions, req.TokenID, req.InitialBalance, req.Side); delta > executedQty {
 			executedQty = delta
 		}
 		verifyErr = nil
@@ -5116,10 +5158,10 @@ func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader
 	if orderID != "" {
 		if wsQty := trader.GetConfirmedFillSize(orderID); wsQty > executedQty {
 			executedQty = wsQty
-			wsConfirmed = hasConfirmedExecutedQty(side, wsQty)
+			wsConfirmed = hasConfirmedExecutedQty(req.Side, wsQty)
 		}
 	}
-	if hasConfirmedExecutedQty(side, executedQty) {
+	if hasConfirmedExecutedQty(req.Side, executedQty) {
 		verifyErr = nil
 	}
 	return executedQty, wsConfirmed, orderConfirmed, verifyErr

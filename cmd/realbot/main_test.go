@@ -2341,3 +2341,58 @@ func TestShouldSkipImmediateExecutionConfirmationKeepsVerificationWhenFillSignal
 		t.Fatal("expected verification to continue when venue acknowledged quantity exists")
 	}
 }
+
+func TestBuildDirectMarketOrderRequestBuyExactSharesUsesGTC(t *testing.T) {
+	req := buildDirectMarketOrderRequest(directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		TokenID:     "token-1",
+		Price:       0.44,
+		Size:        1.02,
+		FeeRateBps:  1000,
+		ExactShares: true,
+	})
+
+	if req.TimeInForce != api.TIFGoodTilCancelled {
+		t.Fatalf("expected GTC for exact-share buy, got %q", req.TimeInForce)
+	}
+	if req.Size != 1.02 {
+		t.Fatalf("expected buy size to remain shares, got %.4f", req.Size)
+	}
+}
+
+func TestBuildDirectMarketOrderRequestSellKeepsFAK(t *testing.T) {
+	req := buildDirectMarketOrderRequest(directMarketOrderSignalRequest{
+		Side:       api.SideSell,
+		TokenID:    "token-1",
+		Price:      0.44,
+		Size:       1.02,
+		FeeRateBps: 1000,
+	})
+
+	if req.TimeInForce != api.TIFFillAndKill {
+		t.Fatalf("expected sell to keep FAK, got %q", req.TimeInForce)
+	}
+}
+
+func TestShouldCancelResidualBuyOrderOnlyForExactShareBuys(t *testing.T) {
+	if !shouldCancelResidualBuyOrder(directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		Size:        1.02,
+		ExactShares: true,
+	}, 0.75) {
+		t.Fatal("expected residual exact-share buy to be cancelled")
+	}
+	if shouldCancelResidualBuyOrder(directMarketOrderSignalRequest{
+		Side: api.SideBuy,
+		Size: 1.02,
+	}, 0.75) {
+		t.Fatal("expected non-exact-share buy to skip residual cancellation")
+	}
+	if shouldCancelResidualBuyOrder(directMarketOrderSignalRequest{
+		Side:        api.SideSell,
+		Size:        1.02,
+		ExactShares: true,
+	}, 0.75) {
+		t.Fatal("expected sells to skip residual cancellation")
+	}
+}
