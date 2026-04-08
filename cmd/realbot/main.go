@@ -81,6 +81,7 @@ const (
 	realbotBatchBuyConfirmTimeout    = 1500 * time.Millisecond
 	realbotBuyAttributionTimeout     = 12 * time.Second
 	realbotMinDirectOrderValue       = 1.0
+	realbotWalletTruthEventMinDelta  = 2.0
 	binanceGapMaxSlippageCents       = 1.0
 	ladderedTakerMaxPairSum          = 1.25
 	ladderedTakerMinSkew             = 0.02
@@ -4239,20 +4240,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							continue
 						}
 
-						if ladderedMode {
-							targetOutcome := outcomes[0]
-							targetAsk := ask1
-							targetLimit := limitPrice1
-							targetSize := requestSize1
-							if ladderedDirection == 1 {
-								targetOutcome = outcomes[1]
-								targetAsk = ask2
-								targetLimit = limitPrice2
-								targetSize = requestSize2
-							}
-							tui.LogEvent("[%s] 🪜 LADDER candidate %s@$%.3f→%.3f (%s sh) | pair sum $%.3f | skew %.1f¢ [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-								id, targetOutcome, targetAsk, targetLimit, formatShareQty(targetSize), sum, math.Abs(ask1-ask2)*100.0, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-						} else {
+						if !ladderedMode {
 							tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								id, outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 						}
@@ -4384,7 +4372,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							side1Success, side2Success := exec1.Success, exec2.Success
 							logDirectExecutionAudit(tui, id, "Side 1 BUY", requestSize1, limitPrice1, exec1)
 							logDirectExecutionAudit(tui, id, "Side 2 BUY", requestSize2, limitPrice2, exec2)
-							if _, _, _, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr != nil {
+							if _, _, _, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr != nil && !ladderedMode {
 								tui.LogEvent("[%s] ⚠️ External position snapshot unavailable after direct buy: %v", id, verifyErr)
 							}
 
@@ -4405,17 +4393,21 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									if !side1Success && prevSide1Success && hasConfirmedExecutedQty(api.SideBuy, rawAttribution1) {
 										filled1 = rawAttribution1
 										side1Success = true
-										tui.LogEvent("[%s] ℹ️ Side 1 buy confirmation fell back to venue/WS ack while balance attribution lagged (%s)", id, attrSource)
+										if !ladderedMode {
+											tui.LogEvent("[%s] ℹ️ Side 1 buy confirmation fell back to venue/WS ack while balance attribution lagged (%s)", id, attrSource)
+										}
 									}
 									if !side2Success && prevSide2Success && hasConfirmedExecutedQty(api.SideBuy, rawAttribution2) {
 										filled2 = rawAttribution2
 										side2Success = true
-										tui.LogEvent("[%s] ℹ️ Side 2 buy confirmation fell back to venue/WS ack while balance attribution lagged (%s)", id, attrSource)
+										if !ladderedMode {
+											tui.LogEvent("[%s] ℹ️ Side 2 buy confirmation fell back to venue/WS ack while balance attribution lagged (%s)", id, attrSource)
+										}
 									}
-									if math.Abs(rawFilled1-filled1) > 0.25 || math.Abs(rawFilled2-filled2) > 0.25 {
+									if !ladderedMode && (math.Abs(rawFilled1-filled1) > 0.25 || math.Abs(rawFilled2-filled2) > 0.25) {
 										tui.LogEvent("[%s] 🧾 PANIC BUY attribution (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, attrSource, outcomes[0], absBal0, filled1, outcomes[1], absBal1, filled2)
 									}
-								} else {
+								} else if !ladderedMode {
 									tui.LogEvent("[%s] ⚠️ PANIC BUY attribution unavailable; using capped order confirmation only: %v", id, attrErr)
 								}
 							}
@@ -6539,6 +6531,9 @@ func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string
 		side = "ADJ-"
 	}
 	tui.RecordWalletSyncAdjustment(marketID, outcome, deltaShares, markPrice, side)
+	if math.Abs(deltaShares) < realbotWalletTruthEventMinDelta {
+		return
+	}
 	tui.LogEvent("[%s] 🧾 Wallet sync %s %s %s%s (local %.4f, on-chain %.4f, split %.4f)",
 		marketID,
 		action,
