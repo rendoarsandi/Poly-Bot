@@ -1187,6 +1187,9 @@ type TUI struct {
 	program     *tea.Program
 	issueLogger *core.CSVLogger
 
+	lastDedupLogAt  map[string]time.Time
+	lastDedupLogMsg map[string]string
+
 	snapshotVersion uint64
 }
 
@@ -2497,6 +2500,8 @@ func NewTUI(engine *Engine, orderBook *OrderBook) *TUI {
 		eventLog:        make([]string, 0),
 		maxEvents:       defaultMaxEventHistory,
 		walletTruth:     make(map[string][]WalletTruthPosition),
+		lastDedupLogAt:  make(map[string]time.Time),
+		lastDedupLogMsg: make(map[string]string),
 		width:           80,
 		height:          24,
 		startTime:       time.Now(),
@@ -3013,6 +3018,50 @@ func (t *TUI) LogEvent(format string, args ...interface{}) {
 	}
 }
 
+func (t *TUI) LogEventDedup(key string, interval time.Duration, format string, args ...interface{}) bool {
+	if strings.TrimSpace(key) == "" {
+		t.LogEvent(format, args...)
+		return true
+	}
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+
+	timestamp := time.Now().Format("15:04:05")
+	msg := fmt.Sprintf("[%s] %s", timestamp, fmt.Sprintf(format, args...))
+	msg = core.SanitizeString(msg)
+
+	var issueLogger *core.CSVLogger
+	equity := 0.0
+
+	t.mu.Lock()
+	lastMsg := t.lastDedupLogMsg[key]
+	lastAt := t.lastDedupLogAt[key]
+	if msg == lastMsg && !lastAt.IsZero() && time.Since(lastAt) < interval {
+		t.mu.Unlock()
+		return false
+	}
+	t.lastDedupLogMsg[key] = msg
+	t.lastDedupLogAt[key] = time.Now()
+	t.eventLog = append(t.eventLog, msg)
+	if len(t.eventLog) > t.maxEvents {
+		t.eventLog = t.eventLog[1:]
+	}
+	t.markDirtyLocked()
+	if shouldPersistIssueEvent(msg) {
+		issueLogger = t.issueLogger
+		if t.engine != nil {
+			equity = t.engine.GetEquity()
+		}
+	}
+	t.mu.Unlock()
+
+	if issueLogger != nil {
+		issueLogger.Log(issueLogLevel(msg), extractIssueAsset(msg), "REALBOT_ISSUE", msg, equity)
+	}
+	return true
+}
+
 func shouldPersistIssueEvent(msg string) bool {
 	lower := strings.ToLower(msg)
 	criticalPhrases := []string{
@@ -3096,6 +3145,23 @@ func (t *TUI) RecordOrderWithMode(marketID, outcome, side string, shares, price,
 		t.orderHistory = t.orderHistory[len(t.orderHistory)-t.maxOrderHistory:]
 	}
 	t.markDirtyLocked()
+}
+
+func (t *TUI) RecordWalletSyncAdjustment(marketID, outcome string, deltaShares, markPrice float64, direction string) {
+	if math.Abs(deltaShares) < 1e-9 {
+		return
+	}
+	side := "ADJ"
+	switch {
+	case deltaShares > 0:
+		side = "ADJ+"
+	case deltaShares < 0:
+		side = "ADJ-"
+	}
+	if trimmed := strings.TrimSpace(direction); trimmed != "" {
+		side = trimmed
+	}
+	t.RecordOrderWithMode(marketID, outcome, side, math.Abs(deltaShares), markPrice, 0.0, 0.0, 0.0, "wallet-sync", "SYNCED")
 }
 
 func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
@@ -3322,6 +3388,7 @@ func (t *TUI) SetWalletTruthPositions(marketID string, positions []WalletTruthPo
 	defer t.mu.Unlock()
 	if len(positions) == 0 {
 		delete(t.walletTruth, marketID)
+		t.markDirtyLocked()
 		return
 	}
 	if existing, ok := t.walletTruth[marketID]; ok && len(existing) > 0 {
@@ -3348,6 +3415,7 @@ func (t *TUI) SetWalletTruthPositions(marketID string, positions []WalletTruthPo
 		}
 	}
 	t.walletTruth[marketID] = append([]WalletTruthPosition(nil), positions...)
+	t.markDirtyLocked()
 }
 
 func (t *TUI) UpdateWalletTruthRedeemable(marketID string, winningOutcome string) {
@@ -3372,6 +3440,7 @@ func (t *TUI) UpdateWalletTruthRedeemable(marketID string, winningOutcome string
 		}
 	}
 	t.walletTruth[marketID] = positions
+	t.markDirtyLocked()
 }
 
 // UpdateWalletTruthResolution updates resolution status for all positions in a market.
@@ -3402,12 +3471,14 @@ func (t *TUI) UpdateWalletTruthResolution(marketID string, resolved bool, winnin
 		}
 	}
 	t.walletTruth[marketID] = positions
+	t.markDirtyLocked()
 }
 
 func (t *TUI) ClearWalletTruthPositions(marketID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.walletTruth, marketID)
+	t.markDirtyLocked()
 }
 
 func (t *TUI) getSplitPositions() []SplitPosition {
@@ -4954,6 +5025,8 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 			modeLabel = "close"
 		case "taker":
 			modeLabel = "taker"
+		case "wallet-sync":
+			modeLabel = "sync"
 		}
 
 		statusIcon := "✅"
@@ -4964,6 +5037,9 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 			marginSt = styleRed
 		case "PARTIAL":
 			statusIcon = "⚠️"
+			marginSt = styleYellow
+		case "SYNCED":
+			statusIcon = "🧾"
 			marginSt = styleYellow
 		}
 

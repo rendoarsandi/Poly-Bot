@@ -121,6 +121,27 @@ func TestTUI_SetWalletTruthPositionsClonesInput(t *testing.T) {
 	}
 }
 
+func TestTUI_SetWalletTruthPositionsMarksDirty(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	startVersion := tui.snapshotVersion
+
+	tui.SetWalletTruthPositions("BTC", []WalletTruthPosition{{
+		MarketID:      "BTC",
+		Outcome:       "Down",
+		LocalShares:   2.5,
+		OnChainShares: 2.5,
+	}})
+	if tui.snapshotVersion <= startVersion {
+		t.Fatalf("expected wallet-truth set to mark snapshot dirty, version %d -> %d", startVersion, tui.snapshotVersion)
+	}
+
+	midVersion := tui.snapshotVersion
+	tui.ClearWalletTruthPositions("BTC")
+	if tui.snapshotVersion <= midVersion {
+		t.Fatalf("expected wallet-truth clear to mark snapshot dirty, version %d -> %d", midVersion, tui.snapshotVersion)
+	}
+}
+
 func TestTUI_SetWalletTruthPositionsPreservesResolutionStateAcrossRefresh(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -1893,6 +1914,39 @@ func TestRecordOrderDefaultsToTakerMode(t *testing.T) {
 	}
 	if history[0].ExecutionMode != "taker" {
 		t.Fatalf("expected default execution mode taker, got %q", history[0].ExecutionMode)
+	}
+}
+
+func TestRecordWalletSyncAdjustmentAddsSyncHistoryEntry(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.RecordWalletSyncAdjustment("BTC", "Down", 3.001719, 0.28, "ADJ+")
+
+	history := tui.GetOrderHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 sync history entry, got %d", len(history))
+	}
+	if history[0].ExecutionMode != "wallet-sync" {
+		t.Fatalf("expected wallet-sync execution mode, got %q", history[0].ExecutionMode)
+	}
+	if history[0].Status != "SYNCED" {
+		t.Fatalf("expected SYNCED status, got %q", history[0].Status)
+	}
+	if history[0].Side != "ADJ+" {
+		t.Fatalf("expected ADJ+ side, got %q", history[0].Side)
+	}
+}
+
+func TestLogEventDedupSuppressesRepeatedMessages(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+
+	if !tui.LogEventDedup("wallet-sync:BTC", time.Minute, "[%s] sync failed", "BTC") {
+		t.Fatal("expected first deduped log to be recorded")
+	}
+	if tui.LogEventDedup("wallet-sync:BTC", time.Minute, "[%s] sync failed", "BTC") {
+		t.Fatal("expected duplicate deduped log to be suppressed")
+	}
+	if got := len(tui.eventLog); got != 1 {
+		t.Fatalf("expected 1 event log entry after suppression, got %d", got)
 	}
 }
 

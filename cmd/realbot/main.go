@@ -2427,7 +2427,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 		truthCtx, truthCancel := context.WithTimeout(ctx, timeout)
 		defer truthCancel()
-		_, _ = syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui)
+		if _, err := syncWalletTruthPositions(truthCtx, id, tokenToOutcome, trader, engine, splitInventory, tui); err != nil {
+			tui.LogEventDedup("wallet-truth-refresh:"+id+":"+strings.TrimSpace(err.Error()), 15*time.Second,
+				"[%s] ⚠️ Wallet-truth refresh failed: %v", id, err)
+		}
 	}
 	refreshWalletTruth(5 * time.Second)
 	copytradeState := newRealbotCopytradeState()
@@ -4206,9 +4209,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						side1Success, side2Success := exec1.Success, exec2.Success
 						logDirectExecutionAudit(tui, id, "Side 1 BUY", requestSize1, limitPrice1, exec1)
 						logDirectExecutionAudit(tui, id, "Side 2 BUY", requestSize2, limitPrice2, exec2)
-						if bal0, bal1, verifySource, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr == nil {
-							tui.LogEvent("[%s] 🔍 Verify Positions (%s): %s=%.4f, %s=%.4f (Target: %s/%s)", id, verifySource, outcomes[0], bal0, outcomes[1], bal1, formatShareQty(requestSize1), formatShareQty(requestSize2))
-						} else {
+						if _, _, _, verifyErr := loadPairBalancesWSFirst(ctx, trader, token0, token1); verifyErr != nil {
 							tui.LogEvent("[%s] ⚠️ External position snapshot unavailable after direct buy: %v", id, verifyErr)
 						}
 
@@ -4223,7 +4224,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								filled2 = attributedBuyFill(exec2, requestSize2, acquired1, true)
 								side1Success = hasConfirmedExecutedQty(api.SideBuy, filled1)
 								side2Success = hasConfirmedExecutedQty(api.SideBuy, filled2)
-								if shouldAttemptCleanupSell(initialSnapshot0) || shouldAttemptCleanupSell(initialSnapshot1) || math.Abs(rawFilled1-filled1) > 0.01 || math.Abs(rawFilled2-filled2) > 0.01 {
+								if math.Abs(rawFilled1-filled1) > 0.25 || math.Abs(rawFilled2-filled2) > 0.25 {
 									tui.LogEvent("[%s] 🧾 PANIC BUY attribution (%s): %s abs=%.4f Δ=%.4f, %s abs=%.4f Δ=%.4f", id, attrSource, outcomes[0], absBal0, filled1, outcomes[1], absBal1, filled2)
 								}
 							} else {
@@ -4255,7 +4256,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						// Log results based on VERIFIED state
 						if side1Requested && side1Success {
-							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, requestSize1)
+							if !ladderedMode {
+								tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, requestSize1)
+							}
 							tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
 						} else if side1Requested {
 							// Log the actual failure reason (err or res.Message)
@@ -4272,7 +4275,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						if side2Requested && side2Success {
-							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, requestSize2)
+							if !ladderedMode {
+								tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, requestSize2)
+							}
 							tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
 						} else if side2Requested {
 							// Log the actual failure reason (err or res.Message)
@@ -4341,11 +4346,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						if ladderedMode {
 							if ladderedDirection == 0 && side1Success {
 								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
-								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s", id, outcomes[0], formatShareQty(filled1))
-								if realbotShouldAdvanceLadderedEntry(requestSize1, filled1) {
+								advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize1, filled1)
+								anchorNote := "anchor advanced"
+								if !advancedAnchor {
+									anchorNote = "anchor unchanged"
+								}
+								tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[0], formatShareQty(filled1), formatShareQty(requestSize1), ask1, anchorNote)
+								if advancedAnchor {
 									ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
-								} else {
-									tui.LogEvent("[%s] ℹ️ Laddered partial fill kept inventory but did not advance the re-entry anchor: filled %s of %s", id, formatShareQty(filled1), formatShareQty(requestSize1))
 								}
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
@@ -4355,11 +4363,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								refreshWalletTruth(5 * time.Second)
 							} else if ladderedDirection == 1 && side2Success {
 								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
-								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s", id, outcomes[1], formatShareQty(filled2))
-								if realbotShouldAdvanceLadderedEntry(requestSize2, filled2) {
+								advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize2, filled2)
+								anchorNote := "anchor advanced"
+								if !advancedAnchor {
+									anchorNote = "anchor unchanged"
+								}
+								tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[1], formatShareQty(filled2), formatShareQty(requestSize2), ask2, anchorNote)
+								if advancedAnchor {
 									ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
-								} else {
-									tui.LogEvent("[%s] ℹ️ Laddered partial fill kept inventory but did not advance the re-entry anchor: filled %s of %s", id, formatShareQty(filled2), formatShareQty(requestSize2))
 								}
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
@@ -4822,8 +4833,30 @@ func directExecutionHasSizingDrift(exec directMarketExecution, requestedQty floa
 	return drift > math.Max(0.02, requestedQty*0.02)
 }
 
+func directExecutionNeedsAuditLog(exec directMarketExecution, requestedQty float64) bool {
+	if exec.Result == nil {
+		return false
+	}
+	if exec.VerifyErr != nil {
+		return true
+	}
+	if directExecutionHasSizingDrift(exec, requestedQty) {
+		return true
+	}
+	if len(exec.Result.TransactionsHashes) > 1 {
+		return true
+	}
+	if !exec.Success {
+		return exec.AcknowledgedQty > 0 || exec.AcknowledgedNotional > 0 || len(exec.Result.TransactionsHashes) > 0
+	}
+	return false
+}
+
 func logDirectExecutionAudit(tui *paper.TUI, id, label string, requestedQty, limitPrice float64, exec directMarketExecution) {
 	if tui == nil || exec.Result == nil {
+		return
+	}
+	if !directExecutionNeedsAuditLog(exec, requestedQty) {
 		return
 	}
 	if exec.AcknowledgedQty <= 0 && exec.AcknowledgedNotional <= 0 && len(exec.Result.TransactionsHashes) == 0 {
@@ -6230,6 +6263,31 @@ func reconcileBoughtPairBalances(ctx context.Context, trader *trading.RealTrader
 	return acquired0, acquired1, live0, live1, source, onChainErr
 }
 
+func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string, deltaShares, localShares, onChainShares, splitShares, markPrice float64, action string) {
+	if tui == nil || math.Abs(deltaShares) < realbotWalletTruthLogMinDelta {
+		return
+	}
+	side := "ADJ"
+	sign := ""
+	if deltaShares > 0 {
+		side = "ADJ+"
+		sign = "+"
+	} else if deltaShares < 0 {
+		side = "ADJ-"
+	}
+	tui.RecordWalletSyncAdjustment(marketID, outcome, deltaShares, markPrice, side)
+	tui.LogEvent("[%s] 🧾 Wallet sync %s %s %s%s (local %.4f, on-chain %.4f, split %.4f)",
+		marketID,
+		action,
+		outcome,
+		sign,
+		formatShareQty(math.Abs(deltaShares)),
+		localShares,
+		onChainShares,
+		splitShares,
+	)
+}
+
 func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, splitInventory *paper.SplitInventory, tui *paper.TUI) (bool, error) {
 	enginePositions := engine.GetPositions()
 	localByOutcome := make(map[string]float64)
@@ -6258,10 +6316,9 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		desiredBoughtShares := math.Max(0, onChainShares-splitShares)
 		if desiredBoughtShares > localBoughtShares+1e-6 {
 			addQty := desiredBoughtShares - localBoughtShares
-			if engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, walletTruthSyncMarkPrice(engine, marketID, outcome)) {
-				if addQty >= realbotWalletTruthLogMinDelta {
-					tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcome, formatShareQty(addQty), localBoughtShares, onChainShares, splitShares)
-				}
+			markPrice := walletTruthSyncMarkPrice(engine, marketID, outcome)
+			if engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, markPrice) {
+				realbotRecordWalletTruthAdjustment(tui, marketID, outcome, addQty, localBoughtShares, onChainShares, splitShares, markPrice, "restored")
 				changed = true
 			}
 			localBoughtShares = desiredBoughtShares
@@ -6402,35 +6459,31 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	changed := false
 	if local0 > desired0+1e-6 {
 		trimQty := local0 - desired0
-		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
-			if trimQty >= realbotWalletTruthLogMinDelta {
-				tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(trimQty), local0, onChain0, split0)
-			}
+		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[0])
+		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, markPrice) {
+			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[0], -trimQty, local0, onChain0, split0, markPrice, "trimmed")
 			changed = true
 		}
 	} else if desired0 > local0+1e-6 {
 		addQty := desired0 - local0
-		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, walletTruthSyncMarkPrice(engine, marketID, outcomes[0])) {
-			if addQty >= realbotWalletTruthLogMinDelta {
-				tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[0], formatShareQty(addQty), local0, onChain0, split0)
-			}
+		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[0])
+		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, markPrice) {
+			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[0], addQty, local0, onChain0, split0, markPrice, "restored")
 			changed = true
 		}
 	}
 	if local1 > desired1+1e-6 {
 		trimQty := local1 - desired1
-		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {
-			if trimQty >= realbotWalletTruthLogMinDelta {
-				tui.LogEvent("[%s] 🧾 Wallet-truth sync trimmed stale %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(trimQty), local1, onChain1, split1)
-			}
+		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[1])
+		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, markPrice) {
+			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[1], -trimQty, local1, onChain1, split1, markPrice, "trimmed")
 			changed = true
 		}
 	} else if desired1 > local1+1e-6 {
 		addQty := desired1 - local1
-		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, walletTruthSyncMarkPrice(engine, marketID, outcomes[1])) {
-			if addQty >= realbotWalletTruthLogMinDelta {
-				tui.LogEvent("[%s] 🧾 Wallet-truth sync restored missing %s inventory by %s (local %.4f → on-chain %.4f, split %.4f)", marketID, outcomes[1], formatShareQty(addQty), local1, onChain1, split1)
-			}
+		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[1])
+		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, markPrice) {
+			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[1], addQty, local1, onChain1, split1, markPrice, "restored")
 			changed = true
 		}
 	}
