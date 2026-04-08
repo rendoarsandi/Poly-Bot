@@ -57,7 +57,32 @@ func TestLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
+func TestRealbotBinanceGapBuyLimitPriceUsesFixedOneCentCap(t *testing.T) {
+	if got := realbotBinanceGapBuyLimitPrice(0.54, 0.90); math.Abs(got-0.55) > 0.000001 {
+		t.Fatalf("expected fixed 1c cap for binance-gap, got %.3f", got)
+	}
+}
 
+func TestRealbotLadderedMoveThresholdMatchesPaperbotClamp(t *testing.T) {
+	if got := realbotLadderedMoveThreshold(0.01); got != 0.01 {
+		t.Fatalf("expected sub-1c threshold to clamp to 1c, got %.4f", got)
+	}
+	if got := realbotLadderedMoveThreshold(80); got != 0.25 {
+		t.Fatalf("expected threshold to clamp to 25c, got %.4f", got)
+	}
+}
+
+func TestRealbotShouldAdvanceLadderedEntryRequiresMaterialFill(t *testing.T) {
+	if realbotShouldAdvanceLadderedEntry(10.0, 0.01) {
+		t.Fatal("expected dust partial to leave ladder anchor unchanged")
+	}
+	if !realbotShouldAdvanceLadderedEntry(10.0, 9.6) {
+		t.Fatal("expected materially filled rung to advance ladder anchor")
+	}
+	if !realbotShouldAdvanceLadderedEntry(0.01, 0.01) {
+		t.Fatal("expected minimum actionable rung to advance when fully filled")
+	}
+}
 
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {

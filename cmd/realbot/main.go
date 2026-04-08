@@ -77,6 +77,7 @@ const (
 	realbotMakerRequoteInterval      = 500 * time.Millisecond
 	realbotMakerMinQuoteValue        = 5.0
 	realbotMakerCashUsagePerOutcome  = 0.35
+	binanceGapMaxSlippageCents       = 1.0
 	ladderedTakerMaxPairSum          = 1.25
 	ladderedTakerMinSkew             = 0.02
 	ladderedTakerHedgeShareRatio     = 0.35
@@ -504,6 +505,10 @@ func realbotDirectionalBuyLimitPrice(ask, maxAskPrice, maxSlippagePct float64) f
 	return limit
 }
 
+func realbotBinanceGapBuyLimitPrice(ask, maxAskPrice float64) float64 {
+	return realbotDirectionalBuyLimitPrice(ask, maxAskPrice, binanceGapMaxSlippageCents)
+}
+
 func realbotAskLiquidityAtOrBelow(levels []paper.MarketLevel, maxPrice float64) float64 {
 	total := 0.0
 	for _, lvl := range levels {
@@ -735,7 +740,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		// SILENCED: Do not log spammy range errors
 		return
 	}
-	limitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice, liveCfg.LadderedTakerMaxSlippagePct)
+	limitPrice := realbotBinanceGapBuyLimitPrice(ask, liveCfg.MaxAskPrice)
 	if limitPrice <= 0 {
 		return
 	}
@@ -3736,28 +3741,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						continue
 					}
 
-					// Risk checks should use the worst price sum the bot is willing to execute through.
-					cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
-					if ladderedMode {
-						if ask1 > ask2 {
-							cost = shares * ask1
-						} else {
-							cost = shares * ask2
-						}
-					}
-
-					// Use the last known cached balance here; a fresh RPC can add avoidable
-					// latency right when we need to submit the panic-buy legs.
-
-					// Check risk limits only (Balance check disabled per user request to match utilbot behavior)
-					if !riskMgr.CanPlaceOrder(cost) {
-						tui.LogEvent("[%s] ⚠️ Risk limit exceeded for cost $%.2f", id, cost)
-						continue
-					}
-
-					// Skipping conservative balance checks (costWithBuffer > currentCash) to allow max execution.
-					// If balance is insufficient, the API call will fail naturally.
-
 					minEntryShares := 1.0
 					if ladderedMode {
 						minEntryShares = minOnChainActionShares
@@ -3772,7 +3755,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						// Cooldown - don't spam logs, just skip silently
 						continue
 					}
-
 
 					if true { // Always execute if we got here
 						limitPrice1 := 0.0
@@ -3815,12 +3797,55 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", id, minEntryShares, formatShareQty(activeSize))
 								continue
 							}
+							directionalLimitPrice := limitPrice1
+							directionalLevels := asks1
+							if ladderedDirection == 1 {
+								directionalLimitPrice = limitPrice2
+								directionalLevels = asks2
+							}
+							directionalLiquidity := normalizeMarketBuyShares(realbotAskLiquidityAtOrBelow(directionalLevels, directionalLimitPrice))
+							if directionalLiquidity < activeSize {
+								tui.LogEvent("[%s] 📉 Downscaling laddered leg from %s to %s shares to match visible depth through $%.3f", id, formatShareQty(activeSize), formatShareQty(directionalLiquidity), directionalLimitPrice)
+								activeSize = directionalLiquidity
+								if ladderedDirection == 1 {
+									requestSize2 = activeSize
+								} else {
+									requestSize1 = activeSize
+								}
+							}
+							if activeSize < minEntryShares {
+								tui.LogEvent("[%s] ⚠️ Visible laddered depth through cap $%.3f is below %.2f share minimum: %s", id, directionalLimitPrice, minEntryShares, formatShareQty(activeSize))
+								panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+								continue
+							}
+							shares = activeSize
 						} else {
 							if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
 								tui.LogEvent("[%s] ⚠️ Actionable arb legs below %.2f share minimum: %s/%s", id, minEntryShares, formatShareQty(requestSize1), formatShareQty(requestSize2))
 								continue
 							}
 						}
+
+						// Risk checks should use the worst price the bot is actually allowed to pay.
+						cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
+						if ladderedMode {
+							cost = requestSize1 * limitPrice1
+							if ladderedDirection == 1 {
+								cost = requestSize2 * limitPrice2
+							}
+						}
+
+						// Use the last known cached balance here; a fresh RPC can add avoidable
+						// latency right when we need to submit the panic-buy legs.
+
+						// Check risk limits only (Balance check disabled per user request to match utilbot behavior)
+						if !riskMgr.CanPlaceOrder(cost) {
+							tui.LogEvent("[%s] ⚠️ Risk limit exceeded for cost $%.2f", id, cost)
+							continue
+						}
+
+						// Skipping conservative balance checks (costWithBuffer > currentCash) to allow max execution.
+						// If balance is insufficient, the API call will fail naturally.
 
 						if !ladderedMode {
 							budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
@@ -3922,7 +3947,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						var requests []directMarketOrderSignalRequest
-						if !ladderedMode || ladderedDirection == 0 {
+						side1Requested := !ladderedMode || ladderedDirection == 0
+						side2Requested := !ladderedMode || ladderedDirection == 1
+						if side1Requested {
 							requests = append(requests, directMarketOrderSignalRequest{
 								Side:           api.SideBuy,
 								TokenID:        token0,
@@ -3933,7 +3960,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								InitialBalance: initialBal0,
 							})
 						}
-						if !ladderedMode || ladderedDirection == 1 {
+						if side2Requested {
 							requests = append(requests, directMarketOrderSignalRequest{
 								Side:           api.SideBuy,
 								TokenID:        token1,
@@ -4014,10 +4041,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						// Log results based on VERIFIED state
-						if side1Success {
+						if side1Requested && side1Success {
 							tui.LogEvent("[%s] ✅ Side 1 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[0], ask1, filled1, requestSize1)
 							tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
-						} else {
+						} else if side1Requested {
 							// Log the actual failure reason (err or res.Message)
 							if err1 != nil {
 								tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
@@ -4031,10 +4058,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
 						}
 
-						if side2Success {
+						if side2Requested && side2Success {
 							tui.LogEvent("[%s] ✅ Side 2 MARKET: %s (Observed $%.3f, Filled: %.2f/%.2f)", id, outcomes[1], ask2, filled2, requestSize2)
 							tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
-						} else {
+						} else if side2Requested {
 							// Log the actual failure reason (err or res.Message)
 							if err2 != nil {
 								tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
@@ -4102,7 +4129,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							if ladderedDirection == 0 && side1Success {
 								_, _ = engine.BuyForMarket(id, outcomes[0], ask1, filled1)
 								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s", id, outcomes[0], formatShareQty(filled1))
-								ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
+								if realbotShouldAdvanceLadderedEntry(requestSize1, filled1) {
+									ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
+								} else {
+									tui.LogEvent("[%s] ℹ️ Laddered partial fill kept inventory but did not advance the re-entry anchor: filled %s of %s", id, formatShareQty(filled1), formatShareQty(requestSize1))
+								}
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
@@ -4112,7 +4143,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							} else if ladderedDirection == 1 && side2Success {
 								_, _ = engine.BuyForMarket(id, outcomes[1], ask2, filled2)
 								tui.LogEvent("[%s] 🪜 Laddered taker inventory added: %s=%s", id, outcomes[1], formatShareQty(filled2))
-								ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
+								if realbotShouldAdvanceLadderedEntry(requestSize2, filled2) {
+									ladderedEntries = append(ladderedEntries, struct{ ask0, ask1 float64 }{ask1, ask2})
+								} else {
+									tui.LogEvent("[%s] ℹ️ Laddered partial fill kept inventory but did not advance the re-entry anchor: filled %s of %s", id, formatShareQty(filled2), formatShareQty(requestSize2))
+								}
 								if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 									currentBalance = newBal
 									engine.SyncBalanceNeutral(currentBalance)
@@ -4898,7 +4933,6 @@ func pairMarginPercent(sum float64) float64 {
 	return (1.0 - sum) * 100.0
 }
 
-
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
 	if minAsk > ladderedTakerMinAsk {
 		minAsk = ladderedTakerMinAsk
@@ -4928,7 +4962,6 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 	}
 	return true
 }
-
 
 func computeRealbotMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
 	return strategy.ComputeMakerInventorySkew(positionShares, peerShares, targetShares)
@@ -8216,16 +8249,7 @@ func ladderedTakerDirectionalSide(entries []struct{ ask0, ask1 float64 }, ask0, 
 	}
 	lastAsk0 := entries[len(entries)-1].ask0
 	lastAsk1 := entries[len(entries)-1].ask1
-	threshold := moveCents
-	switch {
-	case threshold <= 0:
-		threshold = 1.0
-	case threshold < 0.1:
-		threshold = 0.1
-	case threshold > 25.0:
-		threshold = 25.0
-	}
-	threshold = threshold / 100.0
+	threshold := realbotLadderedMoveThreshold(moveCents)
 
 	move0 := ask0 - lastAsk0
 	move1 := ask1 - lastAsk1
@@ -8243,4 +8267,31 @@ func ladderedTakerDirectionalSide(entries []struct{ ask0, ask1 float64 }, ask0, 
 		}
 	}
 	return -1, false
+}
+
+func realbotLadderedMoveThreshold(moveCents float64) float64 {
+	threshold := moveCents
+	switch {
+	case threshold <= 0:
+		threshold = 1.0
+	case threshold < 1.0:
+		threshold = 1.0
+	case threshold > 25.0:
+		threshold = 25.0
+	}
+	return threshold / 100.0
+}
+
+func realbotShouldAdvanceLadderedEntry(requestedQty, filledQty float64) bool {
+	if requestedQty <= 0 || filledQty < minOnChainActionShares-1e-9 {
+		return false
+	}
+	minFilled := requestedQty - math.Max(0.02, requestedQty*0.05)
+	if minFilled < minOnChainActionShares {
+		minFilled = minOnChainActionShares
+	}
+	if minFilled > requestedQty {
+		minFilled = requestedQty
+	}
+	return filledQty >= minFilled-1e-9
 }

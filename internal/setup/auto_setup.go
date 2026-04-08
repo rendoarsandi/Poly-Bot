@@ -170,10 +170,9 @@ func UpdateKalshiEnvFile(kalshiKey, kalshiPK string) error {
 }
 
 func UpdatePolymarketCredentials(rpc, pk string) error {
-	envFile := ".env"
 	var creds *APICredentials
 	var err error
-	
+
 	if pk != "" {
 		creds, err = deriveOrBuildAPIKey(pk)
 		if err != nil {
@@ -181,6 +180,14 @@ func UpdatePolymarketCredentials(rpc, pk string) error {
 		}
 	}
 
+	return updatePolymarketEnvFile(".env", rpc, pk, creds)
+}
+
+func updateEnvFile(pk string, creds *APICredentials) error {
+	return updatePolymarketEnvFile(".env", "", pk, creds)
+}
+
+func updatePolymarketEnvFile(envFile, rpc, pk string, creds *APICredentials) error {
 	lines := []string{}
 	if _, err := os.Stat(envFile); err == nil {
 		content, err := os.ReadFile(envFile)
