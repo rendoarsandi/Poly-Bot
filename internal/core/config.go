@@ -107,116 +107,118 @@ type Config struct {
 	// Strategy: SPLIT USDC → YES+NO shares, SELL when bid_sum > $1.03
 	// This is the INVERSE of the panic buy strategy (buy when ask_sum < $0.98)
 	// ═══════════════════════════════════════════════════════════════════════════
-	SplitStrategyEnabled              bool    // Enable split strategy (default: false)
-	SplitMinMarginSell                float64 // Minimum margin to trigger sell (default: 3%)
-	SplitTargetMarginReserve          float64 // Maintain inventory for this margin level (default: 6%)
-	SplitReplenishThreshold           float64 // Trigger new split when shares fall below this (default: 50)
-	SplitMergeBufferSeconds           int     // Seconds before expiry to merge unsold shares (default: 30)
-	MakerMergeBufferSeconds           int     // Seconds before expiry to merge paired maker inventory (default: 30)
-	MakerQuoteGap                     float64 // Distance from mid for maker quotes (default: 0.008)
-	MakerInventoryTargetMult          float64 // Target multiplier for inventory skew (default: 3.0)
-	MakerInventoryCapMult             float64 // Cap multiplier for inventory skew (default: 5.0)
-	MakerMinQuoteValue                float64 // Minimum shares to quote (default: 10.0)
-	SplitInitialCapPct                float64 // Initial Split Cap (default: 0.25)
-	SplitReplenishCapPct              float64 // Replenishment Cap (default: 0.50)
-	TradingHoursMode                  string  // "off", "weekdays trade only", "us open only"
-	TakerCloseMarket                  bool    // Force GTC buy right before market closes
-	TakerCloseMarketTime              int     // Seconds before close to trigger (default: 5)
-	TakerCloseMarketSlippage          float64 // Limit price for taker close (default: 0.99)
-	TakerCloseMarketMinPrice          float64 // Min price to trigger close buy (default: 0.60)
-	CopytradeTarget                   string  // Wallet address, profile handle, or profile URL to follow
-	CopytradePollIntervalMs           int     // Copytrade public-wallet poll interval in milliseconds
-	CopytradeMaxSlippagePct           float64 // Legacy field name; interpreted as absolute copytrade slippage allowance in cents
-	CopytradeSizingMode               string  // "usdc" or "shares" for copytrade entries
-	CopytradeSizeUSDC                 float64 // Fixed per-trade USDC budget when copytrade mode uses USDC sizing
-	CopytradeSizeShares               float64 // Fixed share cap per trade when copytrade mode uses share sizing
-	CopytradeSizePercent              float64 // Percent of the target/master trade size when copytrade mode uses percent sizing
-	LadderedTakerSizingMode           string  // "usdc" or "shares" for laddered paired taker entries
-	LadderedTakerSizeUSDC             float64 // Fixed per-entry USDC budget when laddered taker uses USDC sizing
-	LadderedTakerSizeShares           float64 // Fixed paired-share size per entry when laddered taker uses share sizing
-	LadderedTakerReentryMoveCents     float64 // Minimum quote movement (in cents) required before the next laddered entry
-	LadderedTakerMaxSlippagePct       float64 // Maximum slippage allowed for laddered taker orders (in cents)
-	BinanceQuoteAsset                 string  // Futures quote asset suffix used to build symbols, e.g. USDT
-	BinanceSignalThresholdPct         float64 // Percent move over the lookback window required to trigger entry
-	PaperBinanceExecutionDelayMs      int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
-	BinanceSignalLookbackMs           int     // Lookback window for Binance directional signal in milliseconds
-	BinanceSignalCooldownMs           int     // Cooldown between Binance-triggered entries in milliseconds
-	BinanceSignalMaxAgeMs             int     // Max allowed Binance signal staleness in milliseconds
-	BinanceSignalPolyMaxMoveCents     float64 // Max Polymarket catch-up on the signaled side before entry is skipped
-	BinanceSignalPolyAdverseMoveCents float64 // Max Polymarket wrong-way move allowed before entry is skipped
-	BinanceSignalSpreadMaxCents       float64 // Max Polymarket target-side spread allowed for Binance gap entries
-	StartupWizardSeen                 bool    // Whether the themed startup wizard has been completed
+	SplitStrategyEnabled               bool    // Enable split strategy (default: false)
+	SplitMinMarginSell                 float64 // Minimum margin to trigger sell (default: 3%)
+	SplitTargetMarginReserve           float64 // Maintain inventory for this margin level (default: 6%)
+	SplitReplenishThreshold            float64 // Trigger new split when shares fall below this (default: 50)
+	SplitMergeBufferSeconds            int     // Seconds before expiry to merge unsold shares (default: 30)
+	MakerMergeBufferSeconds            int     // Seconds before expiry to merge paired maker inventory (default: 30)
+	MakerQuoteGap                      float64 // Distance from mid for maker quotes (default: 0.008)
+	MakerInventoryTargetMult           float64 // Target multiplier for inventory skew (default: 3.0)
+	MakerInventoryCapMult              float64 // Cap multiplier for inventory skew (default: 5.0)
+	MakerMinQuoteValue                 float64 // Minimum shares to quote (default: 10.0)
+	SplitInitialCapPct                 float64 // Initial Split Cap (default: 0.25)
+	SplitReplenishCapPct               float64 // Replenishment Cap (default: 0.50)
+	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only"
+	TakerCloseMarket                   bool    // Force GTC buy right before market closes
+	BlockNewEntriesOnPendingRedemption bool    // Block fresh entries while prior-round inventory/payout is still unresolved
+	TakerCloseMarketTime               int     // Seconds before close to trigger (default: 5)
+	TakerCloseMarketSlippage           float64 // Limit price for taker close (default: 0.99)
+	TakerCloseMarketMinPrice           float64 // Min price to trigger close buy (default: 0.60)
+	CopytradeTarget                    string  // Wallet address, profile handle, or profile URL to follow
+	CopytradePollIntervalMs            int     // Copytrade public-wallet poll interval in milliseconds
+	CopytradeMaxSlippagePct            float64 // Legacy field name; interpreted as absolute copytrade slippage allowance in cents
+	CopytradeSizingMode                string  // "usdc" or "shares" for copytrade entries
+	CopytradeSizeUSDC                  float64 // Fixed per-trade USDC budget when copytrade mode uses USDC sizing
+	CopytradeSizeShares                float64 // Fixed share cap per trade when copytrade mode uses share sizing
+	CopytradeSizePercent               float64 // Percent of the target/master trade size when copytrade mode uses percent sizing
+	LadderedTakerSizingMode            string  // "usdc" or "shares" for laddered paired taker entries
+	LadderedTakerSizeUSDC              float64 // Fixed per-entry USDC budget when laddered taker uses USDC sizing
+	LadderedTakerSizeShares            float64 // Fixed paired-share size per entry when laddered taker uses share sizing
+	LadderedTakerReentryMoveCents      float64 // Minimum quote movement (in cents) required before the next laddered entry
+	LadderedTakerMaxSlippagePct        float64 // Maximum slippage allowed for laddered taker orders (in cents)
+	BinanceQuoteAsset                  string  // Futures quote asset suffix used to build symbols, e.g. USDT
+	BinanceSignalThresholdPct          float64 // Percent move over the lookback window required to trigger entry
+	PaperBinanceExecutionDelayMs       int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
+	BinanceSignalLookbackMs            int     // Lookback window for Binance directional signal in milliseconds
+	BinanceSignalCooldownMs            int     // Cooldown between Binance-triggered entries in milliseconds
+	BinanceSignalMaxAgeMs              int     // Max allowed Binance signal staleness in milliseconds
+	BinanceSignalPolyMaxMoveCents      float64 // Max Polymarket catch-up on the signaled side before entry is skipped
+	BinanceSignalPolyAdverseMoveCents  float64 // Max Polymarket wrong-way move allowed before entry is skipped
+	BinanceSignalSpreadMaxCents        float64 // Max Polymarket target-side spread allowed for Binance gap entries
+	StartupWizardSeen                  bool    // Whether the themed startup wizard has been completed
 
 	settingsProfile string
 	settingsPath    string
 }
 
 type RuntimeSettings struct {
-	Exchange                          string  `json:"exchange"`
-	MarketSlug                        string  `json:"marketSlug"`
-	Timeframe                         string  `json:"timeframe"`
-	MaxMarkets                        int     `json:"maxMarkets"`
-	BaseBalance                       float64 `json:"baseBalance"`
-	BaseTradeSize                     float64 `json:"baseTradeSize"`
-	PaperBalance                      float64 `json:"paperBalance"`
-	MinMarginPercent                  float64 `json:"minMarginPercent"`
-	TradeScaleFactor                  float64 `json:"tradeScaleFactor"`
-	TradeSizingMode                   string  `json:"tradeSizingMode"`
-	TradeSizeUSDC                     float64 `json:"tradeSizeUsdc"`
-	FeeRateBps                        int     `json:"feeRateBps"`
-	MaxTradeSize                      float64 `json:"maxTradeSize"`
-	MaxDailyLoss                      float64 `json:"maxDailyLoss"`
-	RequireConfirm                    bool    `json:"requireConfirm"`
-	EnableCSVLogger                   bool    `json:"enableCsvLogger"`
-	EnableRawAPILog                   bool    `json:"enableRawApiLog"`
-	ExecutionLocalQuoteMaxAgeMs       int     `json:"executionLocalQuoteMaxAgeMs"`
-	RestFallbackQuoteAgeMs            int     `json:"restFallbackQuoteAgeMs"`
-	RestFallbackPollIntervalMs        int     `json:"restFallbackPollIntervalMs"`
-	EnableMarginAggression            bool    `json:"enableMarginAggression"`
-	MaxAggressionMultiplier           float64 `json:"maxAggressionMultiplier"`
-	MinAskPrice                       float64 `json:"minAskPrice"`
-	MaxAskPrice                       float64 `json:"maxAskPrice"`
-	PaperArbMode                      string  `json:"paperArbMode"`
-	BuyExecutionMarginFloorPercent    float64 `json:"buyExecutionMarginFloorPercent"`
-	SplitStrategyEnabled              bool    `json:"splitStrategyEnabled"`
-	SplitMinMarginSell                float64 `json:"splitMinMarginSell"`
-	SplitTargetMarginReserve          float64 `json:"splitTargetMarginReserve"`
-	SplitReplenishThreshold           float64 `json:"splitReplenishThreshold"`
-	SplitMergeBufferSeconds           int     `json:"splitMergeBufferSeconds"`
-	MakerMergeBufferSeconds           int     `json:"makerMergeBufferSeconds"`
-	MakerQuoteGap                     float64 `json:"makerQuoteGap"`
-	MakerInventoryTargetMult          float64 `json:"makerInventoryTargetMult"`
-	MakerInventoryCapMult             float64 `json:"makerInventoryCapMult"`
-	MakerMinQuoteValue                float64 `json:"makerMinQuoteValue"`
-	SplitInitialCapPct                float64 `json:"splitInitialCapPct"`
-	SplitReplenishCapPct              float64 `json:"splitReplenishCapPct"`
-	TradingHoursMode                  string  `json:"tradingHoursMode"`
-	TakerCloseMarket                  bool    `json:"takerCloseMarket"`
-	TakerCloseMarketTime              int     `json:"takerCloseMarketTime"`
-	TakerCloseMarketSlippage          float64 `json:"takerCloseMarketSlippage"`
-	TakerCloseMarketMinPrice          float64 `json:"takerCloseMarketMinPrice"`
-	CopytradeTarget                   string  `json:"copytradeTarget"`
-	CopytradePollIntervalMs           int     `json:"copytradePollIntervalMs"`
-	CopytradeMaxSlippagePct           float64 `json:"copytradeMaxSlippagePct"`
-	CopytradeSizingMode               string  `json:"copytradeSizingMode"`
-	CopytradeSizeUSDC                 float64 `json:"copytradeSizeUsdc"`
-	CopytradeSizeShares               float64 `json:"copytradeSizeShares"`
-	CopytradeSizePercent              float64 `json:"copytradeSizePercent"`
-	LadderedTakerSizingMode           string  `json:"ladderedTakerSizingMode"`
-	LadderedTakerSizeUSDC             float64 `json:"ladderedTakerSizeUsdc"`
-	LadderedTakerSizeShares           float64 `json:"ladderedTakerSizeShares"`
-	LadderedTakerReentryMoveCents     float64 `json:"ladderedTakerReentryMoveCents"`
-	LadderedTakerMaxSlippagePct       float64 `json:"ladderedTakerMaxSlippagePct"`
-	BinanceQuoteAsset                 string  `json:"binanceQuoteAsset"`
-	BinanceSignalThresholdPct         float64 `json:"binanceSignalThresholdPct"`
-	PaperBinanceExecutionDelayMs      int     `json:"paperBinanceExecutionDelayMs"`
-	BinanceSignalLookbackMs           int     `json:"binanceSignalLookbackMs"`
-	BinanceSignalCooldownMs           int     `json:"binanceSignalCooldownMs"`
-	BinanceSignalMaxAgeMs             int     `json:"binanceSignalMaxAgeMs"`
-	BinanceSignalPolyMaxMoveCents     float64 `json:"binanceSignalPolyMaxMoveCents"`
-	BinanceSignalPolyAdverseMoveCents float64 `json:"binanceSignalPolyAdverseMoveCents"`
-	BinanceSignalSpreadMaxCents       float64 `json:"binanceSignalSpreadMaxCents"`
-	StartupWizardSeen                 bool    `json:"startupWizardSeen"`
+	Exchange                           string  `json:"exchange"`
+	MarketSlug                         string  `json:"marketSlug"`
+	Timeframe                          string  `json:"timeframe"`
+	MaxMarkets                         int     `json:"maxMarkets"`
+	BaseBalance                        float64 `json:"baseBalance"`
+	BaseTradeSize                      float64 `json:"baseTradeSize"`
+	PaperBalance                       float64 `json:"paperBalance"`
+	MinMarginPercent                   float64 `json:"minMarginPercent"`
+	TradeScaleFactor                   float64 `json:"tradeScaleFactor"`
+	TradeSizingMode                    string  `json:"tradeSizingMode"`
+	TradeSizeUSDC                      float64 `json:"tradeSizeUsdc"`
+	FeeRateBps                         int     `json:"feeRateBps"`
+	MaxTradeSize                       float64 `json:"maxTradeSize"`
+	MaxDailyLoss                       float64 `json:"maxDailyLoss"`
+	RequireConfirm                     bool    `json:"requireConfirm"`
+	EnableCSVLogger                    bool    `json:"enableCsvLogger"`
+	EnableRawAPILog                    bool    `json:"enableRawApiLog"`
+	ExecutionLocalQuoteMaxAgeMs        int     `json:"executionLocalQuoteMaxAgeMs"`
+	RestFallbackQuoteAgeMs             int     `json:"restFallbackQuoteAgeMs"`
+	RestFallbackPollIntervalMs         int     `json:"restFallbackPollIntervalMs"`
+	EnableMarginAggression             bool    `json:"enableMarginAggression"`
+	MaxAggressionMultiplier            float64 `json:"maxAggressionMultiplier"`
+	MinAskPrice                        float64 `json:"minAskPrice"`
+	MaxAskPrice                        float64 `json:"maxAskPrice"`
+	PaperArbMode                       string  `json:"paperArbMode"`
+	BuyExecutionMarginFloorPercent     float64 `json:"buyExecutionMarginFloorPercent"`
+	SplitStrategyEnabled               bool    `json:"splitStrategyEnabled"`
+	SplitMinMarginSell                 float64 `json:"splitMinMarginSell"`
+	SplitTargetMarginReserve           float64 `json:"splitTargetMarginReserve"`
+	SplitReplenishThreshold            float64 `json:"splitReplenishThreshold"`
+	SplitMergeBufferSeconds            int     `json:"splitMergeBufferSeconds"`
+	MakerMergeBufferSeconds            int     `json:"makerMergeBufferSeconds"`
+	MakerQuoteGap                      float64 `json:"makerQuoteGap"`
+	MakerInventoryTargetMult           float64 `json:"makerInventoryTargetMult"`
+	MakerInventoryCapMult              float64 `json:"makerInventoryCapMult"`
+	MakerMinQuoteValue                 float64 `json:"makerMinQuoteValue"`
+	SplitInitialCapPct                 float64 `json:"splitInitialCapPct"`
+	SplitReplenishCapPct               float64 `json:"splitReplenishCapPct"`
+	TradingHoursMode                   string  `json:"tradingHoursMode"`
+	TakerCloseMarket                   bool    `json:"takerCloseMarket"`
+	BlockNewEntriesOnPendingRedemption bool    `json:"blockNewEntriesOnPendingRedemption"`
+	TakerCloseMarketTime               int     `json:"takerCloseMarketTime"`
+	TakerCloseMarketSlippage           float64 `json:"takerCloseMarketSlippage"`
+	TakerCloseMarketMinPrice           float64 `json:"takerCloseMarketMinPrice"`
+	CopytradeTarget                    string  `json:"copytradeTarget"`
+	CopytradePollIntervalMs            int     `json:"copytradePollIntervalMs"`
+	CopytradeMaxSlippagePct            float64 `json:"copytradeMaxSlippagePct"`
+	CopytradeSizingMode                string  `json:"copytradeSizingMode"`
+	CopytradeSizeUSDC                  float64 `json:"copytradeSizeUsdc"`
+	CopytradeSizeShares                float64 `json:"copytradeSizeShares"`
+	CopytradeSizePercent               float64 `json:"copytradeSizePercent"`
+	LadderedTakerSizingMode            string  `json:"ladderedTakerSizingMode"`
+	LadderedTakerSizeUSDC              float64 `json:"ladderedTakerSizeUsdc"`
+	LadderedTakerSizeShares            float64 `json:"ladderedTakerSizeShares"`
+	LadderedTakerReentryMoveCents      float64 `json:"ladderedTakerReentryMoveCents"`
+	LadderedTakerMaxSlippagePct        float64 `json:"ladderedTakerMaxSlippagePct"`
+	BinanceQuoteAsset                  string  `json:"binanceQuoteAsset"`
+	BinanceSignalThresholdPct          float64 `json:"binanceSignalThresholdPct"`
+	PaperBinanceExecutionDelayMs       int     `json:"paperBinanceExecutionDelayMs"`
+	BinanceSignalLookbackMs            int     `json:"binanceSignalLookbackMs"`
+	BinanceSignalCooldownMs            int     `json:"binanceSignalCooldownMs"`
+	BinanceSignalMaxAgeMs              int     `json:"binanceSignalMaxAgeMs"`
+	BinanceSignalPolyMaxMoveCents      float64 `json:"binanceSignalPolyMaxMoveCents"`
+	BinanceSignalPolyAdverseMoveCents  float64 `json:"binanceSignalPolyAdverseMoveCents"`
+	BinanceSignalSpreadMaxCents        float64 `json:"binanceSignalSpreadMaxCents"`
+	StartupWizardSeen                  bool    `json:"startupWizardSeen"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -270,40 +272,41 @@ func LoadConfig() (*Config, error) {
 		}(),
 		BuyExecutionMarginFloorPercent: parseEnvFloat("BUY_EXECUTION_MARGIN_FLOOR_PERCENT", -1.0),
 		// Split strategy settings (panic sell)
-		SplitStrategyEnabled:              os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
-		SplitMinMarginSell:                parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
-		SplitTargetMarginReserve:          parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
-		SplitReplenishThreshold:           parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
-		SplitMergeBufferSeconds:           parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
-		MakerMergeBufferSeconds:           parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
-		MakerQuoteGap:                     parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
-		MakerInventoryTargetMult:          parseEnvFloat("MAKER_INVENTORY_TARGET_MULT", 3.0),
-		MakerInventoryCapMult:             parseEnvFloat("MAKER_INVENTORY_CAP_MULT", 5.0),
-		MakerMinQuoteValue:                parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
-		SplitInitialCapPct:                parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
-		SplitReplenishCapPct:              parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
-		TradingHoursMode:                  parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
-		CopytradeTarget:                   strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
-		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
-		CopytradeMaxSlippagePct:           normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
-		CopytradeSizingMode:               normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
-		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(parseEnvFloat("COPYTRADE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
-		CopytradeSizeShares:               normalizeCopytradeSizeShares(parseEnvFloat("COPYTRADE_SIZE_SHARES", 1.0)),
-		CopytradeSizePercent:              normalizeCopytradeSizePercent(parseEnvFloat("COPYTRADE_SIZE_PERCENT", 100.0)),
-		LadderedTakerSizingMode:           normalizeLadderedTakerSizingMode(parseEnvString("LADDERED_TAKER_SIZING_MODE", LadderedTakerSizingModeUSDC)),
-		LadderedTakerSizeUSDC:             normalizeLadderedTakerSizeUSDC(parseEnvFloat("LADDERED_TAKER_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
-		LadderedTakerSizeShares:           normalizeLadderedTakerSizeShares(parseEnvFloat("LADDERED_TAKER_SIZE_SHARES", 1.0)),
-		LadderedTakerReentryMoveCents:     normalizeLadderedTakerReentryMoveCents(parseEnvFloat("LADDERED_TAKER_REENTRY_MOVE_CENTS", 1.0)),
-		LadderedTakerMaxSlippagePct:       normalizeLadderedTakerMaxSlippagePct(parseEnvFloat("LADDERED_TAKER_MAX_SLIPPAGE_PCT", 1.0)),
-		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
-		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
-		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
-		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(parseEnvInt("BINANCE_SIGNAL_LOOKBACK_MS", 1500)),
-		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(parseEnvInt("BINANCE_SIGNAL_COOLDOWN_MS", 2500)),
-		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(parseEnvInt("BINANCE_SIGNAL_MAX_AGE_MS", 3000)),
-		BinanceSignalPolyMaxMoveCents:     normalizeBinanceSignalPolyMaxMoveCents(parseEnvFloat("BINANCE_SIGNAL_POLY_MAX_MOVE_CENTS", 1.5)),
-		BinanceSignalPolyAdverseMoveCents: normalizeBinanceSignalPolyAdverseMoveCents(parseEnvFloat("BINANCE_SIGNAL_POLY_ADVERSE_MOVE_CENTS", 0.75)),
-		BinanceSignalSpreadMaxCents:       normalizeBinanceSignalSpreadMaxCents(parseEnvFloat("BINANCE_SIGNAL_SPREAD_MAX_CENTS", 4.0)),
+		SplitStrategyEnabled:               os.Getenv("SPLIT_STRATEGY_ENABLED") == "true",
+		SplitMinMarginSell:                 parseEnvFloat("SPLIT_MIN_MARGIN_SELL", 3.0),
+		SplitTargetMarginReserve:           parseEnvFloat("SPLIT_TARGET_MARGIN_RESERVE", 6.0),
+		SplitReplenishThreshold:            parseEnvFloat("SPLIT_REPLENISH_THRESHOLD", 50.0),
+		SplitMergeBufferSeconds:            parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30),
+		MakerMergeBufferSeconds:            parseEnvInt("MAKER_MERGE_BUFFER_SECONDS", parseEnvInt("SPLIT_MERGE_BUFFER_SECONDS", 30)),
+		MakerQuoteGap:                      parseEnvFloat("MAKER_QUOTE_GAP", 0.008),
+		MakerInventoryTargetMult:           parseEnvFloat("MAKER_INVENTORY_TARGET_MULT", 3.0),
+		MakerInventoryCapMult:              parseEnvFloat("MAKER_INVENTORY_CAP_MULT", 5.0),
+		MakerMinQuoteValue:                 parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
+		SplitInitialCapPct:                 parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
+		SplitReplenishCapPct:               parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
+		TradingHoursMode:                   parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
+		CopytradeTarget:                    strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
+		BlockNewEntriesOnPendingRedemption: os.Getenv("BLOCK_NEW_ENTRIES_ON_PENDING_REDEMPTION") == "true",
+		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
+		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
+		CopytradeSizingMode:                normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
+		CopytradeSizeUSDC:                  normalizeCopytradeSizeUSDC(parseEnvFloat("COPYTRADE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
+		CopytradeSizeShares:                normalizeCopytradeSizeShares(parseEnvFloat("COPYTRADE_SIZE_SHARES", 1.0)),
+		CopytradeSizePercent:               normalizeCopytradeSizePercent(parseEnvFloat("COPYTRADE_SIZE_PERCENT", 100.0)),
+		LadderedTakerSizingMode:            normalizeLadderedTakerSizingMode(parseEnvString("LADDERED_TAKER_SIZING_MODE", LadderedTakerSizingModeUSDC)),
+		LadderedTakerSizeUSDC:              normalizeLadderedTakerSizeUSDC(parseEnvFloat("LADDERED_TAKER_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
+		LadderedTakerSizeShares:            normalizeLadderedTakerSizeShares(parseEnvFloat("LADDERED_TAKER_SIZE_SHARES", 1.0)),
+		LadderedTakerReentryMoveCents:      normalizeLadderedTakerReentryMoveCents(parseEnvFloat("LADDERED_TAKER_REENTRY_MOVE_CENTS", 1.0)),
+		LadderedTakerMaxSlippagePct:        normalizeLadderedTakerMaxSlippagePct(parseEnvFloat("LADDERED_TAKER_MAX_SLIPPAGE_PCT", 1.0)),
+		BinanceQuoteAsset:                  normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
+		BinanceSignalThresholdPct:          normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
+		PaperBinanceExecutionDelayMs:       normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
+		BinanceSignalLookbackMs:            normalizeBinanceSignalLookbackMs(parseEnvInt("BINANCE_SIGNAL_LOOKBACK_MS", 1500)),
+		BinanceSignalCooldownMs:            normalizeBinanceSignalCooldownMs(parseEnvInt("BINANCE_SIGNAL_COOLDOWN_MS", 2500)),
+		BinanceSignalMaxAgeMs:              normalizeBinanceSignalMaxAgeMs(parseEnvInt("BINANCE_SIGNAL_MAX_AGE_MS", 3000)),
+		BinanceSignalPolyMaxMoveCents:      normalizeBinanceSignalPolyMaxMoveCents(parseEnvFloat("BINANCE_SIGNAL_POLY_MAX_MOVE_CENTS", 1.5)),
+		BinanceSignalPolyAdverseMoveCents:  normalizeBinanceSignalPolyAdverseMoveCents(parseEnvFloat("BINANCE_SIGNAL_POLY_ADVERSE_MOVE_CENTS", 0.75)),
+		BinanceSignalSpreadMaxCents:        normalizeBinanceSignalSpreadMaxCents(parseEnvFloat("BINANCE_SIGNAL_SPREAD_MAX_CENTS", 4.0)),
 	}
 
 	return cfg, nil
@@ -685,71 +688,72 @@ func parseEnvString(key string, defaultVal string) string {
 
 func (c *Config) runtimeSettings() RuntimeSettings {
 	return RuntimeSettings{
-		Exchange:                          c.Exchange,
-		MarketSlug:                        c.MarketSlug,
-		Timeframe:                         c.Timeframe,
-		MaxMarkets:                        c.MaxMarkets,
-		BaseBalance:                       c.BaseBalance,
-		BaseTradeSize:                     c.BaseTradeSize,
-		PaperBalance:                      normalizePaperBalance(c.PaperBalance),
-		MinMarginPercent:                  c.MinMarginPercent,
-		TradeScaleFactor:                  c.TradeScaleFactor,
-		TradeSizingMode:                   normalizeTradeSizingMode(c.TradeSizingMode),
-		TradeSizeUSDC:                     normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC),
-		FeeRateBps:                        c.FeeRateBps,
-		MaxTradeSize:                      c.MaxTradeSize,
-		MaxDailyLoss:                      c.MaxDailyLoss,
-		RequireConfirm:                    c.RequireConfirm,
-		EnableCSVLogger:                   c.EnableCSVLogger,
-		EnableRawAPILog:                   c.EnableRawAPILog,
-		ExecutionLocalQuoteMaxAgeMs:       c.ExecutionLocalQuoteMaxAgeMs,
-		RestFallbackQuoteAgeMs:            c.RestFallbackQuoteAgeMs,
-		RestFallbackPollIntervalMs:        c.RestFallbackPollIntervalMs,
-		EnableMarginAggression:            c.EnableMarginAggression,
-		MaxAggressionMultiplier:           c.MaxAggressionMultiplier,
-		MinAskPrice:                       c.MinAskPrice,
-		MaxAskPrice:                       c.MaxAskPrice,
-		PaperArbMode:                      c.PaperArbMode,
-		BuyExecutionMarginFloorPercent:    c.BuyExecutionMarginFloorPercent,
-		SplitStrategyEnabled:              c.SplitStrategyEnabled,
-		SplitMinMarginSell:                c.SplitMinMarginSell,
-		SplitTargetMarginReserve:          c.SplitTargetMarginReserve,
-		SplitReplenishThreshold:           c.SplitReplenishThreshold,
-		SplitMergeBufferSeconds:           c.SplitMergeBufferSeconds,
-		MakerMergeBufferSeconds:           c.MakerMergeBufferSeconds,
-		MakerQuoteGap:                     c.MakerQuoteGap,
-		MakerInventoryTargetMult:          c.MakerInventoryTargetMult,
-		MakerInventoryCapMult:             c.MakerInventoryCapMult,
-		MakerMinQuoteValue:                c.MakerMinQuoteValue,
-		SplitInitialCapPct:                c.SplitInitialCapPct,
-		SplitReplenishCapPct:              c.SplitReplenishCapPct,
-		TradingHoursMode:                  c.TradingHoursMode,
-		TakerCloseMarket:                  c.TakerCloseMarket,
-		TakerCloseMarketTime:              c.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:          c.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:          c.TakerCloseMarketMinPrice,
-		CopytradeTarget:                   strings.TrimSpace(c.CopytradeTarget),
-		CopytradePollIntervalMs:           normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
-		CopytradeMaxSlippagePct:           normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct),
-		CopytradeSizingMode:               normalizeCopytradeSizingMode(c.CopytradeSizingMode),
-		CopytradeSizeUSDC:                 normalizeCopytradeSizeUSDC(c.CopytradeSizeUSDC),
-		CopytradeSizeShares:               normalizeCopytradeSizeShares(c.CopytradeSizeShares),
-		CopytradeSizePercent:              normalizeCopytradeSizePercent(c.CopytradeSizePercent),
-		LadderedTakerSizingMode:           normalizeLadderedTakerSizingMode(c.LadderedTakerSizingMode),
-		LadderedTakerSizeUSDC:             normalizeLadderedTakerSizeUSDC(c.LadderedTakerSizeUSDC),
-		LadderedTakerSizeShares:           normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares),
-		LadderedTakerReentryMoveCents:     normalizeLadderedTakerReentryMoveCents(c.LadderedTakerReentryMoveCents),
-		LadderedTakerMaxSlippagePct:       normalizeLadderedTakerMaxSlippagePct(c.LadderedTakerMaxSlippagePct),
-		BinanceQuoteAsset:                 normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
-		BinanceSignalThresholdPct:         normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
-		PaperBinanceExecutionDelayMs:      normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
-		BinanceSignalLookbackMs:           normalizeBinanceSignalLookbackMs(c.BinanceSignalLookbackMs),
-		BinanceSignalCooldownMs:           normalizeBinanceSignalCooldownMs(c.BinanceSignalCooldownMs),
-		BinanceSignalMaxAgeMs:             normalizeBinanceSignalMaxAgeMs(c.BinanceSignalMaxAgeMs),
-		BinanceSignalPolyMaxMoveCents:     normalizeBinanceSignalPolyMaxMoveCents(c.BinanceSignalPolyMaxMoveCents),
-		BinanceSignalPolyAdverseMoveCents: normalizeBinanceSignalPolyAdverseMoveCents(c.BinanceSignalPolyAdverseMoveCents),
-		BinanceSignalSpreadMaxCents:       normalizeBinanceSignalSpreadMaxCents(c.BinanceSignalSpreadMaxCents),
-		StartupWizardSeen:                 c.StartupWizardSeen,
+		Exchange:                           c.Exchange,
+		MarketSlug:                         c.MarketSlug,
+		Timeframe:                          c.Timeframe,
+		MaxMarkets:                         c.MaxMarkets,
+		BaseBalance:                        c.BaseBalance,
+		BaseTradeSize:                      c.BaseTradeSize,
+		PaperBalance:                       normalizePaperBalance(c.PaperBalance),
+		MinMarginPercent:                   c.MinMarginPercent,
+		TradeScaleFactor:                   c.TradeScaleFactor,
+		TradeSizingMode:                    normalizeTradeSizingMode(c.TradeSizingMode),
+		TradeSizeUSDC:                      normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC),
+		FeeRateBps:                         c.FeeRateBps,
+		MaxTradeSize:                       c.MaxTradeSize,
+		MaxDailyLoss:                       c.MaxDailyLoss,
+		RequireConfirm:                     c.RequireConfirm,
+		EnableCSVLogger:                    c.EnableCSVLogger,
+		EnableRawAPILog:                    c.EnableRawAPILog,
+		ExecutionLocalQuoteMaxAgeMs:        c.ExecutionLocalQuoteMaxAgeMs,
+		RestFallbackQuoteAgeMs:             c.RestFallbackQuoteAgeMs,
+		RestFallbackPollIntervalMs:         c.RestFallbackPollIntervalMs,
+		EnableMarginAggression:             c.EnableMarginAggression,
+		MaxAggressionMultiplier:            c.MaxAggressionMultiplier,
+		MinAskPrice:                        c.MinAskPrice,
+		MaxAskPrice:                        c.MaxAskPrice,
+		PaperArbMode:                       c.PaperArbMode,
+		BuyExecutionMarginFloorPercent:     c.BuyExecutionMarginFloorPercent,
+		SplitStrategyEnabled:               c.SplitStrategyEnabled,
+		SplitMinMarginSell:                 c.SplitMinMarginSell,
+		SplitTargetMarginReserve:           c.SplitTargetMarginReserve,
+		SplitReplenishThreshold:            c.SplitReplenishThreshold,
+		SplitMergeBufferSeconds:            c.SplitMergeBufferSeconds,
+		MakerMergeBufferSeconds:            c.MakerMergeBufferSeconds,
+		MakerQuoteGap:                      c.MakerQuoteGap,
+		MakerInventoryTargetMult:           c.MakerInventoryTargetMult,
+		MakerInventoryCapMult:              c.MakerInventoryCapMult,
+		MakerMinQuoteValue:                 c.MakerMinQuoteValue,
+		SplitInitialCapPct:                 c.SplitInitialCapPct,
+		SplitReplenishCapPct:               c.SplitReplenishCapPct,
+		TradingHoursMode:                   c.TradingHoursMode,
+		TakerCloseMarket:                   c.TakerCloseMarket,
+		BlockNewEntriesOnPendingRedemption: c.BlockNewEntriesOnPendingRedemption,
+		TakerCloseMarketTime:               c.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:           c.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:           c.TakerCloseMarketMinPrice,
+		CopytradeTarget:                    strings.TrimSpace(c.CopytradeTarget),
+		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
+		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct),
+		CopytradeSizingMode:                normalizeCopytradeSizingMode(c.CopytradeSizingMode),
+		CopytradeSizeUSDC:                  normalizeCopytradeSizeUSDC(c.CopytradeSizeUSDC),
+		CopytradeSizeShares:                normalizeCopytradeSizeShares(c.CopytradeSizeShares),
+		CopytradeSizePercent:               normalizeCopytradeSizePercent(c.CopytradeSizePercent),
+		LadderedTakerSizingMode:            normalizeLadderedTakerSizingMode(c.LadderedTakerSizingMode),
+		LadderedTakerSizeUSDC:              normalizeLadderedTakerSizeUSDC(c.LadderedTakerSizeUSDC),
+		LadderedTakerSizeShares:            normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares),
+		LadderedTakerReentryMoveCents:      normalizeLadderedTakerReentryMoveCents(c.LadderedTakerReentryMoveCents),
+		LadderedTakerMaxSlippagePct:        normalizeLadderedTakerMaxSlippagePct(c.LadderedTakerMaxSlippagePct),
+		BinanceQuoteAsset:                  normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
+		BinanceSignalThresholdPct:          normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
+		PaperBinanceExecutionDelayMs:       normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
+		BinanceSignalLookbackMs:            normalizeBinanceSignalLookbackMs(c.BinanceSignalLookbackMs),
+		BinanceSignalCooldownMs:            normalizeBinanceSignalCooldownMs(c.BinanceSignalCooldownMs),
+		BinanceSignalMaxAgeMs:              normalizeBinanceSignalMaxAgeMs(c.BinanceSignalMaxAgeMs),
+		BinanceSignalPolyMaxMoveCents:      normalizeBinanceSignalPolyMaxMoveCents(c.BinanceSignalPolyMaxMoveCents),
+		BinanceSignalPolyAdverseMoveCents:  normalizeBinanceSignalPolyAdverseMoveCents(c.BinanceSignalPolyAdverseMoveCents),
+		BinanceSignalSpreadMaxCents:        normalizeBinanceSignalSpreadMaxCents(c.BinanceSignalSpreadMaxCents),
+		StartupWizardSeen:                  c.StartupWizardSeen,
 	}
 }
 
@@ -796,6 +800,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.SplitReplenishCapPct = s.SplitReplenishCapPct
 	c.TradingHoursMode = s.TradingHoursMode
 	c.TakerCloseMarket = s.TakerCloseMarket
+	c.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
@@ -1100,4 +1105,3 @@ func ResolvePaperBinanceExecutionDelay(cfg *Config) time.Duration {
 	}
 	return time.Duration(normalizePaperBinanceExecutionDelayMs(250)) * time.Millisecond
 }
-

@@ -36,7 +36,9 @@ func TestRealbotEnsureFreshSellExecutionQuoteUsesLocalQuoteWithinConfiguredAge(t
 		tokenFullBids,
 		tokenFullAsks,
 		quoteState,
+		time.Now().Add(-500*time.Millisecond),
 		core.ResolveExecutionLocalQuoteMaxAge(&core.Config{ExecutionLocalQuoteMaxAgeMs: 750}),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("expected local quote to be accepted without REST refresh: %v", err)

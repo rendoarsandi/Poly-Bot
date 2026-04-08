@@ -323,6 +323,47 @@ func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISetting
 	return sizing
 }
 
+func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
+	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil {
+		return "", false
+	}
+
+	currentMarketID = strings.TrimSpace(currentMarketID)
+	for _, pos := range engine.GetPositions() {
+		if pos.Quantity <= minOnChainActionShares {
+			continue
+		}
+		if strings.TrimSpace(pos.MarketID) == "" || strings.EqualFold(strings.TrimSpace(pos.MarketID), currentMarketID) {
+			continue
+		}
+		return fmt.Sprintf("prior-round inventory %s %s still open (%.4f shares)", pos.MarketID, pos.Outcome, pos.Quantity), true
+	}
+
+	if splitInventory != nil {
+		for _, pos := range splitInventory.GetAllPositions() {
+			if pos.Shares <= minOnChainActionShares {
+				continue
+			}
+			if strings.TrimSpace(pos.MarketID) == "" || strings.EqualFold(strings.TrimSpace(pos.MarketID), currentMarketID) {
+				continue
+			}
+			return fmt.Sprintf("prior-round split inventory %s %s still open (%.4f shares)", pos.MarketID, pos.Outcome, pos.Shares), true
+		}
+	}
+
+	for marketID, payout := range engine.GetPendingRedemptions() {
+		if payout <= 0.000001 {
+			continue
+		}
+		if strings.TrimSpace(marketID) == "" || strings.EqualFold(strings.TrimSpace(marketID), currentMarketID) {
+			continue
+		}
+		return fmt.Sprintf("prior-round payout %s still pending redemption ($%.2f)", marketID, payout), true
+	}
+
+	return "", false
+}
+
 func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]float64) (string, float64) {
 	bestOutcome := ""
 	highestPrice := 0.0
@@ -552,7 +593,7 @@ func realbotClampSingleBuySharesToBudget(requestedShares, budget, limitPrice flo
 	return 0
 }
 
-func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, string) {
+func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, lastPairUpdate time.Time, maxAge time.Duration) (bool, string) {
 	ask := tokenAsks[outcome]
 	if ask <= 0 || ask >= 1.0 {
 		return false, fmt.Sprintf("missing local ask for %s", outcome)
@@ -560,13 +601,9 @@ func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenB
 	if len(tokenFullAsks[outcome]) == 0 {
 		return false, fmt.Sprintf("missing local ask depth for %s", outcome)
 	}
-	state, ok := quoteState[outcome]
-	if !ok || state.UpdatedAt.IsZero() {
-		return false, fmt.Sprintf("missing quote timestamp for %s", outcome)
-	}
-	age := now.Sub(state.UpdatedAt)
+	age := realbotPairQuoteAge(lastPairUpdate, now)
 	if age > maxAge {
-		return false, fmt.Sprintf("%s buy quote age %s > %s", outcome, age.Round(time.Millisecond), maxAge)
+		return false, fmt.Sprintf("pair quote age %s > %s", age.Round(time.Millisecond), maxAge)
 	}
 	bid := tokenBids[outcome]
 	if bid > 0 && !realbotHasSaneTopOfBook(bid, ask) {
@@ -575,7 +612,7 @@ func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenB
 	return true, ""
 }
 
-func realbotCanUseLocalDirectionalSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, string) {
+func realbotCanUseLocalDirectionalSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, lastPairUpdate time.Time, maxAge time.Duration) (bool, string) {
 	bid := tokenBids[outcome]
 	if bid <= 0 || bid >= 1.0 {
 		return false, fmt.Sprintf("missing local bid for %s", outcome)
@@ -583,13 +620,9 @@ func realbotCanUseLocalDirectionalSellQuote(now time.Time, outcome string, token
 	if len(tokenFullBids[outcome]) == 0 {
 		return false, fmt.Sprintf("missing local bid depth for %s", outcome)
 	}
-	state, ok := quoteState[outcome]
-	if !ok || state.UpdatedAt.IsZero() {
-		return false, fmt.Sprintf("missing quote timestamp for %s", outcome)
-	}
-	age := now.Sub(state.UpdatedAt)
+	age := realbotPairQuoteAge(lastPairUpdate, now)
 	if age > maxAge {
-		return false, fmt.Sprintf("%s sell quote age %s > %s", outcome, age.Round(time.Millisecond), maxAge)
+		return false, fmt.Sprintf("pair quote age %s > %s", age.Round(time.Millisecond), maxAge)
 	}
 	ask := tokenAsks[outcome]
 	if ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
@@ -598,7 +631,7 @@ func realbotCanUseLocalDirectionalSellQuote(now time.Time, outcome string, token
 	return true, ""
 }
 
-func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *paper.DirectionalSignalTracker, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, currentBalance float64, binanceFeed *api.BinanceFuturesPriceFeed, getTokenID func(string) string, entryGate *realbotEntryGate, lastTrade *time.Time, lastBinanceLog *time.Time) {
+func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, lastPairUpdate time.Time, polyTracker *paper.DirectionalSignalTracker, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, currentBalance float64, binanceFeed *api.BinanceFuturesPriceFeed, getTokenID func(string) string, entryGate *realbotEntryGate, lastTrade *time.Time, lastBinanceLog *time.Time) {
 	logThrottled := func(format string, args ...interface{}) {
 		if lastBinanceLog == nil {
 			tui.LogEvent(format, args...)
@@ -725,7 +758,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	status.Ready = true
 	status.Status = "ready"
 	status.Reason = "signal ready"
-	if ok, reason := realbotCanUseLocalDirectionalBuyQuote(time.Now(), targetOutcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, maxQuoteAge); !ok {
+	if ok, reason := realbotCanUseLocalDirectionalBuyQuote(time.Now(), targetOutcome, tokenBids, tokenAsks, tokenFullAsks, lastPairUpdate, maxQuoteAge); !ok {
 		status.Ready = false
 		status.Status = "waiting"
 		status.Reason = reason
@@ -833,48 +866,49 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 
 func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 	return paper.TUISettings{
-		Exchange:                       cfg.Exchange,
-		MarketSlug:                     cfg.MarketSlug,
-		MaxMarkets:                     cfg.MaxMarkets,
-		Timeframe:                      cfg.Timeframe,
-		TradeSizingMode:                cfg.TradeSizingMode,
-		TradeScaleFactor:               cfg.TradeScaleFactor,
-		TradeSizeUSDC:                  cfg.TradeSizeUSDC,
-		MinMarginPercent:               cfg.MinMarginPercent,
-		BinanceSignalThresholdPct:      cfg.BinanceSignalThresholdPct,
-		PaperArbMode:                   normalizePaperArbMode(cfg.PaperArbMode),
-		CopytradeTarget:                cfg.CopytradeTarget,
-		CopytradePollIntervalMs:        cfg.CopytradePollIntervalMs,
-		CopytradeSizingMode:            cfg.CopytradeSizingMode,
-		CopytradeSizeUSDC:              cfg.CopytradeSizeUSDC,
-		CopytradeSizeShares:            cfg.CopytradeSizeShares,
-		CopytradeSizePercent:           cfg.CopytradeSizePercent,
-		CopytradeMaxSlippagePct:        cfg.CopytradeMaxSlippagePct,
-		LadderedTakerSizingMode:        cfg.LadderedTakerSizingMode,
-		LadderedTakerSizeUSDC:          cfg.LadderedTakerSizeUSDC,
-		LadderedTakerSizeShares:        cfg.LadderedTakerSizeShares,
-		LadderedTakerReentryMoveCents:  cfg.LadderedTakerReentryMoveCents,
-		BuyExecutionMarginFloorPercent: cfg.BuyExecutionMarginFloorPercent,
-		SplitMinMarginSell:             cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:           cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:             cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:           cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds:        cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:                  cfg.MakerQuoteGap,
-		MakerInventoryTargetMult:       cfg.MakerInventoryTargetMult,
-		MakerInventoryCapMult:          cfg.MakerInventoryCapMult,
-		MakerMinQuoteValue:             cfg.MakerMinQuoteValue,
-		MinAskPrice:                    cfg.MinAskPrice,
-		MaxAskPrice:                    cfg.MaxAskPrice,
-		MaxTradeSize:                   cfg.MaxTradeSize,
-		MaxDailyLoss:                   cfg.MaxDailyLoss,
-		TakerCloseMarket:               cfg.TakerCloseMarket,
-		TakerCloseMarketTime:           cfg.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:       cfg.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:       cfg.TakerCloseMarketMinPrice,
-		TradingHoursMode:               cfg.TradingHoursMode,
-		PolygonRPC:                     cfg.PolygonRPCURL,
-		PolygonPrivateKey:              cfg.PK,
+		Exchange:                           cfg.Exchange,
+		MarketSlug:                         cfg.MarketSlug,
+		MaxMarkets:                         cfg.MaxMarkets,
+		Timeframe:                          cfg.Timeframe,
+		TradeSizingMode:                    cfg.TradeSizingMode,
+		TradeScaleFactor:                   cfg.TradeScaleFactor,
+		TradeSizeUSDC:                      cfg.TradeSizeUSDC,
+		MinMarginPercent:                   cfg.MinMarginPercent,
+		BinanceSignalThresholdPct:          cfg.BinanceSignalThresholdPct,
+		PaperArbMode:                       normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:                    cfg.CopytradeTarget,
+		CopytradePollIntervalMs:            cfg.CopytradePollIntervalMs,
+		CopytradeSizingMode:                cfg.CopytradeSizingMode,
+		CopytradeSizeUSDC:                  cfg.CopytradeSizeUSDC,
+		CopytradeSizeShares:                cfg.CopytradeSizeShares,
+		CopytradeSizePercent:               cfg.CopytradeSizePercent,
+		CopytradeMaxSlippagePct:            cfg.CopytradeMaxSlippagePct,
+		LadderedTakerSizingMode:            cfg.LadderedTakerSizingMode,
+		LadderedTakerSizeUSDC:              cfg.LadderedTakerSizeUSDC,
+		LadderedTakerSizeShares:            cfg.LadderedTakerSizeShares,
+		LadderedTakerReentryMoveCents:      cfg.LadderedTakerReentryMoveCents,
+		BuyExecutionMarginFloorPercent:     cfg.BuyExecutionMarginFloorPercent,
+		SplitMinMarginSell:                 cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:               cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:                 cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:               cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:            cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:                      cfg.MakerQuoteGap,
+		MakerInventoryTargetMult:           cfg.MakerInventoryTargetMult,
+		MakerInventoryCapMult:              cfg.MakerInventoryCapMult,
+		MakerMinQuoteValue:                 cfg.MakerMinQuoteValue,
+		MinAskPrice:                        cfg.MinAskPrice,
+		MaxAskPrice:                        cfg.MaxAskPrice,
+		MaxTradeSize:                       cfg.MaxTradeSize,
+		MaxDailyLoss:                       cfg.MaxDailyLoss,
+		TakerCloseMarket:                   cfg.TakerCloseMarket,
+		TakerCloseMarketTime:               cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:           cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:           cfg.TakerCloseMarketMinPrice,
+		TradingHoursMode:                   cfg.TradingHoursMode,
+		PolygonRPC:                         cfg.PolygonRPCURL,
+		PolygonPrivateKey:                  cfg.PK,
+		BlockNewEntriesOnPendingRedemption: cfg.BlockNewEntriesOnPendingRedemption,
 	}
 }
 
@@ -919,6 +953,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
 	cfg.TradingHoursMode = s.TradingHoursMode
+	cfg.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	if cfg.Exchange == "kalshi" {
 		cfg.SplitStrategyEnabled = false
 		cfg.MakerMergeBufferSeconds = 0
@@ -1430,24 +1465,27 @@ func realbotNeutralRoundPnL(startingEquity, endingEquity, reconciliationDelta fl
 	return endingEquity - startingEquity - reconciliationDelta
 }
 
-func realbotPairQuoteAge(now time.Time, outcomes []string, quoteState map[string]realbotQuoteState) time.Duration {
-	maxAge := time.Duration(0)
-	sawMissing := false
-	for _, outcome := range outcomes {
-		updatedAt := quoteState[outcome].UpdatedAt
-		if updatedAt.IsZero() {
-			sawMissing = true
-			continue
-		}
-		age := now.Sub(updatedAt)
-		if age > maxAge {
-			maxAge = age
-		}
+func realbotPairQuoteAge(lastPairUpdate, now time.Time) time.Duration {
+	if now.IsZero() {
+		now = time.Now()
 	}
-	if sawMissing {
-		return 24 * time.Hour
+	if lastPairUpdate.IsZero() {
+		return time.Duration(1 << 62)
 	}
-	return maxAge
+	return now.Sub(lastPairUpdate)
+}
+
+func realbotShouldUseLocalPair(outcomes []string, tokenBids, tokenAsks map[string]float64, lastPairUpdate time.Time, maxAge time.Duration, now time.Time) bool {
+	return realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) && realbotPairQuoteAge(lastPairUpdate, now) <= maxAge
+}
+
+func realbotSyncPairUpdate(outcomes []string, tokenBids, tokenAsks map[string]float64, lastPairUpdate *time.Time, now time.Time) {
+	if lastPairUpdate == nil {
+		return
+	}
+	if realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks) {
+		*lastPairUpdate = now
+	}
 }
 
 func main() {
@@ -2239,6 +2277,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	polySignalTracker := paper.NewDirectionalSignalTracker(core.ResolveBinanceSignalLookback(cfg), outcomes)
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
+	lastPairUpdate := time.Time{}
 	var ladderedEntries []struct {
 		ask0 float64
 		ask1 float64
@@ -2252,6 +2291,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	makerQuotes := make(map[string]*realbotMakerQuote)
 	lastMakerSync := time.Time{}
 	mergeCoordinator := newRealbotMergeCoordinator()
+	lastEntryBlockNoticeAt := time.Time{}
+	lastEntryBlockReason := ""
 
 	// Initial balance tracking
 	currentBalance := startingBalance
@@ -2298,6 +2339,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var lastTakerCloseLogKey string
 	var lastTakerCloseQuoteRefresh time.Time
 	usWeekdayGateClosedLogged := false
+	manualTradingPauseLogged := false
 	preserveWalletTruth := false
 	defer func() {
 		if !preserveWalletTruth {
@@ -2438,6 +2480,17 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			tui.LogEvent("[%s] ✅ Trading gate open at %s - trading resumed", id, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
 			usWeekdayGateClosedLogged = false
 		}
+		manualTradingPaused := tui.IsTradingPaused()
+		if manualTradingPaused {
+			if !manualTradingPauseLogged {
+				tui.LogEvent("[%s] ⏸️ Manual trading pause enabled - new trades paused", id)
+				manualTradingPauseLogged = true
+			}
+		} else if manualTradingPauseLogged {
+			tui.LogEvent("[%s] ▶️ Manual trading pause disabled - trading resumed", id)
+			manualTradingPauseLogged = false
+		}
+		entryTradingAllowed := weekdayTradingAllowed && !manualTradingPaused
 		mergeBuffer := time.Duration(cfg.SplitMergeBufferSeconds) * time.Second
 		if weekdayTradingAllowed && !realbotCopytradeHoldMode(liveCfg) && realbotShouldRunNearExpiryCleanup(liveCfg, timeToExpiry, mergeBuffer) {
 			// If taker close just fired, suppress sell actions for 15s to prevent racing
@@ -2558,6 +2611,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(b.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(b.Asks, false)
 						quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
+						realbotSyncPairUpdate(outcomes, tokenBids, tokenAsks, &lastPairUpdate, updatedAt)
 
 						if bid > 0 && ask > 0 {
 							mid := (bid + ask) / 2
@@ -2645,6 +2699,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						for outcome := range touchedOutcomes {
 							quoteState[outcome] = realbotQuoteState{UpdatedAt: now, Source: "ws"}
 						}
+						realbotSyncPairUpdate(outcomes, tokenBids, tokenAsks, &lastPairUpdate, now)
 					}
 				} else if bbo, err := api.ParseBestBidAsk(msg); err == nil && strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") && bbo.AssetID != "" {
 					outcome := tokenToOutcome[bbo.AssetID]
@@ -2671,6 +2726,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						polySignalTracker.Record(outcome, tokenBids[outcome], tokenAsks[outcome], updatedAt)
 					}
 					quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws-bbo"}
+					realbotSyncPairUpdate(outcomes, tokenBids, tokenAsks, &lastPairUpdate, updatedAt)
 				} else if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
 					// ── Book snapshot (single object) ──────────────────────
 					bid, ask := 0.0, 0.0
@@ -2712,6 +2768,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						tokenFullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 						tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 						quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
+						realbotSyncPairUpdate(outcomes, tokenBids, tokenAsks, &lastPairUpdate, updatedAt)
 					}
 				}
 			default:
@@ -2763,7 +2820,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		tui.UpdateWSLatency(wsTimeSinceMsg)
 		tui.UpdateWSPingLatency(wsMgr.PingLatency())
 		terminalBookState := realbotLooksLikeTerminalBook(outcomes, tokenBids, tokenAsks)
-		pairQuoteAge := realbotPairQuoteAge(time.Now(), outcomes, quoteState)
+		pairQuoteAge := realbotPairQuoteAge(lastPairUpdate, time.Now())
 		needsWSReconnect := realbotShouldReconnectWS(outcomes, tokenBids, tokenAsks, pairQuoteAge, restFallbackQuoteAge, terminalBookState)
 		localPairSane := realbotHasSanePairQuotes(outcomes, tokenBids, tokenAsks)
 		shouldRestFallback := !terminalBookState &&
@@ -2774,7 +2831,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		if shouldRestFallback {
 			wasFallbackActive := restFallbackActive
 			restFallbackActive = true
-			recovered := handleRestFallbackWithDepth(ctx, id, pairQuoteAge, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, polySignalTracker, engine, restClient, tui, wasFallbackActive && !restRecoveryLogged)
+			recovered := handleRestFallbackWithDepth(ctx, id, pairQuoteAge, tokenMap, tokenBids, tokenAsks, displayBids, displayAsks, tokenFullBids, tokenFullAsks, quoteState, &lastPairUpdate, polySignalTracker, engine, restClient, tui, wasFallbackActive && !restRecoveryLogged)
 			lastRestFallbackPoll = time.Now()
 			if recovered {
 				restFallbackActive = false
@@ -2824,11 +2881,26 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			wsMgr.ForceReconnect()
 		}
 
+		blockNewEntriesReason, blockNewEntries := realbotNewEntryBlockReason(id, engine, splitInventory, liveCfg)
+		if blockNewEntries {
+			if blockNewEntriesReason != lastEntryBlockReason || lastEntryBlockNoticeAt.IsZero() || time.Since(lastEntryBlockNoticeAt) >= 5*time.Second {
+				tui.LogEvent("[%s] ⏸️ New entries blocked: %s", id, blockNewEntriesReason)
+				lastEntryBlockNoticeAt = time.Now()
+				lastEntryBlockReason = blockNewEntriesReason
+			}
+		} else {
+			lastEntryBlockNoticeAt = time.Time{}
+			lastEntryBlockReason = ""
+		}
+
 		// --- TAKER CLOSE MARKET LOGIC ---
 		// React only after we have drained the current WS queue so the decision
 		// follows the latest local WS book state.
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-		if weekdayTradingAllowed && realbotTakerCloseHoldMode(liveCfg) && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+		if entryTradingAllowed && realbotTakerCloseHoldMode(liveCfg) && timeToExpiry > 0 && timeToExpiry <= takerCloseTime {
+			if blockNewEntries {
+				continue
+			}
 			if !takerCloseAttempted {
 				bestOutcome, highestPrice := realbotBestTakerCloseOutcomePrice(outcomes, tokenBids, tokenAsks)
 				minPrice := normalizedRealbotTakerCloseMinPrice(liveCfg)
@@ -3019,6 +3091,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		liveCfg = tui.GetSettings()
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 		takerCloseMode := paper.TakerCloseModeActive(liveCfg)
+		executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
+		executionPairFresh := realbotShouldUseLocalPair(outcomes, tokenBids, tokenAsks, lastPairUpdate, executionQuoteMaxAge, time.Now())
 		weekdayTradingAllowed = true
 		if liveCfg.TradingHoursMode == "weekdays trade only" {
 			weekdayTradingAllowed = core.IsUSWeekday(core.USTime(time.Now()))
@@ -3032,6 +3106,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
+		manualTradingPaused = tui.IsTradingPaused()
+		entryTradingAllowed = weekdayTradingAllowed && !manualTradingPaused
 
 		if arbMode != paperArbModeCopytrade && !takerCloseMode && len(outcomes) == 2 && time.Since(lastTrade) > 5*time.Second && time.Now().After(nextLiveRecoveryAttempt) {
 			recoveryCheckCtx, cancelRecoveryCheck := context.WithTimeout(context.Background(), 3*time.Second)
@@ -3075,6 +3151,13 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 				nextLiveRecoveryAttempt = time.Now().Add(5 * time.Second)
 			}
 		}
+		if manualTradingPaused {
+			pauseMakerCtx, pauseMakerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			realbotCancelAllMakerQuotes(pauseMakerCtx, id, "manual trading pause active", trader, engine, tui, makerQuotes)
+			pauseMakerCancel()
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
+			continue
+		}
 
 		// Skip normal trading completely if TakerCloseMarket is enabled
 		if takerCloseMode {
@@ -3086,6 +3169,20 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		if arbMode == paperArbModeMaker {
+			if !executionPairFresh {
+				cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
+				realbotCancelAllMakerQuotes(cancelMakerCtx, id, "waiting for fresh pair quotes", trader, engine, tui, makerQuotes)
+				cancelMaker()
+				time.Sleep(realbotTraderLoopInterval(liveCfg))
+				continue
+			}
+			if blockNewEntries {
+				cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
+				realbotCancelAllMakerQuotes(cancelMakerCtx, id, "waiting for prior-round redemption", trader, engine, tui, makerQuotes)
+				cancelMaker()
+				time.Sleep(realbotTraderLoopInterval(liveCfg))
+				continue
+			}
 			makerCtx, makerCancel := context.WithTimeout(ctx, 5*time.Second)
 			maintainRealbotMakerQuotes(makerCtx, id, endTime, outcomes, getTokenID, tokenBids, tokenAsks, tokenFeeRates, trader, engine, riskMgr, tui, liveCfg, cfg, makerQuotes, &lastMakerSync)
 			makerCancel()
@@ -3096,12 +3193,24 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		realbotCancelAllMakerQuotes(cancelMakerCtx, id, "maker mode disabled", trader, engine, tui, makerQuotes)
 		cancelMaker()
 		if arbMode == paperArbModeCopytrade {
+			if blockNewEntries {
+				time.Sleep(realbotTraderLoopInterval(liveCfg))
+				continue
+			}
 			realbotHandleCopytradeMarket(ctx, id, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, tokenFeeRates, trader, engine, tui, restClient, liveCfg, copytradePoller, copytradeState, entryGate, refreshWalletTruth)
 			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
 		if arbMode == paperArbModeBinanceGap {
-			realbotHandleBinanceGapMarket(ctx, id, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, polySignalTracker, tokenFeeRates, trader, engine, tui, liveCfg, cfg, currentBalance, binanceFeed, getTokenID, entryGate, &lastTrade, &lastBinanceLog)
+			if !executionPairFresh {
+				time.Sleep(realbotTraderLoopInterval(liveCfg))
+				continue
+			}
+			if blockNewEntries {
+				time.Sleep(realbotTraderLoopInterval(liveCfg))
+				continue
+			}
+			realbotHandleBinanceGapMarket(ctx, id, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, lastPairUpdate, polySignalTracker, tokenFeeRates, trader, engine, tui, liveCfg, cfg, currentBalance, binanceFeed, getTokenID, entryGate, &lastTrade, &lastBinanceLog)
 			time.Sleep(realbotTraderLoopInterval(liveCfg))
 			continue
 		}
@@ -3124,6 +3233,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			isSplit := globalSplitStatus[market.ConditionID]
 
 			shouldSplit := !isSplit && time.Now().After(nextSplitAttempt)
+			if blockNewEntries {
+				shouldSplit = false
+			}
 			if shouldSplit {
 				if kalshiHoldMode {
 					shouldSplit = false
@@ -3368,8 +3480,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							tui.LogEvent("[%s] 📈 SPLIT SELL candidate %s@$%.2f + %s@$%.2f = $%.3f (%.1f%% observed, %.1f%% execution floor) | %s shares [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
 								id, outcomes[0], bid1, outcomes[1], bid2, bidSum, sellMargin, executionMarginFloor, formatShareQty(sharesToSell),
 								rawLiq1, rawLiq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-							executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
-							freshLocalSellQuote, _, localSellQuoteReason := realbotCanUseLocalSellQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullBids, quoteState, executionQuoteMaxAge)
+							freshLocalSellQuote, _, localSellQuoteReason := realbotCanUseLocalSellQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullBids, lastPairUpdate, executionQuoteMaxAge)
 							if !freshLocalSellQuote {
 								tui.LogEvent("[%s] ⚠️ Split-sell paused: awaiting fresh local quote (%s)", id, localSellQuoteReason)
 								continue
@@ -3589,6 +3700,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					entryReady = ladderedTakerEntryEligible(ask1, ask2)
 				}
 				if entryReady {
+					if blockNewEntries {
+						panicBuyCooldown = time.Now().Add(500 * time.Millisecond)
+						continue
+					}
 					// Evaluate risk
 					riskAction, riskReason := riskMgr.Evaluate()
 					if riskAction == paper.RiskActionKillSwitch {
@@ -3616,8 +3731,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 					requestedShares := shares
 					// Fee estimation and balance check logging removed per user request.
-					executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(cfg))
-					freshLocalBuyQuote, _, localBuyQuoteReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullAsks, quoteState, executionQuoteMaxAge)
+					freshLocalBuyQuote, _, localBuyQuoteReason := realbotCanUseLocalBuyQuote(time.Now(), outcomes, tokenBids, tokenAsks, tokenFullAsks, lastPairUpdate, executionQuoteMaxAge)
 					if !freshLocalBuyQuote {
 						// Disabled per user request: stationary prices can cause false-positive stale quotes
 						_ = localBuyQuoteReason
@@ -5625,58 +5739,42 @@ func realbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
 	return bestBid, true
 }
 
-func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
-	maxObservedAge := time.Duration(0)
+func realbotCanUseLocalBuyQuote(now time.Time, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, lastPairUpdate time.Time, maxAge time.Duration) (bool, time.Duration, string) {
 	for _, out := range outcomes {
 		if tokenAsks[out] <= 0 {
-			return false, maxObservedAge, fmt.Sprintf("missing local ask for %s", out)
+			return false, 0, fmt.Sprintf("missing local ask for %s", out)
 		}
 		if len(tokenFullAsks[out]) == 0 {
-			return false, maxObservedAge, fmt.Sprintf("missing local ask depth for %s", out)
-		}
-		state, ok := quoteState[out]
-		if !ok || state.UpdatedAt.IsZero() {
-			return false, maxObservedAge, fmt.Sprintf("missing quote timestamp for %s", out)
-		}
-		age := now.Sub(state.UpdatedAt)
-		if age > maxObservedAge {
-			maxObservedAge = age
-		}
-		if age > maxAge {
-			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
+			return false, 0, fmt.Sprintf("missing local ask depth for %s", out)
 		}
 	}
 	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
-		return false, maxObservedAge, reason
+		return false, 0, reason
 	}
-	return true, maxObservedAge, ""
+	age := realbotPairQuoteAge(lastPairUpdate, now)
+	if age > maxAge {
+		return false, age, fmt.Sprintf("pair quote age %s > %s", age.Round(time.Millisecond), maxAge)
+	}
+	return true, age, ""
 }
 
-func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (bool, time.Duration, string) {
-	maxObservedAge := time.Duration(0)
+func realbotCanUseLocalSellQuote(now time.Time, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, lastPairUpdate time.Time, maxAge time.Duration) (bool, time.Duration, string) {
 	for _, out := range outcomes {
 		if tokenBids[out] <= 0 {
-			return false, maxObservedAge, fmt.Sprintf("missing local bid for %s", out)
+			return false, 0, fmt.Sprintf("missing local bid for %s", out)
 		}
 		if len(tokenFullBids[out]) == 0 {
-			return false, maxObservedAge, fmt.Sprintf("missing local bid depth for %s", out)
-		}
-		state, ok := quoteState[out]
-		if !ok || state.UpdatedAt.IsZero() {
-			return false, maxObservedAge, fmt.Sprintf("missing quote timestamp for %s", out)
-		}
-		age := now.Sub(state.UpdatedAt)
-		if age > maxObservedAge {
-			maxObservedAge = age
-		}
-		if age > maxAge {
-			return false, maxObservedAge, fmt.Sprintf("%s quote age %s > %s", out, age.Round(time.Millisecond), maxAge)
+			return false, 0, fmt.Sprintf("missing local bid depth for %s", out)
 		}
 	}
 	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
-		return false, maxObservedAge, reason
+		return false, 0, reason
 	}
-	return true, maxObservedAge, ""
+	age := realbotPairQuoteAge(lastPairUpdate, now)
+	if age > maxAge {
+		return false, age, fmt.Sprintf("pair quote age %s > %s", age.Round(time.Millisecond), maxAge)
+	}
+	return true, age, ""
 }
 
 func realbotCanUseLocalTakerCloseQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (float64, string, bool) {
@@ -5714,7 +5812,7 @@ func realbotCanUseLocalTakerCloseQuote(now time.Time, outcome string, tokenBids,
 	return ask, "", true
 }
 
-func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState) (time.Duration, error) {
+func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, lastPairUpdate *time.Time) (time.Duration, error) {
 	type quoteResult struct {
 		outcome string
 		bids    []paper.MarketLevel
@@ -5784,29 +5882,30 @@ func realbotRefreshExecutionBooks(ctx context.Context, restClient *api.RestClien
 	if reason := realbotLocalQuoteSanityReason(outcomes, tokenBids, tokenAsks); reason != "" {
 		return maxLatency, fmt.Errorf("invalid refreshed pair quote: %s", reason)
 	}
+	realbotSyncPairUpdate(outcomes, tokenBids, tokenAsks, lastPairUpdate, time.Now())
 	return maxLatency, nil
 }
 
-func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, localQuoteMaxAge time.Duration) (source string, metric time.Duration, detail string, err error) {
+func realbotEnsureFreshBuyExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, lastPairUpdate time.Time, localQuoteMaxAge time.Duration, pairUpdateTarget *time.Time) (source string, metric time.Duration, detail string, err error) {
 	now := time.Now()
-	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenBids, tokenAsks, tokenFullAsks, quoteState, localQuoteMaxAge)
+	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, tokenBids, tokenAsks, tokenFullAsks, lastPairUpdate, localQuoteMaxAge)
 	if fresh {
 		return "local", age, "", nil
 	}
-	latency, refreshErr := realbotRefreshExecutionBooks(ctx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+	latency, refreshErr := realbotRefreshExecutionBooks(ctx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, pairUpdateTarget)
 	if refreshErr != nil {
 		return "rest", latency, reason, fmt.Errorf("local quote unavailable (%s): %w", reason, refreshErr)
 	}
 	return "rest", latency, reason, nil
 }
 
-func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, localQuoteMaxAge time.Duration) (source string, metric time.Duration, detail string, err error) {
+func realbotEnsureFreshSellExecutionQuote(ctx context.Context, restClient *api.RestClient, market *api.Market, outcomes []string, tokenBids, tokenAsks map[string]float64, tokenFullBids, tokenFullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, lastPairUpdate time.Time, localQuoteMaxAge time.Duration, pairUpdateTarget *time.Time) (source string, metric time.Duration, detail string, err error) {
 	now := time.Now()
-	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenAsks, tokenFullBids, quoteState, localQuoteMaxAge)
+	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, tokenBids, tokenAsks, tokenFullBids, lastPairUpdate, localQuoteMaxAge)
 	if fresh {
 		return "local", age, "", nil
 	}
-	latency, refreshErr := realbotRefreshExecutionBooks(ctx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState)
+	latency, refreshErr := realbotRefreshExecutionBooks(ctx, restClient, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, pairUpdateTarget)
 	if refreshErr != nil {
 		return "rest", latency, reason, fmt.Errorf("local quote unavailable (%s): %w", reason, refreshErr)
 	}
@@ -6404,7 +6503,7 @@ func settleMarketInventory(
 	return nil
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, polyTracker *paper.DirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, lastPairUpdate *time.Time, polyTracker *paper.DirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
 	success := false
 	staleSeconds := int(staleTime.Seconds())
 	restErrors := 0
@@ -6506,6 +6605,9 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			fullAsks[outcome] = nil
 			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
 		}
+	}
+	if success {
+		realbotSyncPairUpdate(outcomes, bids, asks, lastPairUpdate, time.Now())
 	}
 	if success {
 		if logRecovery && staleSeconds >= 10 {

@@ -2659,46 +2659,47 @@ func run() error {
 
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
-		Exchange:                      cfg.Exchange,
-		MarketSlug:                    cfg.MarketSlug,
-		MaxMarkets:                    cfg.MaxMarkets,
-		PaperBalance:                  cfg.PaperBalance,
-		Timeframe:                     cfg.Timeframe,
-		TradeSizingMode:               cfg.TradeSizingMode,
-		TradeScaleFactor:              cfg.TradeScaleFactor,
-		TradeSizeUSDC:                 cfg.TradeSizeUSDC,
-		MinMarginPercent:              cfg.MinMarginPercent,
-		BinanceSignalThresholdPct:     cfg.BinanceSignalThresholdPct,
-		PaperBinanceExecutionDelayMs:  cfg.PaperBinanceExecutionDelayMs,
-		PaperArbMode:                  normalizePaperArbMode(cfg.PaperArbMode),
-		CopytradeTarget:               cfg.CopytradeTarget,
-		CopytradePollIntervalMs:       cfg.CopytradePollIntervalMs,
-		CopytradeSizingMode:           cfg.CopytradeSizingMode,
-		CopytradeSizeUSDC:             cfg.CopytradeSizeUSDC,
-		CopytradeSizeShares:           cfg.CopytradeSizeShares,
-		CopytradeSizePercent:          cfg.CopytradeSizePercent,
-		CopytradeMaxSlippagePct:       cfg.CopytradeMaxSlippagePct,
-		LadderedTakerSizingMode:       cfg.LadderedTakerSizingMode,
-		LadderedTakerSizeUSDC:         cfg.LadderedTakerSizeUSDC,
-		LadderedTakerSizeShares:       cfg.LadderedTakerSizeShares,
-		LadderedTakerReentryMoveCents: cfg.LadderedTakerReentryMoveCents,
-		SplitMinMarginSell:            cfg.SplitMinMarginSell,
-		SplitStrategyEnabled:          cfg.SplitStrategyEnabled,
-		SplitInitialCapPct:            cfg.SplitInitialCapPct,
-		SplitReplenishCapPct:          cfg.SplitReplenishCapPct,
-		MakerMergeBufferSeconds:       cfg.MakerMergeBufferSeconds,
-		MakerQuoteGap:                 cfg.MakerQuoteGap,
-		MinAskPrice:                   cfg.MinAskPrice,
-		MaxAskPrice:                   cfg.MaxAskPrice,
-		MaxTradeSize:                  cfg.MaxTradeSize,
-		MaxDailyLoss:                  cfg.MaxDailyLoss,
-		TakerCloseMarket:              cfg.TakerCloseMarket,
-		TakerCloseMarketTime:          cfg.TakerCloseMarketTime,
-		TakerCloseMarketSlippage:      cfg.TakerCloseMarketSlippage,
-		TakerCloseMarketMinPrice:      cfg.TakerCloseMarketMinPrice,
-		TradingHoursMode:              cfg.TradingHoursMode,
-		PolygonRPC:                    cfg.PolygonRPCURL,
-		PolygonPrivateKey:             cfg.PK,
+		Exchange:                           cfg.Exchange,
+		MarketSlug:                         cfg.MarketSlug,
+		MaxMarkets:                         cfg.MaxMarkets,
+		PaperBalance:                       cfg.PaperBalance,
+		Timeframe:                          cfg.Timeframe,
+		TradeSizingMode:                    cfg.TradeSizingMode,
+		TradeScaleFactor:                   cfg.TradeScaleFactor,
+		TradeSizeUSDC:                      cfg.TradeSizeUSDC,
+		MinMarginPercent:                   cfg.MinMarginPercent,
+		BinanceSignalThresholdPct:          cfg.BinanceSignalThresholdPct,
+		PaperBinanceExecutionDelayMs:       cfg.PaperBinanceExecutionDelayMs,
+		PaperArbMode:                       normalizePaperArbMode(cfg.PaperArbMode),
+		CopytradeTarget:                    cfg.CopytradeTarget,
+		CopytradePollIntervalMs:            cfg.CopytradePollIntervalMs,
+		CopytradeSizingMode:                cfg.CopytradeSizingMode,
+		CopytradeSizeUSDC:                  cfg.CopytradeSizeUSDC,
+		CopytradeSizeShares:                cfg.CopytradeSizeShares,
+		CopytradeSizePercent:               cfg.CopytradeSizePercent,
+		CopytradeMaxSlippagePct:            cfg.CopytradeMaxSlippagePct,
+		LadderedTakerSizingMode:            cfg.LadderedTakerSizingMode,
+		LadderedTakerSizeUSDC:              cfg.LadderedTakerSizeUSDC,
+		LadderedTakerSizeShares:            cfg.LadderedTakerSizeShares,
+		LadderedTakerReentryMoveCents:      cfg.LadderedTakerReentryMoveCents,
+		SplitMinMarginSell:                 cfg.SplitMinMarginSell,
+		SplitStrategyEnabled:               cfg.SplitStrategyEnabled,
+		SplitInitialCapPct:                 cfg.SplitInitialCapPct,
+		SplitReplenishCapPct:               cfg.SplitReplenishCapPct,
+		MakerMergeBufferSeconds:            cfg.MakerMergeBufferSeconds,
+		MakerQuoteGap:                      cfg.MakerQuoteGap,
+		MinAskPrice:                        cfg.MinAskPrice,
+		MaxAskPrice:                        cfg.MaxAskPrice,
+		MaxTradeSize:                       cfg.MaxTradeSize,
+		MaxDailyLoss:                       cfg.MaxDailyLoss,
+		TakerCloseMarket:                   cfg.TakerCloseMarket,
+		BlockNewEntriesOnPendingRedemption: cfg.BlockNewEntriesOnPendingRedemption,
+		TakerCloseMarketTime:               cfg.TakerCloseMarketTime,
+		TakerCloseMarketSlippage:           cfg.TakerCloseMarketSlippage,
+		TakerCloseMarketMinPrice:           cfg.TakerCloseMarketMinPrice,
+		TradingHoursMode:                   cfg.TradingHoursMode,
+		PolygonRPC:                         cfg.PolygonRPCURL,
+		PolygonPrivateKey:                  cfg.PK,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
 		cfg.MarketSlug = s.MarketSlug
@@ -2734,6 +2735,7 @@ func run() error {
 		cfg.MaxTradeSize = s.MaxTradeSize
 		cfg.MaxDailyLoss = s.MaxDailyLoss
 		cfg.TakerCloseMarket = s.TakerCloseMarket
+		cfg.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 		cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
 		cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 		cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
@@ -3101,7 +3103,7 @@ func run() error {
 		// Log market rotation from the shared engine state rather than summing
 		// overlapping per-trader deltas from concurrent goroutines.
 		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
-		
+
 		displayPositions := engine.GetPositions()
 		if len(displayPositions) == 0 && len(allRedemptions) == 0 {
 			// Reconstruct gross bought positions from the round's trades
@@ -3400,6 +3402,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 	var lastTakerCloseLog time.Time
 	lastResolutionPendingLog := time.Time{}
 	usWeekdayGateClosedLogged := false
+	manualTradingPauseLogged := false
 
 	mainLoopTicker := time.NewTicker(paperbotTraderLoopInterval(t.TUI.GetSettings()))
 	defer mainLoopTicker.Stop()
@@ -3511,12 +3514,23 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			t.TUI.LogEvent("[%s] ✅ Trading gate open at %s - trading resumed", t.ID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
 			usWeekdayGateClosedLogged = false
 		}
+		manualTradingPaused := t.TUI.IsTradingPaused()
+		if manualTradingPaused {
+			if !manualTradingPauseLogged {
+				t.TUI.LogEvent("[%s] ⏸️ Manual trading pause enabled - new trades paused", t.ID)
+				manualTradingPauseLogged = true
+			}
+		} else if manualTradingPauseLogged {
+			t.TUI.LogEvent("[%s] ▶️ Manual trading pause disabled - trading resumed", t.ID)
+			manualTradingPauseLogged = false
+		}
+		entryTradingAllowed := weekdayTradingAllowed && !manualTradingPaused
 
 		takerCloseMode := paper.TakerCloseModeActive(liveCfg)
 
 		// --- TAKER CLOSE MARKET LOGIC ---
 		takerCloseTime := time.Duration(liveCfg.TakerCloseMarketTime) * time.Second
-		if weekdayTradingAllowed && takerCloseMode && timeToEnd > 0 && timeToEnd <= takerCloseTime {
+		if entryTradingAllowed && takerCloseMode && timeToEnd > 0 && timeToEnd <= takerCloseTime {
 			if !takerCloseAttempted {
 				t.mu.Lock()
 				bestOutcome := ""
@@ -4093,6 +4107,8 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 
 		// Trading logic - check every tick for arbitrage opportunities
 		liveCfg = t.TUI.GetSettings()
+		manualTradingPaused = t.TUI.IsTradingPaused()
+		entryTradingAllowed = weekdayTradingAllowed && !manualTradingPaused
 		arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 		takerCloseMode = paper.TakerCloseModeActive(liveCfg)
 		localQuoteMaxAge = core.ResolveExecutionLocalQuoteMaxAge(t.Config)
@@ -4100,7 +4116,9 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		now = time.Now()
 		localPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, localQuoteMaxAge, now)
 		executionPairFresh = shouldUseLocalPaperPair(t.Outcomes, t.TokenBids, t.TokenAsks, t.LastPairUpdate, executionQuoteMaxAge, now)
-		if !weekdayTradingAllowed {
+		if manualTradingPaused {
+			cancelAllPaperMakerQuotes(t, "manual trading pause active")
+		} else if !weekdayTradingAllowed {
 			cancelAllPaperMakerQuotes(t, "trading gate closed")
 		} else if takerCloseMode {
 			cancelAllPaperMakerQuotes(t, "taker close market enabled")
@@ -4110,7 +4128,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 			cancelAllPaperMakerQuotes(t, "market not active for maker quoting")
 		}
 		if arbMode == paperArbModeCopytrade && paperbotCopytradeCanTrade(marketState, timeToEnd) && len(t.Outcomes) > 0 {
-			if !weekdayTradingAllowed || takerCloseMode {
+			if !entryTradingAllowed || takerCloseMode {
 				continue
 			}
 			paperbotHandleCopytradeMarket(ctx, t, liveCfg)
@@ -4118,7 +4136,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		}
 		marketTradableForArb := paperbotArbModeCanTrade(arbMode, marketState, timeToEnd)
 		if len(tokenPrices) == 2 && len(t.Outcomes) == 2 && marketTradableForArb {
-			if !weekdayTradingAllowed {
+			if !entryTradingAllowed {
 				continue
 			}
 
@@ -4678,7 +4696,7 @@ func runTrader(ctx context.Context, t *MarketTrader) (*marketResult, error) {
 		// SPLIT STRATEGY SIMULATION: Sell when bid_sum > $1.00 + margin
 		// This simulates the panic sell strategy without real blockchain calls
 		// ═══════════════════════════════════════════════════════════════════════════
-		if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled && localPairFresh && weekdayTradingAllowed {
+		if len(t.Outcomes) == 2 && marketState == paper.MarketStateActive && liveCfg.SplitStrategyEnabled && localPairFresh && entryTradingAllowed {
 			bid1 := t.TokenBids[t.Outcomes[0]]
 			bid2 := t.TokenBids[t.Outcomes[1]]
 			currentBookEquity := t.Engine.GetBookEquity()
@@ -5290,7 +5308,6 @@ func paperbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) flo
 	return target
 }
 
-
 func paperbotLadderedDirectionalSide(hasLast bool, lastAsk0, lastAsk1, ask0, ask1, moveCents float64) (int, bool) {
 	if !hasLast {
 		switch {
@@ -5363,7 +5380,6 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 	}
 	return true
 }
-
 
 func paperbotAskLiquidityAtOrBelow(levels []paper.MarketLevel, maxPrice float64) float64 {
 	total := 0.0

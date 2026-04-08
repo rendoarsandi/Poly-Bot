@@ -435,51 +435,52 @@ type RoundHistoryEntry struct {
 // TUISettings holds runtime-adjustable trading parameters.
 // These can be changed live from the settings panel (press 's').
 type TUISettings struct {
-	Exchange                       string  // "polymarket" or "kalshi"
-	MarketSlug                     string  // Current selected market slug or ALL or BTC,ETH
-	MaxMarkets                     int     // Max concurrent markets to trade
-	PaperBalance                   float64 // Paper-only bankroll / session reset amount
-	Timeframe                      string  // "5m" or "15m"
-	TradeSizingMode                string  // "percent" or "usdc"
-	TradeScaleFactor               float64 // e.g. 0.05 = 5% of equity per trade
-	TradeSizeUSDC                  float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
-	MinMarginPercent               float64 // e.g. 2.0 = require 2% arb margin
-	BinanceSignalThresholdPct      float64 // e.g. 0.02 = require 0.02% Binance move in binance-gap mode
-	PaperBinanceExecutionDelayMs   int     // Paper-only execution delay after Binance-gap signal is detected
-	PaperArbMode                   string  // taker, laddered-taker, binance-gap, copytrade, or maker
-	CopytradeTarget                string  // wallet address, profile handle, or profile URL
-	CopytradePollIntervalMs        int     // public-wallet poll interval for copytrade mode
-	CopytradeSizingMode            string  // "usdc" or "shares" when PaperArbMode == copytrade
-	CopytradeSizeUSDC              float64 // fixed per-trade copytrade budget when sizing by USDC
-	CopytradeSizeShares            float64 // fixed per-trade copytrade share cap when sizing by shares
-	CopytradeSizePercent           float64 // percent of the master/target trade size when sizing by percent
-	CopytradeMaxSlippagePct        float64 // legacy field name; interpreted as absolute copytrade slippage allowance in cents
-	LadderedTakerSizingMode        string  // "usdc" or "shares" when PaperArbMode == laddered-taker
-	LadderedTakerSizeUSDC          float64 // fixed per-entry paired budget when laddered taker uses USDC sizing
-	LadderedTakerSizeShares        float64 // fixed paired share cap when laddered taker uses share sizing
-	LadderedTakerReentryMoveCents  float64 // minimum quote movement in cents required before the next laddered entry
-	LadderedTakerMaxSlippagePct    float64 // maximum slippage in cents for laddered taker
-	BuyExecutionMarginFloorPercent float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
-	SplitMinMarginSell             float64 // e.g. 3.0 = sell splits at 3% margin
-	SplitStrategyEnabled           bool    // toggle split strategy on/off
-	SplitInitialCapPct             float64 // Initial Split Cap percentage
-	SplitReplenishCapPct           float64 // Replenishment Cap percentage
-	TradingHoursMode               string  // "off", "weekdays trade only", "us open only"
-	MakerMergeBufferSeconds        int     // seconds before expiry to merge paired maker inventory
-	MakerQuoteGap                  float64 // distance from mid for maker quotes
-	MakerInventoryTargetMult       float64
-	MakerInventoryCapMult          float64
-	MakerMinQuoteValue             float64
-	MinAskPrice                    float64 // e.g. 0.10 = minimum ask price filter
-	MaxAskPrice                    float64 // e.g. 0.90 = maximum ask price filter
-	MaxTradeSize                   float64 // e.g. 50.00 = max trade size $50
-	MaxDailyLoss                   float64 // e.g. 0.0 = disabled, else max drawdown limit
-	TakerCloseMarket               bool    // e.g. force buy higher side close to end
-	TakerCloseMarketTime           int     // e.g. 5 seconds
-	TakerCloseMarketSlippage       float64 // e.g. 0.99 limit price
-	TakerCloseMarketMinPrice       float64 // e.g. 0.60 min spike price
-	PolygonRPC                     string  // Editable RPC URL
-	PolygonPrivateKey              string  // Editable Private Key
+	Exchange                           string  // "polymarket" or "kalshi"
+	MarketSlug                         string  // Current selected market slug or ALL or BTC,ETH
+	MaxMarkets                         int     // Max concurrent markets to trade
+	PaperBalance                       float64 // Paper-only bankroll / session reset amount
+	Timeframe                          string  // "5m" or "15m"
+	TradeSizingMode                    string  // "percent" or "usdc"
+	TradeScaleFactor                   float64 // e.g. 0.05 = 5% of equity per trade
+	TradeSizeUSDC                      float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
+	MinMarginPercent                   float64 // e.g. 2.0 = require 2% arb margin
+	BinanceSignalThresholdPct          float64 // e.g. 0.02 = require 0.02% Binance move in binance-gap mode
+	PaperBinanceExecutionDelayMs       int     // Paper-only execution delay after Binance-gap signal is detected
+	PaperArbMode                       string  // taker, laddered-taker, binance-gap, copytrade, or maker
+	CopytradeTarget                    string  // wallet address, profile handle, or profile URL
+	CopytradePollIntervalMs            int     // public-wallet poll interval for copytrade mode
+	CopytradeSizingMode                string  // "usdc" or "shares" when PaperArbMode == copytrade
+	CopytradeSizeUSDC                  float64 // fixed per-trade copytrade budget when sizing by USDC
+	CopytradeSizeShares                float64 // fixed per-trade copytrade share cap when sizing by shares
+	CopytradeSizePercent               float64 // percent of the master/target trade size when sizing by percent
+	CopytradeMaxSlippagePct            float64 // legacy field name; interpreted as absolute copytrade slippage allowance in cents
+	LadderedTakerSizingMode            string  // "usdc" or "shares" when PaperArbMode == laddered-taker
+	LadderedTakerSizeUSDC              float64 // fixed per-entry paired budget when laddered taker uses USDC sizing
+	LadderedTakerSizeShares            float64 // fixed paired share cap when laddered taker uses share sizing
+	LadderedTakerReentryMoveCents      float64 // minimum quote movement in cents required before the next laddered entry
+	LadderedTakerMaxSlippagePct        float64 // maximum slippage in cents for laddered taker
+	BuyExecutionMarginFloorPercent     float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
+	SplitMinMarginSell                 float64 // e.g. 3.0 = sell splits at 3% margin
+	SplitStrategyEnabled               bool    // toggle split strategy on/off
+	SplitInitialCapPct                 float64 // Initial Split Cap percentage
+	SplitReplenishCapPct               float64 // Replenishment Cap percentage
+	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only"
+	MakerMergeBufferSeconds            int     // seconds before expiry to merge paired maker inventory
+	MakerQuoteGap                      float64 // distance from mid for maker quotes
+	MakerInventoryTargetMult           float64
+	MakerInventoryCapMult              float64
+	MakerMinQuoteValue                 float64
+	MinAskPrice                        float64 // e.g. 0.10 = minimum ask price filter
+	MaxAskPrice                        float64 // e.g. 0.90 = maximum ask price filter
+	MaxTradeSize                       float64 // e.g. 50.00 = max trade size $50
+	MaxDailyLoss                       float64 // e.g. 0.0 = disabled, else max drawdown limit
+	TakerCloseMarket                   bool    // e.g. force buy higher side close to end
+	BlockNewEntriesOnPendingRedemption bool    // block fresh entries while prior-round inventory is still awaiting redemption
+	TakerCloseMarketTime               int     // e.g. 5 seconds
+	TakerCloseMarketSlippage           float64 // e.g. 0.99 limit price
+	TakerCloseMarketMinPrice           float64 // e.g. 0.60 min spike price
+	PolygonRPC                         string  // Editable RPC URL
+	PolygonPrivateKey                  string  // Editable Private Key
 }
 
 // Preset quick-select settings.
@@ -509,6 +510,7 @@ const (
 	settingsRowSplitInitialCap
 	settingsRowSplitReplenishCap
 	settingsRowTakerCloseMarket
+	settingsRowBlockPendingRedemption
 	settingsRowMinAskPrice
 	settingsRowMaxAskPrice
 	settingsRowMakerMergeBuffer
@@ -738,6 +740,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Split Replenish Cap"
 	case settingsRowTakerCloseMarket:
 		return "Taker Close Market"
+	case settingsRowBlockPendingRedemption:
+		return "Wait Redeem Before Entry"
 	case settingsRowMinAskPrice:
 		if maker {
 			return "Maker Min Buy Price"
@@ -1138,30 +1142,31 @@ type TUI struct {
 	orderBook  *OrderBook
 	orderBooks map[string]*OrderBook
 
-	markets         map[string]*MarketData
-	marketSlug      string
-	outcomes        []string
-	endTime         time.Time
-	lastPrices      map[string]float64
-	lastBids        map[string]float64
-	lastAsks        map[string]float64
-	realBids        map[string]float64
-	realAsks        map[string]float64
-	pendingOrders   map[string][]PendingOrder
-	orderBookDepth  map[string]map[string][]MarketLevel
-	eventLog        []string
-	maxEvents       int
-	orderHistory    []OrderHistoryEntry
-	maxOrderHistory int
-	roundHistory    []RoundHistoryEntry
-	maxRoundHistory int
-	isKilled        bool
-	killReason      string
-	tradeFactor     float64
-	startTime       time.Time
-	width           int
-	height          int
-	mode            string // "Paper" or "Real" - for footer display
+	markets            map[string]*MarketData
+	marketSlug         string
+	outcomes           []string
+	endTime            time.Time
+	lastPrices         map[string]float64
+	lastBids           map[string]float64
+	lastAsks           map[string]float64
+	realBids           map[string]float64
+	realAsks           map[string]float64
+	pendingOrders      map[string][]PendingOrder
+	orderBookDepth     map[string]map[string][]MarketLevel
+	eventLog           []string
+	maxEvents          int
+	orderHistory       []OrderHistoryEntry
+	maxOrderHistory    int
+	roundHistory       []RoundHistoryEntry
+	maxRoundHistory    int
+	isKilled           bool
+	killReason         string
+	tradeFactor        float64
+	startTime          time.Time
+	width              int
+	height             int
+	mode               string // "Paper" or "Real" - for footer display
+	manualTradingPause bool
 
 	restLatency    time.Duration
 	restLatencyAvg time.Duration
@@ -1197,37 +1202,38 @@ func (t *TUI) GetAndClearRestart() bool {
 // ─── Bubbletea internals ──────────────────────────────────────────────────────
 
 type tuiSnapshot struct {
-	version        uint64
-	markets        map[string]*MarketData
-	marketSlug     string
-	outcomes       []string
-	endTime        time.Time
-	lastPrices     map[string]float64
-	lastBids       map[string]float64
-	lastAsks       map[string]float64
-	realBids       map[string]float64
-	realAsks       map[string]float64
-	pendingOrders  map[string][]PendingOrder
-	orderBookDepth map[string]map[string][]MarketLevel
-	eventLog       []string
-	orderHistory   []OrderHistoryEntry
-	roundHistory   []RoundHistoryEntry
-	isKilled       bool
-	killReason     string
-	tradeFactor    float64
-	maxTradeSize   float64
-	settings       TUISettings
-	startTime      time.Time
-	width          int
-	height         int
-	mode           string
-	restLatency    time.Duration
-	restLatencyAvg time.Duration
-	wsLatency      time.Duration
-	wsPingLatency  time.Duration
-	latencySource  string
-	splitPositions []SplitPosition
-	walletTruth    []WalletTruthPosition
+	version            uint64
+	markets            map[string]*MarketData
+	marketSlug         string
+	outcomes           []string
+	endTime            time.Time
+	lastPrices         map[string]float64
+	lastBids           map[string]float64
+	lastAsks           map[string]float64
+	realBids           map[string]float64
+	realAsks           map[string]float64
+	pendingOrders      map[string][]PendingOrder
+	orderBookDepth     map[string]map[string][]MarketLevel
+	eventLog           []string
+	orderHistory       []OrderHistoryEntry
+	roundHistory       []RoundHistoryEntry
+	isKilled           bool
+	killReason         string
+	tradeFactor        float64
+	maxTradeSize       float64
+	settings           TUISettings
+	startTime          time.Time
+	width              int
+	height             int
+	mode               string
+	manualTradingPause bool
+	restLatency        time.Duration
+	restLatencyAvg     time.Duration
+	wsLatency          time.Duration
+	wsPingLatency      time.Duration
+	latencySource      string
+	splitPositions     []SplitPosition
+	walletTruth        []WalletTruthPosition
 
 	stats           Stats
 	exposure        float64
@@ -1615,6 +1621,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.width = m.tui.width
 		m.snap.height = m.tui.height
 		m.snap.mode = m.tui.mode
+		m.snap.manualTradingPause = m.tui.manualTradingPause
 		m.snap.restLatency = m.tui.restLatency
 		m.snap.restLatencyAvg = m.tui.restLatencyAvg
 		m.snap.wsLatency = m.tui.wsLatency
@@ -1763,6 +1770,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			switch key {
+			case "p", "P":
+				m.snap.manualTradingPause = m.tui.ToggleTradingPause()
+				return m, nil
 			case "s", "S":
 				m.showSettings = false
 				m.refreshScrollMetrics()
@@ -1990,6 +2000,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowTakerCloseMarket:
 					m.tui.settings.TakerCloseMarket = !m.tui.settings.TakerCloseMarket
+					changed = true
+				case settingsRowBlockPendingRedemption:
+					m.tui.settings.BlockNewEntriesOnPendingRedemption = !m.tui.settings.BlockNewEntriesOnPendingRedemption
 					changed = true
 				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice -= 0.01
@@ -2249,6 +2262,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowTakerCloseMarket:
 					m.tui.settings.TakerCloseMarket = !m.tui.settings.TakerCloseMarket
 					changed = true
+				case settingsRowBlockPendingRedemption:
+					m.tui.settings.BlockNewEntriesOnPendingRedemption = !m.tui.settings.BlockNewEntriesOnPendingRedemption
+					changed = true
 				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice += 0.01
 					if m.tui.settings.MinAskPrice > 0.99 {
@@ -2390,6 +2406,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Normal key handling ──────────────────────────────────────────────
 		switch key {
+		case "p", "P":
+			m.snap.manualTradingPause = m.tui.ToggleTradingPause()
+			return m, nil
 		case "up", "k":
 			m.scrollBy(-1)
 			return m, nil
@@ -2569,6 +2588,24 @@ func (t *TUI) SetMode(mode string) {
 	defer t.mu.Unlock()
 	t.mode = mode
 	t.markDirtyLocked()
+}
+
+func (t *TUI) ToggleTradingPause() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.manualTradingPause = !t.manualTradingPause
+	if t.manualTradingPause {
+		t.appendEventLocked("⏸️ Manual trading pause enabled")
+	} else {
+		t.appendEventLocked("▶️ Manual trading pause disabled")
+	}
+	return t.manualTradingPause
+}
+
+func (t *TUI) IsTradingPaused() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.manualTradingPause
 }
 
 func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.Time) {
@@ -4993,10 +5030,7 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 
 // renderFooter: slim status bar.
 func (m tuiModel) renderFooter(w int, scrollOffset, maxOffset int) string {
-	m.tui.mu.Lock()
-	mode := m.tui.mode
-	m.tui.mu.Unlock()
-
+	mode := m.snap.mode
 	if mode == "" {
 		mode = "Paper"
 	}
@@ -5007,16 +5041,24 @@ func (m tuiModel) renderFooter(w int, scrollOffset, maxOffset int) string {
 		scrollText = fmt.Sprintf("Scroll %d/%d", scrollOffset, maxOffset)
 	}
 	leftText := "  Polyarb-15m  ·  " + modeText + "  ·  " + scrollText
-	rightText := "[↑↓/jk] scroll  [PgUp/PgDn] page  [g/G] top/btm  [q] quit  "
+	pauseLabel := " LIVE "
+	pauseStyle := lipgloss.NewStyle().Foreground(clrEmerald).Bold(true)
+	pauseAction := "pause"
+	if m.snap.manualTradingPause {
+		pauseLabel = " PAUSED "
+		pauseStyle = styleBgRedBold
+		pauseAction = "resume"
+	}
+	rightText := fmt.Sprintf("[P] %s  [↑↓/jk] scroll  [PgUp/PgDn] page  [g/G] top/btm  [q] quit  ", pauseAction)
 	if w < 120 {
-		rightText = "[↑↓/jk] scroll  [PgUp/PgDn] page  [q] quit  "
+		rightText = fmt.Sprintf("[P] %s  [↑↓/jk] scroll  [PgUp/PgDn] page  [q] quit  ", pauseAction)
 	}
 	if w < 92 {
-		rightText = "[↑↓] scroll  [q] quit  "
+		rightText = fmt.Sprintf("[P] %s  [↑↓] scroll  [q] quit  ", pauseAction)
 	}
-	left := styleMuted.Render(leftText)
+	left := styleMuted.Render(leftText) + "  " + pauseStyle.Render(pauseLabel)
 	right := styleMuted.Render(rightText)
-	leftLen := len(leftText)
+	leftLen := len(leftText) + 2 + len(pauseLabel)
 	rightLen := len(rightText)
 	gap := w - 2 - leftLen - rightLen
 	if gap < 1 {
@@ -5304,6 +5346,16 @@ func (m tuiModel) renderSettings(w int) string {
 			label: settingsRowLabel(cfg, settingsRowTakerCloseMarket),
 			value: func() string {
 				if cfg.TakerCloseMarket {
+					return styleGreen.Render("  ON ")
+				}
+				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowBlockPendingRedemption),
+			value: func() string {
+				if cfg.BlockNewEntriesOnPendingRedemption {
 					return styleGreen.Render("  ON ")
 				}
 				return styleMuted.Render(" OFF ")

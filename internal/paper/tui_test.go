@@ -1177,6 +1177,75 @@ func TestSettingsRestartKeyRequestsRestart(t *testing.T) {
 	}
 }
 
+func TestTUIToggleTradingPause(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	if tui.IsTradingPaused() {
+		t.Fatal("expected manual trading pause to start disabled")
+	}
+
+	if paused := tui.ToggleTradingPause(); !paused {
+		t.Fatal("expected toggle to enable manual trading pause")
+	}
+	if !tui.IsTradingPaused() {
+		t.Fatal("expected manual trading pause to remain enabled")
+	}
+	if len(tui.eventLog) == 0 || !strings.Contains(tui.eventLog[len(tui.eventLog)-1], "Manual trading pause enabled") {
+		t.Fatalf("expected pause-enable event log, got %#v", tui.eventLog)
+	}
+
+	if paused := tui.ToggleTradingPause(); paused {
+		t.Fatal("expected second toggle to disable manual trading pause")
+	}
+	if tui.IsTradingPaused() {
+		t.Fatal("expected manual trading pause to be disabled")
+	}
+	if len(tui.eventLog) == 0 || !strings.Contains(tui.eventLog[len(tui.eventLog)-1], "Manual trading pause disabled") {
+		t.Fatalf("expected pause-disable event log, got %#v", tui.eventLog)
+	}
+}
+
+func TestPauseHotkeyTogglesTradingPause(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	model := tuiModel{tui: tui}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	updated := next.(tuiModel)
+	if !tui.IsTradingPaused() {
+		t.Fatal("expected p hotkey to enable manual trading pause")
+	}
+	if !updated.snap.manualTradingPause {
+		t.Fatal("expected snapshot pause state to update immediately")
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	updated = next.(tuiModel)
+	if tui.IsTradingPaused() {
+		t.Fatal("expected P hotkey to disable manual trading pause")
+	}
+	if updated.snap.manualTradingPause {
+		t.Fatal("expected snapshot pause state to clear immediately")
+	}
+}
+
+func TestPauseHotkeyDoesNotInterceptSettingsTextEdit(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	model := tuiModel{
+		tui:           tui,
+		showSettings:  true,
+		settingsEdit:  true,
+		settingsInput: "rpc-",
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	updated := next.(tuiModel)
+	if tui.IsTradingPaused() {
+		t.Fatal("expected p typed during settings edit to avoid toggling pause")
+	}
+	if updated.settingsInput != "rpc-p" {
+		t.Fatalf("expected settings input to keep typed p, got %q", updated.settingsInput)
+	}
+}
+
 func TestInitSettingsKeepsLowCopytradePollInterval(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -1873,8 +1942,26 @@ func TestRenderFooterShowsScrollStatus(t *testing.T) {
 	if !strings.Contains(rendered, "Scroll 12/50") {
 		t.Fatalf("expected footer scroll status, got %q", rendered)
 	}
+	if !strings.Contains(rendered, "[P] pause") {
+		t.Fatalf("expected footer pause hotkey, got %q", rendered)
+	}
 	if !strings.Contains(rendered, "[↑↓/jk] scroll") {
 		t.Fatalf("expected footer controls, got %q", rendered)
+	}
+}
+
+func TestRenderFooterShowsPausedStatus(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	model := tuiModel{
+		tui:  tui,
+		snap: tuiSnapshot{mode: "Real", manualTradingPause: true},
+	}
+	rendered := model.renderFooter(140, 0, 0)
+	if !strings.Contains(rendered, "PAUSED") {
+		t.Fatalf("expected footer pause badge, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "[P] resume") {
+		t.Fatalf("expected footer resume hotkey, got %q", rendered)
 	}
 }
 

@@ -1207,6 +1207,18 @@ func (e *Engine) ClearPendingRedemption(marketID string) {
 	e.SetPendingRedemption(marketID, 0)
 }
 
+// GetPendingRedemptions returns a snapshot of pending redemption payouts by market.
+func (e *Engine) GetPendingRedemptions() map[string]float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	result := make(map[string]float64, len(e.pendingRedemptions))
+	for marketID, payout := range e.pendingRedemptions {
+		result[marketID] = payout
+	}
+	return result
+}
+
 // SettlePendingRedemption moves a pending redemption payout into cash balance and
 // clears the pending marker for that market. Returns the settled payout amount.
 func (e *Engine) SettlePendingRedemption(marketID string) float64 {

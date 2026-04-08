@@ -311,6 +311,48 @@ func TestRealbotSizingCapitalForTradeUsesCurrentEquityInTakerClose(t *testing.T)
 	}
 }
 
+func TestRealbotNewEntryBlockReasonBlocksPriorRoundInventory(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	if _, err := engine.BuyForMarket("BTC-older", "Up", 0.50, 5.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+		BlockNewEntriesOnPendingRedemption: true,
+	})
+	if !blocked {
+		t.Fatal("expected prior-round inventory to block new entries")
+	}
+	if !strings.Contains(reason, "prior-round inventory") {
+		t.Fatalf("expected inventory block reason, got %q", reason)
+	}
+
+	if reason, blocked = realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{}); blocked || reason != "" {
+		t.Fatalf("expected toggle-off mode not to block, got blocked=%v reason=%q", blocked, reason)
+	}
+
+	if reason, blocked = realbotNewEntryBlockReason("BTC-older", engine, nil, paper.TUISettings{
+		BlockNewEntriesOnPendingRedemption: true,
+	}); blocked || reason != "" {
+		t.Fatalf("expected current market inventory not to block itself, got blocked=%v reason=%q", blocked, reason)
+	}
+}
+
+func TestRealbotNewEntryBlockReasonBlocksPendingRedemptionPayout(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	engine.SetPendingRedemption("BTC-older", 12.0)
+
+	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+		BlockNewEntriesOnPendingRedemption: true,
+	})
+	if !blocked {
+		t.Fatal("expected pending redemption payout to block new entries")
+	}
+	if !strings.Contains(reason, "pending redemption") {
+		t.Fatalf("expected pending redemption reason, got %q", reason)
+	}
+}
+
 func TestRealbotShouldKeepPendingRedeemTxTracksConfirmationTimeouts(t *testing.T) {
 	err := errors.New("redeem tx 0xabc confirmation pending: timeout waiting for transaction")
 	if !realbotShouldKeepPendingRedeemTx("0xabc", err) {
@@ -1554,18 +1596,15 @@ func TestRealbotCanUseLocalBuyQuote(t *testing.T) {
 		"Down": {{Price: 0.36, Size: 10}},
 		"Up":   {{Price: 0.64, Size: 8}},
 	}
-	state := map[string]realbotQuoteState{
-		"Down": {UpdatedAt: now.Add(-40 * time.Millisecond), Source: "ws"},
-		"Up":   {UpdatedAt: now.Add(-70 * time.Millisecond), Source: "rest"},
-	}
+	lastPairUpdate := now.Add(-70 * time.Millisecond)
 
-	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
+	fresh, age, reason := realbotCanUseLocalBuyQuote(now, outcomes, bids, asks, depth, lastPairUpdate, 250*time.Millisecond)
 	if !fresh || reason != "" {
 		t.Fatalf("expected fresh local quote, got fresh=%v age=%v reason=%q", fresh, age, reason)
 	}
 
-	state["Up"] = realbotQuoteState{UpdatedAt: now.Add(-400 * time.Millisecond), Source: "ws"}
-	fresh, _, reason = realbotCanUseLocalBuyQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
+	lastPairUpdate = now.Add(-400 * time.Millisecond)
+	fresh, _, reason = realbotCanUseLocalBuyQuote(now, outcomes, bids, asks, depth, lastPairUpdate, 250*time.Millisecond)
 	if fresh || reason == "" {
 		t.Fatalf("expected stale quote rejection, got fresh=%v reason=%q", fresh, reason)
 	}
@@ -1602,8 +1641,9 @@ func TestRealbotEnsureFreshBuyExecutionQuoteFallsBackToREST(t *testing.T) {
 		"Down": {UpdatedAt: time.Now().Add(-10 * time.Second), Source: "ws"},
 		"Up":   {UpdatedAt: time.Now().Add(-10 * time.Second), Source: "ws"},
 	}
+	lastPairUpdate := time.Time{}
 
-	source, _, detail, err := realbotEnsureFreshBuyExecutionQuote(context.Background(), client, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, 250*time.Millisecond)
+	source, _, detail, err := realbotEnsureFreshBuyExecutionQuote(context.Background(), client, market, outcomes, tokenBids, tokenAsks, tokenFullBids, tokenFullAsks, quoteState, lastPairUpdate, 250*time.Millisecond, &lastPairUpdate)
 	if err != nil {
 		t.Fatalf("expected REST refresh to succeed, got %v", err)
 	}
@@ -1700,7 +1740,7 @@ func TestHandleRestFallbackWithDepthSkipsOlderBooksWhenCurrentQuoteIsFresh(t *te
 	ok := handleRestFallbackWithDepth(context.Background(), "SOL", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
-	}, bids, asks, map[string]float64{}, map[string]float64{}, fullBids, fullAsks, quoteState, nil, engine, client, tui, false)
+	}, bids, asks, map[string]float64{}, map[string]float64{}, fullBids, fullAsks, quoteState, nil, nil, engine, client, tui, false)
 	if !ok {
 		t.Fatal("expected fallback call to complete")
 	}
@@ -1740,7 +1780,7 @@ func TestHandleRestFallbackWithDepthPreservesDisplayForOneSidedBooks(t *testing.
 	ok := handleRestFallbackWithDepth(context.Background(), "BTC", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
-	}, bids, asks, displayBids, displayAsks, fullBids, fullAsks, quoteState, nil, engine, client, tui, false)
+	}, bids, asks, displayBids, displayAsks, fullBids, fullAsks, quoteState, nil, nil, engine, client, tui, false)
 	if !ok {
 		t.Fatal("expected fallback call to complete")
 	}
@@ -1767,18 +1807,15 @@ func TestRealbotCanUseLocalSellQuote(t *testing.T) {
 		"Down": {{Price: 0.54, Size: 8}},
 		"Up":   {{Price: 0.49, Size: 10}},
 	}
-	state := map[string]realbotQuoteState{
-		"Down": {UpdatedAt: now.Add(-40 * time.Millisecond), Source: "ws"},
-		"Up":   {UpdatedAt: now.Add(-70 * time.Millisecond), Source: "rest"},
-	}
+	lastPairUpdate := now.Add(-70 * time.Millisecond)
 
-	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
+	fresh, age, reason := realbotCanUseLocalSellQuote(now, outcomes, bids, asks, depth, lastPairUpdate, 250*time.Millisecond)
 	if !fresh || reason != "" || age != 70*time.Millisecond {
 		t.Fatalf("expected fresh local sell quote, got fresh=%v age=%v reason=%q", fresh, age, reason)
 	}
 
-	state["Up"] = realbotQuoteState{UpdatedAt: now.Add(-400 * time.Millisecond), Source: "ws"}
-	fresh, _, reason = realbotCanUseLocalSellQuote(now, outcomes, bids, asks, depth, state, 250*time.Millisecond)
+	lastPairUpdate = now.Add(-400 * time.Millisecond)
+	fresh, _, reason = realbotCanUseLocalSellQuote(now, outcomes, bids, asks, depth, lastPairUpdate, 250*time.Millisecond)
 	if fresh || reason == "" {
 		t.Fatalf("expected stale sell quote rejection, got fresh=%v reason=%q", fresh, reason)
 	}
