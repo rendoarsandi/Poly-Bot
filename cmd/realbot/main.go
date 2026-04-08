@@ -47,9 +47,9 @@ const (
 	realbotFastVerifyTTL             = 6 * time.Second
 	minOnChainActionShares           = 0.01
 	realbotUIRefreshInterval         = 1000 * time.Millisecond
-	realbotMainLoopInterval          = 125 * time.Millisecond
-	realbotCopytradeLoopIntervalMin  = 200 * time.Millisecond
-	realbotCopytradeLoopIntervalMax  = 500 * time.Millisecond
+	realbotMainLoopInterval          = 50 * time.Millisecond
+	realbotCopytradeLoopIntervalMin  = 100 * time.Millisecond
+	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	realbotCopytradeUIRefreshMin     = 1000 * time.Millisecond
 	realbotCopytradeUIRefreshMax     = 1000 * time.Millisecond
 	realbotCopytradeRetryQueueCap    = 256
