@@ -3417,9 +3417,77 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 	t.markDirtyLocked()
 }
 
+func roundHistoryPositionBookValueForMarket(positions map[string]Position, marketID string) (float64, bool) {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return 0, false
+	}
+
+	marketPositions := make([]Position, 0, len(positions))
+	for _, pos := range positions {
+		if strings.EqualFold(strings.TrimSpace(pos.MarketID), marketID) {
+			marketPositions = append(marketPositions, pos)
+		}
+	}
+	if len(marketPositions) == 0 {
+		return 0, false
+	}
+
+	if len(marketPositions) < 2 {
+		value := 0.0
+		for _, pos := range marketPositions {
+			value += pos.TotalCost
+		}
+		return value, true
+	}
+
+	matchedQty := marketPositions[0].Quantity
+	for _, pos := range marketPositions[1:] {
+		if pos.Quantity < matchedQty {
+			matchedQty = pos.Quantity
+		}
+	}
+	if matchedQty < 0 {
+		matchedQty = 0
+	}
+
+	value := matchedQty
+	for _, pos := range marketPositions {
+		if pos.Quantity <= 0 {
+			continue
+		}
+		unmatchedQty := pos.Quantity - matchedQty
+		if unmatchedQty <= 0 {
+			continue
+		}
+		value += (pos.TotalCost / pos.Quantity) * unmatchedQty
+	}
+	return value, true
+}
+
+func roundHistoryRedemptionDelta(entry RoundHistoryEntry, pnlDelta float64, newRedemptions []*RedemptionResult) float64 {
+	if len(newRedemptions) == 0 {
+		return pnlDelta
+	}
+
+	delta := 0.0
+	for _, req := range newRedemptions {
+		if req == nil {
+			continue
+		}
+		if bookValue, ok := roundHistoryPositionBookValueForMarket(entry.positions, req.MarketID); ok {
+			delta += req.TotalPayout - bookValue
+			continue
+		}
+		delta += req.TotalPnL
+	}
+	return delta
+}
+
 func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedemptions []*RedemptionResult) {
-	entry.EndingEquity += pnlDelta
-	entry.PnL += pnlDelta
+	redemptionDelta := roundHistoryRedemptionDelta(*entry, pnlDelta, newRedemptions)
+	entry.EndingEquity += redemptionDelta
+	entry.PnL += redemptionDelta
 
 	// Append new redemptions
 	entry.redemptions = append(entry.redemptions, newRedemptions...)

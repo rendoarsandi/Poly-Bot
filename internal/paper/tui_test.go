@@ -1763,42 +1763,42 @@ func TestRecordRoundCapturesOutcomeShares(t *testing.T) {
 
 func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
-	tui.RecordRound(100.0, 86.72, -13.28, 76, map[string]Position{
-		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 39.78, TotalCost: 22.28},
-		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 37.74, TotalCost: 22.64},
+	tui.RecordRound(100.0, 100.0, 0.0, 10, map[string]Position{
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 4.0, TotalCost: 2.00},
 	}, nil)
-	tui.RecordRound(86.72, 92.73, 6.01, 12, map[string]Position{
-		"m2:Up": {MarketID: "m2", Outcome: "Up", Quantity: 1.02, TotalCost: 0.61},
+	tui.RecordRound(100.0, 101.0, 1.0, 12, map[string]Position{
+		"m2:Up": {MarketID: "m2", Outcome: "Up", Quantity: 1.0, TotalCost: 0.50},
 	}, nil)
 
-	tui.AmendMostRecentRoundForMarket("m1", 6.01, []*RedemptionResult{{
+	tui.AmendMostRecentRoundForMarket("m1", 1.60, []*RedemptionResult{{
 		MarketID:       "m1",
-		WinningOutcome: "Down",
-		WinningShares:  37.74,
-		WinningPayout:  37.74,
-		WinningCost:    22.64,
-		WinningPnL:     15.10,
-		LosingOutcome:  "Up",
-		LosingShares:   39.78,
-		LosingCost:     22.28,
-		TotalPayout:    37.74,
-		TotalPnL:       -7.18,
+		WinningOutcome: "Up",
+		WinningShares:  6.0,
+		WinningPayout:  6.0,
+		WinningCost:    2.40,
+		WinningPnL:     3.60,
+		LosingOutcome:  "Down",
+		LosingShares:   4.0,
+		LosingCost:     2.00,
+		TotalPayout:    6.0,
+		TotalPnL:       1.60,
 	}})
 
 	history := tui.GetRoundHistory()
 	if len(history) != 2 {
 		t.Fatalf("expected 2 round history entries, got %d", len(history))
 	}
-	if got := history[0].EndingEquity; math.Abs(got-92.73) > 0.0001 {
-		t.Fatalf("expected matching round ending equity to be amended to 92.73, got %.2f", got)
+	if got := history[0].EndingEquity; math.Abs(got-101.20) > 0.0001 {
+		t.Fatalf("expected matching round ending equity to be amended by redemption delta to 101.20, got %.2f", got)
 	}
-	if got := history[0].PnL; math.Abs(got-(-7.27)) > 0.0001 {
-		t.Fatalf("expected matching round pnl to be amended to -7.27, got %.2f", got)
+	if got := history[0].PnL; math.Abs(got-1.20) > 0.0001 {
+		t.Fatalf("expected matching round pnl to be amended by redemption delta to 1.20, got %.2f", got)
 	}
-	if history[1].EndingEquity != 92.73 {
+	if history[1].EndingEquity != 101.0 {
 		t.Fatalf("expected unrelated latest round to remain unchanged, got %.2f", history[1].EndingEquity)
 	}
-	if !strings.Contains(history[0].ShareSummary, "Down 37.74@$0.60") || !strings.Contains(history[0].ShareSummary, "Up 39.78@$0.56") {
+	if !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
 		t.Fatalf("expected amended round summary to keep redemption outcomes, got %q", history[0].ShareSummary)
 	}
 }
