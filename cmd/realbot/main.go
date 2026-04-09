@@ -3824,11 +3824,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			bid1 := tokenBids[outcomes[0]]
 			bid2 := tokenBids[outcomes[1]]
 
-			// Prevent trading on transient WS glitches where the book is one-sided or crossed
-			if bid1 <= 0 || bid2 <= 0 || ask1 <= bid1 || ask2 <= bid2 {
-				continue
-			}
-
 			// Read live price-range filter from settings panel (adjustable at runtime)
 			realbotCfg := tui.GetSettings()
 			rMinAsk := realbotCfg.MinAskPrice
@@ -3836,6 +3831,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			ladderedMode := arbMode == paperArbModeLaddered
 			if ladderedMode {
 				rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
+			}
+			// Keep the strict crossed-book guard for paired arb. In laddered mode we
+			// only need a tradable ask on one side, so don't block on stale/missing bids.
+			if !ladderedMode && (bid1 <= 0 || bid2 <= 0 || ask1 <= bid1 || ask2 <= bid2) {
+				continue
 			}
 			setEntryCooldown := func(d time.Duration) {
 				if !ladderedMode {
@@ -3895,26 +3895,28 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					}
 					requestedShares := shares
 					// Fee estimation and balance check logging removed per user request.
-					buyQuoteCtx, cancelBuyQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
-					_, _, _, buyQuoteErr := realbotEnsureFreshBuyExecutionQuote(
-						buyQuoteCtx,
-						restClient,
-						market,
-						outcomes,
-						tokenBids,
-						tokenAsks,
-						tokenFullBids,
-						tokenFullAsks,
-						quoteState,
-						lastPairUpdate,
-						executionQuoteMaxAge,
-						&lastPairUpdate,
-					)
-					cancelBuyQuote()
-					if buyQuoteErr != nil {
-						tui.LogEvent("[%s] ⚠️ Skipping buy: fresh execution quote unavailable (%v)", id, buyQuoteErr)
-						setEntryCooldown(500 * time.Millisecond)
-						continue
+					if !ladderedMode {
+						buyQuoteCtx, cancelBuyQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+						_, _, _, buyQuoteErr := realbotEnsureFreshBuyExecutionQuote(
+							buyQuoteCtx,
+							restClient,
+							market,
+							outcomes,
+							tokenBids,
+							tokenAsks,
+							tokenFullBids,
+							tokenFullAsks,
+							quoteState,
+							lastPairUpdate,
+							executionQuoteMaxAge,
+							&lastPairUpdate,
+						)
+						cancelBuyQuote()
+						if buyQuoteErr != nil {
+							tui.LogEvent("[%s] ⚠️ Skipping buy: fresh execution quote unavailable (%v)", id, buyQuoteErr)
+							setEntryCooldown(500 * time.Millisecond)
+							continue
+						}
 					}
 
 					ask1 = tokenAsks[outcomes[0]]
@@ -4327,7 +4329,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							attributionTrusted := false
-							if haveInitialSnapshot {
+							// Laddered mode prioritizes entry cadence. Rely on immediate execution
+							// confirmation here and let wallet-truth sync reconcile asynchronously.
+							if haveInitialSnapshot && !ladderedMode {
 								prevSide1Success, prevSide2Success := side1Success, side2Success
 								rawAttribution1 := attributedBuyFill(exec1, requestSize1, 0, false)
 								rawAttribution2 := attributedBuyFill(exec2, requestSize2, 0, false)

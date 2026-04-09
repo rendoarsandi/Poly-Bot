@@ -5079,6 +5079,18 @@ func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 	return makePanel(inner, clrSlate, sb.String())
 }
 
+func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
+	if len(entry.positions) == 0 {
+		return false
+	}
+	for _, pos := range entry.positions {
+		if pos.Quantity > 0.000001 {
+			return true
+		}
+	}
+	return false
+}
+
 func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 	s := m.snap
 	inner := w - 4
@@ -5094,6 +5106,10 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 	losses := 0
 	flats := 0
 	for _, entry := range s.roundHistory {
+		if roundHistoryHasOpenInventory(entry) {
+			flats++
+			continue
+		}
 		switch {
 		case entry.PnL > 0.0001:
 			wins++
@@ -5116,19 +5132,26 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 
 	for i := len(s.roundHistory) - 1; i >= len(s.roundHistory)-displayCount && i >= 0; i-- {
 		entry := s.roundHistory[i]
+		openInventory := roundHistoryHasOpenInventory(entry)
 		pnlStyle := styleDimmed
 		resultLabel := "FLAT"
 		resultStyle := styleDimmed
 		pnlText := signedDollar(entry.PnL)
-		switch {
-		case entry.PnL > 0.0001:
-			pnlStyle = styleGreen
-			resultLabel = "WIN"
-			resultStyle = styleGreen
-		case entry.PnL < -0.0001:
-			pnlStyle = styleRed
-			resultLabel = "LOSS"
-			resultStyle = styleRed
+		if openInventory {
+			pnlStyle = styleYellow
+			resultLabel = "OPEN"
+			resultStyle = styleYellow
+		} else {
+			switch {
+			case entry.PnL > 0.0001:
+				pnlStyle = styleGreen
+				resultLabel = "WIN"
+				resultStyle = styleGreen
+			case entry.PnL < -0.0001:
+				pnlStyle = styleRed
+				resultLabel = "LOSS"
+				resultStyle = styleRed
+			}
 		}
 
 		sb.WriteString(fmt.Sprintf("  %-4d  %s  $%-9.2f  $%-9.2f  %s  %-5d  %s\n",

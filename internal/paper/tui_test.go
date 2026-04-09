@@ -1692,6 +1692,39 @@ func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	}
 }
 
+func TestRenderRoundHistoryMarksOpenInventoryAsCarry(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			roundHistory: []RoundHistoryEntry{
+				{
+					Number:         1,
+					Timestamp:      time.Unix(3, 0),
+					StartingEquity: 102.94,
+					EndingEquity:   97.08,
+					PnL:            -5.87,
+					Trades:         58,
+					ShareSummary:   "Up 26.62@$0.55  |  Down 30.79@$0.59",
+					positions: map[string]Position{
+						"btc:up":   {MarketID: "btc", Outcome: "Up", Quantity: 26.62, AvgPrice: 0.55},
+						"btc:down": {MarketID: "btc", Outcome: "Down", Quantity: 30.79, AvgPrice: 0.59},
+					},
+				},
+			},
+		},
+	}
+
+	rendered := model.renderRoundHistory(120, 5)
+	if !strings.Contains(rendered, "OPEN") {
+		t.Fatalf("expected open-inventory carry label in round history, got %q", rendered)
+	}
+	if strings.Contains(rendered, "LOSS") {
+		t.Fatalf("expected carry round not to be classified as loss, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "W/L/F 0/0/1") {
+		t.Fatalf("expected carry round to count toward flat bucket, got %q", rendered)
+	}
+}
+
 func TestApplyPaperBalanceLockedAllowsOpenInventory(t *testing.T) {
 	engine := NewEngine(1000.0)
 	if _, err := engine.BuyForMarket("BTC#m1", "Up", 0.5, 10); err != nil {
