@@ -1413,8 +1413,16 @@ type realbotQuoteState struct {
 }
 
 type realbotAsyncEntryResult struct {
-	lastTradeAt   time.Time
-	cooldownUntil time.Time
+	lastTradeAt            time.Time
+	cooldownUntil          time.Time
+	ladderedEntrySeq       uint64
+	ladderedEntryConfirmed bool
+}
+
+type realbotLadderedEntry struct {
+	seq  uint64
+	ask0 float64
+	ask1 float64
 }
 
 type realbotMakerQuote struct {
@@ -2387,10 +2395,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
 	lastPairUpdate := time.Time{}
-	ladderedEntries := make(map[string][]struct {
-		ask0 float64
-		ask1 float64
-	})
+	var ladderedEntries []realbotLadderedEntry
+	var nextLadderedEntrySeq uint64
 	lastBinanceLog := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -2495,6 +2501,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		select {
 		case result := <-entryExecutionDone:
 			entryExecutionInFlight = false
+			ladderedEntries = realbotResolveLadderedEntry(ladderedEntries, result.ladderedEntrySeq, result.ladderedEntryConfirmed)
 			if !result.lastTradeAt.IsZero() {
 				lastTrade = result.lastTradeAt
 			}
@@ -4058,13 +4065,16 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						}
 
 						ladderedDirection := -1
+						ladderedEntrySeq := uint64(0)
 						if ladderedMode {
 							var directionalReady bool
-							ladderedDirection, directionalReady = ladderedTakerDirectionalSide(ladderedEntries[id], ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+							ladderedDirection, directionalReady = ladderedTakerDirectionalSide(ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 							if !directionalReady {
 								continue
 							}
-							ladderedEntries[id] = append(ladderedEntries[id], struct{ask0, ask1 float64}{ask1, ask2})
+							nextLadderedEntrySeq++
+							ladderedEntrySeq = nextLadderedEntrySeq
+							ladderedEntries = append(ladderedEntries, realbotLadderedEntry{seq: ladderedEntrySeq, ask0: ask1, ask1: ask2})
 						}
 
 						requestSize1 := shares
@@ -4237,8 +4247,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							entryExecutionDone chan<- realbotAsyncEntryResult,
 							shares float64,
 							acquiredGate bool,
+							ladderedEntrySeq uint64,
 						) {
-							asyncResult := realbotAsyncEntryResult{}
+							asyncResult := realbotAsyncEntryResult{ladderedEntrySeq: ladderedEntrySeq}
 							defer func() {
 								asyncResult.lastTradeAt = time.Now()
 								if acquiredGate && entryGate != nil {
@@ -4246,7 +4257,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 								select {
 								case entryExecutionDone <- asyncResult:
-								default:
+								case <-ctx.Done():
 								}
 							}()
 
@@ -4482,6 +4493,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									if !advancedAnchor {
 										anchorNote = "anchor unchanged"
 									}
+									asyncResult.ladderedEntryConfirmed = advancedAnchor
 									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[0], formatShareQty(filled1), formatShareQty(requestSize1), ask1, anchorNote)
 									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 										engine.SyncBalanceNeutral(newBal)
@@ -4496,6 +4508,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									if !advancedAnchor {
 										anchorNote = "anchor unchanged"
 									}
+									asyncResult.ladderedEntryConfirmed = advancedAnchor
 									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[1], formatShareQty(filled2), formatShareQty(requestSize2), ask2, anchorNote)
 									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 										engine.SyncBalanceNeutral(newBal)
@@ -4684,6 +4697,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							entryExecutionDone,
 							shares,
 							acquiredGate,
+							ladderedEntrySeq,
 						)
 						continue
 					}
@@ -8694,7 +8708,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	realbotCopytradeQueueRetryTrades(state, retryTrades)
 }
 
-func ladderedTakerDirectionalSide(entries []struct{ ask0, ask1 float64 }, ask0, ask1, moveCents float64) (int, bool) {
+func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, moveCents float64) (int, bool) {
 	if len(entries) == 0 {
 		switch {
 		case ask0 > ask1+1e-9:
@@ -8725,6 +8739,19 @@ func ladderedTakerDirectionalSide(entries []struct{ ask0, ask1 float64 }, ask0, 
 		}
 	}
 	return -1, false
+}
+
+func realbotResolveLadderedEntry(entries []realbotLadderedEntry, seq uint64, confirmed bool) []realbotLadderedEntry {
+	if seq == 0 || confirmed {
+		return entries
+	}
+	for i := range entries {
+		if entries[i].seq != seq {
+			continue
+		}
+		return append(entries[:i], entries[i+1:]...)
+	}
+	return entries
 }
 
 func realbotLadderedMoveThreshold(moveCents float64) float64 {

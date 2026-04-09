@@ -4465,14 +4465,30 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	}
 
 	uptime := time.Since(s.startTime).Round(time.Second)
-	winCount, lossCount := positionWinLossFromOrderHistory(s.orderHistory, strings.EqualFold(s.settings.PaperArbMode, "copytrade"))
-	if winCount+lossCount == 0 {
-		winCount = stats.WinningTrades
-		lossCount = stats.LosingTrades
-	}
-	if winCount+lossCount == 0 && profitable+losingRounds > 0 && !hasWalletTruthInventory {
-		winCount = profitable
-		lossCount = losingRounds
+	roundWins, roundLosses, roundFlats := roundOutcomeCounts(s.roundHistory)
+	winCount, lossCount, flatCount := 0, 0, 0
+	useRoundSummary := false
+	switch {
+	case rounds > 0:
+		useRoundSummary = true
+		if len(s.roundHistory) > 0 && len(s.roundHistory) == rounds {
+			winCount = roundWins
+			lossCount = roundLosses
+			flatCount = roundFlats
+		} else {
+			winCount = profitable
+			lossCount = losingRounds
+			flatCount = rounds - profitable - losingRounds
+			if flatCount < 0 {
+				flatCount = 0
+			}
+		}
+	default:
+		winCount, lossCount = positionWinLossFromOrderHistory(s.orderHistory, strings.EqualFold(s.settings.PaperArbMode, "copytrade"))
+		if winCount+lossCount == 0 {
+			winCount = stats.WinningTrades
+			lossCount = stats.LosingTrades
+		}
 	}
 	totalDecisions := winCount + lossCount
 	winRate := 0.0
@@ -4507,13 +4523,24 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
 	)
 	row3 := tradeLine
-	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L %d/%d  ·  ⏱ %s",
-		multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
-		rounds,
-		winRate,
-		winCount, lossCount,
-		styleDimmed.Render(uptime.String()),
-	)
+	row4 := ""
+	if useRoundSummary {
+		row4 = fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L/F %d/%d/%d  ·  ⏱ %s",
+			multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
+			rounds,
+			winRate,
+			winCount, lossCount, flatCount,
+			styleDimmed.Render(uptime.String()),
+		)
+	} else {
+		row4 = fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L %d/%d  ·  ⏱ %s",
+			multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
+			rounds,
+			winRate,
+			winCount, lossCount,
+			styleDimmed.Render(uptime.String()),
+		)
+	}
 	row5 := "  " + renderTradingHoursStatus(s.settings.TradingHoursMode, time.Now())
 
 	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4 + "\n" + row5
@@ -5080,21 +5107,8 @@ func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
 	return false
 }
 
-func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
-	s := m.snap
-	inner := w - 4
-	var sb strings.Builder
-
-	if len(s.roundHistory) == 0 {
-		sb.WriteString(sectionHeader("🧮", "ROUND HISTORY", clrSlate) + "\n")
-		sb.WriteString(styleDimmed.Render("  (no completed rounds yet)"))
-		return makePanel(inner, clrSlate, sb.String())
-	}
-
-	wins := 0
-	losses := 0
-	flats := 0
-	for _, entry := range s.roundHistory {
+func roundOutcomeCounts(history []RoundHistoryEntry) (wins, losses, flats int) {
+	for _, entry := range history {
 		if roundHistoryHasOpenInventory(entry) {
 			flats++
 			continue
@@ -5108,6 +5122,21 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			flats++
 		}
 	}
+	return wins, losses, flats
+}
+
+func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
+	s := m.snap
+	inner := w - 4
+	var sb strings.Builder
+
+	if len(s.roundHistory) == 0 {
+		sb.WriteString(sectionHeader("🧮", "ROUND HISTORY", clrSlate) + "\n")
+		sb.WriteString(styleDimmed.Render("  (no completed rounds yet)"))
+		return makePanel(inner, clrSlate, sb.String())
+	}
+
+	wins, losses, flats := roundOutcomeCounts(s.roundHistory)
 
 	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND HISTORY  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",

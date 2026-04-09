@@ -144,14 +144,30 @@ func TestRealbotLadderedDirectionalSideMatchesPaperbotCases(t *testing.T) {
 	if side, ok := ladderedTakerDirectionalSide(nil, 0.62, 0.38, 1.0); !ok || side != 0 {
 		t.Fatalf("expected initial higher-ask side 0, got side=%d ok=%v", side, ok)
 	}
-	if side, ok := ladderedTakerDirectionalSide([]struct{ ask0, ask1 float64 }{{ask0: 0.50, ask1: 0.40}}, 0.505, 0.401, 1.0); ok {
+	if side, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}, 0.505, 0.401, 1.0); ok {
 		t.Fatalf("expected move below threshold to block re-entry, got side=%d ok=%v", side, ok)
 	}
-	if side, ok := ladderedTakerDirectionalSide([]struct{ ask0, ask1 float64 }{{ask0: 0.50, ask1: 0.40}}, 0.512, 0.401, 1.0); !ok || side != 0 {
+	if side, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}, 0.512, 0.401, 1.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 re-entry, got side=%d ok=%v", side, ok)
 	}
-	if side, ok := ladderedTakerDirectionalSide([]struct{ ask0, ask1 float64 }{{ask0: 0.50, ask1: 0.40}}, 0.501, 0.412, 1.0); !ok || side != 1 {
+	if side, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}, 0.501, 0.412, 1.0); !ok || side != 1 {
 		t.Fatalf("expected side 1 re-entry, got side=%d ok=%v", side, ok)
+	}
+}
+
+func TestRealbotResolveLadderedEntryDropsRejectedPendingAnchor(t *testing.T) {
+	entries := []realbotLadderedEntry{
+		{seq: 1, ask0: 0.50, ask1: 0.40},
+		{seq: 2, ask0: 0.52, ask1: 0.40},
+	}
+
+	entries = realbotResolveLadderedEntry(entries, 2, false)
+
+	if len(entries) != 1 {
+		t.Fatalf("expected failed pending rung to be removed, got %d entries", len(entries))
+	}
+	if side, ok := ladderedTakerDirectionalSide(entries, 0.512, 0.401, 1.0); !ok || side != 0 {
+		t.Fatalf("expected re-entry to fall back to the last confirmed ladder anchor, got side=%d ok=%v", side, ok)
 	}
 }
 

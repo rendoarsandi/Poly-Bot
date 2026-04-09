@@ -1988,7 +1988,7 @@ func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   7,
 		LosingTrades:    3,
-	}, 0, 100, 100, 1.0, 100, 5, 3, 0, nil)
+	}, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Win 70%") {
 		t.Fatalf("expected win rate in account status, got %q", rendered)
@@ -2016,7 +2016,7 @@ func TestRenderAccountStatusUsesPositionWinLossFromOrderHistory(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   9,
 		LosingTrades:    1,
-	}, 0, 100, 100, 1.0, 120, 4, 4, 0, nil)
+	}, 0, 100, 100, 1.0, 120, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "W/L 1/1") {
 		t.Fatalf("expected W/L to be based on per-position realized result from order history, got %q", rendered)
@@ -2042,14 +2042,46 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	if !strings.Contains(rendered, "Win 60%") {
 		t.Fatalf("expected round win rate fallback in account status, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "W/L 3/2") {
-		t.Fatalf("expected round win/loss fallback in account status, got %q", rendered)
+	if !strings.Contains(rendered, "W/L/F 3/2/3") {
+		t.Fatalf("expected round win/loss/flat fallback in account status, got %q", rendered)
 	}
 	if strings.Contains(rendered, "profitable") {
 		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "$6.00/trade") {
 		t.Fatalf("expected real trade budget to follow high-water sizing, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusUsesRoundHistorySummaryWhenAvailable(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+			orderHistory: []OrderHistoryEntry{
+				{MarketID: "BTC#m1", Outcome: "Up", Side: "SELL", Profit: 0.7, Status: "FILLED"},
+				{MarketID: "ETH#m2", Outcome: "Down", Side: "SELL", Profit: -0.2, Status: "FILLED"},
+			},
+			roundHistory: []RoundHistoryEntry{
+				{Number: 1, Timestamp: time.Unix(1, 0), PnL: 2.0},
+				{Number: 2, Timestamp: time.Unix(2, 0), PnL: -1.0},
+				{Number: 3, Timestamp: time.Unix(3, 0), PnL: 0.0, positions: map[string]Position{"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 1}}},
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+		WinningTrades:   9,
+		LosingTrades:    1,
+	}, 0, 100, 100, 1.0, 120, 3, 1, 1, nil)
+
+	if !strings.Contains(rendered, "W/L/F 1/1/1") {
+		t.Fatalf("expected account status to match round history outcomes when round history is available, got %q", rendered)
+	}
+	if strings.Contains(rendered, "W/L 9/1") {
+		t.Fatalf("expected round summary to override trade-history win/loss display, got %q", rendered)
 	}
 }
 
