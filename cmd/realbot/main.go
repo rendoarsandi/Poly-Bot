@@ -363,9 +363,50 @@ func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISetting
 }
 
 func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
-	// Disabled by request: never block fresh entries because of pending
-	// redemptions or prior-round inventory.
-	return "", false
+	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil {
+		return "", false
+	}
+
+	const eps = 1e-6
+
+	pendingRedemptions := engine.GetPendingRedemptions()
+	if len(pendingRedemptions) > 0 {
+		marketIDs := make([]string, 0, len(pendingRedemptions))
+		for marketID, payout := range pendingRedemptions {
+			if marketID == "" || marketID == currentMarketID || payout <= eps {
+				continue
+			}
+			marketIDs = append(marketIDs, marketID)
+		}
+		sort.Strings(marketIDs)
+		if len(marketIDs) > 0 {
+			marketID := marketIDs[0]
+			return fmt.Sprintf("waiting for redemption payout from %s ($%.2f)", marketID, pendingRedemptions[marketID]), true
+		}
+	}
+
+	positions := engine.GetPositions()
+	if len(positions) == 0 {
+		return "", false
+	}
+	sharesByMarket := make(map[string]float64)
+	for _, pos := range positions {
+		if pos.MarketID == "" || pos.MarketID == currentMarketID || pos.Quantity <= eps {
+			continue
+		}
+		sharesByMarket[pos.MarketID] += pos.Quantity
+	}
+	if len(sharesByMarket) == 0 {
+		return "", false
+	}
+
+	marketIDs := make([]string, 0, len(sharesByMarket))
+	for marketID := range sharesByMarket {
+		marketIDs = append(marketIDs, marketID)
+	}
+	sort.Strings(marketIDs)
+	marketID := marketIDs[0]
+	return fmt.Sprintf("waiting for prior inventory on %s (%s shares)", marketID, formatShareQty(sharesByMarket[marketID])), true
 }
 
 func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]float64) (string, float64) {

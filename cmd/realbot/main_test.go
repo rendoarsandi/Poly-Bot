@@ -488,7 +488,7 @@ func TestRealbotSizingCapitalForTradeUsesCurrentEquityInTakerClose(t *testing.T)
 	}
 }
 
-func TestRealbotNewEntryBlockReasonDisabledForPriorRoundInventory(t *testing.T) {
+func TestRealbotNewEntryBlockReasonBlocksForPriorRoundInventory(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	if _, err := engine.BuyForMarket("BTC-older", "Up", 0.50, 5.0); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
@@ -497,8 +497,8 @@ func TestRealbotNewEntryBlockReasonDisabledForPriorRoundInventory(t *testing.T) 
 	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
-	if blocked || reason != "" {
-		t.Fatalf("expected no block when gate is disabled, got blocked=%v reason=%q", blocked, reason)
+	if !blocked || !strings.Contains(reason, "BTC-older") {
+		t.Fatalf("expected prior-round inventory block, got blocked=%v reason=%q", blocked, reason)
 	}
 	if reason, blocked = realbotNewEntryBlockReason("BTC-older", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
@@ -507,19 +507,19 @@ func TestRealbotNewEntryBlockReasonDisabledForPriorRoundInventory(t *testing.T) 
 	}
 }
 
-func TestRealbotNewEntryBlockReasonDisabledForPendingRedemptionPayout(t *testing.T) {
+func TestRealbotNewEntryBlockReasonBlocksForPendingRedemptionPayout(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.SetPendingRedemption("BTC-older", 12.0)
 
 	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
-	if blocked || reason != "" {
-		t.Fatalf("expected no block when gate is disabled, got blocked=%v reason=%q", blocked, reason)
+	if !blocked || !strings.Contains(reason, "BTC-older") {
+		t.Fatalf("expected pending-redemption block, got blocked=%v reason=%q", blocked, reason)
 	}
 }
 
-func TestRealbotNewEntryBlockReasonDisabledForGroupedInventory(t *testing.T) {
+func TestRealbotNewEntryBlockReasonBlocksForGroupedInventory(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	if _, err := engine.BuyForMarket("BTC-older", "Down", 0.18, 22.1457); err != nil {
 		t.Fatalf("seed down buy failed: %v", err)
@@ -531,8 +531,23 @@ func TestRealbotNewEntryBlockReasonDisabledForGroupedInventory(t *testing.T) {
 	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
+	if !blocked || !strings.Contains(reason, "BTC-older") {
+		t.Fatalf("expected grouped-inventory block, got blocked=%v reason=%q", blocked, reason)
+	}
+}
+
+func TestRealbotNewEntryBlockReasonDisabledSettingAllowsEntries(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	if _, err := engine.BuyForMarket("BTC-older", "Up", 0.50, 5.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	engine.SetPendingRedemption("BTC-older", 12.0)
+
+	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+		BlockNewEntriesOnPendingRedemption: false,
+	})
 	if blocked || reason != "" {
-		t.Fatalf("expected no block when gate is disabled, got blocked=%v reason=%q", blocked, reason)
+		t.Fatalf("expected setting OFF to allow entries, got blocked=%v reason=%q", blocked, reason)
 	}
 }
 
