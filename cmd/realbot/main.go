@@ -550,6 +550,30 @@ func realbotDirectionalBuyLimitPrice(ask, maxAskPrice, maxSlippagePct float64) f
 	return limit
 }
 
+func realbotEnsureTopAskLevel(levels []paper.MarketLevel, topAsk, fallbackSize float64) []paper.MarketLevel {
+	if topAsk <= 0 || topAsk >= 1.0 {
+		return levels
+	}
+	hasTop := false
+	for _, lvl := range levels {
+		if lvl.Size <= 0 {
+			continue
+		}
+		if lvl.Price <= topAsk+1e-6 {
+			hasTop = true
+			break
+		}
+	}
+	if hasTop {
+		return levels
+	}
+	injectSize := fallbackSize
+	if injectSize < minOnChainActionShares {
+		injectSize = minOnChainActionShares
+	}
+	return append(levels, paper.MarketLevel{Price: topAsk, Size: injectSize})
+}
+
 func realbotConfiguredPriceRange(liveCfg paper.TUISettings) (float64, float64) {
 	minPrice := liveCfg.MinAskPrice
 	maxPrice := liveCfg.MaxAskPrice
@@ -3936,10 +3960,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					// Copy and sort asks by price ascending for both outcomes
 					asks1 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[0]]))
 					copy(asks1, tokenFullAsks[outcomes[0]])
+					asks1 = realbotEnsureTopAskLevel(asks1, ask1, requestedShares)
 					sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
 					asks2 := make([]paper.MarketLevel, len(tokenFullAsks[outcomes[1]]))
 					copy(asks2, tokenFullAsks[outcomes[1]])
+					asks2 = realbotEnsureTopAskLevel(asks2, ask2, requestedShares)
 					sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
 
 					// Calculate aggregated matched liquidity across valid price levels
@@ -4064,27 +4090,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", id, minEntryShares, formatShareQty(activeSize))
 								continue
 							}
-							directionalLimitPrice := limitPrice1
-							directionalLevels := asks1
-							if ladderedDirection == 1 {
-								directionalLimitPrice = limitPrice2
-								directionalLevels = asks2
-							}
-							directionalLiquidity := normalizeMarketBuyShares(realbotAskLiquidityAtOrBelow(directionalLevels, directionalLimitPrice))
-							if directionalLiquidity < activeSize {
-								tui.LogEvent("[%s] 📉 Downscaling laddered leg from %s to %s shares to match visible depth through $%.3f", id, formatShareQty(activeSize), formatShareQty(directionalLiquidity), directionalLimitPrice)
-								activeSize = directionalLiquidity
-								if ladderedDirection == 1 {
-									requestSize2 = activeSize
-								} else {
-									requestSize1 = activeSize
-								}
-							}
-							if activeSize < minEntryShares {
-								tui.LogEvent("[%s] ⚠️ Visible laddered depth through cap $%.3f is below %.2f share minimum: %s", id, directionalLimitPrice, minEntryShares, formatShareQty(activeSize))
-								setEntryCooldown(500 * time.Millisecond)
-								continue
-							}
+							// User override: do not gate laddered entries on local visible depth.
+							// Submit at capped price and trust live execution attribution for fills.
 							shares = activeSize
 						} else {
 							if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
@@ -4172,12 +4179,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 						side1Requested := !ladderedMode || ladderedDirection == 0
 						side2Requested := !ladderedMode || ladderedDirection == 1
-						if side1Requested && !hasActionableDirectOrderValue(limitPrice1, requestSize1) {
+						if !ladderedMode && side1Requested && !hasActionableDirectOrderValue(limitPrice1, requestSize1) {
 							tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg cap notional $%.3f is below $%.2f minimum (%s @ $%.3f)",
 								id, outcomes[0], directOrderNotional(limitPrice1, requestSize1), realbotMinDirectOrderValue, formatShareQty(requestSize1), limitPrice1)
 							continue
 						}
-						if side2Requested && !hasActionableDirectOrderValue(limitPrice2, requestSize2) {
+						if !ladderedMode && side2Requested && !hasActionableDirectOrderValue(limitPrice2, requestSize2) {
 							tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg cap notional $%.3f is below $%.2f minimum (%s @ $%.3f)",
 								id, outcomes[1], directOrderNotional(limitPrice2, requestSize2), realbotMinDirectOrderValue, formatShareQty(requestSize2), limitPrice2)
 							continue
@@ -4894,7 +4901,7 @@ func hasConfirmedExecutedQty(side api.Side, qty float64) bool {
 	if side == api.SideSell {
 		return qty > 0.000001
 	}
-	return qty > 0.01
+	return qty >= minOnChainActionShares-1e-9
 }
 
 func formatShareQty(qty float64) string {
@@ -8742,15 +8749,10 @@ func realbotLadderedMoveThreshold(moveCents float64) float64 {
 }
 
 func realbotShouldAdvanceLadderedEntry(requestedQty, filledQty float64) bool {
-	if requestedQty <= 0 || filledQty < minOnChainActionShares-1e-9 {
+	if requestedQty <= 0 {
 		return false
 	}
-	minFilled := requestedQty - math.Max(0.02, requestedQty*0.05)
-	if minFilled < minOnChainActionShares {
-		minFilled = minOnChainActionShares
-	}
-	if minFilled > requestedQty {
-		minFilled = requestedQty
-	}
-	return filledQty >= minFilled-1e-9
+	// Keep ladder anchor behavior aligned with paperbot: any actionable fill should
+	// update the last-entry anchor so re-entry direction uses the most recent market state.
+	return filledQty >= minOnChainActionShares-1e-9
 }

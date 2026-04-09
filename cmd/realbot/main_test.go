@@ -100,6 +100,37 @@ func TestRealbotDirectionalSellFloorPriceRespectsConfiguredMin(t *testing.T) {
 	}
 }
 
+func TestRealbotEnsureTopAskLevelInjectsBBOWhenDepthMissing(t *testing.T) {
+	levels := []paper.MarketLevel{{Price: 0.62, Size: 5}}
+	updated := realbotEnsureTopAskLevel(levels, 0.60, 1.02)
+	if len(updated) != 2 {
+		t.Fatalf("expected injected top ask level, got %d levels", len(updated))
+	}
+	found := false
+	for _, lvl := range updated {
+		if math.Abs(lvl.Price-0.60) < 0.000001 {
+			found = true
+			if math.Abs(lvl.Size-1.02) > 0.000001 {
+				t.Fatalf("expected injected top size 1.02, got %.4f", lvl.Size)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected injected top ask 0.60, got %+v", updated)
+	}
+}
+
+func TestRealbotEnsureTopAskLevelSkipsInjectionWhenTopAlreadyPresent(t *testing.T) {
+	levels := []paper.MarketLevel{
+		{Price: 0.58, Size: 2},
+		{Price: 0.60, Size: 3},
+	}
+	updated := realbotEnsureTopAskLevel(levels, 0.60, 1.02)
+	if len(updated) != len(levels) {
+		t.Fatalf("expected no injected level when top already present, got %d levels", len(updated))
+	}
+}
+
 func TestRealbotLadderedMoveThresholdMatchesPaperbotClamp(t *testing.T) {
 	if got := realbotLadderedMoveThreshold(0.01); got != 0.01 {
 		t.Fatalf("expected sub-1c threshold to clamp to 1c, got %.4f", got)
@@ -109,9 +140,33 @@ func TestRealbotLadderedMoveThresholdMatchesPaperbotClamp(t *testing.T) {
 	}
 }
 
-func TestRealbotShouldAdvanceLadderedEntryRequiresMaterialFill(t *testing.T) {
-	if realbotShouldAdvanceLadderedEntry(10.0, 0.01) {
-		t.Fatal("expected dust partial to leave ladder anchor unchanged")
+func TestRealbotLadderedDirectionalSideMatchesPaperbotCases(t *testing.T) {
+	if side, ok := ladderedTakerDirectionalSide(nil, 0.62, 0.38, 1.0); !ok || side != 0 {
+		t.Fatalf("expected initial higher-ask side 0, got side=%d ok=%v", side, ok)
+	}
+	if side, ok := ladderedTakerDirectionalSide([]struct{ ask0, ask1 float64 }{{ask0: 0.50, ask1: 0.40}}, 0.505, 0.401, 1.0); ok {
+		t.Fatalf("expected move below threshold to block re-entry, got side=%d ok=%v", side, ok)
+	}
+	if side, ok := ladderedTakerDirectionalSide([]struct{ ask0, ask1 float64 }{{ask0: 0.50, ask1: 0.40}}, 0.512, 0.401, 1.0); !ok || side != 0 {
+		t.Fatalf("expected side 0 re-entry, got side=%d ok=%v", side, ok)
+	}
+	if side, ok := ladderedTakerDirectionalSide([]struct{ ask0, ask1 float64 }{{ask0: 0.50, ask1: 0.40}}, 0.501, 0.412, 1.0); !ok || side != 1 {
+		t.Fatalf("expected side 1 re-entry, got side=%d ok=%v", side, ok)
+	}
+}
+
+func TestHasConfirmedExecutedQtyBuyUsesMinimumActionableThreshold(t *testing.T) {
+	if !hasConfirmedExecutedQty(api.SideBuy, minOnChainActionShares) {
+		t.Fatal("expected exact minimum actionable buy fill to count as confirmed")
+	}
+	if hasConfirmedExecutedQty(api.SideBuy, minOnChainActionShares-0.0001) {
+		t.Fatal("expected sub-minimum buy fill to remain unconfirmed")
+	}
+}
+
+func TestRealbotShouldAdvanceLadderedEntryTracksAnyActionableFill(t *testing.T) {
+	if !realbotShouldAdvanceLadderedEntry(10.0, 0.01) {
+		t.Fatal("expected minimum actionable partial fill to advance ladder anchor")
 	}
 	if !realbotShouldAdvanceLadderedEntry(10.0, 9.6) {
 		t.Fatal("expected materially filled rung to advance ladder anchor")
