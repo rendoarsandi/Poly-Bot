@@ -1286,7 +1286,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 						tui.LogEvent("[%s] ⚠️ Clearing pending redemption after timeout without explicit balance confirmation (start=%.2f peak=%.2f expected +%.2f)",
 							marketID, redeemStartBalance, highestObservedBalance, pendingPayout)
 					}
-					engine.ClearPendingRedemption(marketID)
+					engine.SettlePendingRedemption(marketID)
 					return
 				}
 				if time.Since(winnerDepletedAt) <= realbotRedeemRetryInterval {
