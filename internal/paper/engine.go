@@ -550,6 +550,7 @@ func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, is
 
 // RedemptionResult holds detailed info about a market redemption
 type RedemptionResult struct {
+	MarketID       string
 	WinningOutcome string
 	WinningShares  float64
 	WinningPayout  float64
@@ -605,6 +606,7 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 	defer e.mu.Unlock()
 
 	result := &RedemptionResult{
+		MarketID:       marketID,
 		WinningOutcome: winningOutcome,
 	}
 

@@ -7069,6 +7069,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 					pnlEmoji = "💸"
 				}
 				if result.WinningShares > 0 || result.LosingShares > 0 || result.TotalPayout > 0 || result.TotalPnL != 0 {
+					tui.AmendMostRecentRoundForMarket(id, result.TotalPnL, []*paper.RedemptionResult{result})
 					tui.LogEvent("[%s] %s RESOLVED: %s won | PnL: %s$%.2f", id, pnlEmoji, winner, pnlSign, result.TotalPnL)
 				} else {
 					tui.LogEvent("[%s] ⏳ RESOLVED: %s won | wallet-truth redeemable %s shares (cost basis unavailable: %s)", id, winner, formatShareQty(walletTruthWinningShares), strings.Join(missingCostBasis, ", "))

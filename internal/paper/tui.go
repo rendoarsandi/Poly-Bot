@@ -3417,18 +3417,7 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 	t.markDirtyLocked()
 }
 
-// AmendLatestRound updates the most recent round history entry with late background redemptions
-func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionResult) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if len(t.roundHistory) == 0 {
-		return
-	}
-
-	lastIdx := len(t.roundHistory) - 1
-	entry := &t.roundHistory[lastIdx]
-
+func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedemptions []*RedemptionResult) {
 	entry.EndingEquity += pnlDelta
 	entry.PnL += pnlDelta
 
@@ -3494,6 +3483,63 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 
 	// Update share summary with combined view
 	entry.ShareSummary = roundHistoryShareSummary(entry.positions, entry.redemptions)
+}
+
+func roundHistoryEntryHasMarket(entry RoundHistoryEntry, marketID string) bool {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return false
+	}
+	for _, pos := range entry.positions {
+		if strings.EqualFold(strings.TrimSpace(pos.MarketID), marketID) {
+			return true
+		}
+	}
+	for _, redemption := range entry.redemptions {
+		if redemption != nil && strings.EqualFold(strings.TrimSpace(redemption.MarketID), marketID) {
+			return true
+		}
+	}
+	return false
+}
+
+// AmendLatestRound updates the most recent round history entry with late background redemptions
+func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionResult) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.roundHistory) == 0 {
+		return
+	}
+
+	lastIdx := len(t.roundHistory) - 1
+	amendRoundHistoryEntry(&t.roundHistory[lastIdx], pnlDelta, newRedemptions)
+
+	t.markDirtyLocked()
+}
+
+// AmendMostRecentRoundForMarket updates the newest round-history entry that still
+// carries inventory or prior redemption details for the given market.
+func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, newRedemptions []*RedemptionResult) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.roundHistory) == 0 {
+		return
+	}
+
+	targetIdx := -1
+	for i := len(t.roundHistory) - 1; i >= 0; i-- {
+		if roundHistoryEntryHasMarket(t.roundHistory[i], marketID) {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx < 0 {
+		return
+	}
+
+	amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
 
 	t.markDirtyLocked()
 }

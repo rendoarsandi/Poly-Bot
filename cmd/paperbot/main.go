@@ -5114,7 +5114,7 @@ func (t *MarketTrader) redeemResolvedWinner(winner, reason string) *paper.Redemp
 	}
 
 	if strings.HasPrefix(reason, "BACKGROUND WINNER WATCH") {
-		t.TUI.AmendLatestRound(result.TotalPnL, []*paper.RedemptionResult{result})
+		t.TUI.AmendMostRecentRoundForMarket(t.ID, result.TotalPnL, []*paper.RedemptionResult{result})
 	}
 
 	if t.CSVLogger != nil {
