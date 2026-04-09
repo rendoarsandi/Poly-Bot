@@ -3484,7 +3484,7 @@ func roundHistoryRedemptionDelta(entry RoundHistoryEntry, pnlDelta float64, newR
 	return delta
 }
 
-func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedemptions []*RedemptionResult) {
+func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedemptions []*RedemptionResult) float64 {
 	redemptionDelta := roundHistoryRedemptionDelta(*entry, pnlDelta, newRedemptions)
 	entry.EndingEquity += redemptionDelta
 	entry.PnL += redemptionDelta
@@ -3551,6 +3551,20 @@ func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedem
 
 	// Update share summary with combined view
 	entry.ShareSummary = roundHistoryShareSummary(entry.positions, entry.redemptions)
+	return redemptionDelta
+}
+
+func rebaseSubsequentRoundHistoryEntries(history []RoundHistoryEntry, startIdx int, delta float64) {
+	if math.Abs(delta) < 0.000001 {
+		return
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	for i := startIdx; i < len(history); i++ {
+		history[i].StartingEquity += delta
+		history[i].EndingEquity += delta
+	}
 }
 
 func roundHistoryEntryHasMarket(entry RoundHistoryEntry, marketID string) bool {
@@ -3581,7 +3595,7 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 	}
 
 	lastIdx := len(t.roundHistory) - 1
-	amendRoundHistoryEntry(&t.roundHistory[lastIdx], pnlDelta, newRedemptions)
+	_ = amendRoundHistoryEntry(&t.roundHistory[lastIdx], pnlDelta, newRedemptions)
 
 	t.markDirtyLocked()
 }
@@ -3607,7 +3621,8 @@ func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, n
 		return
 	}
 
-	amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
+	redemptionDelta := amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
+	rebaseSubsequentRoundHistoryEntries(t.roundHistory, targetIdx+1, redemptionDelta)
 
 	t.markDirtyLocked()
 }
