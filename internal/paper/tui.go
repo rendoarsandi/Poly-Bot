@@ -4498,25 +4498,14 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 			cashText = fmt.Sprintf("$%.2f (wallet USDC $%.2f)", stats.CurrentBalance, s.walletCash)
 		}
 	}
-	row1 := ""
-	if isRealMode {
-		row1 = fmt.Sprintf("  %s %s  ·  Exposure %s  ·  BookEq %s  ·  MTM %s  ·  DD %s",
-			cashLabel,
-			styleBold.Render(cashText),
-			styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
-			styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
-			styleWhite.Render(fmt.Sprintf("$%.2f", displayMTMEquity)),
-			drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
-		)
-	} else {
-		row1 = fmt.Sprintf("  Cash %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
-			styleBold.Render(cashText),
-			styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
-			styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
-			changeSt.Render(signedDollar(displayNetChange)),
-			drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
-		)
-	}
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
+		cashLabel,
+		styleBold.Render(cashText),
+		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
+		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
+		changeSt.Render(signedDollar(displayNetChange)),
+		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
+	)
 	row3 := tradeLine
 	row4 := fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L %d/%d  ·  ⏱ %s",
 		multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
@@ -4829,7 +4818,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		marketLabel := "Now"
 		resolveLabel := "Resolve"
 		if ladderedMode {
-			marketLabel = "MTM"
+			marketLabel = "Unrealized"
 			resolveLabel = "Resolve(if held)"
 		}
 		summaryLine := styleBold.Render(fmt.Sprintf("  📊 %s: %s",

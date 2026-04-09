@@ -1885,8 +1885,8 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	if !strings.Contains(rendered, "Realized +$1.08") {
 		t.Fatalf("expected real-mode account status to show realized pnl explicitly, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "BookEq $66.35") || !strings.Contains(rendered, "MTM $66.35") {
-		t.Fatalf("expected real-mode account status to show book and mtm equity, got %q", rendered)
+	if !strings.Contains(rendered, "Equity $66.35") {
+		t.Fatalf("expected real-mode account status to show equity, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "($3.60/trade)") {
 		t.Fatalf("expected 5%% trade budget to keep the real-mode high-water floor, got %q", rendered)
@@ -1912,7 +1912,7 @@ func TestRenderAccountStatusRealModeShowsWalletCashSeparatelyFromSpendableBalanc
 	if !strings.Contains(rendered, "Spendable $9.93 (wallet USDC $18.00)") {
 		t.Fatalf("expected spendable and wallet USDC in real-mode account status, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "BookEq $18.00") || !strings.Contains(rendered, "MTM $18.00") {
+	if !strings.Contains(rendered, "Equity ") || !strings.Contains(rendered, "$18.00") {
 		t.Fatalf("expected real-mode equity labels to follow wallet cash when flat, got %q", rendered)
 	}
 }
@@ -2098,8 +2098,8 @@ func TestRenderAccountStatusUsesMatchedLabelInLadderedMode(t *testing.T) {
 	if !strings.Contains(rendered, "Matched ") {
 		t.Fatalf("expected laddered account status to label matched-pair pnl clearly, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "BookEq ") || !strings.Contains(rendered, " MTM ") {
-		t.Fatalf("expected real account status to show both book and mtm equity labels, got %q", rendered)
+	if !strings.Contains(rendered, "Equity ") {
+		t.Fatalf("expected real account status to show equity labels, got %q", rendered)
 	}
 }
 
