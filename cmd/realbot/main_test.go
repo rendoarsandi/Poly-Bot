@@ -192,6 +192,18 @@ func TestRealbotShouldAdvanceLadderedEntryTracksAnyActionableFill(t *testing.T) 
 	}
 }
 
+func TestRealbotLadderedRecoveredFillQtyUsesRequestedSideOnly(t *testing.T) {
+	if got := realbotLadderedRecoveredFillQty(0, 1.02, 1.50, 9.0); math.Abs(got-1.02) > 1e-9 {
+		t.Fatalf("expected side 0 recovery to clamp to requested qty, got %.4f", got)
+	}
+	if got := realbotLadderedRecoveredFillQty(1, 1.02, 9.0, 0.80); math.Abs(got-0.80) > 1e-9 {
+		t.Fatalf("expected side 1 recovery to use the requested side only, got %.4f", got)
+	}
+	if got := realbotLadderedRecoveredFillQty(0, 1.02, 0, 0.80); got != 0 {
+		t.Fatalf("expected opposite-side recovery to be ignored, got %.4f", got)
+	}
+}
+
 func TestRealbotShouldAutoMergeBalancedInventory(t *testing.T) {
 	if realbotShouldAutoMergeBalancedInventory(paper.TUISettings{PaperArbMode: paperArbModeLaddered}) {
 		t.Fatal("expected laddered mode to keep balanced inventory parked")

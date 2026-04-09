@@ -1169,6 +1169,26 @@ func realbotRecoverLateBuyFill(trader *trading.RealTrader, tokenID string, initi
 	return qty, nil
 }
 
+func realbotLadderedRecoveredFillQty(ladderedDirection int, requestedQty, acquired0, acquired1 float64) float64 {
+	recoveredQty := acquired0
+	if ladderedDirection == 1 {
+		recoveredQty = acquired1
+	}
+	return clampRequestedExecutionQty(recoveredQty, requestedQty)
+}
+
+func realbotRecoverLateLadderedBuyFill(ctx context.Context, trader *trading.RealTrader, token0, token1 string, initial0, initial1 float64, ladderedDirection int, requestedQty float64) (float64, string, error) {
+	acquired0, acquired1, _, _, source, err := reconcileBoughtPairBalances(ctx, trader, token0, token1, initial0, initial1, true)
+	recoveredQty := realbotLadderedRecoveredFillQty(ladderedDirection, requestedQty, acquired0, acquired1)
+	if hasConfirmedExecutedQty(api.SideBuy, recoveredQty) {
+		return recoveredQty, source, nil
+	}
+	if err != nil {
+		return 0, source, err
+	}
+	return 0, source, nil
+}
+
 func realbotShortTxHash(txHash string) string {
 	txHash = strings.TrimSpace(txHash)
 	if len(txHash) > 10 {
@@ -4139,32 +4159,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						// Ensure the buy payload still fits the latest balance snapshot.
-						if ladderedMode {
-							estimatedCost := requestSize1 * limitPrice1
-							if ladderedDirection == 1 {
-								estimatedCost = requestSize2 * limitPrice2
-							}
-							if estimatedCost > currentBalance && estimatedCost > 0 {
-								scale := currentBalance / estimatedCost
-								if ladderedDirection == 1 {
-									requestSize2 = normalizeMarketBuyShares(requestSize2 * scale)
-								} else {
-									requestSize1 = normalizeMarketBuyShares(requestSize1 * scale)
-								}
-							}
-							activeSize := requestSize1
-							if ladderedDirection == 1 {
-								activeSize = requestSize2
-							}
-							if activeSize < minEntryShares {
-								if time.Since(lastDustRecoveryNotice) > 60*time.Second {
-									tui.LogEvent("[%s] ⚠️ Skipping buy: laddered leg no longer fits balance (%s)", id, formatShareQty(activeSize))
-									lastDustRecoveryNotice = time.Now()
-								}
-								continue
-							}
-						} else {
+						if !ladderedMode {
 							safeShares := realbotClampBuySharesToBudget(shares, currentBalance, limitPrice1, limitPrice2)
 							if safeShares < shares {
 								tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", id, formatShareQty(shares), formatShareQty(safeShares), currentBalance)
@@ -4337,8 +4332,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 
 							attributionTrusted := false
-							// Laddered mode prioritizes entry cadence. Rely on immediate execution
-							// confirmation here and let wallet-truth sync reconcile asynchronously.
+							recoveredLateLadderFill := false
+							recoveredLateLadderSource := ""
+							// Laddered mode keeps the fast path lightweight, but still performs a
+							// targeted delayed-fill recovery when the immediate venue ack is inconclusive.
 							if haveInitialSnapshot && !ladderedMode {
 								prevSide1Success, prevSide2Success := side1Success, side2Success
 								rawAttribution1 := attributedBuyFill(exec1, requestSize1, 0, false)
@@ -4384,6 +4381,32 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 								}
 								if !side2Success && exec2.Success && res2 != nil && strings.TrimSpace(res2.Message) == "" {
 									res2.Message = "No fresh buy delta attributable after snapshot verification"
+								}
+							}
+							if ladderedMode {
+								requestedQty := requestSize1
+								confirmed := side1Success
+								if ladderedDirection == 1 {
+									requestedQty = requestSize2
+									confirmed = side2Success
+								}
+								if !confirmed {
+									recoverCtx, cancelRecover := context.WithTimeout(ctx, 3*time.Second)
+									recoveredQty, recoverSource, recoverErr := realbotRecoverLateLadderedBuyFill(recoverCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, ladderedDirection, requestedQty)
+									cancelRecover()
+									if hasConfirmedExecutedQty(api.SideBuy, recoveredQty) {
+										if ladderedDirection == 1 {
+											filled2 = math.Max(filled2, recoveredQty)
+											side2Success = true
+										} else {
+											filled1 = math.Max(filled1, recoveredQty)
+											side1Success = true
+										}
+										recoveredLateLadderFill = true
+										recoveredLateLadderSource = recoverSource
+									} else if recoverErr != nil {
+										tui.LogEvent("[%s] ⚠️ Ladder late-fill check failed: %v", id, recoverErr)
+									}
 								}
 							}
 
@@ -4495,6 +4518,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									}
 									asyncResult.ladderedEntryConfirmed = advancedAnchor
 									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[0], formatShareQty(filled1), formatShareQty(requestSize1), ask1, anchorNote)
+									if recoveredLateLadderFill {
+										tui.LogEvent("[%s] 🔄 Ladder late fill recovered via %s: %s %s", id, recoveredLateLadderSource, outcomes[0], formatShareQty(filled1))
+									}
 									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 										engine.SyncBalanceNeutral(newBal)
 										engine.RecalculateDrawdown()
@@ -4510,6 +4536,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 									}
 									asyncResult.ladderedEntryConfirmed = advancedAnchor
 									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[1], formatShareQty(filled2), formatShareQty(requestSize2), ask2, anchorNote)
+									if recoveredLateLadderFill {
+										tui.LogEvent("[%s] 🔄 Ladder late fill recovered via %s: %s %s", id, recoveredLateLadderSource, outcomes[1], formatShareQty(filled2))
+									}
 									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 										engine.SyncBalanceNeutral(newBal)
 										engine.RecalculateDrawdown()

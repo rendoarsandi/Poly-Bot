@@ -151,9 +151,13 @@ func (e *Engine) UpdateMarketData(marketID, outcome string, price, bid, ask floa
 		key := marketID + ":" + outcome
 		if bid > 0 {
 			e.marketBids[key] = bid
+		} else {
+			e.marketBids[key] = 0
 		}
 		if ask > 0 {
 			e.marketAsks[key] = ask
+		} else {
+			e.marketAsks[key] = 0
 		}
 	}
 
@@ -215,9 +219,13 @@ func (e *Engine) UpdateMarketBidAsk(marketID, outcome string, bid, ask float64) 
 	key := marketID + ":" + outcome
 	if bid > 0 {
 		e.marketBids[key] = bid
+	} else {
+		e.marketBids[key] = 0
 	}
 	if ask > 0 {
 		e.marketAsks[key] = ask
+	} else {
+		e.marketAsks[key] = 0
 	}
 }
 
@@ -1049,9 +1057,7 @@ func (e *Engine) getUnrealizedValue() float64 {
 	for key, pos := range e.positions {
 		// Use BID price for valuation (what we could sell for)
 		// This is more conservative and realistic
-		if bid, ok := e.marketBids[key]; ok && bid > 0 {
-			value += pos.Quantity * bid
-		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
+		if bid := e.positionBidPrice(key, pos.Outcome); bid > 0 {
 			value += pos.Quantity * bid
 		} else {
 			// Use cost basis if no current price
@@ -1072,10 +1078,7 @@ func (e *Engine) getUnrealizedPnL() float64 {
 	unrealized := 0.0
 	for key, pos := range e.positions {
 		// Use BID price for valuation (what we could sell for)
-		if bid, ok := e.marketBids[key]; ok && bid > 0 {
-			currentValue := pos.Quantity * bid
-			unrealized += currentValue - pos.TotalCost
-		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
+		if bid := e.positionBidPrice(key, pos.Outcome); bid > 0 {
 			currentValue := pos.Quantity * bid
 			unrealized += currentValue - pos.TotalCost
 		}
@@ -1136,17 +1139,8 @@ func (e *Engine) GetPositionsWithPnL() map[string]PositionPnL {
 
 		// Get current bid/ask for this position
 		key := k // Already includes marketID:outcome
-		if bid, ok := e.marketBids[key]; ok && bid > 0 {
-			pnl.CurrentBid = bid
-		} else if bid, ok := e.currentBids[pos.Outcome]; ok && bid > 0 {
-			pnl.CurrentBid = bid
-		}
-
-		if ask, ok := e.marketAsks[key]; ok && ask > 0 {
-			pnl.CurrentAsk = ask
-		} else if ask, ok := e.currentAsks[pos.Outcome]; ok && ask > 0 {
-			pnl.CurrentAsk = ask
-		}
+		pnl.CurrentBid = e.positionBidPrice(key, pos.Outcome)
+		pnl.CurrentAsk = e.positionAskPrice(key, pos.Outcome)
 
 		// Calculate market value (what we could sell for now)
 		if pnl.CurrentBid > 0 {
@@ -1161,6 +1155,32 @@ func (e *Engine) GetPositionsWithPnL() map[string]PositionPnL {
 		result[k] = pnl
 	}
 	return result
+}
+
+func (e *Engine) positionBidPrice(key, outcome string) float64 {
+	if bid, ok := e.marketBids[key]; ok {
+		if bid > 0 {
+			return bid
+		}
+		return 0
+	}
+	if bid, ok := e.currentBids[outcome]; ok && bid > 0 {
+		return bid
+	}
+	return 0
+}
+
+func (e *Engine) positionAskPrice(key, outcome string) float64 {
+	if ask, ok := e.marketAsks[key]; ok {
+		if ask > 0 {
+			return ask
+		}
+		return 0
+	}
+	if ask, ok := e.currentAsks[outcome]; ok && ask > 0 {
+		return ask
+	}
+	return 0
 }
 
 // GetRecentTrades returns the last n trades

@@ -708,6 +708,39 @@ func TestEngine_GetPositionsWithPnL_KeepsSameAssetRoundsSeparate(t *testing.T) {
 	}
 }
 
+func TestEngine_GetPositionsWithPnL_ClearedMarketBidSuppressesOutcomeFallback(t *testing.T) {
+	engine := NewEngine(1000.0)
+
+	if _, err := engine.BuyForMarket("BTC#stale", "Down", 0.44, 10); err != nil {
+		t.Fatalf("BuyForMarket failed: %v", err)
+	}
+
+	engine.UpdateBidAsk("Down", 0.20, 0.21)
+	engine.UpdateMarketBidAsk("BTC#stale", "Down", 0, 0.01)
+
+	positions := engine.GetPositionsWithPnL()
+	pos, ok := positions["BTC#stale:Down"]
+	if !ok {
+		t.Fatalf("missing position with pnl: %+v", positions)
+	}
+
+	if pos.CurrentBid != 0 {
+		t.Fatalf("expected cleared market bid to suppress stale fallback, got %.4f", pos.CurrentBid)
+	}
+	if absFloat(pos.CurrentAsk-0.01) > 1e-9 {
+		t.Fatalf("expected ask to remain visible after bid clear, got %.4f", pos.CurrentAsk)
+	}
+	if pos.MarketValue != 0 || pos.UnrealizedPnL != 0 {
+		t.Fatalf("expected cleared bid to avoid stale MTM, got value=%.4f pnl=%.4f", pos.MarketValue, pos.UnrealizedPnL)
+	}
+	if absFloat(engine.GetUnrealizedPnL()) > 1e-9 {
+		t.Fatalf("expected engine unrealized pnl to ignore cleared bid, got %.4f", engine.GetUnrealizedPnL())
+	}
+	if absFloat(engine.GetEquity()-1000.0) > 1e-9 {
+		t.Fatalf("expected equity to fall back to cost basis after bid clear, got %.4f", engine.GetEquity())
+	}
+}
+
 func TestEngine_RedeemWithDetails(t *testing.T) {
 	engine := NewEngine(100.0)
 
