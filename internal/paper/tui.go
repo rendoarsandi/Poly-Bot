@@ -217,13 +217,6 @@ func signedDollar(amount float64) string {
 	return fmt.Sprintf("%s$%.2f", sign, amount)
 }
 
-func formatExposureLimit(limit float64) string {
-	if limit <= 0 || math.IsNaN(limit) || math.IsInf(limit, 0) || limit >= math.MaxFloat64/2 {
-		return "uncapped"
-	}
-	return fmt.Sprintf("$%.2f", limit)
-}
-
 func formatDrawdownCash(amount float64) string {
 	if math.Abs(amount) < 0.0001 {
 		return "$0.00"
@@ -1175,10 +1168,9 @@ func displayedTradeBudgetsWithMode(mode string, cash, equity, startingBalance, s
 type TUI struct {
 	mu sync.Mutex
 
-	engine      *Engine
-	orderBook   *OrderBook
-	orderBooks  map[string]*OrderBook
-	maxExposure float64
+	engine     *Engine
+	orderBook  *OrderBook
+	orderBooks map[string]*OrderBook
 
 	markets            map[string]*MarketData
 	marketSlug         string
@@ -1868,7 +1860,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.hasWalletCash = m.tui.hasWalletCash
 		m.snap.stats = stats
 		m.snap.exposure = exposure
-		m.snap.maxExposure = m.tui.maxExposure
+		m.snap.maxExposure = stats.PeakExposure
 		m.snap.equity = equity
 		m.snap.bookEquity = bookEquity
 		m.snap.positions = positions
@@ -2739,16 +2731,6 @@ func (t *TUI) SetTradeFactor(factor float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tradeFactor = factor
-	t.markDirtyLocked()
-}
-
-func (t *TUI) SetMaxExposure(limit float64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.maxExposure == limit {
-		return
-	}
-	t.maxExposure = limit
 	t.markDirtyLocked()
 }
 
@@ -4673,10 +4655,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 			cashText = fmt.Sprintf("$%.2f (wallet USDC $%.2f)", stats.CurrentBalance, s.walletCash)
 		}
 	}
-	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  DD %s",
 		cashLabel,
 		styleBold.Render(cashText),
-		styleWhite.Render(fmt.Sprintf("$%.2f / %s", totalExposure, formatExposureLimit(maxExposure))),
+		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
+		styleWhite.Render(fmt.Sprintf("$%.2f", maxExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(signedDollar(displayNetChange)),
 		drawdownSt.Render(formatDrawdownCash(stats.MaxDrawdownCash)),

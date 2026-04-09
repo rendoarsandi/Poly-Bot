@@ -2436,7 +2436,7 @@ func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
 	}
 }
 
-func TestRenderAccountStatusShowsExposureCapAndDollarDrawdown(t *testing.T) {
+func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Paper",
@@ -2447,32 +2447,18 @@ func TestRenderAccountStatusShowsExposureCapAndDollarDrawdown(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  95.0,
 		StartingBalance: 100.0,
+		PeakExposure:    25.0,
 		MaxDrawdown:     5.0,
 		MaxDrawdownCash: 5.0,
-	}, 12.5, 2000.0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, nil)
+	}, 12.5, 25.0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, nil)
 
-	if !strings.Contains(rendered, "Exposure $12.50 / $2000.00") {
-		t.Fatalf("expected account status to show current/max exposure, got %q", rendered)
+	if !strings.Contains(rendered, "Exposure $12.50") {
+		t.Fatalf("expected account status to show current exposure, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Max Exp $25.00") {
+		t.Fatalf("expected account status to show max exposure as a UI stat, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "DD -$5.00") {
 		t.Fatalf("expected account status to show dollar drawdown, got %q", rendered)
-	}
-}
-
-func TestRenderAccountStatusShowsUncappedExposureWhenLimitDisabled(t *testing.T) {
-	model := tuiModel{
-		snap: tuiSnapshot{
-			mode:        "Real",
-			tradeFactor: 0.05,
-		},
-	}
-
-	rendered := model.renderAccountStatus(120, Stats{
-		CurrentBalance:  100.0,
-		StartingBalance: 100.0,
-	}, 4.25, math.MaxFloat64, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, nil)
-
-	if !strings.Contains(rendered, "Exposure $4.25 / uncapped") {
-		t.Fatalf("expected account status to show uncapped exposure limit, got %q", rendered)
 	}
 }

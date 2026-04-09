@@ -495,6 +495,28 @@ func TestEngine_MaxDrawdownCashPreservesActualLossAcrossNewPeaks(t *testing.T) {
 	}
 }
 
+func TestEngine_PeakExposurePreservesSessionHigh(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if !engine.SyncExternalPosition("m1", "Up", 20, 0.5) {
+		t.Fatal("expected initial external position sync to change exposure")
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.PeakExposure-10.0) > 0.0001 {
+		t.Fatalf("expected peak exposure $10.00, got %.4f", stats.PeakExposure)
+	}
+
+	if !engine.SyncExternalPosition("m1", "Up", 4, 0.5) {
+		t.Fatal("expected reduced external position sync to change exposure")
+	}
+
+	stats = engine.GetStats()
+	if absFloat(stats.PeakExposure-10.0) > 0.0001 {
+		t.Fatalf("expected peak exposure to preserve the session high $10.00, got %.4f", stats.PeakExposure)
+	}
+}
+
 func TestEngine_ResetPaperSession(t *testing.T) {
 	engine := NewEngine(100.0)
 

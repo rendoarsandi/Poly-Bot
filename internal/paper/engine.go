@@ -36,6 +36,7 @@ type Stats struct {
 	LosingTrades    int
 	RealizedPnL     float64
 	UnrealizedPnL   float64
+	PeakExposure    float64
 	MaxDrawdown     float64
 	MaxDrawdownCash float64
 	PeakBalance     float64
@@ -77,6 +78,7 @@ type Engine struct {
 	// Stats tracking
 	totalTrades     int
 	realizedPnL     float64
+	peakExposure    float64
 	peakBalance     float64
 	maxDrawdown     float64
 	maxDrawdownCash float64
@@ -874,6 +876,11 @@ func (e *Engine) addTrade(trade Trade) {
 
 // recalculateDrawdown updates max drawdown based on current equity
 func (e *Engine) recalculateDrawdown() {
+	totalExposure, _ := e.getExposureLocked()
+	if totalExposure > e.peakExposure {
+		e.peakExposure = totalExposure
+	}
+
 	totalEquity := e.getBookEquity()
 	if totalEquity > e.peakBalance {
 		e.peakBalance = totalEquity
@@ -1103,6 +1110,7 @@ func (e *Engine) GetStats() Stats {
 		LosingTrades:    e.losingTrades,
 		RealizedPnL:     e.realizedPnL,
 		UnrealizedPnL:   e.getUnrealizedPnL(),
+		PeakExposure:    e.peakExposure,
 		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
 		MaxDrawdownCash: e.maxDrawdownCash,
 		PeakBalance:     e.peakBalance,
@@ -1388,6 +1396,7 @@ func (e *Engine) ResetPaperSession(balance float64) error {
 	e.trades = nil
 	e.totalTrades = 0
 	e.realizedPnL = 0
+	e.peakExposure = 0
 	e.peakBalance = balance
 	e.maxDrawdown = 0
 	e.maxDrawdownCash = 0
@@ -1558,6 +1567,10 @@ func (e *Engine) GetExposure() (totalExposure float64, maxSingleExposure float64
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.getExposureLocked()
+}
+
+func (e *Engine) getExposureLocked() (totalExposure float64, maxSingleExposure float64) {
 	for _, pos := range e.positions {
 		totalExposure += pos.TotalCost
 		if pos.TotalCost > maxSingleExposure {
