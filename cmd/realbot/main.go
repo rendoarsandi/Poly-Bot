@@ -1413,11 +1413,8 @@ type realbotQuoteState struct {
 }
 
 type realbotAsyncEntryResult struct {
-	lastTradeAt      time.Time
-	cooldownUntil    time.Time
-	addLadderedEntry bool
-	ladderAsk0       float64
-	ladderAsk1       float64
+	lastTradeAt   time.Time
+	cooldownUntil time.Time
 }
 
 type realbotMakerQuote struct {
@@ -2390,10 +2387,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	lastPublishedQuoteAt := time.Time{}
 	lastTrade := time.Time{}
 	lastPairUpdate := time.Time{}
-	var ladderedEntries []struct {
+	ladderedEntries := make(map[string][]struct {
 		ask0 float64
 		ask1 float64
-	}
+	})
 	lastBinanceLog := time.Time{}
 	lastSplitSell := time.Time{}    // Track last split sell to avoid rapid-fire
 	nextSplitAttempt := time.Time{} // Cooldown for retrying failed splits
@@ -2503,12 +2500,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			}
 			if !result.cooldownUntil.IsZero() && panicBuyCooldown.Before(result.cooldownUntil) {
 				panicBuyCooldown = result.cooldownUntil
-			}
-			if result.addLadderedEntry {
-				ladderedEntries = append(ladderedEntries, struct {
-					ask0 float64
-					ask1 float64
-				}{ask0: result.ladderAsk0, ask1: result.ladderAsk1})
 			}
 		default:
 		}
@@ -4069,10 +4060,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 						ladderedDirection := -1
 						if ladderedMode {
 							var directionalReady bool
-							ladderedDirection, directionalReady = ladderedTakerDirectionalSide(ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+							ladderedDirection, directionalReady = ladderedTakerDirectionalSide(ladderedEntries[id], ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 							if !directionalReady {
 								continue
 							}
+							ladderedEntries[id] = append(ladderedEntries[id], struct{ask0, ask1 float64}{ask1, ask2})
 						}
 
 						requestSize1 := shares
@@ -4486,11 +4478,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 										anchorNote = "anchor unchanged"
 									}
 									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[0], formatShareQty(filled1), formatShareQty(requestSize1), ask1, anchorNote)
-									if advancedAnchor {
-										asyncResult.addLadderedEntry = true
-										asyncResult.ladderAsk0 = ask1
-										asyncResult.ladderAsk1 = ask2
-									}
 									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 										engine.SyncBalanceNeutral(newBal)
 										engine.RecalculateDrawdown()
@@ -4505,11 +4492,6 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 										anchorNote = "anchor unchanged"
 									}
 									tui.LogEvent("[%s] 🪜 Ladder BUY confirmed: %s %s/%s @ $%.3f (%s)", id, outcomes[1], formatShareQty(filled2), formatShareQty(requestSize2), ask2, anchorNote)
-									if advancedAnchor {
-										asyncResult.addLadderedEntry = true
-										asyncResult.ladderAsk0 = ask1
-										asyncResult.ladderAsk1 = ask2
-									}
 									if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
 										engine.SyncBalanceNeutral(newBal)
 										engine.RecalculateDrawdown()
