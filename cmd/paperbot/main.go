@@ -3180,6 +3180,7 @@ func createTrader(backgroundCtx context.Context, id string, market *api.Market, 
 		SkewThreshold:      0.30,
 		KillSwitchDrawdown: 0.10,
 	}
+	tui.SetMaxExposure(riskConfig.MaxExposure)
 	riskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
 	monitor := paper.NewMarketMonitor(engine, orderBook, ladderMgr, riskMgr)

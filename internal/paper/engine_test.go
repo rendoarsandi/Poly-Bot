@@ -469,6 +469,32 @@ func TestEngine_SetBalance(t *testing.T) {
 	}
 }
 
+func TestEngine_MaxDrawdownCashPreservesActualLossAcrossNewPeaks(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	engine.SetBalance(90.0)
+	engine.RecalculateDrawdown()
+
+	stats := engine.GetStats()
+	if absFloat(stats.MaxDrawdown-10.0) > 0.0001 {
+		t.Fatalf("expected max drawdown 10.0%%, got %.4f", stats.MaxDrawdown)
+	}
+	if absFloat(stats.MaxDrawdownCash-10.0) > 0.0001 {
+		t.Fatalf("expected max drawdown cash $10.00, got %.4f", stats.MaxDrawdownCash)
+	}
+
+	engine.SetBalance(200.0)
+	engine.RecalculateDrawdown()
+
+	stats = engine.GetStats()
+	if absFloat(stats.MaxDrawdown-10.0) > 0.0001 {
+		t.Fatalf("expected max drawdown percent to remain 10.0%%, got %.4f", stats.MaxDrawdown)
+	}
+	if absFloat(stats.MaxDrawdownCash-10.0) > 0.0001 {
+		t.Fatalf("expected max drawdown cash to remain the original $10.00 loss, got %.4f", stats.MaxDrawdownCash)
+	}
+}
+
 func TestEngine_ResetPaperSession(t *testing.T) {
 	engine := NewEngine(100.0)
 

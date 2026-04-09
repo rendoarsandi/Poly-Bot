@@ -1842,7 +1842,7 @@ func TestRenderAccountStatusFormatsRealizedFromRealizedPnL(t *testing.T) {
 		CurrentBalance:  100,
 		StartingBalance: 100,
 		RealizedPnL:     -3,
-	}, 0, 120, 120, 1.0, 100, 0, 0, 0, nil)
+	}, 0, 0, 120, 120, 1.0, 100, 0, 0, 0, nil)
 
 	if strings.Contains(rendered, "+$-3.00") {
 		t.Fatalf("expected realized pnl to format from its own sign, got %q", rendered)
@@ -1863,7 +1863,7 @@ func TestRenderAccountStatusUsesBookEquityForPaperTradeBudget(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  94,
 		StartingBalance: 100,
-	}, 6, 97, 100, 1.0, 100, 0, 0, 0, map[string]Position{
+	}, 6, 0, 97, 100, 1.0, 100, 0, 0, 0, map[string]Position{
 		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 10, AvgPrice: 0.60, TotalCost: 6},
 	})
 
@@ -1887,7 +1887,7 @@ func TestRenderAccountStatusShowsFixedUSDCTradeBudget(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  100,
 		StartingBalance: 100,
-	}, 0, 100, 100, 1.3, 100, 0, 0, 0, nil)
+	}, 0, 0, 100, 100, 1.3, 100, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Trade $2.30 fixed") {
 		t.Fatalf("expected account status to show fixed trade sizing, got %q", rendered)
@@ -1909,7 +1909,7 @@ func TestRenderAccountStatusFallsBackToNetChangeWhenFlat(t *testing.T) {
 		CurrentBalance:  120,
 		StartingBalance: 100,
 		RealizedPnL:     0,
-	}, 0, 120, 120, 1.0, 100, 0, 0, 0, nil)
+	}, 0, 0, 120, 120, 1.0, 100, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Realized +$20.00") {
 		t.Fatalf("expected flat realized line to fall back to settled net change, got %q", rendered)
@@ -1928,7 +1928,7 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 		CurrentBalance:  66.35,
 		StartingBalance: 72.01,
 		RealizedPnL:     1.08,
-	}, 0.0, 66.35, 66.35, 1.0, 72.01, 2, 2, 0, nil)
+	}, 0.0, 0, 66.35, 66.35, 1.0, 72.01, 2, 2, 0, nil)
 
 	if !strings.Contains(rendered, "Realized +$1.08") {
 		t.Fatalf("expected real-mode account status to show realized pnl explicitly, got %q", rendered)
@@ -1955,7 +1955,7 @@ func TestRenderAccountStatusRealModeShowsWalletCashSeparatelyFromSpendableBalanc
 		CurrentBalance:  9.93,
 		StartingBalance: 18.00,
 		RealizedPnL:     -4.08,
-	}, 0.0, 9.93, 9.93, 1.0, 18.00, 3, 1, 1, nil)
+	}, 0.0, 0, 9.93, 9.93, 1.0, 18.00, 3, 1, 1, nil)
 
 	if !strings.Contains(rendered, "Spendable $9.93 (wallet USDC $18.00)") {
 		t.Fatalf("expected spendable and wallet USDC in real-mode account status, got %q", rendered)
@@ -1980,7 +1980,7 @@ func TestRenderAccountStatusRealModeTakerCloseUsesCurrentEquityBudget(t *testing
 		CurrentBalance:  61.53,
 		StartingBalance: 56.00,
 		RealizedPnL:     5.59,
-	}, 0.0, 61.53, 61.53, 1.0, 203.20, 4, 4, 0, nil)
+	}, 0.0, 0, 61.53, 61.53, 1.0, 203.20, 4, 4, 0, nil)
 
 	if !strings.Contains(rendered, "($3.08/trade)") {
 		t.Fatalf("expected taker-close trade budget to follow current live equity, got %q", rendered)
@@ -2010,7 +2010,7 @@ func TestRenderAccountStatusDoesNotFallbackToNetChangeWhileWalletTruthInventoryO
 		CurrentBalance:  96.9,
 		StartingBalance: 100,
 		RealizedPnL:     0,
-	}, 0, 96.9, 96.9, 1.0, 100, 1, 0, 1, nil)
+	}, 0, 0, 96.9, 96.9, 1.0, 100, 1, 0, 1, nil)
 
 	if strings.Contains(rendered, "Realized -$3.10") {
 		t.Fatalf("expected open wallet-truth inventory to suppress net-change realized fallback, got %q", rendered)
@@ -2036,7 +2036,7 @@ func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   7,
 		LosingTrades:    3,
-	}, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
+	}, 0, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Win 70%") {
 		t.Fatalf("expected win rate in account status, got %q", rendered)
@@ -2064,7 +2064,7 @@ func TestRenderAccountStatusUsesPositionWinLossFromOrderHistory(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   9,
 		LosingTrades:    1,
-	}, 0, 100, 100, 1.0, 120, 0, 0, 0, nil)
+	}, 0, 0, 100, 100, 1.0, 120, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "W/L 1/1") {
 		t.Fatalf("expected W/L to be based on per-position realized result from order history, got %q", rendered)
@@ -2085,7 +2085,7 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  100,
 		StartingBalance: 100,
-	}, 0, 100, 100, 1.2, 120, 8, 3, 2, nil)
+	}, 0, 0, 100, 100, 1.2, 120, 8, 3, 2, nil)
 
 	if !strings.Contains(rendered, "Win 60%") {
 		t.Fatalf("expected round win rate fallback in account status, got %q", rendered)
@@ -2123,7 +2123,7 @@ func TestRenderAccountStatusUsesRoundHistorySummaryWhenAvailable(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   9,
 		LosingTrades:    1,
-	}, 0, 100, 100, 1.0, 120, 3, 1, 1, nil)
+	}, 0, 0, 100, 100, 1.0, 120, 3, 1, 1, nil)
 
 	if !strings.Contains(rendered, "W/L/F 1/1/1") {
 		t.Fatalf("expected account status to match round history outcomes when round history is available, got %q", rendered)
@@ -2145,7 +2145,7 @@ func TestRenderAccountStatusShowsResolutionEstimateForUnresolvedInventory(t *tes
 		CurrentBalance:  96.9,
 		StartingBalance: 100,
 		RealizedPnL:     0,
-	}, 3.1, 100, 100, 1.0, 100, 0, 0, 0, map[string]Position{
+	}, 3.1, 0, 100, 100, 1.0, 100, 0, 0, 0, map[string]Position{
 		"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 3.5, AvgPrice: 3.1 / 3.5, TotalCost: 3.1},
 	})
 
@@ -2170,7 +2170,7 @@ func TestRenderAccountStatusUsesMatchedLabelInLadderedMode(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  65.0,
 		StartingBalance: 100.0,
-	}, 35.0, 92.25, 92.25, 1.0, 100.0, 0, 0, 0, map[string]Position{
+	}, 35.0, 0, 92.25, 92.25, 1.0, 100.0, 0, 0, 0, map[string]Position{
 		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 27.1186, AvgPrice: 0.74, TotalCost: 20.067764},
 		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 40.5598, AvgPrice: 0.37, TotalCost: 15.007126},
 	})
@@ -2200,7 +2200,7 @@ func TestRenderAccountStatusHidesArbAndResolveInCopytradeMode(t *testing.T) {
 		CurrentBalance:  93.92,
 		StartingBalance: 100.00,
 		RealizedPnL:     0,
-	}, 6.08, 99.70, 99.70, 1.0, 100.0, 0, 0, 0, map[string]Position{
+	}, 6.08, 0, 99.70, 99.70, 1.0, 100.0, 0, 0, 0, map[string]Position{
 		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 2, AvgPrice: 0.25, TotalCost: 0.50},
 		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 6, AvgPrice: 0.93, TotalCost: 5.58},
 	})
@@ -2230,7 +2230,7 @@ func TestRenderAccountStatusShowsPercentCopytradeSizing(t *testing.T) {
 		CurrentBalance:  100.0,
 		StartingBalance: 100.0,
 		RealizedPnL:     0,
-	}, 0, 100, 100, 1.0, 100.0, 0, 0, 0, nil)
+	}, 0, 0, 100, 100, 1.0, 100.0, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Copy 10.0% master") {
 		t.Fatalf("expected percent copytrade sizing label, got %q", rendered)
@@ -2426,12 +2426,53 @@ func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  100,
 		StartingBalance: 100,
-	}, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
+	}, 0, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "US time") {
 		t.Fatalf("expected account status to include US clock, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "Weekday Gate") {
 		t.Fatalf("expected account status to include weekday gate status, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsExposureCapAndDollarDrawdown(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  95.0,
+		StartingBalance: 100.0,
+		MaxDrawdown:     5.0,
+		MaxDrawdownCash: 5.0,
+	}, 12.5, 2000.0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Exposure $12.50 / $2000.00") {
+		t.Fatalf("expected account status to show current/max exposure, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "DD -$5.00") {
+		t.Fatalf("expected account status to show dollar drawdown, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsUncappedExposureWhenLimitDisabled(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100.0,
+		StartingBalance: 100.0,
+	}, 4.25, math.MaxFloat64, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Exposure $4.25 / uncapped") {
+		t.Fatalf("expected account status to show uncapped exposure limit, got %q", rendered)
 	}
 }

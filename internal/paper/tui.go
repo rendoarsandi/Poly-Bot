@@ -217,6 +217,23 @@ func signedDollar(amount float64) string {
 	return fmt.Sprintf("%s$%.2f", sign, amount)
 }
 
+func formatExposureLimit(limit float64) string {
+	if limit <= 0 || math.IsNaN(limit) || math.IsInf(limit, 0) || limit >= math.MaxFloat64/2 {
+		return "uncapped"
+	}
+	return fmt.Sprintf("$%.2f", limit)
+}
+
+func formatDrawdownCash(amount float64) string {
+	if math.Abs(amount) < 0.0001 {
+		return "$0.00"
+	}
+	if amount < 0 {
+		amount = math.Abs(amount)
+	}
+	return fmt.Sprintf("-$%.2f", amount)
+}
+
 func formatBinanceSignalPrice(symbol string, price float64) string {
 	if price <= 0 {
 		return "--"
@@ -1158,9 +1175,10 @@ func displayedTradeBudgetsWithMode(mode string, cash, equity, startingBalance, s
 type TUI struct {
 	mu sync.Mutex
 
-	engine     *Engine
-	orderBook  *OrderBook
-	orderBooks map[string]*OrderBook
+	engine      *Engine
+	orderBook   *OrderBook
+	orderBooks  map[string]*OrderBook
+	maxExposure float64
 
 	markets            map[string]*MarketData
 	marketSlug         string
@@ -1264,6 +1282,7 @@ type tuiSnapshot struct {
 
 	stats           Stats
 	exposure        float64
+	maxExposure     float64
 	equity          float64
 	bookEquity      float64
 	positions       map[string]PositionPnL
@@ -1651,7 +1670,7 @@ func (m tuiModel) renderMainContent(w int) string {
 
 		var leftRows []string
 		leftRows = append(leftRows, m.renderMarketInfo(leftW))
-		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.equity, s.bookEquity, s.multiplier, s.sizingBalance, s.rounds, s.profitable, s.losingRounds, s.enginePositions))
+		leftRows = append(leftRows, m.renderAccountStatus(leftW, s.stats, s.exposure, s.maxExposure, s.equity, s.bookEquity, s.multiplier, s.sizingBalance, s.rounds, s.profitable, s.losingRounds, s.enginePositions))
 		leftRows = append(leftRows, m.renderPositions(leftW, s.positions))
 		if ord := m.renderOrders(leftW, s.orders); ord != "" {
 			leftRows = append(leftRows, ord)
@@ -1669,7 +1688,7 @@ func (m tuiModel) renderMainContent(w int) string {
 		rows = append(rows, content)
 	} else {
 		rows = append(rows, m.renderMarketInfo(w))
-		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.equity, s.bookEquity,
+		rows = append(rows, m.renderAccountStatus(w, s.stats, s.exposure, s.maxExposure, s.equity, s.bookEquity,
 			s.multiplier, s.sizingBalance, s.rounds, s.profitable, s.losingRounds, s.enginePositions))
 		rows = append(rows, "")
 		rows = append(rows, m.renderPositions(w, s.positions))
@@ -1849,6 +1868,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.hasWalletCash = m.tui.hasWalletCash
 		m.snap.stats = stats
 		m.snap.exposure = exposure
+		m.snap.maxExposure = m.tui.maxExposure
 		m.snap.equity = equity
 		m.snap.bookEquity = bookEquity
 		m.snap.positions = positions
@@ -2719,6 +2739,16 @@ func (t *TUI) SetTradeFactor(factor float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tradeFactor = factor
+	t.markDirtyLocked()
+}
+
+func (t *TUI) SetMaxExposure(limit float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.maxExposure == limit {
+		return
+	}
+	t.maxExposure = limit
 	t.markDirtyLocked()
 }
 
@@ -4411,7 +4441,7 @@ func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBi
 //	│  Trade 2.5% ($25/trade)  ·  Realized +$2.30  ·  Arb +$0.45      │
 //	│  Compound 1.02×  ·  5 rounds  ·  Win 60%  ·  W/L 3/2  ·  ⏱ 1h23m │
 //	╰──────────────────────────────────────────────────────────────────╯
-func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity, bookEquity, multiplier, sizingBalance float64, rounds, profitable, losingRounds int, positions map[string]Position) string {
+func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExposure, equity, bookEquity, multiplier, sizingBalance float64, rounds, profitable, losingRounds int, positions map[string]Position) string {
 	s := m.snap
 	inner := w - 4
 	settings := s.settings
@@ -4646,10 +4676,10 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, equity,
 	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Equity %s  (%s)  ·  DD %s",
 		cashLabel,
 		styleBold.Render(cashText),
-		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
+		styleWhite.Render(fmt.Sprintf("$%.2f / %s", totalExposure, formatExposureLimit(maxExposure))),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(signedDollar(displayNetChange)),
-		drawdownSt.Render(fmt.Sprintf("-%.1f%%", stats.MaxDrawdown)),
+		drawdownSt.Render(formatDrawdownCash(stats.MaxDrawdownCash)),
 	)
 	row3 := tradeLine
 	row4 := ""

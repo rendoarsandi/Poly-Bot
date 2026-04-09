@@ -2229,6 +2229,7 @@ func run() error {
 				SkewThreshold:      0.10,            // 10% skew triggers rebalance
 				KillSwitchDrawdown: 0.10,            // 10% drawdown triggers kill switch (real money protection)
 			}
+			tui.SetMaxExposure(riskConfig.MaxExposure)
 			marketRiskMgr := paper.NewRiskManager(riskConfig, engine, orderBook, outcomes)
 
 			wg.Add(1)

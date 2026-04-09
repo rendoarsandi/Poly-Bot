@@ -37,6 +37,7 @@ type Stats struct {
 	RealizedPnL     float64
 	UnrealizedPnL   float64
 	MaxDrawdown     float64
+	MaxDrawdownCash float64
 	PeakBalance     float64
 	CurrentBalance  float64
 	StartingBalance float64
@@ -74,12 +75,13 @@ type Engine struct {
 	maxTrades int
 
 	// Stats tracking
-	totalTrades   int
-	realizedPnL   float64
-	peakBalance   float64
-	maxDrawdown   float64
-	winningTrades int
-	losingTrades  int
+	totalTrades     int
+	realizedPnL     float64
+	peakBalance     float64
+	maxDrawdown     float64
+	maxDrawdownCash float64
+	winningTrades   int
+	losingTrades    int
 
 	// Current market prices for unrealized PnL (legacy - outcome only)
 	currentPrices map[string]float64
@@ -877,9 +879,13 @@ func (e *Engine) recalculateDrawdown() {
 		e.peakBalance = totalEquity
 	}
 	if e.peakBalance > 0 {
-		drawdown := (e.peakBalance - totalEquity) / e.peakBalance
+		drawdownCash := e.peakBalance - totalEquity
+		drawdown := drawdownCash / e.peakBalance
 		if drawdown > e.maxDrawdown {
 			e.maxDrawdown = drawdown
+		}
+		if drawdownCash > e.maxDrawdownCash {
+			e.maxDrawdownCash = drawdownCash
 		}
 	}
 }
@@ -1098,6 +1104,7 @@ func (e *Engine) GetStats() Stats {
 		RealizedPnL:     e.realizedPnL,
 		UnrealizedPnL:   e.getUnrealizedPnL(),
 		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
+		MaxDrawdownCash: e.maxDrawdownCash,
 		PeakBalance:     e.peakBalance,
 		CurrentBalance:  e.currentBalance,
 		StartingBalance: e.pnlBaseline,
@@ -1383,6 +1390,7 @@ func (e *Engine) ResetPaperSession(balance float64) error {
 	e.realizedPnL = 0
 	e.peakBalance = balance
 	e.maxDrawdown = 0
+	e.maxDrawdownCash = 0
 	e.winningTrades = 0
 	e.losingTrades = 0
 	e.pendingRedemptions = make(map[string]float64)
