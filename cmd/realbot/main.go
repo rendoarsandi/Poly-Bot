@@ -2397,7 +2397,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var panicBuyCooldown time.Time  // Cooldown for panic buys after successful auto-cleanup
 	var nextLiveRecoveryAttempt time.Time
 	var lastDustRecoveryNotice time.Time
-	entryExecutionDone := make(chan realbotAsyncEntryResult, 1)
+	entryExecutionDone := make(chan realbotAsyncEntryResult, 50)
 	entryExecutionInFlight := false
 	makerQuotes := make(map[string]*realbotMakerQuote)
 	lastMakerSync := time.Time{}
@@ -3852,7 +3852,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 					entryReady = ladderedTakerEntryEligible(ask1, ask2)
 				}
 				if entryReady {
-					if entryExecutionInFlight {
+					if entryExecutionInFlight && !ladderedMode {
 						continue
 					}
 					if blockNewEntries {
@@ -4199,10 +4199,14 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							}
 						}
 
-						if entryGate != nil && !entryGate.TryAcquire() {
-							setEntryCooldown(500 * time.Millisecond)
-							tui.LogEvent("[%s] ⏳ Skipping buy: another market is executing a live entry", id)
-							continue
+						acquiredGate := false
+						if entryGate != nil && !ladderedMode {
+							if !entryGate.TryAcquire() {
+								setEntryCooldown(500 * time.Millisecond)
+								tui.LogEvent("[%s] ⏳ Skipping buy: another market is executing a live entry", id)
+								continue
+							}
+							acquiredGate = true
 						}
 
 						entryExecutionInFlight = true
@@ -4232,11 +4236,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							entryGate *realbotEntryGate,
 							entryExecutionDone chan<- realbotAsyncEntryResult,
 							shares float64,
+							acquiredGate bool,
 						) {
 							asyncResult := realbotAsyncEntryResult{}
 							defer func() {
 								asyncResult.lastTradeAt = time.Now()
-								if entryGate != nil {
+								if acquiredGate && entryGate != nil {
 									entryGate.Release()
 								}
 								select {
@@ -4678,6 +4683,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 							entryGate,
 							entryExecutionDone,
 							shares,
+							acquiredGate,
 						)
 						continue
 					}
