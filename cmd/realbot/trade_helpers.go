@@ -172,6 +172,39 @@ func realbotUIInterval(settings paper.TUISettings) time.Duration {
 	return realbotUIRefreshInterval
 }
 
+func realbotDecisionEvalInterval(settings paper.TUISettings, timeToExpiry time.Duration, entryExecutionInFlight bool) time.Duration {
+	mode := normalizePaperArbMode(settings.PaperArbMode)
+	if mode == paperArbModeCopytrade {
+		return realbotTraderLoopInterval(settings)
+	}
+	if entryExecutionInFlight || mode == paperArbModeMaker || realbotTakerCloseHoldMode(settings) {
+		return realbotMainLoopInterval
+	}
+	if timeToExpiry > 0 && timeToExpiry <= 30*time.Second {
+		return realbotMainLoopInterval
+	}
+	if mode == paperArbModeBinanceGap {
+		return 75 * time.Millisecond
+	}
+	return realbotDecisionLoopInterval
+}
+
+func realbotShouldRunDecisionLoop(now, lastEvalAt, lastEvalQuoteAt, latestQuoteAt time.Time, interval time.Duration) bool {
+	if interval <= 0 {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if lastEvalAt.IsZero() {
+		return true
+	}
+	if now.Sub(lastEvalAt) >= interval {
+		return true
+	}
+	return latestQuoteAt.After(lastEvalQuoteAt) && now.Sub(lastEvalAt) >= interval
+}
+
 func realbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) float64 {
 	target := avgPrice * (1.0 + (profitTargetPct / 100.0))
 	if target < 0.01 {

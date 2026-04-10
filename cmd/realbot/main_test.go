@@ -2607,6 +2607,44 @@ func TestRealbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 	}
 }
 
+func TestRealbotDecisionEvalIntervalKeepsUrgentModesFast(t *testing.T) {
+	if got := realbotDecisionEvalInterval(paper.TUISettings{PaperArbMode: "maker"}, time.Minute, false); got != realbotMainLoopInterval {
+		t.Fatalf("expected maker decision interval %s, got %s", realbotMainLoopInterval, got)
+	}
+	if got := realbotDecisionEvalInterval(paper.TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}, time.Minute, false); got != realbotMainLoopInterval {
+		t.Fatalf("expected taker-close decision interval %s, got %s", realbotMainLoopInterval, got)
+	}
+	if got := realbotDecisionEvalInterval(paper.TUISettings{PaperArbMode: "taker"}, 20*time.Second, false); got != realbotMainLoopInterval {
+		t.Fatalf("expected near-expiry decision interval %s, got %s", realbotMainLoopInterval, got)
+	}
+	if got := realbotDecisionEvalInterval(paper.TUISettings{PaperArbMode: "taker"}, time.Minute, true); got != realbotMainLoopInterval {
+		t.Fatalf("expected in-flight decision interval %s, got %s", realbotMainLoopInterval, got)
+	}
+}
+
+func TestRealbotDecisionEvalIntervalSlowsSteadyStateModes(t *testing.T) {
+	if got := realbotDecisionEvalInterval(paper.TUISettings{PaperArbMode: "taker"}, time.Minute, false); got != realbotDecisionLoopInterval {
+		t.Fatalf("expected steady-state taker decision interval %s, got %s", realbotDecisionLoopInterval, got)
+	}
+	if got := realbotDecisionEvalInterval(paper.TUISettings{PaperArbMode: "binance-gap"}, time.Minute, false); got != 75*time.Millisecond {
+		t.Fatalf("expected binance-gap decision interval 75ms, got %s", got)
+	}
+}
+
+func TestRealbotShouldRunDecisionLoopThrottlesBurstQuotes(t *testing.T) {
+	base := time.Unix(1000, 0)
+	lastEval := base
+	lastQuote := base
+	latestQuote := base.Add(10 * time.Millisecond)
+
+	if realbotShouldRunDecisionLoop(base.Add(50*time.Millisecond), lastEval, lastQuote, latestQuote, 100*time.Millisecond) {
+		t.Fatal("expected burst quote inside interval to be throttled")
+	}
+	if !realbotShouldRunDecisionLoop(base.Add(100*time.Millisecond), lastEval, lastQuote, latestQuote, 100*time.Millisecond) {
+		t.Fatal("expected decision loop to run once interval elapses")
+	}
+}
+
 func TestFormatShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := formatShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)

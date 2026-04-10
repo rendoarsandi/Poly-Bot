@@ -31,6 +31,7 @@ const (
 	minOnChainActionShares           = 0.01
 	realbotUIRefreshInterval         = 1000 * time.Millisecond
 	realbotMainLoopInterval          = 50 * time.Millisecond
+	realbotDecisionLoopInterval      = 100 * time.Millisecond
 	realbotCopytradeLoopIntervalMin  = 100 * time.Millisecond
 	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond
 	realbotCopytradeUIRefreshMin     = 1000 * time.Millisecond

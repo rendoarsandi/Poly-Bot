@@ -92,6 +92,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	wsChannelClosed := false
 	restFallbackQuoteAge := runtimeState.restFallbackQuoteAge
 	restFallbackPollInterval := runtimeState.restFallbackPollPeriod
+	lastDecisionEvalAt := time.Time{}
+	lastDecisionQuoteAt := time.Time{}
 
 	for {
 		currentBalance = engine.GetBalance()
@@ -210,6 +212,18 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			wsChannelClosed:      &wsChannelClosed,
 		}) {
 			return
+		}
+
+		now := time.Now()
+		latestQuoteAt, _ := realbotLatestQuoteUpdate(outcomes, quoteState)
+		decisionInterval := realbotDecisionEvalInterval(liveCfg, timeToExpiry, entryExecutionInFlight)
+		if !realbotShouldRunDecisionLoop(now, lastDecisionEvalAt, lastDecisionQuoteAt, latestQuoteAt, decisionInterval) {
+			time.Sleep(realbotTraderLoopInterval(liveCfg))
+			continue
+		}
+		lastDecisionEvalAt = now
+		if latestQuoteAt.After(lastDecisionQuoteAt) {
+			lastDecisionQuoteAt = latestQuoteAt
 		}
 
 		if realbotHandlePostQuoteIteration(realbotPostQuoteIterationArgs{
