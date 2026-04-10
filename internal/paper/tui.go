@@ -5614,7 +5614,21 @@ func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
 	if len(entry.positions) == 0 {
 		return false
 	}
+	resolvedMarkets := make(map[string]struct{}, len(entry.redemptions))
+	for _, redemption := range entry.redemptions {
+		if redemption == nil {
+			continue
+		}
+		marketID := strings.TrimSpace(redemption.MarketID)
+		if marketID == "" {
+			continue
+		}
+		resolvedMarkets[strings.ToLower(marketID)] = struct{}{}
+	}
 	for _, pos := range entry.positions {
+		if _, ok := resolvedMarkets[strings.ToLower(strings.TrimSpace(pos.MarketID))]; ok {
+			continue
+		}
 		if pos.Quantity > 0.000001 {
 			return true
 		}

@@ -2204,6 +2204,35 @@ func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
 	}
 }
 
+func TestRoundHistoryHasOpenInventoryIgnoresResolvedMarketResiduals(t *testing.T) {
+	entry := RoundHistoryEntry{
+		positions: map[string]Position{
+			"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 0.5},
+		},
+		redemptions: []*RedemptionResult{
+			{MarketID: "m1", WinningOutcome: "Up", WinningShares: 10},
+		},
+	}
+	if roundHistoryHasOpenInventory(entry) {
+		t.Fatal("expected redeemed market residual snapshot not to count as open inventory")
+	}
+}
+
+func TestRoundHistoryHasOpenInventoryKeepsOtherMarketsOpen(t *testing.T) {
+	entry := RoundHistoryEntry{
+		positions: map[string]Position{
+			"m1:Up": {MarketID: "m1", Outcome: "Up", Quantity: 0.5},
+			"m2:Up": {MarketID: "m2", Outcome: "Up", Quantity: 1.0},
+		},
+		redemptions: []*RedemptionResult{
+			{MarketID: "m1", WinningOutcome: "Up", WinningShares: 10},
+		},
+	}
+	if !roundHistoryHasOpenInventory(entry) {
+		t.Fatal("expected unresolved other-market inventory to keep row open")
+	}
+}
+
 func TestRenderSettingsShowsPaperBalanceRow(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
