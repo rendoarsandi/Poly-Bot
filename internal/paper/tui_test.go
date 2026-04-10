@@ -1146,6 +1146,68 @@ func TestRefreshScrollMetricsIfNeededSkipsStableLayout(t *testing.T) {
 	}
 }
 
+func TestDisplayDirtyThrottleMarksPendingDuringQuoteBurst(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.AddMarket("BTC", "btc-updown-5m-1", []string{"Up", "Down"}, time.Now().Add(time.Minute))
+
+	base := time.Unix(100, 0)
+	initialVersion := tui.snapshotVersion
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.45}, map[string]float64{"Up": 0.55}, "WS", base)
+	if tui.snapshotVersion != initialVersion+1 {
+		t.Fatalf("expected first display update to bump snapshot version, got %d", tui.snapshotVersion)
+	}
+
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.46}, map[string]float64{"Up": 0.56}, "WS", base.Add(100*time.Millisecond))
+	if tui.snapshotVersion != initialVersion+1 {
+		t.Fatalf("expected burst display update to stay throttled at version %d, got %d", initialVersion+1, tui.snapshotVersion)
+	}
+	if !tui.displayDirtyPending {
+		t.Fatal("expected throttled display update to leave a pending dirty flag")
+	}
+
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.47}, map[string]float64{"Up": 0.57}, "WS", base.Add(tuiDisplayDirtyMinInterval))
+	if tui.snapshotVersion != initialVersion+2 {
+		t.Fatalf("expected later display update to bump snapshot version again, got %d", tui.snapshotVersion)
+	}
+	if tui.displayDirtyPending {
+		t.Fatal("expected pending dirty flag to clear after throttled flush")
+	}
+}
+
+func TestTickFlushesPendingDisplayDirty(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.AddMarket("BTC", "btc-updown-5m-1", []string{"Up", "Down"}, time.Now().Add(time.Minute))
+
+	base := time.Unix(100, 0)
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.45}, map[string]float64{"Up": 0.55}, "WS", base)
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.46}, map[string]float64{"Up": 0.56}, "WS", base.Add(100*time.Millisecond))
+	if !tui.displayDirtyPending {
+		t.Fatal("expected pending dirty flag before tick flush")
+	}
+
+	model := tuiModel{tui: tui, interval: time.Second}
+	next, _ := model.Update(tickMsg(base.Add(time.Second)))
+	updated := next.(tuiModel)
+
+	if tui.displayDirtyPending {
+		t.Fatal("expected tick to flush pending display dirty flag")
+	}
+	if updated.snap.version != tui.snapshotVersion {
+		t.Fatalf("expected tick snapshot version %d to match tui version %d", updated.snap.version, tui.snapshotVersion)
+	}
+}
+
+func TestLogEventSuppressesImmediateConsecutiveDuplicates(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+
+	tui.LogEvent("repeat me")
+	tui.LogEvent("repeat me")
+
+	if got := len(tui.eventLog); got != 1 {
+		t.Fatalf("expected consecutive duplicate logs to collapse to 1 entry, got %d", got)
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {

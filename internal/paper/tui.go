@@ -1298,8 +1298,12 @@ type TUI struct {
 	program     *tea.Program
 	issueLogger *core.CSVLogger
 
-	lastDedupLogAt  map[string]time.Time
-	lastDedupLogMsg map[string]string
+	lastDedupLogAt      map[string]time.Time
+	lastDedupLogMsg     map[string]string
+	lastDisplayDirtyAt  time.Time
+	displayDirtyPending bool
+	lastEventBody       string
+	lastEventAt         time.Time
 
 	snapshotVersion uint64
 }
@@ -1370,6 +1374,19 @@ func (t *TUI) markDirtyLocked() {
 	t.snapshotVersion++
 }
 
+func (t *TUI) markDisplayDirtyLocked(now time.Time) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if t.lastDisplayDirtyAt.IsZero() || now.Sub(t.lastDisplayDirtyAt) >= tuiDisplayDirtyMinInterval {
+		t.snapshotVersion++
+		t.lastDisplayDirtyAt = now
+		t.displayDirtyPending = false
+		return
+	}
+	t.displayDirtyPending = true
+}
+
 func (t *TUI) SetWalletCash(balance float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1413,6 +1430,11 @@ type tuiModel struct {
 	layoutHeight   int
 	layoutSettings bool
 }
+
+const (
+	tuiDisplayDirtyMinInterval   = 250 * time.Millisecond
+	tuiConsecutiveLogDedupWindow = 750 * time.Millisecond
+)
 
 type WalletTruthPosition struct {
 	MarketID         string
@@ -1914,6 +1936,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		walletTruth := m.tui.getWalletTruthPositions()
 
 		m.tui.mu.Lock()
+		if m.tui.displayDirtyPending {
+			m.tui.snapshotVersion++
+			m.tui.lastDisplayDirtyAt = time.Now()
+			m.tui.displayDirtyPending = false
+		}
 
 		if m.snap.markets == nil || m.snap.version != m.tui.snapshotVersion {
 			// Rebuild the expensive collections only when the underlying TUI data changed.
@@ -3027,7 +3054,7 @@ func (t *TUI) SetMarketBinanceSignal(marketID string, signal MarketBinanceSignal
 			return
 		}
 		market.BinanceSignal = signal
-		t.markDirtyLocked()
+		t.markDisplayDirtyLocked(time.Now())
 	}
 }
 
@@ -3165,7 +3192,7 @@ func (t *TUI) UpdateMarketPricesWithSourceAt(marketID string, bids, asks map[str
 		}
 		m.LastUpdate = updatedAt
 		m.DataSource = source
-		t.markDirtyLocked()
+		t.markDisplayDirtyLocked(updatedAt)
 	}
 }
 
@@ -3174,7 +3201,7 @@ func (t *TUI) TouchMarket(marketID string) {
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
 		m.LastUpdate = time.Now()
-		t.markDirtyLocked()
+		t.markDisplayDirtyLocked(m.LastUpdate)
 	}
 }
 
@@ -3240,7 +3267,7 @@ func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]Mark
 		if market, ok := t.markets[marketID]; ok {
 			market.LastDepthUpdate = time.Now()
 		}
-		t.markDirtyLocked()
+		t.markDisplayDirtyLocked(time.Now())
 	}
 }
 
@@ -3265,7 +3292,7 @@ func (t *TUI) UpdatePrices(prices map[string]float64, bids, asks map[string]floa
 	for k, v := range asks {
 		t.lastAsks[k] = v
 	}
-	t.markDirtyLocked()
+	t.markDisplayDirtyLocked(time.Now())
 }
 
 func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
@@ -3277,7 +3304,7 @@ func (t *TUI) UpdateRealMarket(bids, asks map[string]float64) {
 	for k, v := range asks {
 		t.realAsks[k] = v
 	}
-	t.markDirtyLocked()
+	t.markDisplayDirtyLocked(time.Now())
 }
 
 func pendingOrdersEqual(a, b []PendingOrder) bool {
@@ -3354,7 +3381,7 @@ func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder
 	if len(flattened) == 0 {
 		if _, exists := t.pendingOrders[marketID]; exists {
 			delete(t.pendingOrders, marketID)
-			t.markDirtyLocked()
+			t.markDisplayDirtyLocked(time.Now())
 		}
 		return
 	}
@@ -3362,18 +3389,24 @@ func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder
 		return
 	}
 	t.pendingOrders[marketID] = flattened
-	t.markDirtyLocked()
+	t.markDisplayDirtyLocked(time.Now())
 }
 
 func (t *TUI) LogEvent(format string, args ...interface{}) {
-	timestamp := time.Now().Format("15:04:05")
-	msg := fmt.Sprintf("[%s] %s", timestamp, fmt.Sprintf(format, args...))
-	msg = core.SanitizeString(msg)
+	now := time.Now()
+	body := core.SanitizeString(fmt.Sprintf(format, args...))
 
 	var issueLogger *core.CSVLogger
 	equity := 0.0
 
 	t.mu.Lock()
+	if body == t.lastEventBody && !t.lastEventAt.IsZero() && now.Sub(t.lastEventAt) < tuiConsecutiveLogDedupWindow {
+		t.mu.Unlock()
+		return
+	}
+	t.lastEventBody = body
+	t.lastEventAt = now
+	msg := fmt.Sprintf("[%s] %s", now.Format("15:04:05"), body)
 	t.eventLog = append(t.eventLog, msg)
 	if len(t.eventLog) > t.maxEvents {
 		t.eventLog = t.eventLog[1:]
