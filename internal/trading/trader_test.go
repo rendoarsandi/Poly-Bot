@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -245,6 +246,31 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	}
 	if got := trader.GetLivePositionSize("token-up"); got != 1.5 {
 		t.Fatalf("expected live position to drop to 1.5, got %.2f", got)
+	}
+}
+
+func TestEmbeddedPaperRealTraderRejectsOversell(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	if _, err := trader.Buy(context.Background(), "token-up", "Up", 0.55, 1.5, api.OrderTypeLimit, api.TIFGoodTilCancelled, 1000); err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+
+	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.60, 2.0, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper oversell returned unexpected error: %v", err)
+	}
+	if sell.Success {
+		t.Fatalf("expected embedded paper oversell to fail, got %+v", sell)
+	}
+	if !strings.Contains(sell.Message, "insufficient position") {
+		t.Fatalf("expected insufficient position failure, got %q", sell.Message)
+	}
+	if got := trader.GetLivePositionSize("token-up"); got != 1.5 {
+		t.Fatalf("expected live position to remain 1.5 after rejected sell, got %.2f", got)
 	}
 }
 

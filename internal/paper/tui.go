@@ -1928,6 +1928,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "enter":
 					m.tui.mu.Lock()
 					changed := false
+					var notifySettingsChange func()
 					prevPaperBalance := m.tui.settings.PaperBalance
 					changed = applySettingsEditValue(&m.tui.settings, m.settingsCursor, m.settingsInput)
 					if changed {
@@ -1940,11 +1941,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.tui.appendEventLocked(fmt.Sprintf("💼 Paper balance reset to $%.2f", m.tui.settings.PaperBalance))
 							}
 						}
-						if m.tui.onSettingsChange != nil {
-							m.tui.onSettingsChange(m.tui.settings)
-						}
+						notifySettingsChange = m.tui.settingsChangeHookLocked()
 					}
 					m.tui.mu.Unlock()
+					if notifySettingsChange != nil {
+						notifySettingsChange()
+					}
 					m.settingsEdit = false
 					m.settingsInput = ""
 					return m, nil
@@ -2019,6 +2021,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "left", "-", "h":
 				m.tui.mu.Lock()
 				changed := false
+				var notifySettingsChange func()
 				prevPaperBalance := m.tui.settings.PaperBalance
 				if !settingsRowEditable(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Unlock()
@@ -2296,14 +2299,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.settingsCursor = ensureVisibleSettingsCursor(m.tui.settings, m.tui.mode, m.settingsCursor)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if changed && m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
+				if changed {
+					notifySettingsChange = m.tui.settingsChangeHookLocked()
 				}
 				m.tui.mu.Unlock()
+				if notifySettingsChange != nil {
+					notifySettingsChange()
+				}
 				return m, nil
 			case "right", "+", "l":
 				m.tui.mu.Lock()
 				changed := false
+				var notifySettingsChange func()
 				prevPaperBalance := m.tui.settings.PaperBalance
 				if !settingsRowEditable(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.tui.mu.Unlock()
@@ -2554,10 +2561,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.settingsCursor = ensureVisibleSettingsCursor(m.tui.settings, m.tui.mode, m.settingsCursor)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if changed && m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
+				if changed {
+					notifySettingsChange = m.tui.settingsChangeHookLocked()
 				}
 				m.tui.mu.Unlock()
+				if notifySettingsChange != nil {
+					notifySettingsChange()
+				}
 				return m, nil
 			// Quick presets
 			case "1":
@@ -2566,10 +2576,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preset.PaperBalance = m.tui.settings.PaperBalance
 				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
+				notifySettingsChange := m.tui.settingsChangeHookLocked()
 				m.tui.mu.Unlock()
+				if notifySettingsChange != nil {
+					notifySettingsChange()
+				}
 				return m, nil
 			case "2":
 				m.tui.mu.Lock()
@@ -2577,10 +2588,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preset.PaperBalance = m.tui.settings.PaperBalance
 				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
+				notifySettingsChange := m.tui.settingsChangeHookLocked()
 				m.tui.mu.Unlock()
+				if notifySettingsChange != nil {
+					notifySettingsChange()
+				}
 				return m, nil
 			case "3":
 				m.tui.mu.Lock()
@@ -2588,10 +2600,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preset.PaperBalance = m.tui.settings.PaperBalance
 				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				if m.tui.onSettingsChange != nil {
-					m.tui.onSettingsChange(m.tui.settings)
-				}
+				notifySettingsChange := m.tui.settingsChangeHookLocked()
 				m.tui.mu.Unlock()
+				if notifySettingsChange != nil {
+					notifySettingsChange()
+				}
 				return m, nil
 			}
 			return m, nil
@@ -3150,6 +3163,17 @@ func (t *TUI) applyPaperBalanceLocked(balance float64) error {
 	}
 	t.markDirtyLocked()
 	return nil
+}
+
+func (t *TUI) settingsChangeHookLocked() func() {
+	if t.onSettingsChange == nil {
+		return nil
+	}
+	settings := t.settings
+	onChange := t.onSettingsChange
+	return func() {
+		onChange(settings)
+	}
 }
 
 func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder) {

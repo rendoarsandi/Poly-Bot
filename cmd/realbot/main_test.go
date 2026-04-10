@@ -2847,6 +2847,60 @@ func TestRealbotCanUseLocalSellQuote(t *testing.T) {
 	}
 }
 
+func TestRealbotBuildCleanupSellQuoteKeepsConfiguredFloor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/book" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ts := time.Now().UTC().Format(time.RFC3339Nano)
+		_, _ = w.Write([]byte("{\"asset_id\":\"token-up\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.54\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.55\",\"size\":\"4\"}]}"))
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+
+	_, err := realbotBuildCleanupSellQuote(context.Background(), client, "token-up", 2, 0.60)
+	if err == nil {
+		t.Fatal("expected cleanup quote to reject bids below the configured floor")
+	}
+	if !strings.Contains(err.Error(), "below") {
+		t.Fatalf("expected floor-liquidity rejection, got %v", err)
+	}
+}
+
+func TestRealbotBuildCleanupSellQuoteUsesLiquidityAtConfiguredFloor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/book" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ts := time.Now().UTC().Format(time.RFC3339Nano)
+		_, _ = w.Write([]byte("{\"asset_id\":\"token-up\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.60\",\"size\":\"1.25\"},{\"price\":\"0.59\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.61\",\"size\":\"4\"}]}"))
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+
+	quote, err := realbotBuildCleanupSellQuote(context.Background(), client, "token-up", 2, 0.60)
+	if err != nil {
+		t.Fatalf("expected cleanup quote at configured floor to succeed, got %v", err)
+	}
+	if math.Abs(quote.SubmitPrice-0.60) > 0.000001 {
+		t.Fatalf("expected cleanup submit price 0.60, got %.3f", quote.SubmitPrice)
+	}
+	if math.Abs(quote.TotalBidLiquidity-1.25) > 0.000001 {
+		t.Fatalf("expected only floor-respecting liquidity to count, got %.2f", quote.TotalBidLiquidity)
+	}
+	if math.Abs(quote.ExecutableQty-1.25) > 0.000001 {
+		t.Fatalf("expected executable qty to cap at floor liquidity 1.25, got %.2f", quote.ExecutableQty)
+	}
+}
+
 func TestRealbotLocalQuoteSanityReasonRejectsWideOutcomeSpread(t *testing.T) {
 	reason := realbotLocalQuoteSanityReason(
 		[]string{"Down", "Up"},

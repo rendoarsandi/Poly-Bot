@@ -996,6 +996,50 @@ func TestSetModeDisablesSplitForRealbotPaperBackend(t *testing.T) {
 	}
 }
 
+func TestExecutionBackendChangeDoesNotDeadlockWhenSettingsCallbackLogs(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetMode("Real")
+
+	callbackDone := make(chan TUISettings, 1)
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "taker",
+	}, func(s TUISettings) {
+		tui.LogEvent("backend changed to %s", s.ExecutionBackend)
+		callbackDone <- s
+	})
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowExecutionBackend,
+	}
+
+	updateDone := make(chan tuiModel, 1)
+	go func() {
+		next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		updateDone <- next.(tuiModel)
+	}()
+
+	select {
+	case updated := <-updateDone:
+		if got := updated.tui.GetSettings().ExecutionBackend; got != core.ExecutionBackendLive {
+			t.Fatalf("expected execution backend to change to live, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("settings update deadlocked when callback logged to TUI")
+	}
+
+	select {
+	case got := <-callbackDone:
+		if got.ExecutionBackend != core.ExecutionBackendLive {
+			t.Fatalf("expected callback to receive live backend, got %q", got.ExecutionBackend)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected settings callback to complete")
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {

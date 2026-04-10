@@ -445,6 +445,19 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	if side == api.SideBuy {
 		t.livePositions[tokenID] += size
 	} else {
+		if t.livePositions[tokenID]+1e-9 < size {
+			available := t.livePositions[tokenID]
+			t.posMu.Unlock()
+			return &TradeResult{
+				Success: false,
+				Message: fmt.Sprintf("insufficient position for paper sell: have %.4f need %.4f", available, size),
+				Price:   price,
+				Size:    size,
+				Side:    string(side),
+				TokenID: tokenID,
+				Outcome: outcome,
+			}, nil
+		}
 		t.livePositions[tokenID] -= size
 		if t.livePositions[tokenID] < 0 {
 			t.livePositions[tokenID] = 0

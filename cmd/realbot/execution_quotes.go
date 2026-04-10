@@ -291,9 +291,6 @@ func realbotBuildCleanupSellQuote(ctx context.Context, restClient *api.RestClien
 		return realbotCleanupSellQuote{}, fmt.Errorf("no live bid found")
 	}
 	submitPrice := core.CleanupSellLimitPrice(configuredFloor)
-	if bestBid < submitPrice {
-		submitPrice = bestBid
-	}
 	totalBidLiquidity := 0.0
 	for _, lvl := range bids {
 		if lvl.Price+1e-9 >= submitPrice {
