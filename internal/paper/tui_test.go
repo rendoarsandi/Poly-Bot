@@ -958,11 +958,62 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 	}
 }
 
+func TestSettingsArbModesHideMakerForRealbotPaperBackend(t *testing.T) {
+	modes := settingsArbModes(TUISettings{ExecutionBackend: core.ExecutionBackendPaper}, "Real")
+	for _, mode := range modes {
+		if mode == "maker" {
+			t.Fatalf("expected realbot paper backend arb modes to hide maker, got %v", modes)
+		}
+	}
+}
+
+func TestSetModeCoercesMakerForRealbotPaperBackend(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "maker",
+	}, nil)
+
+	tui.SetMode("Real")
+
+	if got := tui.GetSettings().PaperArbMode; got != "taker" {
+		t.Fatalf("expected realbot paper backend to coerce maker mode to taker, got %q", got)
+	}
+}
+
+func TestSetModeDisablesSplitForRealbotPaperBackend(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		ExecutionBackend:     core.ExecutionBackendPaper,
+		PaperArbMode:         "taker",
+		SplitStrategyEnabled: true,
+	}, nil)
+
+	tui.SetMode("Real")
+
+	if tui.GetSettings().SplitStrategyEnabled {
+		t.Fatal("expected realbot paper backend to disable split strategy")
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {
 		if !isRowVisible(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
+		}
+	}
+}
+
+func TestIsRowVisibleHidesSplitRowsForRealbotPaperBackend(t *testing.T) {
+	cfg := TUISettings{
+		ExecutionBackend:     core.ExecutionBackendPaper,
+		PaperArbMode:         "taker",
+		SplitStrategyEnabled: true,
+	}
+	for _, idx := range []int{settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
+		if isRowVisible(cfg, "Real", idx) {
+			t.Fatalf("expected split row %d to be hidden for realbot paper backend", idx)
 		}
 	}
 }

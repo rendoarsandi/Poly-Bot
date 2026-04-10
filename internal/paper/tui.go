@@ -466,6 +466,7 @@ type RoundHistoryEntry struct {
 // These can be changed live from the settings panel (press 's').
 type TUISettings struct {
 	Exchange                           string  // "polymarket" or "kalshi"
+	ExecutionBackend                   string  // "live" or "paper"
 	MarketSlug                         string  // Current selected market slug or ALL or BTC,ETH
 	MaxMarkets                         int     // Max concurrent markets to trade
 	PaperBalance                       float64 // Paper-only bankroll / session reset amount
@@ -515,9 +516,9 @@ type TUISettings struct {
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.12, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 1.0, LadderedTakerSizeShares: 1.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.08, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 5.0, LadderedTakerSizeShares: 5.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.05, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 10.0, LadderedTakerSizeShares: 10.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.12, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 1.0, LadderedTakerSizeShares: 1.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.08, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 5.0, LadderedTakerSizeShares: 5.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.05, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 10.0, LadderedTakerSizeShares: 10.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
 )
 
 const (
@@ -551,6 +552,7 @@ const (
 	settingsRowMaxTradeSize
 	settingsRowMaxDailyLoss
 	settingsRowExchange
+	settingsRowExecutionBackend
 	settingsRowTakerCloseTime
 	settingsRowTakerCloseSlippage
 	settingsRowTakerCloseMinPrice
@@ -596,8 +598,31 @@ func TakerCloseModeActive(cfg TUISettings) bool {
 	return cfg.TakerCloseMarket && !isMakerSettingsMode(cfg) && !isCopytradeSettingsMode(cfg) && !isBinanceGapSettingsMode(cfg) && !isLadderedTakerSettingsMode(cfg)
 }
 
-func settingsArbModes() []string {
-	return []string{"taker", "laddered-taker", "binance-gap", "copytrade", "maker"}
+func realbotPaperBackendDisablesMaker(cfg TUISettings, mode string) bool {
+	return strings.EqualFold(mode, "Real") && strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper)
+}
+
+func realbotPaperBackendDisablesSplit(cfg TUISettings, mode string) bool {
+	return strings.EqualFold(mode, "Real") && strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper)
+}
+
+func settingsArbModes(cfg TUISettings, mode string) []string {
+	modes := []string{"taker", "laddered-taker", "binance-gap", "copytrade"}
+	if !realbotPaperBackendDisablesMaker(cfg, mode) {
+		modes = append(modes, "maker")
+	}
+	return modes
+}
+
+func normalizeTUISettingsForContext(s TUISettings, mode string) TUISettings {
+	s = normalizeTUISettings(s)
+	if realbotPaperBackendDisablesMaker(s, mode) && strings.EqualFold(s.PaperArbMode, "maker") {
+		s.PaperArbMode = "taker"
+	}
+	if realbotPaperBackendDisablesSplit(s, mode) {
+		s.SplitStrategyEnabled = false
+	}
+	return s
 }
 
 func isRowVisible(cfg TUISettings, mode string, idx int) bool {
@@ -607,10 +632,13 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	binanceGap := isBinanceGapSettingsMode(cfg)
 	kalshi := cfg.Exchange == "kalshi"
 	closeMarket := TakerCloseModeActive(cfg)
-	paperMode := strings.EqualFold(mode, "Paper")
+	paperMode := strings.EqualFold(mode, "Paper") || strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper)
 
 	if idx == settingsRowPaperBalance {
 		return paperMode
+	}
+	if idx == settingsRowExecutionBackend {
+		return !strings.EqualFold(mode, "Paper")
 	}
 
 	if kalshi {
@@ -661,6 +689,9 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	case settingsRowExecutionSlip:
 		return !maker && !binanceGap
 	case settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap:
+		if realbotPaperBackendDisablesSplit(cfg, mode) {
+			return false
+		}
 		return !maker && !binanceGap && !copytrade && !laddered
 	case settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue:
 		return maker
@@ -703,6 +734,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	switch idx {
 	case settingsRowPaperBalance:
 		return "Paper Balance"
+	case settingsRowExecutionBackend:
+		return "Execution Backend"
 	case settingsRowTradeSizingMode:
 		if copytrade {
 			return "Copy Size Mode"
@@ -839,6 +872,11 @@ func normalizeMarketSelection(slug string) string {
 
 func normalizeTUISettings(s TUISettings) TUISettings {
 	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	if strings.EqualFold(strings.TrimSpace(s.ExecutionBackend), core.ExecutionBackendLive) {
+		s.ExecutionBackend = core.ExecutionBackendLive
+	} else {
+		s.ExecutionBackend = core.ExecutionBackendPaper
+	}
 	if s.PaperBalance <= 0 {
 		s.PaperBalance = 100.0
 	}
@@ -1893,7 +1931,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					prevPaperBalance := m.tui.settings.PaperBalance
 					changed = applySettingsEditValue(&m.tui.settings, m.settingsCursor, m.settingsInput)
 					if changed {
-						m.tui.settings = normalizeTUISettings(m.tui.settings)
+						m.tui.settings = normalizeTUISettingsForContext(m.tui.settings, m.tui.mode)
 						if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
 							if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
 								m.tui.settings.PaperBalance = prevPaperBalance
@@ -2103,7 +2141,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowPaperArbMode:
-					m.tui.settings.PaperArbMode = cycleString(settingsArbModes(), m.tui.settings.PaperArbMode, -1)
+					m.tui.settings.PaperArbMode = cycleString(settingsArbModes(m.tui.settings, m.tui.mode), m.tui.settings.PaperArbMode, -1)
 					changed = true
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
@@ -2214,6 +2252,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return newM, cmd
 					}
 					changed = true
+				case settingsRowExecutionBackend:
+					m.tui.settings.ExecutionBackend = cycleString([]string{core.ExecutionBackendPaper, core.ExecutionBackendLive}, m.tui.settings.ExecutionBackend, -1)
+					changed = true
 				case settingsRowTakerCloseTime:
 					m.tui.settings.TakerCloseMarketTime -= 1
 					if m.tui.settings.TakerCloseMarketTime < 1 {
@@ -2243,7 +2284,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				}
 				if changed {
-					m.tui.settings = normalizeTUISettings(m.tui.settings)
+					m.tui.settings = normalizeTUISettingsForContext(m.tui.settings, m.tui.mode)
 					if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
 						if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
 							m.tui.settings.PaperBalance = prevPaperBalance
@@ -2364,7 +2405,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowPaperArbMode:
-					m.tui.settings.PaperArbMode = cycleString(settingsArbModes(), m.tui.settings.PaperArbMode, 1)
+					m.tui.settings.PaperArbMode = cycleString(settingsArbModes(m.tui.settings, m.tui.mode), m.tui.settings.PaperArbMode, 1)
 					changed = true
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
@@ -2469,6 +2510,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return newM, cmd
 					}
 					changed = true
+				case settingsRowExecutionBackend:
+					m.tui.settings.ExecutionBackend = cycleString([]string{core.ExecutionBackendPaper, core.ExecutionBackendLive}, m.tui.settings.ExecutionBackend, 1)
+					changed = true
 				case settingsRowTakerCloseTime:
 					m.tui.settings.TakerCloseMarketTime += 1
 					if m.tui.settings.TakerCloseMarketTime > 60 {
@@ -2498,7 +2542,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				}
 				if changed {
-					m.tui.settings = normalizeTUISettings(m.tui.settings)
+					m.tui.settings = normalizeTUISettingsForContext(m.tui.settings, m.tui.mode)
 					if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
 						if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
 							m.tui.settings.PaperBalance = prevPaperBalance
@@ -2520,7 +2564,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.mu.Lock()
 				preset := SettingsConservative
 				preset.PaperBalance = m.tui.settings.PaperBalance
-				m.tui.settings = normalizeTUISettings(preset)
+				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -2531,7 +2575,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.mu.Lock()
 				preset := SettingsModerate
 				preset.PaperBalance = m.tui.settings.PaperBalance
-				m.tui.settings = normalizeTUISettings(preset)
+				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -2542,7 +2586,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.mu.Lock()
 				preset := SettingsAggressive
 				preset.PaperBalance = m.tui.settings.PaperBalance
-				m.tui.settings = normalizeTUISettings(preset)
+				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if m.tui.onSettingsChange != nil {
 					m.tui.onSettingsChange(m.tui.settings)
@@ -2738,6 +2782,7 @@ func (t *TUI) SetMode(mode string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.mode = mode
+	t.settings = normalizeTUISettingsForContext(t.settings, t.mode)
 	t.markDirtyLocked()
 }
 
@@ -5869,6 +5914,16 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
+			label: settingsRowLabel(cfg, settingsRowExecutionBackend),
+			value: func() string {
+				if strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendLive) {
+					return styleRed.Render(" live ")
+				}
+				return styleGreen.Render(" paper ")
+			}(),
+			bar: "",
+		},
+		{
 			label: settingsRowLabel(cfg, settingsRowTakerCloseTime),
 			value: fmt.Sprintf(" %ds ", cfg.TakerCloseMarketTime),
 			bar:   renderBar(float64(cfg.TakerCloseMarketTime)/60.0, 20),
@@ -6048,10 +6103,10 @@ func (m tuiModel) renderSettings(w int) string {
 		modeNote = styleDimmed.Render("  Laddered taker mode accumulates paired taker inventory in small slices and leaves it for later cleanup/merge instead of instant merge.") + "\n"
 	}
 	balanceResetNote := ""
-	if strings.EqualFold(mode, "Paper") {
+	if strings.EqualFold(mode, "Paper") || strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper) {
 		balanceResetNote = styleDimmed.Render("  Paper Balance updates available paper USDC. When flat it resets the session bankroll; with open inventory it applies as a neutral cash sync.") + "\n"
 	}
-	restartNote := styleDimmed.Render("  Press r to reload the active round immediately after changing market, exchange, or strategy mode.")
+	restartNote := styleDimmed.Render("  Press r to reload the active round after changing market, exchange, or strategy mode. Execution backend changes require a full bot restart.")
 
 	content := title + "\n" +
 		keysLine + "\n\n" +
@@ -6085,7 +6140,7 @@ func (t *TUI) GetSettings() TUISettings {
 func (t *TUI) InitSettings(s TUISettings, onChange func(TUISettings)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	s = normalizeTUISettings(s)
+	s = normalizeTUISettingsForContext(s, t.mode)
 	if s.MakerQuoteGap <= 0 {
 		s.MakerQuoteGap = 0.008
 	}

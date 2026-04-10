@@ -294,7 +294,14 @@ type RealTrader struct {
 
 	livePositions       map[string]float64
 	confirmedOrderFills map[string]float64
+	paperEngine         *paper.Engine
+	paperTokenMeta      map[string]paperTokenMeta
 	posMu               sync.Mutex
+}
+
+type paperTokenMeta struct {
+	MarketID string
+	Outcome  string
 }
 
 // NewRealTrader creates a new real trader
@@ -344,6 +351,124 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	return trader, nil
 }
 
+func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTrader {
+	if cfg == nil {
+		cfg = &core.Config{}
+	}
+	return &RealTrader{
+		config:               cfg,
+		startOfDay:           time.Now().Truncate(24 * time.Hour),
+		ctfBalanceCache:      make(map[string]float64),
+		lastCTFBalanceUpdate: make(map[string]time.Time),
+		lastCTFBalanceTry:    make(map[string]time.Time),
+		livePositions:        make(map[string]float64),
+		confirmedOrderFills:  make(map[string]float64),
+		paperEngine:          engine,
+		paperTokenMeta:       make(map[string]paperTokenMeta),
+	}
+}
+
+func (t *RealTrader) IsEmbeddedPaperMode() bool {
+	return t != nil && t.paperEngine != nil
+}
+
+func (t *RealTrader) RegisterPaperToken(tokenID, marketID, outcome string) {
+	if t == nil || t.paperEngine == nil || tokenID == "" || marketID == "" || outcome == "" {
+		return
+	}
+	seed := 0.0
+	for _, pos := range t.paperEngine.GetPositions() {
+		if pos.MarketID == marketID && pos.Outcome == outcome && pos.Quantity > 0 {
+			seed += pos.Quantity
+		}
+	}
+	t.posMu.Lock()
+	if t.paperTokenMeta == nil {
+		t.paperTokenMeta = make(map[string]paperTokenMeta)
+	}
+	t.paperTokenMeta[tokenID] = paperTokenMeta{MarketID: marketID, Outcome: outcome}
+	t.livePositions[tokenID] = seed
+	t.posMu.Unlock()
+}
+
+func (t *RealTrader) paperPositionsSnapshot() []PositionInfo {
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+
+	positions := make([]PositionInfo, 0, len(t.livePositions))
+	for tokenID, size := range t.livePositions {
+		if size <= 0 {
+			continue
+		}
+		info := PositionInfo{
+			TokenID: tokenID,
+			Size:    size,
+		}
+		if meta, ok := t.paperTokenMeta[tokenID]; ok {
+			info.Outcome = meta.Outcome
+		}
+		positions = append(positions, info)
+	}
+	return positions
+}
+
+func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*TradeResult, error) {
+	if t.paperEngine == nil {
+		return nil, fmt.Errorf("paper engine not initialized")
+	}
+	if err := t.checkSafetyLimits(price * size); err != nil {
+		return &TradeResult{
+			Success: false,
+			Message: err.Error(),
+			Price:   price,
+			Size:    size,
+			Side:    string(side),
+			TokenID: tokenID,
+			Outcome: outcome,
+		}, nil
+	}
+	if price <= 0 || price >= 1.0 || size <= 0 {
+		return &TradeResult{
+			Success: false,
+			Message: "invalid paper order",
+			Price:   price,
+			Size:    size,
+			Side:    string(side),
+			TokenID: tokenID,
+			Outcome: outcome,
+		}, nil
+	}
+
+	orderID := fmt.Sprintf("paper-%d", time.Now().UnixNano())
+	notional := price * size
+	t.posMu.Lock()
+	if side == api.SideBuy {
+		t.livePositions[tokenID] += size
+	} else {
+		t.livePositions[tokenID] -= size
+		if t.livePositions[tokenID] < 0 {
+			t.livePositions[tokenID] = 0
+		}
+	}
+	t.confirmedOrderFills[orderID] = size
+	t.posMu.Unlock()
+
+	return &TradeResult{
+		OrderID:              orderID,
+		Status:               "FILLED",
+		Success:              true,
+		Price:                price,
+		Size:                 size,
+		FeeRateBps:           feeRateBps,
+		Side:                 string(side),
+		TokenID:              tokenID,
+		Outcome:              outcome,
+		AcknowledgedQty:      size,
+		AcknowledgedNotional: notional,
+		Timestamp:            time.Now(),
+	}, nil
+}
+
 func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 	size, err := strconv.ParseFloat(fill.Size, 64)
 	if err != nil || size <= 0 {
@@ -368,6 +493,9 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 
 // Exchange returns the underlying ExchangeClient for direct API access.
 func (t *RealTrader) Exchange() api.ExchangeClient {
+	if t.paperEngine != nil {
+		return nil
+	}
 	return t.client
 }
 
@@ -453,6 +581,9 @@ func (t *RealTrader) WaitForLivePairPositions(ctx context.Context, token0, token
 
 // StartUserWS connects the user websocket and primes the position cache
 func (t *RealTrader) StartUserWS(ctx context.Context) error {
+	if t.paperEngine != nil {
+		return nil
+	}
 	// Prime the cache with a REST call
 	initialPos, err := t.client.GetPositions(ctx)
 	conditionSet := make(map[string]struct{})
@@ -481,6 +612,9 @@ func (t *RealTrader) StartUserWS(ctx context.Context) error {
 // SubscribeUserWSMarkets ensures the user websocket is subscribed to the
 // provided condition IDs so live trade updates are received for active markets.
 func (t *RealTrader) SubscribeUserWSMarkets(ctx context.Context, conditionIDs ...string) error {
+	if t.paperEngine != nil {
+		return nil
+	}
 	if t.userWS == nil {
 		return nil
 	}
@@ -489,16 +623,38 @@ func (t *RealTrader) SubscribeUserWSMarkets(ctx context.Context, conditionIDs ..
 
 // SetTestMode enables/disables test mode
 func (t *RealTrader) SetTestMode(enabled bool) {
+	if t.client == nil {
+		return
+	}
 	t.client.SetTestMode(enabled)
 }
 
 // GetSigner returns the internal signer
 func (t *RealTrader) GetSigner() *api.Signer {
+	if t.client == nil {
+		return nil
+	}
 	return t.client.GetSigner()
 }
 
 // ExecuteBatch places multiple orders in a single HTTP request (e.g. for panic buys or split sells)
 func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest) ([]*TradeResult, error) {
+	if t.paperEngine != nil {
+		results := make([]*TradeResult, len(reqs))
+		for i, req := range reqs {
+			if req == nil {
+				results[i] = &TradeResult{Success: false, Message: "missing paper batch request"}
+				continue
+			}
+			result, err := t.simulatePaperOrder(req.Side, req.TokenID, req.Outcome, req.Price, req.Size, req.FeeRateBps)
+			if err != nil {
+				return nil, err
+			}
+			results[i] = result
+		}
+		return results, nil
+	}
+
 	totalCost := 0.0
 	for _, req := range reqs {
 		if req.Side == api.SideBuy {
@@ -582,6 +738,9 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 }
 
 func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
+	if t.paperEngine != nil {
+		return t.simulatePaperOrder(api.SideBuy, tokenID, outcome, price, size, feeRateBps)
+	}
 	// Check safety limits
 	cost := price * size
 	// Add estimated fee to cost check
@@ -661,6 +820,9 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 }
 
 func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
+	if t.paperEngine != nil {
+		return t.simulatePaperOrder(api.SideSell, tokenID, outcome, price, size, feeRateBps)
+	}
 	// Check safety limits (same as Buy)
 	proceeds := price * size
 	if err := t.checkSafetyLimits(proceeds); err != nil {
@@ -734,14 +896,23 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 }
 
 func (t *RealTrader) CancelOrder(ctx context.Context, orderID string) error {
+	if t.paperEngine != nil {
+		return nil
+	}
 	return t.client.CancelOrder(ctx, orderID)
 }
 
 func (t *RealTrader) CancelAll(ctx context.Context) error {
+	if t.paperEngine != nil {
+		return nil
+	}
 	return t.client.CancelAllOrders(ctx)
 }
 
 func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
+	if t.paperEngine != nil {
+		return t.paperEngine.GetBalance(), nil
+	}
 	t.mu.Lock()
 	// If background sync is keeping this fresh, we can rely on it.
 	// We use a 30s TTL here so if the background ticker is delayed, we still use the cache instead of blocking the WS loop.
@@ -780,6 +951,9 @@ func (t *RealTrader) GetBalance(ctx context.Context) (float64, error) {
 }
 
 func (t *RealTrader) fetchLiveBalance(ctx context.Context) (float64, error) {
+	if t.paperEngine != nil {
+		return t.paperEngine.GetBalance(), nil
+	}
 	if t.client == nil {
 		return 0, fmt.Errorf("exchange client not initialized")
 	}
@@ -819,6 +993,9 @@ func (t *RealTrader) fetchLiveBalance(ctx context.Context) (float64, error) {
 }
 
 func (t *RealTrader) getOnChainUSDCBalance(ctx context.Context) (float64, error) {
+	if t.paperEngine != nil {
+		return t.paperEngine.GetBalance(), nil
+	}
 	if t.polygon == nil {
 		return 0, fmt.Errorf("polygon client not initialized")
 	}
@@ -913,12 +1090,18 @@ func (t *RealTrader) InvalidateCTFBalanceCache(tokenIDs ...string) {
 // UpdateBalanceAllowance syncs the CLOB's cached allowance with on-chain state.
 // Call this before trading to ensure the CLOB knows about unlimited on-chain allowance.
 func (t *RealTrader) UpdateBalanceAllowance(ctx context.Context) error {
+	if t.paperEngine != nil {
+		return nil
+	}
 	return t.client.UpdateBalanceAllowance(ctx)
 }
 
 // ForceRefreshPositions fetches an authoritative external position snapshot and
 // refreshes the local WS-backed cache to match it.
 func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo, error) {
+	if t.paperEngine != nil {
+		return t.paperPositionsSnapshot(), nil
+	}
 	if t.client == nil {
 		return nil, fmt.Errorf("clob client not initialized")
 	}
@@ -950,22 +1133,34 @@ func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo,
 }
 
 func (t *RealTrader) GetPositions(ctx context.Context) ([]PositionInfo, error) {
+	if t.paperEngine != nil {
+		return t.paperPositionsSnapshot(), nil
+	}
 	return t.ForceRefreshPositions(ctx)
 }
 
 func (t *RealTrader) IsPaperMode() bool {
-	return false
+	return t.paperEngine != nil
 }
 
 func (t *RealTrader) IsTestMode() bool {
+	if t.paperEngine != nil || t.client == nil {
+		return false
+	}
 	return t.client.IsTestMode()
 }
 
 func (t *RealTrader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
+	if t.paperEngine != nil || t.client == nil {
+		return nil, fmt.Errorf("market info unavailable in embedded paper mode")
+	}
 	return t.client.GetMarketInfo(ctx, conditionID)
 }
 
 func (t *RealTrader) GetTradingAllowance(ctx context.Context) (float64, error) {
+	if t.paperEngine != nil {
+		return math.MaxFloat64, nil
+	}
 	res, err := t.client.GetBalanceAllowance(ctx)
 	if err != nil {
 		return 0, err
@@ -996,6 +1191,9 @@ func (t *RealTrader) refreshStateAfterRedeem(ctx context.Context) {
 }
 
 func (t *RealTrader) GetOnChainTxState(ctx context.Context, txHash string) (string, error) {
+	if t.paperEngine != nil {
+		return "success", nil
+	}
 	txHash = strings.TrimSpace(txHash)
 	if txHash == "" {
 		return "", fmt.Errorf("tx hash is empty")
@@ -1171,6 +1369,9 @@ func (t *RealTrader) submitOnChainTx(ctx context.Context, txName string, txFunc 
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64, numOutcomes int) (string, error) {
+	if t.paperEngine != nil {
+		return fmt.Sprintf("paper-merge-%d", time.Now().UnixNano()), nil
+	}
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("merge not supported on kalshi")
 	}
@@ -1199,6 +1400,9 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcAmount float64, numOutcomes int) (string, error) {
+	if t.paperEngine != nil {
+		return fmt.Sprintf("paper-split-%d", time.Now().UnixNano()), nil
+	}
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("split not supported on kalshi")
 	}
@@ -1397,11 +1601,17 @@ func (t *RealTrader) RecordLoss(amount float64) {
 
 // Address returns the wallet address
 func (t *RealTrader) Address() string {
+	if t.paperEngine != nil {
+		return "paper"
+	}
 	return t.client.Address()
 }
 
 // GetCTFBalanceFloat returns the on-chain CTF token balance as a float64 (human-readable shares)
 func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
+	if t.paperEngine != nil {
+		return t.GetLivePositionSize(tokenID), nil
+	}
 	if t.polygon == nil {
 		return 0, fmt.Errorf("polygon client not initialized")
 	}
@@ -1471,6 +1681,9 @@ func (t *RealTrader) ForceRefreshCTFBalanceFloat(ctx context.Context, tokenID st
 
 // WaitForFill waits for an order to be filled
 func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout time.Duration) (bool, error) {
+	if t.paperEngine != nil {
+		return t.GetConfirmedFillSize(orderID) > 0, nil
+	}
 	if orderID == "" {
 		return false, nil
 	}
@@ -1499,20 +1712,32 @@ func (t *RealTrader) WaitForFill(ctx context.Context, orderID string, timeout ti
 }
 
 func (t *RealTrader) EnableRawAPILog(path string) error {
+	if t.paperEngine != nil || t.client == nil {
+		return nil
+	}
 	return t.client.EnableRawAPILog(path)
 }
 
 func (t *RealTrader) CloseRawAPILog() error {
+	if t.paperEngine != nil || t.client == nil {
+		return nil
+	}
 	return t.client.CloseRawAPILog()
 }
 
 // GetOpenOrders returns all open orders
 func (t *RealTrader) GetOpenOrders(ctx context.Context) ([]api.OpenOrder, error) {
+	if t.paperEngine != nil {
+		return nil, nil
+	}
 	return t.client.GetOpenOrders(ctx)
 }
 
 // CancelOrder cancels a specific order
 func (t *RealTrader) CancelOrderByID(ctx context.Context, orderID string) error {
+	if t.paperEngine != nil {
+		return nil
+	}
 	return t.client.CancelOrder(ctx, orderID)
 }
 
@@ -1557,6 +1782,9 @@ func (t *RealTrader) QueryBalancedCTFBalances(
 	token0, token1 string,
 	expectedShares float64,
 ) (bal0, bal1 float64, err0, err1 error) {
+	if t.paperEngine != nil {
+		return t.GetLivePositionSize(token0), t.GetLivePositionSize(token1), nil, nil
+	}
 	// Increase attempts from 8 to 20, wait 2.5 seconds between attempts (total 50s timeout)
 	// Position updates via REST/WS might be slightly delayed after on-chain mints
 	const maxAttempts = 20

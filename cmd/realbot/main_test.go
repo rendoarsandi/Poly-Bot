@@ -155,6 +155,41 @@ func TestRealbotLadderedDirectionalSideMatchesPaperbotCases(t *testing.T) {
 	}
 }
 
+func TestRealbotLadderedRequestedQtySharesModePreservesConfiguredSize(t *testing.T) {
+	cfg := paper.TUISettings{
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeShares,
+		LadderedTakerSizeShares: 3.5,
+	}
+
+	if got := realbotLadderedRequestedQty(0.84, cfg, 0.62, 0.64); math.Abs(got-3.5) > 1e-9 {
+		t.Fatalf("expected share ladder sizing to keep configured 3.5 shares, got %.4f", got)
+	}
+}
+
+func TestRealbotLadderedRequestedQtyUSDCSizesAgainstActiveSideLimit(t *testing.T) {
+	cfg := paper.TUISettings{
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   5.0,
+	}
+
+	if got := realbotLadderedRequestedQty(1.00, cfg, 0.80, 0.80); math.Abs(got-6.25) > 1e-9 {
+		t.Fatalf("expected USDC ladder sizing to use the active side price, got %.4f", got)
+	}
+}
+
+func TestRealbotLadderedRequestedQtyUSDCRespectsMaxTradeSize(t *testing.T) {
+	cfg := paper.TUISettings{
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   10.0,
+		MaxTradeSize:            4.0,
+	}
+
+	want := normalizeMarketBuyShares(4.0 / 0.61)
+	if got := realbotLadderedRequestedQty(0.90, cfg, 0.60, 0.61); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("expected max trade size to cap directional ladder sizing at %.4f, got %.4f", want, got)
+	}
+}
+
 func TestRealbotResolveLadderedEntryDropsRejectedPendingAnchor(t *testing.T) {
 	entries := []realbotLadderedEntry{
 		{seq: 1, ask0: 0.50, ask1: 0.40},
@@ -245,19 +280,103 @@ func TestRealbotPrimaryExecutionMode(t *testing.T) {
 
 func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	cfg := &core.Config{
+		ExecutionBackend:            core.ExecutionBackendPaper,
+		PaperBalance:                42.5,
 		PaperArbMode:                paperArbModeLaddered,
 		LadderedTakerMaxSlippagePct: 7,
 	}
 
 	settings := realbotTUISettingsFromConfig(cfg)
+	if settings.ExecutionBackend != core.ExecutionBackendPaper {
+		t.Fatalf("expected TUI settings to include execution backend, got %q", settings.ExecutionBackend)
+	}
+	if settings.PaperBalance != 42.5 {
+		t.Fatalf("expected TUI settings to include paper balance, got %.2f", settings.PaperBalance)
+	}
 	if settings.LadderedTakerMaxSlippagePct != 7 {
 		t.Fatalf("expected TUI settings to include laddered slippage, got %.0f", settings.LadderedTakerMaxSlippagePct)
 	}
 
+	settings.ExecutionBackend = core.ExecutionBackendLive
+	settings.PaperBalance = 77
 	settings.LadderedTakerMaxSlippagePct = 13
 	applyRealbotTUISettings(cfg, settings)
+	if cfg.ExecutionBackend != core.ExecutionBackendLive {
+		t.Fatalf("expected config to receive updated execution backend, got %q", cfg.ExecutionBackend)
+	}
+	if cfg.PaperBalance != 77 {
+		t.Fatalf("expected config to receive updated paper balance, got %.2f", cfg.PaperBalance)
+	}
 	if cfg.LadderedTakerMaxSlippagePct != 13 {
 		t.Fatalf("expected config to receive updated laddered slippage, got %.0f", cfg.LadderedTakerMaxSlippagePct)
+	}
+}
+
+func TestRealbotInitBackendPaperMode(t *testing.T) {
+	state, err := realbotInitBackend(context.Background(), &core.Config{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperBalance:     55.5,
+		PolygonRPCURL:    "https://polygon-rpc.example",
+	})
+	if err != nil {
+		t.Fatalf("expected embedded paper backend init to succeed, got %v", err)
+	}
+	if !state.embeddedPaper {
+		t.Fatal("expected embedded paper backend flag to be true")
+	}
+	if state.trader != nil {
+		t.Fatal("expected embedded paper init to defer trader creation until engine startup")
+	}
+	if math.Abs(state.startingBalance-55.5) > 0.000001 {
+		t.Fatalf("expected embedded paper starting balance 55.5, got %.2f", state.startingBalance)
+	}
+	if state.polygonClient == nil {
+		t.Fatal("expected polygon client to still be available for resolution checks")
+	}
+}
+
+func TestApplyRealbotTUISettingsDisablesUnsupportedPaperBackendModes(t *testing.T) {
+	cfg := &core.Config{}
+	applyRealbotTUISettings(cfg, paper.TUISettings{
+		ExecutionBackend:     core.ExecutionBackendPaper,
+		PaperArbMode:         paperArbModeMaker,
+		SplitStrategyEnabled: true,
+	})
+
+	if cfg.ExecutionBackend != core.ExecutionBackendPaper {
+		t.Fatalf("expected paper execution backend, got %q", cfg.ExecutionBackend)
+	}
+	if cfg.PaperArbMode != paperArbModeTaker {
+		t.Fatalf("expected unsupported maker mode to coerce to taker, got %q", cfg.PaperArbMode)
+	}
+	if cfg.SplitStrategyEnabled {
+		t.Fatal("expected split strategy to be disabled on paper backend")
+	}
+}
+
+func TestRealbotBindBackendTraderUsesLiveTraderWhenPresent(t *testing.T) {
+	engine := paper.NewEngine(100)
+	liveTrader := &trading.RealTrader{}
+
+	got := realbotBindBackendTrader(&core.Config{ExecutionBackend: core.ExecutionBackendLive}, engine, &realbotBackendState{
+		trader: liveTrader,
+	})
+	if got != liveTrader {
+		t.Fatal("expected live backend binding to reuse the initialized trader")
+	}
+}
+
+func TestRealbotBindBackendTraderCreatesEmbeddedPaperFallback(t *testing.T) {
+	engine := paper.NewEngine(100)
+
+	got := realbotBindBackendTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine, &realbotBackendState{
+		embeddedPaper: true,
+	})
+	if got == nil {
+		t.Fatal("expected embedded paper backend binding to create a trader")
+	}
+	if !got.IsEmbeddedPaperMode() {
+		t.Fatal("expected embedded paper backend binding to create an embedded paper trader")
 	}
 }
 
@@ -334,6 +453,194 @@ func TestRealbotCopytradeMarketSelectableAllowsFinalSeconds(t *testing.T) {
 	}
 	if realbotCopytradeMarketSelectable(now, now.Add(-time.Second)) {
 		t.Fatal("expected expired market to be rejected")
+	}
+}
+
+func TestRealbotConditionIDsForMarketsDedupesAndSkipsBlank(t *testing.T) {
+	condIDs := realbotConditionIDsForMarkets(map[string]*api.Market{
+		"m1": {ConditionID: "cond-1"},
+		"m2": {ConditionID: "cond-2"},
+		"m3": {ConditionID: "cond-1"},
+		"m4": {ConditionID: ""},
+		"m5": nil,
+	})
+
+	if len(condIDs) != 2 {
+		t.Fatalf("expected two unique condition ids, got %v", condIDs)
+	}
+	if condIDs[0] != "cond-1" || condIDs[1] != "cond-2" {
+		t.Fatalf("unexpected condition ids %v", condIDs)
+	}
+}
+
+func TestRealbotHandleLiveRecoverySkipsUnsupportedModes(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	currentBalance := 100.0
+	nextAttempt := time.Now()
+	panicBuyCooldown := time.Time{}
+	lastDustNotice := time.Time{}
+
+	handled := realbotHandleLiveRecovery(realbotLiveRecoveryArgs{
+		ctx:         context.Background(),
+		marketID:    "BTC",
+		market:      &api.Market{Tokens: []api.Token{{TokenID: "down-token"}, {TokenID: "up-token"}}},
+		outcomes:    []string{"Down", "Up"},
+		primaryMode: paperArbModeLaddered,
+		engine:      engine,
+		tui:         tui,
+		lastTrade:   time.Now().Add(-30 * time.Second),
+	}, &realbotLiveRecoveryState{
+		currentBalance:          &currentBalance,
+		nextLiveRecoveryAttempt: &nextAttempt,
+		panicBuyCooldown:        &panicBuyCooldown,
+		lastDustRecoveryNotice:  &lastDustNotice,
+	})
+	if handled {
+		t.Fatal("expected laddered mode to bypass live recovery handler")
+	}
+	if math.Abs(currentBalance-100.0) > 0.000001 {
+		t.Fatalf("expected current balance unchanged, got %.2f", currentBalance)
+	}
+}
+
+func TestRealbotHandleClosedMarketIgnoresActiveMarket(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	preserveWalletTruth := false
+
+	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
+		marketID: "BTC",
+		market:   &api.Market{ConditionID: "cond-1"},
+		endTime:  time.Now().Add(30 * time.Second),
+		tui:      tui,
+		engine:   engine,
+	}, &realbotMarketClosureState{
+		preserveWalletTruth: &preserveWalletTruth,
+	})
+	if handled {
+		t.Fatal("expected active market to bypass closed-market handler")
+	}
+	if preserveWalletTruth {
+		t.Fatal("expected active market to leave preserveWalletTruth unchanged")
+	}
+}
+
+func TestRealbotHandleMarketShutdownPreservesTakerCloseInventory(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{TakerCloseMarket: true}, nil)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.71, 3); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	preserveWalletTruth := false
+	handled := realbotHandleMarketShutdown(realbotMarketShutdownArgs{
+		globalCtx: context.Background(),
+		marketID:  "BTC",
+		endTime:   time.Now().Add(time.Minute),
+		engine:    engine,
+		tui:       tui,
+	}, &realbotMarketClosureState{
+		preserveWalletTruth: &preserveWalletTruth,
+	})
+	if !handled {
+		t.Fatal("expected shutdown handler to take over")
+	}
+	if !preserveWalletTruth {
+		t.Fatal("expected taker-close shutdown to preserve wallet-truth inventory")
+	}
+}
+
+func TestRealbotHandleMarketGuardsRespectsManualPause(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{}, nil)
+	tui.SetTradingPaused(true)
+
+	weekdayLogged := false
+	manualLogged := false
+	nextNearCloseCleanup := time.Time{}
+	nearExpiryNoticeSent := false
+
+	result := realbotHandleMarketGuards(realbotMarketGuardArgs{
+		marketID: "BTC",
+		endTime:  time.Now().Add(time.Minute),
+		cfg:      &core.Config{},
+		engine:   engine,
+		tui:      tui,
+	}, &realbotMarketGuardState{
+		usWeekdayGateClosedLogged: &weekdayLogged,
+		manualTradingPauseLogged:  &manualLogged,
+		nextNearCloseCleanup:      &nextNearCloseCleanup,
+		nearExpiryNoticeSent:      &nearExpiryNoticeSent,
+	})
+	if result.weekdayTradingAllowed != true {
+		t.Fatal("expected default trading-hours gate to stay open")
+	}
+	if !result.manualTradingPaused || result.entryTradingAllowed {
+		t.Fatalf("expected manual pause to block entries, got paused=%v entryAllowed=%v", result.manualTradingPaused, result.entryTradingAllowed)
+	}
+	if !manualLogged {
+		t.Fatal("expected manual pause transition to be recorded")
+	}
+	if result.skip {
+		t.Fatal("expected manual pause alone not to trigger near-expiry skip")
+	}
+}
+
+func TestRealbotConsumeAsyncEntryResultUpdatesLoopState(t *testing.T) {
+	entryExecutionInFlight := true
+	lastTrade := time.Time{}
+	panicBuyCooldown := time.Now()
+	ladderedEntries := []realbotLadderedEntry{
+		{seq: 1, ask0: 0.41, ask1: 0.59},
+		{seq: 2, ask0: 0.42, ask1: 0.58},
+	}
+	done := make(chan realbotAsyncEntryResult, 1)
+	expectedTrade := time.Now().Add(-2 * time.Second)
+	expectedCooldown := time.Now().Add(10 * time.Second)
+	done <- realbotAsyncEntryResult{
+		lastTradeAt:            expectedTrade,
+		cooldownUntil:          expectedCooldown,
+		ladderedEntrySeq:       1,
+		ladderedEntryConfirmed: false,
+	}
+
+	realbotConsumeAsyncEntryResult(done, &realbotAsyncEntryState{
+		entryExecutionInFlight: &entryExecutionInFlight,
+		ladderedEntries:        &ladderedEntries,
+		lastTrade:              &lastTrade,
+		panicBuyCooldown:       &panicBuyCooldown,
+	})
+
+	if entryExecutionInFlight {
+		t.Fatal("expected async result to clear in-flight flag")
+	}
+	if !lastTrade.Equal(expectedTrade) {
+		t.Fatalf("expected lastTrade %v, got %v", expectedTrade, lastTrade)
+	}
+	if !panicBuyCooldown.Equal(expectedCooldown) {
+		t.Fatalf("expected cooldown %v, got %v", expectedCooldown, panicBuyCooldown)
+	}
+	if len(ladderedEntries) != 1 || ladderedEntries[0].seq != 2 {
+		t.Fatalf("expected unresolved ladder entry to be pruned, got %+v", ladderedEntries)
+	}
+}
+
+func TestRealbotHandleEntryBlockNoticeTracksTransitions(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	lastReason := ""
+
+	realbotHandleEntryBlockNotice("BTC", true, "pending redemption", tui, &lastReason)
+	if lastReason != "pending redemption" {
+		t.Fatalf("expected block reason to persist, got %q", lastReason)
+	}
+
+	realbotHandleEntryBlockNotice("BTC", false, "", tui, &lastReason)
+	if lastReason != "" {
+		t.Fatalf("expected block reason to clear, got %q", lastReason)
 	}
 }
 
@@ -896,6 +1203,53 @@ func TestRealbotHasEnginePositionsForMarket(t *testing.T) {
 	}
 }
 
+func TestCheckRedemptionEmbeddedPaperSettlesResolvedPayout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/markets/cond-1" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"condition_id":"cond-1","closed":true,"tokens":[{"token_id":"down-token","outcome":"Down","winner":false},{"token_id":"up-token","outcome":"Up","winner":true}]}`))
+	}))
+	defer server.Close()
+
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.RecordRound(100, 97, -3, 1, engine.GetPositions(), nil)
+
+	restClient := api.NewRestClient("polymarket")
+	restClient.BaseURL = server.URL
+	resCache := api.NewResolutionCache(nil, nil, restClient)
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	checkRedemption(ctx, "BTC", "cond-1", []string{"Down", "Up"}, time.Now().Add(-time.Minute), trader, engine, tui, resCache)
+
+	if got := engine.GetPendingRedemptions()["BTC"]; got != 0 {
+		t.Fatalf("expected no pending redemption after embedded paper settle, got %.2f", got)
+	}
+	if got := engine.GetBalance(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected embedded paper balance 102.00 after settlement, got %.2f", got)
+	}
+
+	history := tui.GetRoundHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected one round history entry, got %d", len(history))
+	}
+	if got := history[0].EndingEquity; math.Abs(got-99.0) > 0.000001 {
+		t.Fatalf("expected round ending equity 99.00 after redemption delta, got %.2f", got)
+	}
+	if got := history[0].PnL; math.Abs(got-(-1.0)) > 0.000001 {
+		t.Fatalf("expected round pnl -1.00 after redemption delta, got %.2f", got)
+	}
+}
+
 func TestRealbotPanicBuyCompletionGuardBlocksUnprofitableCompletion(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.62, 10); err != nil {
@@ -935,6 +1289,48 @@ func TestRealbotPanicBuyCompletionGuardIgnoresBalancedInventory(t *testing.T) {
 	block, reason := realbotPanicBuyCompletionGuard(engine, "mkt-1", "Yes", "No", 0.45, 0.40, 2.0)
 	if block {
 		t.Fatalf("expected balanced inventory to bypass completion guard, got reason %q", reason)
+	}
+}
+
+func TestRealbotHandlePanicBuyStrategySkipsCrossedNonLadderedQuotes(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+
+	entryExecutionInFlight := false
+	panicBuyCooldown := time.Time{}
+	lastPairUpdate := time.Now()
+	lastTrade := time.Time{}
+	lastDustRecoveryNotice := time.Time{}
+	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
+	nextLadderedEntrySeq := uint64(1)
+
+	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Down", "Up"},
+		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenBids:      map[string]float64{"Down": 0.52, "Up": 0.48},
+		tokenAsks:      map[string]float64{"Down": 0.51, "Up": 0.49},
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeTaker,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &ladderedEntries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+	if !handled {
+		t.Fatal("expected crossed non-laddered quotes to short-circuit the strategy")
+	}
+	if entryExecutionInFlight {
+		t.Fatal("expected crossed quotes to avoid launching aggressive entry execution")
+	}
+	if nextLadderedEntrySeq != 1 || len(ladderedEntries) != 1 {
+		t.Fatal("expected crossed quotes to leave ladder state unchanged")
 	}
 }
 
@@ -1013,6 +1409,325 @@ func TestRealbotShouldPollRestFallbackOnStaleSaneBook(t *testing.T) {
 		false,
 	) {
 		t.Fatal("expected stale sane book to trigger REST fallback polling")
+	}
+}
+
+func TestRealbotHandleMarketWSMessageUpdatesSnapshotState(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tracker := paper.NewDirectionalSignalTracker(time.Second, []string{"Down", "Up"})
+	lastPairUpdate := time.Time{}
+	quoteState := map[string]realbotQuoteState{
+		"Up": {UpdatedAt: time.Now(), Source: "ws"},
+	}
+	tokenBids := map[string]float64{"Up": 0.51}
+	tokenAsks := map[string]float64{"Up": 0.52}
+	tokenFullBids := make(map[string][]paper.MarketLevel)
+	tokenFullAsks := make(map[string][]paper.MarketLevel)
+
+	args := realbotMarketQuoteArgs{
+		marketID:          "BTC",
+		tokenToOutcome:    map[string]string{"down-token": "Down"},
+		outcomes:          []string{"Down", "Up"},
+		tokenBids:         tokenBids,
+		tokenAsks:         tokenAsks,
+		tokenFullBids:     tokenFullBids,
+		tokenFullAsks:     tokenFullAsks,
+		quoteState:        quoteState,
+		polySignalTracker: tracker,
+		engine:            engine,
+	}
+
+	msg := []byte(`[
+		{
+			"event_type":"book",
+			"asset_id":"down-token",
+			"timestamp":"1766789469958",
+			"bids":[{"price":"0.48","size":"100"}],
+			"asks":[{"price":"0.49","size":"150"}]
+		}
+	]`)
+
+	realbotHandleMarketWSMessage(args, msg, &lastPairUpdate)
+
+	if got := tokenBids["Down"]; math.Abs(got-0.48) > 0.000001 {
+		t.Fatalf("expected Down bid 0.48, got %.4f", got)
+	}
+	if got := tokenAsks["Down"]; math.Abs(got-0.49) > 0.000001 {
+		t.Fatalf("expected Down ask 0.49, got %.4f", got)
+	}
+	if len(tokenFullBids["Down"]) != 1 || len(tokenFullAsks["Down"]) != 1 {
+		t.Fatalf("expected full depth to be populated, got bids=%v asks=%v", tokenFullBids["Down"], tokenFullAsks["Down"])
+	}
+	if quoteState["Down"].Source != "ws" {
+		t.Fatalf("expected Down quote source ws, got %q", quoteState["Down"].Source)
+	}
+	if lastPairUpdate.IsZero() {
+		t.Fatal("expected sane pair snapshot to update lastPairUpdate")
+	}
+}
+
+func TestRealbotHandleMarketWSMessagePriceUpdateAppliesExplicitBestBidAsk(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tracker := paper.NewDirectionalSignalTracker(time.Second, []string{"Down", "Up"})
+	lastPairUpdate := time.Time{}
+	quoteState := map[string]realbotQuoteState{
+		"Up": {UpdatedAt: time.Now(), Source: "ws"},
+	}
+	tokenBids := map[string]float64{"Up": 0.26, "Down": 0.40}
+	tokenAsks := map[string]float64{"Up": 0.27, "Down": 0.60}
+	tokenFullBids := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.40, Size: 10}},
+		"Up":   {{Price: 0.26, Size: 10}},
+	}
+	tokenFullAsks := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.60, Size: 10}},
+		"Up":   {{Price: 0.27, Size: 10}},
+	}
+
+	args := realbotMarketQuoteArgs{
+		marketID:          "BTC",
+		tokenToOutcome:    map[string]string{"down-token": "Down"},
+		outcomes:          []string{"Down", "Up"},
+		tokenBids:         tokenBids,
+		tokenAsks:         tokenAsks,
+		tokenFullBids:     tokenFullBids,
+		tokenFullAsks:     tokenFullAsks,
+		quoteState:        quoteState,
+		polySignalTracker: tracker,
+		engine:            engine,
+	}
+
+	msg := []byte(`{
+		"market":"btc-market",
+		"price_changes":[
+			{
+				"asset_id":"down-token",
+				"price":"0.74",
+				"size":"12",
+				"side":"SELL",
+				"best_bid":"0.73",
+				"best_ask":"0.74",
+				"timestamp":"1766789469958"
+			}
+		]
+	}`)
+
+	realbotHandleMarketWSMessage(args, msg, &lastPairUpdate)
+
+	if got := tokenBids["Down"]; math.Abs(got-0.73) > 0.000001 {
+		t.Fatalf("expected explicit Down best bid 0.73, got %.4f", got)
+	}
+	if got := tokenAsks["Down"]; math.Abs(got-0.74) > 0.000001 {
+		t.Fatalf("expected explicit Down best ask 0.74, got %.4f", got)
+	}
+	if quoteState["Down"].Source != "ws" {
+		t.Fatalf("expected Down quote source ws after price update, got %q", quoteState["Down"].Source)
+	}
+	if lastPairUpdate.IsZero() {
+		t.Fatal("expected sane explicit BBO update to refresh lastPairUpdate")
+	}
+}
+
+func TestRealbotProcessMarketQuotesPublishesDisplayAndFreshness(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.AddMarket("BTC", "btc", []string{"Down", "Up"}, time.Now().Add(time.Minute))
+
+	now := time.Now()
+	displayBids := make(map[string]float64)
+	displayAsks := make(map[string]float64)
+	publishedBids := make(map[string]float64)
+	publishedAsks := make(map[string]float64)
+	tokenBids := map[string]float64{"Down": 0.48, "Up": 0.51}
+	tokenAsks := map[string]float64{"Down": 0.49, "Up": 0.52}
+	tokenFullBids := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.48, Size: 10}},
+		"Up":   {{Price: 0.51, Size: 10}},
+	}
+	tokenFullAsks := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.49, Size: 10}},
+		"Up":   {{Price: 0.52, Size: 10}},
+	}
+	quoteState := map[string]realbotQuoteState{
+		"Down": {UpdatedAt: now, Source: "ws"},
+		"Up":   {UpdatedAt: now, Source: "ws"},
+	}
+
+	lastPairUpdate := now
+	lastPublishedQuoteAt := time.Time{}
+	lastReconnectCount := int32(0)
+	lastWsWarnTime := now
+	lastForceReconnect := now
+	lastRestFallbackPoll := now
+	restFallbackActive := false
+	restRecoveryLogged := false
+	wsChannelClosed := false
+
+	if realbotProcessMarketQuotes(realbotMarketQuoteArgs{
+		ctx:                    context.Background(),
+		marketID:               "BTC",
+		wsMgr:                  &api.WSManager{},
+		wsMsgChan:              make(chan []byte, 1),
+		tokenMap:               map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenToOutcome:         map[string]string{"down-token": "Down", "up-token": "Up"},
+		outcomes:               []string{"Down", "Up"},
+		tokenBids:              tokenBids,
+		tokenAsks:              tokenAsks,
+		tokenFullBids:          tokenFullBids,
+		tokenFullAsks:          tokenFullAsks,
+		displayBids:            displayBids,
+		displayAsks:            displayAsks,
+		publishedBids:          publishedBids,
+		publishedAsks:          publishedAsks,
+		quoteState:             quoteState,
+		polySignalTracker:      paper.NewDirectionalSignalTracker(time.Second, []string{"Down", "Up"}),
+		engine:                 engine,
+		restClient:             api.NewRestClient("polymarket"),
+		tui:                    tui,
+		restFallbackQuoteAge:   time.Minute,
+		restFallbackPollPeriod: time.Minute,
+	}, realbotMarketQuoteRuntime{
+		lastPairUpdate:       &lastPairUpdate,
+		lastPublishedQuoteAt: &lastPublishedQuoteAt,
+		lastReconnectCount:   &lastReconnectCount,
+		lastWsWarnTime:       &lastWsWarnTime,
+		lastForceReconnect:   &lastForceReconnect,
+		lastRestFallbackPoll: &lastRestFallbackPoll,
+		restFallbackActive:   &restFallbackActive,
+		restRecoveryLogged:   &restRecoveryLogged,
+		wsChannelClosed:      &wsChannelClosed,
+	}) {
+		t.Fatal("expected active quote loop to continue running")
+	}
+
+	if math.Abs(displayBids["Down"]-0.48) > 0.000001 || math.Abs(displayAsks["Up"]-0.52) > 0.000001 {
+		t.Fatalf("expected display quotes to publish sane pair, got bids=%v asks=%v", displayBids, displayAsks)
+	}
+	if math.Abs(publishedBids["Up"]-0.51) > 0.000001 || math.Abs(publishedAsks["Down"]-0.49) > 0.000001 {
+		t.Fatalf("expected published quotes to track display, got bids=%v asks=%v", publishedBids, publishedAsks)
+	}
+	if lastPublishedQuoteAt.IsZero() {
+		t.Fatal("expected fresh quote publication to advance lastPublishedQuoteAt")
+	}
+}
+
+func TestRealbotProcessMarketQuotesClosedChannelSchedulesReconnect(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.AddMarket("BTC", "btc", []string{"Down", "Up"}, time.Now().Add(time.Minute))
+
+	ch := make(chan []byte)
+	close(ch)
+
+	lastPairUpdate := time.Now()
+	lastPublishedQuoteAt := time.Time{}
+	lastReconnectCount := int32(0)
+	lastWsWarnTime := time.Now().Add(-2 * realbotWSWarnInterval)
+	lastForceReconnect := time.Time{}
+	lastRestFallbackPoll := time.Now()
+	restFallbackActive := false
+	restRecoveryLogged := false
+	wsChannelClosed := false
+
+	if realbotProcessMarketQuotes(realbotMarketQuoteArgs{
+		ctx:                    context.Background(),
+		marketID:               "BTC",
+		wsMgr:                  &api.WSManager{},
+		wsMsgChan:              ch,
+		tokenMap:               map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenToOutcome:         map[string]string{"down-token": "Down", "up-token": "Up"},
+		outcomes:               []string{"Down", "Up"},
+		tokenBids:              map[string]float64{"Down": 0.48, "Up": 0.51},
+		tokenAsks:              map[string]float64{"Down": 0.49, "Up": 0.52},
+		tokenFullBids:          map[string][]paper.MarketLevel{},
+		tokenFullAsks:          map[string][]paper.MarketLevel{},
+		displayBids:            map[string]float64{},
+		displayAsks:            map[string]float64{},
+		publishedBids:          map[string]float64{},
+		publishedAsks:          map[string]float64{},
+		quoteState:             map[string]realbotQuoteState{},
+		polySignalTracker:      paper.NewDirectionalSignalTracker(time.Second, []string{"Down", "Up"}),
+		engine:                 engine,
+		restClient:             api.NewRestClient("polymarket"),
+		tui:                    tui,
+		restFallbackQuoteAge:   time.Minute,
+		restFallbackPollPeriod: time.Minute,
+	}, realbotMarketQuoteRuntime{
+		lastPairUpdate:       &lastPairUpdate,
+		lastPublishedQuoteAt: &lastPublishedQuoteAt,
+		lastReconnectCount:   &lastReconnectCount,
+		lastWsWarnTime:       &lastWsWarnTime,
+		lastForceReconnect:   &lastForceReconnect,
+		lastRestFallbackPoll: &lastRestFallbackPoll,
+		restFallbackActive:   &restFallbackActive,
+		restRecoveryLogged:   &restRecoveryLogged,
+		wsChannelClosed:      &wsChannelClosed,
+	}) {
+		t.Fatal("expected closed-but-active channel to stay in retry loop rather than exit")
+	}
+
+	if !wsChannelClosed {
+		t.Fatal("expected closed channel to mark wsChannelClosed")
+	}
+	if lastForceReconnect.IsZero() {
+		t.Fatal("expected reconnect path to update lastForceReconnect")
+	}
+	if time.Since(lastWsWarnTime) > time.Second {
+		t.Fatal("expected reconnect warning timestamp to refresh")
+	}
+}
+
+func TestRealbotProcessMarketQuotesReturnsOnCancelledClosedChannel(t *testing.T) {
+	ch := make(chan []byte)
+	close(ch)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	lastPairUpdate := time.Now()
+	lastPublishedQuoteAt := time.Time{}
+	lastReconnectCount := int32(0)
+	lastWsWarnTime := time.Now()
+	lastForceReconnect := time.Now()
+	lastRestFallbackPoll := time.Now()
+	restFallbackActive := false
+	restRecoveryLogged := false
+	wsChannelClosed := false
+
+	if !realbotProcessMarketQuotes(realbotMarketQuoteArgs{
+		ctx:                    ctx,
+		marketID:               "BTC",
+		wsMgr:                  &api.WSManager{},
+		wsMsgChan:              ch,
+		tokenMap:               map[string]string{},
+		tokenToOutcome:         map[string]string{},
+		outcomes:               []string{"Down", "Up"},
+		tokenBids:              map[string]float64{},
+		tokenAsks:              map[string]float64{},
+		tokenFullBids:          map[string][]paper.MarketLevel{},
+		tokenFullAsks:          map[string][]paper.MarketLevel{},
+		displayBids:            map[string]float64{},
+		displayAsks:            map[string]float64{},
+		publishedBids:          map[string]float64{},
+		publishedAsks:          map[string]float64{},
+		quoteState:             map[string]realbotQuoteState{},
+		polySignalTracker:      paper.NewDirectionalSignalTracker(time.Second, []string{"Down", "Up"}),
+		engine:                 paper.NewEngine(100),
+		restClient:             api.NewRestClient("polymarket"),
+		tui:                    paper.NewTUI(paper.NewEngine(100), nil),
+		restFallbackQuoteAge:   time.Minute,
+		restFallbackPollPeriod: time.Minute,
+	}, realbotMarketQuoteRuntime{
+		lastPairUpdate:       &lastPairUpdate,
+		lastPublishedQuoteAt: &lastPublishedQuoteAt,
+		lastReconnectCount:   &lastReconnectCount,
+		lastWsWarnTime:       &lastWsWarnTime,
+		lastForceReconnect:   &lastForceReconnect,
+		lastRestFallbackPoll: &lastRestFallbackPoll,
+		restFallbackActive:   &restFallbackActive,
+		restRecoveryLogged:   &restRecoveryLogged,
+		wsChannelClosed:      &wsChannelClosed,
+	}) {
+		t.Fatal("expected cancelled context with closed channel to exit quote loop")
 	}
 }
 
@@ -1953,6 +2668,68 @@ func TestRealbotCanUseLocalTakerCloseQuoteRejectsNonWSOrStaleQuote(t *testing.T)
 	}, 350*time.Millisecond)
 	if ok || price != 0 || !strings.Contains(reason, "quote age") {
 		t.Fatalf("expected stale quote rejection, got ok=%v price=%.3f reason=%q", ok, price, reason)
+	}
+}
+
+func TestRealbotHandleTakerCloseWindowStopsAtBusyEntryGate(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	gate := newRealbotEntryGate()
+	if !gate.TryAcquire() {
+		t.Fatal("expected fresh entry gate to be acquirable for test setup")
+	}
+	defer gate.Release()
+
+	liveCfg := paper.TUISettings{
+		TakerCloseMarket:         true,
+		TakerCloseMarketTime:     60,
+		TakerCloseMarketMinPrice: 0.60,
+		TakerCloseMarketSlippage: 0.99,
+		TradeSizingMode:          "fixed",
+		TradeSizeUSDC:            5,
+	}
+	takerCloseAttempted := false
+	takerCloseExecutedAt := time.Time{}
+	lastLogAt := time.Time{}
+	lastLogKey := ""
+	lastQuoteRefresh := time.Time{}
+	lastForceReconnect := time.Time{}
+
+	handled := realbotHandleTakerCloseWindow(realbotTakerCloseStrategyArgs{
+		ctx:                 context.Background(),
+		marketID:            "BTC",
+		market:              &api.Market{Tokens: []api.Token{{TokenID: "up-token", Outcome: "Up"}}},
+		outcomes:            []string{"Down", "Up"},
+		tokenMap:            map[string]string{"up-token": "Up"},
+		tokenToOutcome:      map[string]string{"up-token": "Up"},
+		tokenBids:           map[string]float64{"Down": 0.17, "Up": 0.82},
+		tokenAsks:           map[string]float64{"Down": 0.18, "Up": 0.83},
+		tokenFullAsks:       map[string][]paper.MarketLevel{"Up": {{Price: 0.83, Size: 20}}},
+		quoteState:          map[string]realbotQuoteState{"Up": {UpdatedAt: time.Now(), Source: "ws"}},
+		tokenFeeRates:       map[string]int{"Up": 1000},
+		liveCfg:             liveCfg,
+		timeToExpiry:        30 * time.Second,
+		entryTradingAllowed: true,
+		wsMgr:               &api.WSManager{},
+		engine:              engine,
+		tui:                 tui,
+		entryGate:           gate,
+	}, &realbotTakerCloseStrategyState{
+		takerCloseAttempted:        &takerCloseAttempted,
+		takerCloseExecutedAt:       &takerCloseExecutedAt,
+		lastTakerCloseLog:          &lastLogAt,
+		lastTakerCloseLogKey:       &lastLogKey,
+		lastTakerCloseQuoteRefresh: &lastQuoteRefresh,
+		lastForceReconnect:         &lastForceReconnect,
+	})
+	if !handled {
+		t.Fatal("expected busy entry gate to short-circuit taker-close handling")
+	}
+	if takerCloseAttempted {
+		t.Fatal("expected busy entry gate to avoid marking taker-close attempted")
+	}
+	if !takerCloseExecutedAt.IsZero() {
+		t.Fatal("expected no taker-close execution timestamp when gate is busy")
 	}
 }
 

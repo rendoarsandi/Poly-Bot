@@ -201,6 +201,53 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	if !trader.IsPaperMode() {
+		t.Fatal("embedded paper real trader should report paper mode")
+	}
+
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.55, 3, api.OrderTypeLimit, api.TIFGoodTilCancelled, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	if buy.AcknowledgedQty != 3 {
+		t.Fatalf("expected acknowledged qty 3, got %.2f", buy.AcknowledgedQty)
+	}
+	if got := trader.GetLivePositionSize("token-up"); got != 3 {
+		t.Fatalf("expected live position to advance to 3, got %.2f", got)
+	}
+	if filled, err := trader.WaitForFill(context.Background(), buy.OrderID, time.Second); err != nil || !filled {
+		t.Fatalf("expected embedded paper order to confirm immediately, filled=%v err=%v", filled, err)
+	}
+
+	positions, err := trader.ForceRefreshPositions(context.Background())
+	if err != nil {
+		t.Fatalf("embedded paper ForceRefreshPositions failed: %v", err)
+	}
+	if len(positions) != 1 || positions[0].TokenID != "token-up" || positions[0].Size != 3 {
+		t.Fatalf("unexpected embedded paper positions snapshot: %+v", positions)
+	}
+
+	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.60, 1.5, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper sell failed: %v", err)
+	}
+	if !sell.Success {
+		t.Fatalf("embedded paper sell should succeed: %+v", sell)
+	}
+	if got := trader.GetLivePositionSize("token-up"); got != 1.5 {
+		t.Fatalf("expected live position to drop to 1.5, got %.2f", got)
+	}
+}
+
 func TestDeriveAcknowledgedExecutionForMatchedBuy(t *testing.T) {
 	resp := &api.OrderResponse{
 		Status:       "matched",

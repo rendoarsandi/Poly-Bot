@@ -2660,6 +2660,7 @@ func run() error {
 	// Seed settings panel from config (.env), so the live panel reflects initial values
 	tui.InitSettings(paper.TUISettings{
 		Exchange:                           cfg.Exchange,
+		ExecutionBackend:                   cfg.ExecutionBackend,
 		MarketSlug:                         cfg.MarketSlug,
 		MaxMarkets:                         cfg.MaxMarkets,
 		PaperBalance:                       cfg.PaperBalance,
@@ -2703,6 +2704,7 @@ func run() error {
 		PolygonPrivateKey:                  cfg.PK,
 	}, func(s paper.TUISettings) {
 		cfg.Exchange = s.Exchange
+		cfg.ExecutionBackend = core.ExecutionBackendPaper
 		cfg.MarketSlug = s.MarketSlug
 		cfg.MaxMarkets = s.MaxMarkets
 		cfg.PaperBalance = s.PaperBalance

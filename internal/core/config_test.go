@@ -48,6 +48,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 
 	settingsPath := filepath.Join(t.TempDir(), "realbot.settings.json")
 	data := []byte(`{
+		"executionBackend": "paper",
 		"marketSlug": "json-market",
 		"minMarginPercent": 1.5,
 		"tradeSizingMode": "usdc",
@@ -87,6 +88,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.TradingMode != ModeReal {
 		t.Fatalf("expected realbot profile to force real mode, got %q", cfg.TradingMode)
+	}
+	if cfg.ExecutionBackend != ExecutionBackendPaper {
+		t.Fatalf("expected JSON ExecutionBackend paper, got %q", cfg.ExecutionBackend)
 	}
 	if cfg.MarketSlug != "json-market" {
 		t.Fatalf("expected JSON MarketSlug to override env, got %q", cfg.MarketSlug)
