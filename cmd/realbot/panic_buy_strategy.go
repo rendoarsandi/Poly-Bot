@@ -81,7 +81,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
 	}
 
-	if !ladderedMode && (bid1 <= 0 || bid2 <= 0 || ask1 <= bid1 || ask2 <= bid2) {
+	if ask1 <= bid1 || ask2 <= bid2 || (!ladderedMode && (bid1 <= 0 || bid2 <= 0)) {
 		return true
 	}
 

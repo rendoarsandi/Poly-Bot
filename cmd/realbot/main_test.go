@@ -1334,6 +1334,48 @@ func TestRealbotHandlePanicBuyStrategySkipsCrossedNonLadderedQuotes(t *testing.T
 	}
 }
 
+func TestRealbotHandlePanicBuyStrategySkipsCrossedLadderedQuotes(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+
+	entryExecutionInFlight := false
+	panicBuyCooldown := time.Time{}
+	lastPairUpdate := time.Now()
+	lastTrade := time.Time{}
+	lastDustRecoveryNotice := time.Time{}
+	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
+	nextLadderedEntrySeq := uint64(1)
+
+	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Down", "Up"},
+		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenBids:      map[string]float64{"Down": 0.40, "Up": 0.48},
+		tokenAsks:      map[string]float64{"Down": 0.39, "Up": 0.70},
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &ladderedEntries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+	if !handled {
+		t.Fatal("expected crossed laddered quotes to short-circuit the strategy")
+	}
+	if entryExecutionInFlight {
+		t.Fatal("expected crossed laddered quotes to avoid launching aggressive entry execution")
+	}
+	if nextLadderedEntrySeq != 1 || len(ladderedEntries) != 1 {
+		t.Fatal("expected crossed laddered quotes to leave ladder state unchanged")
+	}
+}
+
 func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	if got := normalizePaperArbMode(""); got != paperArbModeTaker {
 		t.Fatalf("expected empty mode to normalize to taker, got %q", got)

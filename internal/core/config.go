@@ -331,10 +331,12 @@ func normalizeTradeSizingMode(mode string) string {
 
 func normalizeExecutionBackend(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case ExecutionBackendLive:
+		return ExecutionBackendLive
 	case ExecutionBackendPaper:
 		return ExecutionBackendPaper
 	default:
-		return ExecutionBackendLive
+		return ExecutionBackendPaper
 	}
 }
 

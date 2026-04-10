@@ -130,7 +130,9 @@ func realbotInitSettingsRuntime(tui *paper.TUI, cfg *core.Config, restClient *ap
 			restClient.Exchange = s.Exchange
 		}
 
-		_ = cfg.SaveSettings()
+		if err := cfg.SaveSettings(); err != nil {
+			tui.LogEvent("⚠️ Failed to save settings: %v", err)
+		}
 		if cfg.ExecutionBackend != sessionExecutionBackend {
 			tui.LogEvent("⚠️ Execution backend changed to %s. Restart the bot process to apply it.", cfg.ExecutionBackend)
 		}

@@ -416,17 +416,6 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	if t.paperEngine == nil {
 		return nil, fmt.Errorf("paper engine not initialized")
 	}
-	if err := t.checkSafetyLimits(price * size); err != nil {
-		return &TradeResult{
-			Success: false,
-			Message: err.Error(),
-			Price:   price,
-			Size:    size,
-			Side:    string(side),
-			TokenID: tokenID,
-			Outcome: outcome,
-		}, nil
-	}
 	if price <= 0 || price >= 1.0 || size <= 0 {
 		return &TradeResult{
 			Success: false,
@@ -438,12 +427,65 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			Outcome: outcome,
 		}, nil
 	}
+	safetyAmount := price * size
+	if side == api.SideBuy && feeRateBps > 0 {
+		safetyAmount += safetyAmount * (float64(feeRateBps) / 10000.0)
+	}
+	if err := t.checkSafetyLimits(safetyAmount); err != nil {
+		return &TradeResult{
+			Success: false,
+			Message: err.Error(),
+			Price:   price,
+			Size:    size,
+			Side:    string(side),
+			TokenID: tokenID,
+			Outcome: outcome,
+		}, nil
+	}
 
+	meta := paperTokenMeta{}
+	if existing, ok := t.paperTokenMeta[tokenID]; ok {
+		meta = existing
+	}
+	if strings.TrimSpace(outcome) == "" {
+		outcome = meta.Outcome
+	}
 	orderID := fmt.Sprintf("paper-%d", time.Now().UnixNano())
-	notional := price * size
 	t.posMu.Lock()
 	if side == api.SideBuy {
-		t.livePositions[tokenID] += size
+		t.paperEngine.SetFeeRateBps(feeRateBps)
+		trade, err := t.paperEngine.BuyForMarket(meta.MarketID, outcome, price, size)
+		if err != nil {
+			t.posMu.Unlock()
+			return &TradeResult{
+				Success: false,
+				Message: err.Error(),
+				Price:   price,
+				Size:    size,
+				Side:    string(side),
+				TokenID: tokenID,
+				Outcome: outcome,
+			}, nil
+		}
+		t.livePositions[tokenID] += trade.Quantity
+		t.confirmedOrderFills[orderID] = trade.Quantity
+		t.posMu.Unlock()
+		fee := math.Max(0, (size-trade.Quantity)*price)
+		return &TradeResult{
+			OrderID:              orderID,
+			Status:               "FILLED",
+			Success:              true,
+			Price:                price,
+			Size:                 size,
+			Fee:                  fee,
+			FeeRateBps:           feeRateBps,
+			Side:                 string(side),
+			TokenID:              tokenID,
+			Outcome:              outcome,
+			AcknowledgedQty:      trade.Quantity,
+			AcknowledgedNotional: trade.Value,
+			Timestamp:            time.Now(),
+		}, nil
 	} else {
 		if t.livePositions[tokenID]+1e-9 < size {
 			available := t.livePositions[tokenID]
@@ -458,28 +500,43 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 				Outcome: outcome,
 			}, nil
 		}
-		t.livePositions[tokenID] -= size
+		t.paperEngine.SetFeeRateBps(feeRateBps)
+		trade, err := t.paperEngine.SellForMarket(meta.MarketID, outcome, price, size)
+		if err != nil {
+			t.posMu.Unlock()
+			return &TradeResult{
+				Success: false,
+				Message: err.Error(),
+				Price:   price,
+				Size:    size,
+				Side:    string(side),
+				TokenID: tokenID,
+				Outcome: outcome,
+			}, nil
+		}
+		t.livePositions[tokenID] -= trade.Quantity
 		if t.livePositions[tokenID] < 0 {
 			t.livePositions[tokenID] = 0
 		}
+		t.confirmedOrderFills[orderID] = trade.Quantity
+		t.posMu.Unlock()
+		fee := math.Max(0, (price*trade.Quantity)-trade.Value)
+		return &TradeResult{
+			OrderID:              orderID,
+			Status:               "FILLED",
+			Success:              true,
+			Price:                price,
+			Size:                 size,
+			Fee:                  fee,
+			FeeRateBps:           feeRateBps,
+			Side:                 string(side),
+			TokenID:              tokenID,
+			Outcome:              outcome,
+			AcknowledgedQty:      trade.Quantity,
+			AcknowledgedNotional: trade.Value,
+			Timestamp:            time.Now(),
+		}, nil
 	}
-	t.confirmedOrderFills[orderID] = size
-	t.posMu.Unlock()
-
-	return &TradeResult{
-		OrderID:              orderID,
-		Status:               "FILLED",
-		Success:              true,
-		Price:                price,
-		Size:                 size,
-		FeeRateBps:           feeRateBps,
-		Side:                 string(side),
-		TokenID:              tokenID,
-		Outcome:              outcome,
-		AcknowledgedQty:      size,
-		AcknowledgedNotional: notional,
-		Timestamp:            time.Now(),
-	}, nil
 }
 
 func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
@@ -653,6 +710,22 @@ func (t *RealTrader) GetSigner() *api.Signer {
 // ExecuteBatch places multiple orders in a single HTTP request (e.g. for panic buys or split sells)
 func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest) ([]*TradeResult, error) {
 	if t.paperEngine != nil {
+		totalCost := 0.0
+		for _, req := range reqs {
+			if req == nil || req.Side != api.SideBuy {
+				continue
+			}
+			cost := req.Price * req.Size
+			if req.FeeRateBps > 0 {
+				cost += cost * (float64(req.FeeRateBps) / 10000.0)
+			}
+			totalCost += cost
+		}
+		if totalCost > 0 {
+			if err := t.checkSafetyLimits(totalCost); err != nil {
+				return nil, err
+			}
+		}
 		results := make([]*TradeResult, len(reqs))
 		for i, req := range reqs {
 			if req == nil {

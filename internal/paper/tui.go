@@ -1638,11 +1638,43 @@ func (m *tuiModel) maxScrollOffset() int {
 	return maxOffset
 }
 
+func settingsContentLineCount(cfg TUISettings, mode string) int {
+	rows := 0
+	for i := 0; i < settingsRowCount; i++ {
+		if isRowVisible(cfg, mode, i) {
+			rows++
+		}
+	}
+	lines := 3 + rows + 8 + 2
+	if isMakerSettingsMode(cfg) || isCopytradeSettingsMode(cfg) || isLadderedTakerSettingsMode(cfg) {
+		lines++
+	}
+	if strings.EqualFold(mode, "Paper") || strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper) {
+		lines++
+	}
+	return lines
+}
+
+func (m *tuiModel) settingsMaxScrollOffset() int {
+	m.tui.mu.Lock()
+	cfg := m.tui.settings
+	mode := m.tui.mode
+	m.tui.mu.Unlock()
+	maxOffset := settingsContentLineCount(cfg, mode) - m.settingsViewportHeight()
+	if maxOffset < 0 {
+		return 0
+	}
+	return maxOffset
+}
+
 func (m *tuiModel) clampScrollOffset() {
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
 	}
 	maxOffset := m.maxScrollOffset()
+	if m.showSettings {
+		maxOffset = m.settingsMaxScrollOffset()
+	}
 	if m.scrollOffset > maxOffset {
 		m.scrollOffset = maxOffset
 	}
@@ -1681,6 +1713,45 @@ func viewportLines(lines []string, offset, height int) ([]string, int, int) {
 		visible = append(visible, "")
 	}
 	return visible, offset, maxOffset
+}
+
+func visibleSettingsRowOrdinal(cfg TUISettings, mode string, cursor int) int {
+	ordinal := 0
+	for i := 0; i < settingsRowCount; i++ {
+		if !isRowVisible(cfg, mode, i) {
+			continue
+		}
+		if i == cursor {
+			return ordinal
+		}
+		ordinal++
+	}
+	return 0
+}
+
+func (m *tuiModel) settingsViewportHeight() int {
+	if m.snap.height <= 1 {
+		return 1000
+	}
+	height := m.bodyViewportHeight() - 2
+	if height < 6 {
+		height = 6
+	}
+	return height
+}
+
+func (m *tuiModel) ensureSettingsCursorVisible(cfg TUISettings, mode string) {
+	cursorLine := 3 + visibleSettingsRowOrdinal(cfg, mode, m.settingsCursor)
+	height := m.settingsViewportHeight()
+	if cursorLine < m.scrollOffset {
+		m.scrollOffset = cursorLine
+	}
+	if cursorLine >= m.scrollOffset+height {
+		m.scrollOffset = cursorLine - height + 1
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
 }
 
 func (m tuiModel) renderMainContent(w int) string {
@@ -2009,6 +2080,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
+				m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
 				return m, nil
 			case "down", "j":
 				for {
@@ -2017,6 +2089,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
+				m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
+				return m, nil
+			case "pgup", "ctrl+b":
+				m.scrollBy(-(m.settingsViewportHeight() - 2))
+				return m, nil
+			case "pgdown", "ctrl+f":
+				m.scrollBy(m.settingsViewportHeight() - 2)
 				return m, nil
 			case "left", "-", "h":
 				m.tui.mu.Lock()
@@ -2298,6 +2377,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				m.settingsCursor = ensureVisibleSettingsCursor(m.tui.settings, m.tui.mode, m.settingsCursor)
+				m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed {
 					notifySettingsChange = m.tui.settingsChangeHookLocked()
@@ -2560,6 +2640,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				m.settingsCursor = ensureVisibleSettingsCursor(m.tui.settings, m.tui.mode, m.settingsCursor)
+				m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				if changed {
 					notifySettingsChange = m.tui.settingsChangeHookLocked()
@@ -2637,12 +2718,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showSettings = true
 			m.settingsEdit = false
 			m.settingsInput = ""
+			m.scrollOffset = 0
 			if !isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 				m.settingsCursor = 0
 				for m.settingsCursor < settingsRowCount-1 && !isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 					m.settingsCursor++
 				}
 			}
+			m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
 			m.refreshScrollMetrics()
 			return m, nil
 		case "c", "C":
@@ -2658,6 +2741,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.onQuit()
 			}
 			return m, tea.Quit
+		}
+
+	case tea.MouseMsg:
+		if m.showSettings && tea.MouseEvent(msg).IsWheel() {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.scrollBy(-3)
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				m.scrollBy(3)
+				return m, nil
+			}
 		}
 	}
 	return m, nil
@@ -2720,7 +2815,7 @@ func (t *TUI) StartRenderLoop(interval time.Duration, cancelFuncs ...func()) {
 		onQuit = cancelFuncs[0]
 	}
 	model := tuiModel{tui: t, interval: interval, onQuit: onQuit}
-	t.program = tea.NewProgram(model, tea.WithAltScreen())
+	t.program = tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	go func() {
 		if _, err := t.program.Run(); err != nil {
 			_ = err
@@ -5485,6 +5580,11 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 			}
 		}
 
+		displayValue := o.Cost
+		if o.Shares > 0 && o.Price > 0 && (o.Side == "BUY" || o.Side == "SELL") {
+			displayValue = o.Shares * o.Price
+		}
+
 		aStyle := getAssetStyle(o.MarketID)
 		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.2f  $%-7.4f  $%-7.2f  %s  %s\n",
 			styleDimmed.Render(o.Timestamp.Format("15:04:05")),
@@ -5493,7 +5593,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 			o.Side,
 			o.Shares,
 			o.Price,
-			o.Cost,
+			displayValue,
 			statusIcon,
 			marginSt.Render(marginText),
 		))
@@ -5627,11 +5727,11 @@ func (m tuiModel) renderSettings(w int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
 	title := titleStyle.Render("⚙  LIVE SETTINGS")
 
-	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
+	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
 	if m.settingsEdit {
 		keysLine = styleDimmed.Render("  Type value  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
 	} else if isCopytradeSettingsMode(cfg) {
-		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [Enter] Paste Target  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
+		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [Enter] Paste Target  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
 	}
 
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
@@ -6132,19 +6232,32 @@ func (m tuiModel) renderSettings(w int) string {
 	}
 	restartNote := styleDimmed.Render("  Press r to reload the active round after changing market, exchange, or strategy mode. Execution backend changes require a full bot restart.")
 
-	content := title + "\n" +
-		keysLine + "\n\n" +
-		strings.Join(rowLines, "\n") + "\n\n" +
-		presetDivider + "\n" +
-		presetTitle + "\n" +
-		p1 + "\n" +
-		p2 + "\n" +
-		p3 + "\n\n" +
-		divider + "\n" +
-		modeNote +
-		balanceResetNote +
-		balanceNote + "\n" +
-		restartNote
+	contentLines := []string{
+		title,
+		keysLine,
+		"",
+	}
+	contentLines = append(contentLines, rowLines...)
+	contentLines = append(contentLines,
+		"",
+		presetDivider,
+		presetTitle,
+		p1,
+		p2,
+		p3,
+		"",
+		divider,
+	)
+	if modeNote != "" {
+		contentLines = append(contentLines, strings.TrimRight(modeNote, "\n"))
+	}
+	if balanceResetNote != "" {
+		contentLines = append(contentLines, strings.TrimRight(balanceResetNote, "\n"))
+	}
+	contentLines = append(contentLines, balanceNote, restartNote)
+
+	visibleLines, _, _ := viewportLines(contentLines, m.scrollOffset, m.settingsViewportHeight())
+	content := strings.Join(visibleLines, "\n")
 
 	return makePanel(inner, clrBrand, content)
 }

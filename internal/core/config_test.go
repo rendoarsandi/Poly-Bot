@@ -184,6 +184,22 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 }
 
+func TestLoadBotConfigInvalidExecutionBackendFailsClosedToPaper(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "realbot.settings.json")
+	data := []byte(`{"executionBackend":"definitely-live-typo"}`)
+	if err := os.WriteFile(settingsPath, data, 0o644); err != nil {
+		t.Fatalf("failed to write temp settings: %v", err)
+	}
+
+	cfg, err := loadBotConfigWithPath("realbot", settingsPath)
+	if err != nil {
+		t.Fatalf("LoadBotConfig failed: %v", err)
+	}
+	if cfg.ExecutionBackend != ExecutionBackendPaper {
+		t.Fatalf("expected invalid executionBackend to fail closed to paper, got %q", cfg.ExecutionBackend)
+	}
+}
+
 func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg, err := LoadConfig()
 	if err != nil {
