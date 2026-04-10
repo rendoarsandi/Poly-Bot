@@ -2631,17 +2631,20 @@ func TestRealbotDecisionEvalIntervalSlowsSteadyStateModes(t *testing.T) {
 	}
 }
 
-func TestRealbotShouldRunDecisionLoopThrottlesBurstQuotes(t *testing.T) {
+func TestRealbotShouldRunDecisionLoopPrioritizesNewQuotes(t *testing.T) {
 	base := time.Unix(1000, 0)
 	lastEval := base
 	lastQuote := base
 	latestQuote := base.Add(10 * time.Millisecond)
 
-	if realbotShouldRunDecisionLoop(base.Add(50*time.Millisecond), lastEval, lastQuote, latestQuote, 100*time.Millisecond) {
-		t.Fatal("expected burst quote inside interval to be throttled")
+	if !realbotShouldRunDecisionLoop(base.Add(50*time.Millisecond), lastEval, lastQuote, latestQuote, 100*time.Millisecond) {
+		t.Fatal("expected new quote inside interval to trigger loop immediately")
 	}
-	if !realbotShouldRunDecisionLoop(base.Add(100*time.Millisecond), lastEval, lastQuote, latestQuote, 100*time.Millisecond) {
-		t.Fatal("expected decision loop to run once interval elapses")
+	if realbotShouldRunDecisionLoop(base.Add(50*time.Millisecond), lastEval, latestQuote, latestQuote, 100*time.Millisecond) {
+		t.Fatal("expected no new quote inside interval to be throttled")
+	}
+	if !realbotShouldRunDecisionLoop(base.Add(100*time.Millisecond), lastEval, latestQuote, latestQuote, 100*time.Millisecond) {
+		t.Fatal("expected decision loop to run once interval elapses even without new quotes")
 	}
 }
 

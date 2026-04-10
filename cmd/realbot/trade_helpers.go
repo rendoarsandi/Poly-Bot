@@ -202,7 +202,7 @@ func realbotShouldRunDecisionLoop(now, lastEvalAt, lastEvalQuoteAt, latestQuoteA
 	if now.Sub(lastEvalAt) >= interval {
 		return true
 	}
-	return latestQuoteAt.After(lastEvalQuoteAt) && now.Sub(lastEvalAt) >= interval
+	return latestQuoteAt.After(lastEvalQuoteAt)
 }
 
 func realbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) float64 {
