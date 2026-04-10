@@ -182,6 +182,28 @@ func truncateText(s string, maxLen int) string {
 	return s[:maxLen-1] + "…"
 }
 
+func orderHistoryMarketLabel(marketID, marketSlug string) string {
+	label := marketDisplayLabel(marketID)
+	slug := strings.TrimSpace(strings.ToLower(marketSlug))
+	if slug == "" {
+		return label
+	}
+	parts := strings.Split(slug, "-")
+	if len(parts) == 0 {
+		return label
+	}
+	suffix := strings.TrimSpace(parts[len(parts)-1])
+	if suffix == "" {
+		return label
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return label
+		}
+	}
+	return label + "#" + suffix
+}
+
 func marginStyle(pct float64) lipgloss.Style {
 	switch {
 	case pct >= 3:
@@ -438,6 +460,7 @@ type ScopedLimitOrder struct {
 type OrderHistoryEntry struct {
 	Timestamp     time.Time
 	MarketID      string
+	MarketSlug    string
 	Outcome       string
 	Side          string
 	ExecutionMode string
@@ -2748,7 +2771,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		if m.showSettings && tea.MouseEvent(msg).IsWheel() {
+		if tea.MouseEvent(msg).IsWheel() {
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
 				m.scrollBy(-3)
@@ -3441,9 +3464,14 @@ func (t *TUI) RecordOrder(marketID, outcome, side string, shares, price, cost, m
 func (t *TUI) RecordOrderWithMode(marketID, outcome, side string, shares, price, cost, margin, profit float64, executionMode, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	marketSlug := ""
+	if market, ok := t.markets[marketID]; ok && market != nil {
+		marketSlug = market.Slug
+	}
 	entry := OrderHistoryEntry{
 		Timestamp:     time.Now(),
 		MarketID:      marketID,
+		MarketSlug:    marketSlug,
 		Outcome:       outcome,
 		Side:          side,
 		ExecutionMode: strings.ToLower(strings.TrimSpace(executionMode)),
@@ -5597,7 +5625,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		aStyle := getAssetStyle(o.MarketID)
 		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.2f  $%-7.4f  $%-7.2f  %s  %s\n",
 			styleDimmed.Render(o.Timestamp.Format("15:04:05")),
-			aStyle.Render(fmt.Sprintf("%-10s", truncateMarketLabel(o.MarketID, 10))),
+			aStyle.Render(fmt.Sprintf("%-21s", truncateText(orderHistoryMarketLabel(o.MarketID, o.MarketSlug), 21))),
 			core.SanitizeString(o.Outcome),
 			o.Side,
 			o.Shares,

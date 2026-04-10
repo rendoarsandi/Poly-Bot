@@ -1098,6 +1098,33 @@ func TestSettingsPanelMouseWheelScrollsViewport(t *testing.T) {
 	}
 }
 
+func TestMainPanelMouseWheelScrollsViewport(t *testing.T) {
+	model := tuiModel{
+		scrollOffset: 0,
+		snap: tuiSnapshot{
+			width:  120,
+			height: 10,
+			eventLog: []string{
+				"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+				"eleven", "twelve", "thirteen", "fourteen", "fifteen",
+			},
+		},
+	}
+	model.refreshScrollMetrics()
+
+	next, _ := model.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	updated := next.(tuiModel)
+	if updated.scrollOffset <= 0 {
+		t.Fatalf("expected mouse wheel down to scroll main viewport, got offset %d", updated.scrollOffset)
+	}
+
+	next, _ = updated.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	updated = next.(tuiModel)
+	if updated.scrollOffset < 0 {
+		t.Fatalf("expected mouse wheel up to clamp main viewport offset, got %d", updated.scrollOffset)
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {
@@ -1828,6 +1855,19 @@ func TestRenderOrderHistoryValueMatchesDisplayedPriceTimesShares(t *testing.T) {
 	}
 	if strings.Contains(rendered, "$0.97") {
 		t.Fatalf("expected stale stored cost not to override displayed value, got %q", rendered)
+	}
+}
+
+func TestRenderOrderHistoryShowsMarketRoundSuffixFromSlug(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.AddMarket("btc-updown", "btc-updown-5m-1775816700", []string{"Up", "Down"}, time.Now().Add(5*time.Minute))
+	tui.RecordOrderWithMode("btc-updown", "Up", "BUY", 1.02, 0.60, 0.61, 0.0, 0.0, "laddered-taker", "FILLED")
+
+	model := tuiModel{snap: tuiSnapshot{orderHistory: tui.GetOrderHistory()}}
+	rendered := model.renderOrderHistory(140, 5)
+
+	if !strings.Contains(rendered, "1775816700") {
+		t.Fatalf("expected order history to include market round suffix from slug, got %q", rendered)
 	}
 }
 
