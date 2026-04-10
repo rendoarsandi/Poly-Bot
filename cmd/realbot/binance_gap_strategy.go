@@ -267,12 +267,14 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		buyPrice = limitPrice
 	}
 	cost := reportedBuyCost(exec, buyPrice, buyQty, shares)
-	if _, err := engine.BuyForMarket(id, targetOutcome, buyPrice, buyQty); err != nil {
-		status.Ready = false
-		status.Status = "blocked"
-		status.Reason = err.Error()
-		logThrottled("[%s] ⚠️ Binance entry engine sync failed for %s: %v", id, targetOutcome, err)
-		return
+	if realbotShouldMirrorExecutionIntoEngine(trader) {
+		if _, err := engine.BuyForMarket(id, targetOutcome, buyPrice, buyQty); err != nil {
+			status.Ready = false
+			status.Status = "blocked"
+			status.Reason = err.Error()
+			logThrottled("[%s] ⚠️ Binance entry engine sync failed for %s: %v", id, targetOutcome, err)
+			return
+		}
 	}
 	status.Status = "triggered"
 	status.Reason = fmt.Sprintf("bought %.2f %s @ $%.3f", buyQty, targetOutcome, buyPrice)

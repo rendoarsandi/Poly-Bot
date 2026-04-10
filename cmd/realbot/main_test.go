@@ -38,6 +38,21 @@ func TestPairBalancesFromPositionsMissingTokenDefaultsToZero(t *testing.T) {
 	}
 }
 
+func TestRealbotShouldMirrorExecutionIntoEngine(t *testing.T) {
+	if !realbotShouldMirrorExecutionIntoEngine(nil) {
+		t.Fatal("expected nil trader to require explicit engine sync")
+	}
+	if !realbotShouldMirrorExecutionIntoEngine(&trading.RealTrader{}) {
+		t.Fatal("expected live trader to require explicit engine sync")
+	}
+
+	engine := paper.NewEngine(100)
+	paperTrader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	if realbotShouldMirrorExecutionIntoEngine(paperTrader) {
+		t.Fatal("expected embedded paper trader to skip duplicate engine sync")
+	}
+}
+
 func TestLadderedTakerAskBoundsPreservesConfiguredRange(t *testing.T) {
 	minAsk, maxAsk := ladderedTakerAskBounds(0.10, 0.90)
 	if minAsk != 0.10 || maxAsk != 0.90 {

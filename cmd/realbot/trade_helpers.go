@@ -9,6 +9,7 @@ import (
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/trading"
 )
 
 func realbotCurrentSizingCapital(engine *paper.Engine) float64 {
@@ -122,6 +123,10 @@ func normalizedRealbotExecutionPriceCap(liveCfg paper.TUISettings) float64 {
 		return 0.99
 	}
 	return limitPrice
+}
+
+func realbotShouldMirrorExecutionIntoEngine(trader *trading.RealTrader) bool {
+	return trader == nil || !trader.IsEmbeddedPaperMode()
 }
 
 func normalizePaperArbMode(mode string) string {

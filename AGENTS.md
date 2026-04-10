@@ -40,6 +40,7 @@
 - `binance-gap` mode in `realbot` is a one-sided Binance futures lead / Polymarket lag strategy. It relies on Binance USD-M futures WebSocket `aggTrade` plus local Polymarket quote history, not Binance REST polling.
 - Relevant runtime settings live in `config/*.settings.json`: `binanceQuoteAsset`, `binanceSignalThresholdPct`, `binanceSignalLookbackMs`, `binanceSignalCooldownMs`, `binanceSignalMaxAgeMs`, `binanceSignalPolyMaxMoveCents`, `binanceSignalPolyAdverseMoveCents`, and `binanceSignalSpreadMaxCents`.
 - When adjusting this mode, test both signal math and live quote freshness guards. The critical failure mode is firing after Polymarket has already caught up.
+- `realbot` can run with `executionBackend = paper`. In that mode, the embedded paper trader already mutates the paper engine on confirmed buys/sells. Do not mirror the same fill into `engine.BuyForMarket` / `engine.SellForMarket` a second time from strategy code, or inventory will double while order history stays single-counted.
 
 ## Security & Configuration Tips
 - Keep secrets in `.env`, not in `config/*.json` or committed files.

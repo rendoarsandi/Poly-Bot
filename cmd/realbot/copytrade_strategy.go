@@ -212,8 +212,10 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				execPrice = ask
 			}
 			execCost := reportedBuyCost(exec, execPrice, execQty, requestedQty)
-			if _, buyErr := engine.BuyForMarket(marketID, outcome, execPrice, execQty); buyErr != nil {
-				tui.LogEvent("[%s] ⚠️ Copytrade local buy sync failed for %s: %v", marketID, outcome, buyErr)
+			if realbotShouldMirrorExecutionIntoEngine(trader) {
+				if _, buyErr := engine.BuyForMarket(marketID, outcome, execPrice, execQty); buyErr != nil {
+					tui.LogEvent("[%s] ⚠️ Copytrade local buy sync failed for %s: %v", marketID, outcome, buyErr)
+				}
 			}
 			state.managed[outcome] = true
 			tui.RecordOrderWithMode(marketID, outcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "copytrade", "FILLED")
@@ -312,8 +314,10 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			if execPrice <= 0 {
 				execPrice = bid
 			}
-			if _, sellErr := engine.SellForMarket(marketID, outcome, execPrice, execQty); sellErr != nil {
-				tui.LogEvent("[%s] ⚠️ Copytrade local sell sync failed for %s: %v", marketID, outcome, sellErr)
+			if realbotShouldMirrorExecutionIntoEngine(trader) {
+				if _, sellErr := engine.SellForMarket(marketID, outcome, execPrice, execQty); sellErr != nil {
+					tui.LogEvent("[%s] ⚠️ Copytrade local sell sync failed for %s: %v", marketID, outcome, sellErr)
+				}
 			}
 			profit := (execPrice - avgPrice) * execQty
 			tui.RecordOrderWithMode(marketID, outcome, "SELL", execQty, execPrice, execQty*execPrice, 0.0, profit, "copytrade", "FILLED")

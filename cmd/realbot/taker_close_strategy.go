@@ -367,12 +367,18 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 	if execPrice <= 0 {
 		execPrice = plan.LimitPrice
 	}
+	shouldMirrorEngine := realbotShouldMirrorExecutionIntoEngine(args.trader)
 	preLocalQty, _ := localBoughtPositionAvg(args.engine, args.marketID, bestOutcome)
 	execCost := reportedBuyCost(exec, execPrice, execQty, plan.RequestedQty)
-	if _, buyErr := args.engine.BuyForMarket(args.marketID, bestOutcome, execPrice, execQty); buyErr != nil {
-		args.tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", args.marketID, buyErr)
+	if shouldMirrorEngine {
+		if _, buyErr := args.engine.BuyForMarket(args.marketID, bestOutcome, execPrice, execQty); buyErr != nil {
+			args.tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", args.marketID, buyErr)
+		}
 	}
 	postBuyLocalQty, _ := localBoughtPositionAvg(args.engine, args.marketID, bestOutcome)
+	if !shouldMirrorEngine {
+		preLocalQty = math.Max(0, postBuyLocalQty-execQty)
+	}
 	args.tui.RecordOrder(args.marketID, bestOutcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "FILLED")
 	if recoveredLateFill {
 		args.tui.LogEvent("[%s] 🔄 Taker close recovered delayed fill: bought %s %s after post-timeout refresh", args.marketID, formatShareQty(execQty), bestOutcome)

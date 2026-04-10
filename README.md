@@ -18,7 +18,7 @@ Main loop:
 
 Main run modes:
 - `paperbot` = simulated trading
-- `realbot` = real wallet, real orders, real on-chain cleanup
+- `realbot` = single entrypoint with `executionBackend: live | paper`
 
 ## What the bot actually does
 
@@ -68,6 +68,7 @@ Notes:
 - uses real Polymarket / Polygon state
 - handles setup, approvals, order placement, cleanup, and redemption
 - if `REQUIRE_CONFIRM=true`, startup asks whether to begin with split strategy `on` or `off`
+- the same entrypoint can also run with `executionBackend = "paper"` from the TUI / config, which keeps realbot's market loop and strategies but swaps execution to the embedded paper engine
 
 ### Other tools
 ```bash
@@ -197,6 +198,11 @@ Adds:
 - maker quote distance is adjustable via `makerQuoteGap` (smaller = tighter / more aggressive, larger = farther / more passive)
 - default live `taker` mode still uses the paired panic-buy / merge path plus split-inventory sell logic
 
+With `executionBackend: "paper"` inside `realbot`:
+- fills are simulated by the embedded paper trader, but market discovery, quote handling, and strategy code still come from `realbot`
+- winner detection is based on explicit market winner metadata first, with on-chain resolution as fallback when winner tags lag
+- strategy code must not apply a second local `engine.BuyForMarket` / `engine.SellForMarket` after an embedded paper fill, or inventory will be double-counted
+
 ## TUI notes
 
 The terminal UI is the main interface. It shows:
@@ -249,4 +255,3 @@ go test ./internal/paper ./cmd/paperbot ./cmd/realbot
 ## Personal reminder
 
 If I change actual bot behavior, I should update this README so it stays honest instead of drifting back into fake polished documentation.
-
