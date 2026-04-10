@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,6 +200,142 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 	}
 	if result.FeeRateBps != 50 {
 		t.Errorf("Expected FeeRateBps 50, got %d", result.FeeRateBps)
+	}
+}
+
+func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	if !trader.IsPaperMode() {
+		t.Fatal("embedded paper real trader should report paper mode")
+	}
+
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.55, 3, api.OrderTypeLimit, api.TIFGoodTilCancelled, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	if buy.AcknowledgedQty <= 0 || buy.AcknowledgedQty >= 3 {
+		t.Fatalf("expected fee-adjusted acknowledged qty below 3, got %.4f", buy.AcknowledgedQty)
+	}
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-buy.AcknowledgedQty) > 1e-9 {
+		t.Fatalf("expected live position to match acknowledged qty %.4f, got %.4f", buy.AcknowledgedQty, got)
+	}
+	if filled, err := trader.WaitForFill(context.Background(), buy.OrderID, time.Second); err != nil || !filled {
+		t.Fatalf("expected embedded paper order to confirm immediately, filled=%v err=%v", filled, err)
+	}
+
+	positions, err := trader.ForceRefreshPositions(context.Background())
+	if err != nil {
+		t.Fatalf("embedded paper ForceRefreshPositions failed: %v", err)
+	}
+	if len(positions) != 1 || positions[0].TokenID != "token-up" || math.Abs(positions[0].Size-buy.AcknowledgedQty) > 1e-9 {
+		t.Fatalf("unexpected embedded paper positions snapshot: %+v", positions)
+	}
+
+	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.60, 1.5, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper sell failed: %v", err)
+	}
+	if !sell.Success {
+		t.Fatalf("embedded paper sell should succeed: %+v", sell)
+	}
+	expectedRemaining := buy.AcknowledgedQty - 1.5
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedRemaining) > 1e-9 {
+		t.Fatalf("expected live position to drop to %.4f, got %.4f", expectedRemaining, got)
+	}
+}
+
+func TestEmbeddedPaperRealTraderRejectsOversell(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.55, 1.5, api.OrderTypeLimit, api.TIFGoodTilCancelled, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	expectedRemaining := buy.AcknowledgedQty
+
+	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.60, 2.0, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper oversell returned unexpected error: %v", err)
+	}
+	if sell.Success {
+		t.Fatalf("expected embedded paper oversell to fail, got %+v", sell)
+	}
+	if !strings.Contains(sell.Message, "insufficient position") {
+		t.Fatalf("expected insufficient position failure, got %q", sell.Message)
+	}
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedRemaining) > 1e-9 {
+		t.Fatalf("expected live position to remain %.4f after rejected sell, got %.4f", expectedRemaining, got)
+	}
+}
+
+func TestEmbeddedPaperRealTraderRejectsBuyAboveBalance(t *testing.T) {
+	engine := paper.NewEngine(0.50)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.60, 1.0, api.OrderTypeLimit, api.TIFGoodTilCancelled, 0)
+	if err != nil {
+		t.Fatalf("embedded paper buy returned unexpected error: %v", err)
+	}
+	if buy.Success {
+		t.Fatalf("expected embedded paper buy above cash balance to fail, got %+v", buy)
+	}
+	if !strings.Contains(buy.Message, "insufficient balance") {
+		t.Fatalf("expected insufficient balance failure, got %q", buy.Message)
+	}
+	if got := trader.GetLivePositionSize("token-up"); got != 0 {
+		t.Fatalf("expected no live position after rejected buy, got %.2f", got)
+	}
+}
+
+func TestEmbeddedPaperRealTraderBuySafetyIncludesFees(t *testing.T) {
+	engine := paper.NewEngine(10.0)
+	cfg := &core.Config{MaxTradeSize: 1.00}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.499, 2.0, api.OrderTypeLimit, api.TIFGoodTilCancelled, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper fee-aware buy returned unexpected error: %v", err)
+	}
+	if buy.Success {
+		t.Fatalf("expected fee-inclusive safety check to reject buy, got %+v", buy)
+	}
+	if !strings.Contains(buy.Message, "exceeds max trade size") {
+		t.Fatalf("expected max trade size rejection, got %q", buy.Message)
+	}
+}
+
+func TestEmbeddedPaperExecuteBatchChecksAggregateBuySafety(t *testing.T) {
+	engine := paper.NewEngine(10.0)
+	cfg := &core.Config{MaxTradeSize: 1.00}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-down", "BTC", "Down")
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+
+	_, err := trader.ExecuteBatch(context.Background(), []*api.OrderRequest{
+		{TokenID: "token-down", Outcome: "Down", Price: 0.30, Size: 2.0, Side: api.SideBuy, FeeRateBps: 0},
+		{TokenID: "token-up", Outcome: "Up", Price: 0.30, Size: 2.0, Side: api.SideBuy, FeeRateBps: 0},
+	})
+	if err == nil {
+		t.Fatal("expected embedded paper batch to enforce aggregate safety limits")
+	}
+	if !strings.Contains(err.Error(), "exceeds max trade size") {
+		t.Fatalf("expected aggregate max trade size rejection, got %v", err)
 	}
 }
 

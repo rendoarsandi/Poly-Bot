@@ -11,6 +11,7 @@ import (
 type StartupWizardOptions struct {
 	Title          string
 	ProfileLabel   string
+	Mode           string
 	Settings       TUISettings
 	FirstRun       bool
 	RequireConfirm bool
@@ -37,7 +38,7 @@ type startupWizardModel struct {
 func RunStartupWizard(opts StartupWizardOptions) (TUISettings, bool, error) {
 	model := startupWizardModel{
 		options:  opts,
-		settings: normalizeStartupWizardSettings(opts.Settings),
+		settings: normalizeStartupWizardSettings(opts.Settings, opts.Mode),
 		width:    110,
 		height:   30,
 	}
@@ -50,11 +51,11 @@ func RunStartupWizard(opts StartupWizardOptions) (TUISettings, bool, error) {
 	if !ok {
 		return opts.Settings, false, fmt.Errorf("unexpected startup wizard model %T", finalModel)
 	}
-	return normalizeStartupWizardSettings(final.settings), final.confirmed, nil
+	return normalizeStartupWizardSettings(final.settings, opts.Mode), final.confirmed, nil
 }
 
-func normalizeStartupWizardSettings(s TUISettings) TUISettings {
-	s = normalizeTUISettings(s)
+func normalizeStartupWizardSettings(s TUISettings, mode string) TUISettings {
+	s = normalizeTUISettingsForContext(s, mode)
 	if strings.TrimSpace(s.Exchange) == "" {
 		s.Exchange = "polymarket"
 	}
@@ -77,10 +78,21 @@ func normalizeStartupWizardSettings(s TUISettings) TUISettings {
 	if s.Exchange == "kalshi" {
 		s.SplitStrategyEnabled = false
 	}
+	if realbotPaperBackendDisablesSplit(s, mode) {
+		s.SplitStrategyEnabled = false
+	}
 	if startupStrategyProfile(s) == "maker" {
 		s.TakerCloseMarket = false
 	}
 	return s
+}
+
+func startupStrategyProfiles(s TUISettings, mode string) []string {
+	profiles := []string{"maker", "taker", "laddered-taker", "copytrade", "taker-close"}
+	if realbotPaperBackendDisablesMaker(s, mode) {
+		profiles = []string{"taker", "laddered-taker", "copytrade", "taker-close"}
+	}
+	return profiles
 }
 
 func startupStrategyProfile(s TUISettings) string {
@@ -138,7 +150,7 @@ func cycleString(values []string, current string, delta int) string {
 }
 
 func (m startupWizardModel) visibleFields() []startupWizardField {
-	settings := normalizeStartupWizardSettings(m.settings)
+	settings := normalizeStartupWizardSettings(m.settings, m.options.Mode)
 	profile := startupStrategyProfile(settings)
 	fields := []startupWizardField{
 		{
@@ -182,7 +194,7 @@ func (m startupWizardModel) visibleFields() []startupWizardField {
 			help:    "Cleaner startup choice than mixing maker, split, and close toggles together.",
 		},
 	)
-	if settings.Exchange != "kalshi" && profile == "taker" {
+	if settings.Exchange != "kalshi" && profile == "taker" && !realbotPaperBackendDisablesSplit(settings, m.options.Mode) {
 		fields = append(fields, startupWizardField{
 			id:      "split",
 			section: "Strategy",
@@ -297,7 +309,7 @@ func (m *startupWizardModel) adjustCurrent(delta int) {
 	case "timeframe":
 		m.settings.Timeframe = cycleString([]string{"15m", "5m"}, m.settings.Timeframe, delta)
 	case "profile":
-		profile := cycleString([]string{"maker", "taker", "laddered-taker", "copytrade", "taker-close"}, startupStrategyProfile(m.settings), delta)
+		profile := cycleString(startupStrategyProfiles(m.settings, m.options.Mode), startupStrategyProfile(m.settings), delta)
 		setStartupStrategyProfile(&m.settings, profile)
 	case "split":
 		m.settings.SplitStrategyEnabled = !m.settings.SplitStrategyEnabled
@@ -312,7 +324,7 @@ func (m *startupWizardModel) adjustCurrent(delta int) {
 			m.settings.MaxDailyLoss = 0
 		}
 	}
-	m.settings = normalizeStartupWizardSettings(m.settings)
+	m.settings = normalizeStartupWizardSettings(m.settings, m.options.Mode)
 	m.clampCursor()
 }
 

@@ -1,5 +1,6 @@
 {
   "exchange": "polymarket",
+  "executionBackend": "paper",
   "marketSlug": "ALL",
   "timeframe": "5m",
   "maxMarkets": 1,

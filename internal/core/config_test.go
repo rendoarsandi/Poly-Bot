@@ -48,6 +48,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 
 	settingsPath := filepath.Join(t.TempDir(), "realbot.settings.json")
 	data := []byte(`{
+		"executionBackend": "paper",
 		"marketSlug": "json-market",
 		"minMarginPercent": 1.5,
 		"tradeSizingMode": "usdc",
@@ -87,6 +88,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.TradingMode != ModeReal {
 		t.Fatalf("expected realbot profile to force real mode, got %q", cfg.TradingMode)
+	}
+	if cfg.ExecutionBackend != ExecutionBackendPaper {
+		t.Fatalf("expected JSON ExecutionBackend paper, got %q", cfg.ExecutionBackend)
 	}
 	if cfg.MarketSlug != "json-market" {
 		t.Fatalf("expected JSON MarketSlug to override env, got %q", cfg.MarketSlug)
@@ -177,6 +181,22 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.APIKey != "env-api-key" {
 		t.Fatalf("expected env secret to remain loaded, got %q", cfg.APIKey)
+	}
+}
+
+func TestLoadBotConfigInvalidExecutionBackendFailsClosedToPaper(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "realbot.settings.json")
+	data := []byte(`{"executionBackend":"definitely-live-typo"}`)
+	if err := os.WriteFile(settingsPath, data, 0o644); err != nil {
+		t.Fatalf("failed to write temp settings: %v", err)
+	}
+
+	cfg, err := loadBotConfigWithPath("realbot", settingsPath)
+	if err != nil {
+		t.Fatalf("LoadBotConfig failed: %v", err)
+	}
+	if cfg.ExecutionBackend != ExecutionBackendPaper {
+		t.Fatalf("expected invalid executionBackend to fail closed to paper, got %q", cfg.ExecutionBackend)
 	}
 }
 

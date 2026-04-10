@@ -20,6 +20,9 @@ const (
 	ModePaper TradingMode = "paper"
 	ModeReal  TradingMode = "real"
 
+	ExecutionBackendPaper = "paper"
+	ExecutionBackendLive  = "live"
+
 	TradeSizingModePercent        = "percent"
 	TradeSizingModeUSDC           = "usdc"
 	CopytradeSizingModeUSDC       = "usdc"
@@ -55,6 +58,9 @@ type Config struct {
 	MarketSlug string
 	Timeframe  string // 5m or 15m
 	MaxMarkets int    // Maximum concurrent markets to trade
+
+	// Shared execution backend used by TUI-driven bots.
+	ExecutionBackend string // "live" or "paper"
 
 	// Position sizing settings
 	// Default: $1000 balance → $50 per trade (5% of balance)
@@ -154,6 +160,7 @@ type Config struct {
 
 type RuntimeSettings struct {
 	Exchange                           string  `json:"exchange"`
+	ExecutionBackend                   string  `json:"executionBackend"`
 	MarketSlug                         string  `json:"marketSlug"`
 	Timeframe                          string  `json:"timeframe"`
 	MaxMarkets                         int     `json:"maxMarkets"`
@@ -226,18 +233,19 @@ func LoadConfig() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		TradingMode:   ModePaper,
-		Exchange:      getEnvWithFallback("EXCHANGE", "polymarket"),
-		KalshiAPIKey:  getEnvWithFallback("KALSHI_API_KEY", ""),
-		KalshiPK:      getEnvWithFallback("KALSHI_PK", ""),
-		PK:            getEnvWithFallback("POLY_PK", "PK"),
-		APIKey:        getEnvWithFallback("POLY_API_KEY", "API_KEY"),
-		APISecret:     getEnvWithFallback("POLY_API_SECRET", "API_SECRET"),
-		APIPassphrase: getEnvWithFallback("POLY_PASSPHRASE", "API_PASSPHRASE"),
-		PolygonRPCURL: os.Getenv("POLYGON_RPC_URL"),
-		MarketSlug:    getEnvWithFallback("MARKET_SLUG", "ALL"),
-		Timeframe:     getEnvWithFallback("TIMEFRAME", "15m"),
-		MaxMarkets:    parseEnvInt("MAX_MARKETS", 4),
+		TradingMode:      ModePaper,
+		Exchange:         getEnvWithFallback("EXCHANGE", "polymarket"),
+		KalshiAPIKey:     getEnvWithFallback("KALSHI_API_KEY", ""),
+		KalshiPK:         getEnvWithFallback("KALSHI_PK", ""),
+		PK:               getEnvWithFallback("POLY_PK", "PK"),
+		APIKey:           getEnvWithFallback("POLY_API_KEY", "API_KEY"),
+		APISecret:        getEnvWithFallback("POLY_API_SECRET", "API_SECRET"),
+		APIPassphrase:    getEnvWithFallback("POLY_PASSPHRASE", "API_PASSPHRASE"),
+		PolygonRPCURL:    os.Getenv("POLYGON_RPC_URL"),
+		MarketSlug:       getEnvWithFallback("MARKET_SLUG", "ALL"),
+		Timeframe:        getEnvWithFallback("TIMEFRAME", "15m"),
+		MaxMarkets:       parseEnvInt("MAX_MARKETS", 4),
+		ExecutionBackend: normalizeExecutionBackend(parseEnvString("EXECUTION_BACKEND", ExecutionBackendPaper)),
 		// Position sizing defaults: $1000 balance → $50 per trade
 		BaseBalance:      parseEnvFloat("BASE_BALANCE", 1000.0),
 		BaseTradeSize:    parseEnvFloat("BASE_TRADE_SIZE", 50.0),
@@ -318,6 +326,17 @@ func normalizeTradeSizingMode(mode string) string {
 		return TradeSizingModeUSDC
 	default:
 		return TradeSizingModePercent
+	}
+}
+
+func normalizeExecutionBackend(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case ExecutionBackendLive:
+		return ExecutionBackendLive
+	case ExecutionBackendPaper:
+		return ExecutionBackendPaper
+	default:
+		return ExecutionBackendPaper
 	}
 }
 
@@ -689,6 +708,7 @@ func parseEnvString(key string, defaultVal string) string {
 func (c *Config) runtimeSettings() RuntimeSettings {
 	return RuntimeSettings{
 		Exchange:                           c.Exchange,
+		ExecutionBackend:                   normalizeExecutionBackend(c.ExecutionBackend),
 		MarketSlug:                         c.MarketSlug,
 		Timeframe:                          c.Timeframe,
 		MaxMarkets:                         c.MaxMarkets,
@@ -760,6 +780,9 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	if s.Exchange != "" {
 		c.Exchange = s.Exchange
+	}
+	if strings.TrimSpace(s.ExecutionBackend) != "" {
+		c.ExecutionBackend = normalizeExecutionBackend(s.ExecutionBackend)
 	}
 	c.MarketSlug = s.MarketSlug
 	c.Timeframe = s.Timeframe
@@ -850,6 +873,7 @@ func (c *Config) SaveSettings() error {
 	envMap["MARKET_SLUG"] = c.MarketSlug
 	envMap["TIMEFRAME"] = c.Timeframe
 	envMap["MAX_MARKETS"] = strconv.Itoa(c.MaxMarkets)
+	envMap["EXECUTION_BACKEND"] = normalizeExecutionBackend(c.ExecutionBackend)
 	envMap["MIN_MARGIN_PERCENT"] = strconv.FormatFloat(c.MinMarginPercent, 'f', -1, 64)
 	envMap["PAPER_BALANCE"] = strconv.FormatFloat(normalizePaperBalance(c.PaperBalance), 'f', -1, 64)
 	envMap["TRADE_SCALE_FACTOR"] = strconv.FormatFloat(c.TradeScaleFactor, 'f', -1, 64)
@@ -1000,8 +1024,10 @@ func loadBotConfigWithPath(profile, path string) (*Config, error) {
 	switch cfg.settingsProfile {
 	case "paperbot":
 		cfg.TradingMode = ModePaper
+		cfg.ExecutionBackend = ExecutionBackendPaper
 	case "realbot":
 		cfg.TradingMode = ModeReal
+		cfg.ExecutionBackend = ExecutionBackendLive
 	default:
 		return nil, fmt.Errorf("unknown bot profile: %s", profile)
 	}

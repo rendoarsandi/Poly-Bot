@@ -958,11 +958,164 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 	}
 }
 
+func TestSettingsArbModesHideMakerForRealbotPaperBackend(t *testing.T) {
+	modes := settingsArbModes(TUISettings{ExecutionBackend: core.ExecutionBackendPaper}, "Real")
+	for _, mode := range modes {
+		if mode == "maker" {
+			t.Fatalf("expected realbot paper backend arb modes to hide maker, got %v", modes)
+		}
+	}
+}
+
+func TestSetModeCoercesMakerForRealbotPaperBackend(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "maker",
+	}, nil)
+
+	tui.SetMode("Real")
+
+	if got := tui.GetSettings().PaperArbMode; got != "taker" {
+		t.Fatalf("expected realbot paper backend to coerce maker mode to taker, got %q", got)
+	}
+}
+
+func TestSetModeDisablesSplitForRealbotPaperBackend(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		ExecutionBackend:     core.ExecutionBackendPaper,
+		PaperArbMode:         "taker",
+		SplitStrategyEnabled: true,
+	}, nil)
+
+	tui.SetMode("Real")
+
+	if tui.GetSettings().SplitStrategyEnabled {
+		t.Fatal("expected realbot paper backend to disable split strategy")
+	}
+}
+
+func TestExecutionBackendChangeDoesNotDeadlockWhenSettingsCallbackLogs(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetMode("Real")
+
+	callbackDone := make(chan TUISettings, 1)
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "taker",
+	}, func(s TUISettings) {
+		tui.LogEvent("backend changed to %s", s.ExecutionBackend)
+		callbackDone <- s
+	})
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowExecutionBackend,
+	}
+
+	updateDone := make(chan tuiModel, 1)
+	go func() {
+		next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		updateDone <- next.(tuiModel)
+	}()
+
+	select {
+	case updated := <-updateDone:
+		if got := updated.tui.GetSettings().ExecutionBackend; got != core.ExecutionBackendLive {
+			t.Fatalf("expected execution backend to change to live, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("settings update deadlocked when callback logged to TUI")
+	}
+
+	select {
+	case got := <-callbackDone:
+		if got.ExecutionBackend != core.ExecutionBackendLive {
+			t.Fatalf("expected callback to receive live backend, got %q", got.ExecutionBackend)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected settings callback to complete")
+	}
+}
+
+func TestSettingsPanelAutoScrollsSelectedRowIntoViewOnSmallTerminal(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetMode("Real")
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "taker",
+	}, nil)
+
+	model := tuiModel{
+		tui:          tui,
+		showSettings: true,
+		scrollOffset: 0,
+		snap: tuiSnapshot{
+			height: 10,
+		},
+	}
+	model.settingsCursor = settingsRowPrivateKeyEdit
+	model.ensureSettingsCursorVisible(tui.GetSettings(), "Real")
+
+	rendered := model.renderSettings(100)
+	if !strings.Contains(rendered, "Private Key") {
+		t.Fatalf("expected scrolled settings view to include selected row, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Market") {
+		t.Fatalf("expected small-terminal settings view to scroll past top rows, got %q", rendered)
+	}
+}
+
+func TestSettingsPanelMouseWheelScrollsViewport(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetMode("Real")
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "taker",
+	}, nil)
+
+	model := tuiModel{
+		tui:          tui,
+		showSettings: true,
+		scrollOffset: 0,
+		snap: tuiSnapshot{
+			height: 10,
+		},
+	}
+
+	next, _ := model.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	updated := next.(tuiModel)
+	if updated.scrollOffset <= 0 {
+		t.Fatalf("expected mouse wheel down to scroll settings viewport, got offset %d", updated.scrollOffset)
+	}
+
+	next, _ = updated.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	updated = next.(tuiModel)
+	if updated.scrollOffset < 0 {
+		t.Fatalf("expected mouse wheel up to clamp scroll offset, got %d", updated.scrollOffset)
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {
 		if !isRowVisible(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to remain visible with taker close enabled", idx)
+		}
+	}
+}
+
+func TestIsRowVisibleHidesSplitRowsForRealbotPaperBackend(t *testing.T) {
+	cfg := TUISettings{
+		ExecutionBackend:     core.ExecutionBackendPaper,
+		PaperArbMode:         "taker",
+		SplitStrategyEnabled: true,
+	}
+	for _, idx := range []int{settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
+		if isRowVisible(cfg, "Real", idx) {
+			t.Fatalf("expected split row %d to be hidden for realbot paper backend", idx)
 		}
 	}
 }
@@ -1660,6 +1813,21 @@ func TestRenderOrderHistoryShowsExplicitCloseModeInsteadOfMaker(t *testing.T) {
 	}
 	if strings.Contains(rendered, "maker") {
 		t.Fatalf("expected taker-close entry not to be labeled maker, got %q", rendered)
+	}
+}
+
+func TestRenderOrderHistoryValueMatchesDisplayedPriceTimesShares(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.RecordOrderWithMode("BTC", "Up", "BUY", 1.02, 0.60, 0.97, 0.0, 0.0, "laddered-taker", "FILLED")
+
+	model := tuiModel{snap: tuiSnapshot{orderHistory: tui.GetOrderHistory()}}
+	rendered := model.renderOrderHistory(120, 5)
+
+	if !strings.Contains(rendered, "$0.61") {
+		t.Fatalf("expected order history to display value from shown shares*price, got %q", rendered)
+	}
+	if strings.Contains(rendered, "$0.97") {
+		t.Fatalf("expected stale stored cost not to override displayed value, got %q", rendered)
 	}
 }
 
