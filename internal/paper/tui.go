@@ -204,6 +204,20 @@ func orderHistoryMarketLabel(marketID, marketSlug string) string {
 	return label + "#" + suffix
 }
 
+func resolveOrderHistoryMarketSlug(entry OrderHistoryEntry, markets map[string]*MarketData) string {
+	if slug := strings.TrimSpace(entry.MarketSlug); slug != "" {
+		return slug
+	}
+	marketID := strings.TrimSpace(entry.MarketID)
+	if marketID == "" || markets == nil {
+		return ""
+	}
+	if market, ok := markets[marketID]; ok && market != nil {
+		return strings.TrimSpace(market.Slug)
+	}
+	return ""
+}
+
 func marginStyle(pct float64) lipgloss.Style {
 	switch {
 	case pct >= 3:
@@ -2963,6 +2977,11 @@ func (t *TUI) AddMarket(id string, slug string, outcomes []string, endTime time.
 		RealBids:    make(map[string]float64),
 		RealAsks:    make(map[string]float64),
 	}
+	for i := range t.orderHistory {
+		if t.orderHistory[i].MarketID == id && strings.TrimSpace(t.orderHistory[i].MarketSlug) == "" {
+			t.orderHistory[i].MarketSlug = slug
+		}
+	}
 	t.markDirtyLocked()
 }
 
@@ -5623,9 +5642,10 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		}
 
 		aStyle := getAssetStyle(o.MarketID)
+		marketSlug := resolveOrderHistoryMarketSlug(o, s.markets)
 		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.2f  $%-7.4f  $%-7.2f  %s  %s\n",
 			styleDimmed.Render(o.Timestamp.Format("15:04:05")),
-			aStyle.Render(fmt.Sprintf("%-21s", truncateText(orderHistoryMarketLabel(o.MarketID, o.MarketSlug), 21))),
+			aStyle.Render(fmt.Sprintf("%-21s", truncateText(orderHistoryMarketLabel(o.MarketID, marketSlug), 21))),
 			core.SanitizeString(o.Outcome),
 			o.Side,
 			o.Shares,

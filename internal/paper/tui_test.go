@@ -1871,6 +1871,21 @@ func TestRenderOrderHistoryShowsMarketRoundSuffixFromSlug(t *testing.T) {
 	}
 }
 
+func TestRenderOrderHistoryBackfillsSlugForOrdersRecordedBeforeAddMarket(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.RecordOrderWithMode("btc-updown", "Up", "BUY", 1.02, 0.60, 0.61, 0.0, 0.0, "laddered-taker", "FILLED")
+	tui.AddMarket("btc-updown", "btc-updown-5m-1775817900", []string{"Up", "Down"}, time.Now().Add(5*time.Minute))
+
+	model := tuiModel{snap: tuiSnapshot{orderHistory: tui.GetOrderHistory(), markets: map[string]*MarketData{
+		"btc-updown": {Slug: "btc-updown-5m-1775817900"},
+	}}}
+	rendered := model.renderOrderHistory(140, 5)
+
+	if !strings.Contains(rendered, "1775817900") {
+		t.Fatalf("expected order history to backfill market round suffix after AddMarket, got %q", rendered)
+	}
+}
+
 func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
