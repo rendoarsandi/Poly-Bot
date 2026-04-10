@@ -208,6 +208,7 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	cfg := &core.Config{MaxTradeSize: 10}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.54, 0.55)
 
 	if !trader.IsPaperMode() {
 		t.Fatal("embedded paper real trader should report paper mode")
@@ -219,6 +220,9 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	}
 	if !buy.Success {
 		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	if math.Abs(buy.Price-0.55) > 1e-9 {
+		t.Fatalf("expected embedded paper buy to use live ask 0.55, got %.4f", buy.Price)
 	}
 	if buy.AcknowledgedQty <= 0 || buy.AcknowledgedQty >= 3 {
 		t.Fatalf("expected fee-adjusted acknowledged qty below 3, got %.4f", buy.AcknowledgedQty)
@@ -238,16 +242,38 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 		t.Fatalf("unexpected embedded paper positions snapshot: %+v", positions)
 	}
 
-	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.60, 1.5, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
+	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.50, 1.5, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
 	if err != nil {
 		t.Fatalf("embedded paper sell failed: %v", err)
 	}
 	if !sell.Success {
 		t.Fatalf("embedded paper sell should succeed: %+v", sell)
 	}
+	if math.Abs(sell.Price-0.54) > 1e-9 {
+		t.Fatalf("expected embedded paper sell to use live bid 0.54, got %.4f", sell.Price)
+	}
 	expectedRemaining := buy.AcknowledgedQty - 1.5
 	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedRemaining) > 1e-9 {
 		t.Fatalf("expected live position to drop to %.4f, got %.4f", expectedRemaining, got)
+	}
+}
+
+func TestEmbeddedPaperRealTraderRejectsNonMarketableLimitAgainstLiveQuote(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.54, 0.55)
+
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.50, 1.0, api.OrderTypeLimit, api.TIFGoodTilCancelled, 0)
+	if err != nil {
+		t.Fatalf("embedded paper buy returned unexpected error: %v", err)
+	}
+	if buy.Success {
+		t.Fatalf("expected non-marketable embedded paper buy to fail, got %+v", buy)
+	}
+	if !strings.Contains(buy.Message, "not marketable") {
+		t.Fatalf("expected non-marketable rejection, got %q", buy.Message)
 	}
 }
 

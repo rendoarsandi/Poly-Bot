@@ -412,6 +412,32 @@ func (t *RealTrader) paperPositionsSnapshot() []PositionInfo {
 	return positions
 }
 
+func (t *RealTrader) resolveEmbeddedPaperExecutionPrice(side api.Side, marketID, outcome string, limitPrice float64) (float64, error) {
+	if t == nil || t.paperEngine == nil {
+		return 0, fmt.Errorf("paper engine not initialized")
+	}
+
+	bid, ask := t.paperEngine.GetMarketBidAsk(marketID, outcome)
+	switch side {
+	case api.SideBuy:
+		if ask > 0 {
+			if ask > limitPrice+1e-9 {
+				return 0, fmt.Errorf("paper buy not marketable: best ask %.4f above limit %.4f", ask, limitPrice)
+			}
+			return ask, nil
+		}
+	case api.SideSell:
+		if bid > 0 {
+			if bid+1e-9 < limitPrice {
+				return 0, fmt.Errorf("paper sell not marketable: best bid %.4f below limit %.4f", bid, limitPrice)
+			}
+			return bid, nil
+		}
+	}
+
+	return limitPrice, nil
+}
+
 func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*TradeResult, error) {
 	if t.paperEngine == nil {
 		return nil, fmt.Errorf("paper engine not initialized")
@@ -450,11 +476,23 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	if strings.TrimSpace(outcome) == "" {
 		outcome = meta.Outcome
 	}
+	execPrice, err := t.resolveEmbeddedPaperExecutionPrice(side, meta.MarketID, outcome, price)
+	if err != nil {
+		return &TradeResult{
+			Success: false,
+			Message: err.Error(),
+			Price:   price,
+			Size:    size,
+			Side:    string(side),
+			TokenID: tokenID,
+			Outcome: outcome,
+		}, nil
+	}
 	orderID := fmt.Sprintf("paper-%d", time.Now().UnixNano())
 	t.posMu.Lock()
 	if side == api.SideBuy {
 		t.paperEngine.SetFeeRateBps(feeRateBps)
-		trade, err := t.paperEngine.BuyForMarket(meta.MarketID, outcome, price, size)
+		trade, err := t.paperEngine.BuyForMarket(meta.MarketID, outcome, execPrice, size)
 		if err != nil {
 			t.posMu.Unlock()
 			return &TradeResult{
@@ -470,12 +508,12 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		t.livePositions[tokenID] += trade.Quantity
 		t.confirmedOrderFills[orderID] = trade.Quantity
 		t.posMu.Unlock()
-		fee := math.Max(0, (size-trade.Quantity)*price)
+		fee := math.Max(0, (size-trade.Quantity)*execPrice)
 		return &TradeResult{
 			OrderID:              orderID,
 			Status:               "FILLED",
 			Success:              true,
-			Price:                price,
+			Price:                execPrice,
 			Size:                 size,
 			Fee:                  fee,
 			FeeRateBps:           feeRateBps,
@@ -501,7 +539,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			}, nil
 		}
 		t.paperEngine.SetFeeRateBps(feeRateBps)
-		trade, err := t.paperEngine.SellForMarket(meta.MarketID, outcome, price, size)
+		trade, err := t.paperEngine.SellForMarket(meta.MarketID, outcome, execPrice, size)
 		if err != nil {
 			t.posMu.Unlock()
 			return &TradeResult{
@@ -520,12 +558,12 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		}
 		t.confirmedOrderFills[orderID] = trade.Quantity
 		t.posMu.Unlock()
-		fee := math.Max(0, (price*trade.Quantity)-trade.Value)
+		fee := math.Max(0, (execPrice*trade.Quantity)-trade.Value)
 		return &TradeResult{
 			OrderID:              orderID,
 			Status:               "FILLED",
 			Success:              true,
-			Price:                price,
+			Price:                execPrice,
 			Size:                 size,
 			Fee:                  fee,
 			FeeRateBps:           feeRateBps,
