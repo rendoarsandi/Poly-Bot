@@ -5112,18 +5112,6 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 	var sb strings.Builder
 
-	// ── In-flight positions ──
-	if showInFlightPositions && !isCopytradeSettingsMode(settings) {
-		inflightStatus := styleYellow.Render("⏳ awaiting merge")
-		if ladderedMode {
-			inflightStatus = styleYellow.Render("⏳ open inventory")
-		}
-		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%d) %s",
-			len(positionsWithPnL), inflightStatus), clrTeal) + "\n")
-	} else {
-		sb.WriteString(sectionHeader("📦", "POSITIONS", clrTeal) + "\n")
-	}
-
 	byMarket := make(map[string][]PositionPnL)
 	if showInFlightPositions {
 		for _, pos := range positionsWithPnL {
@@ -5133,6 +5121,22 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			}
 			byMarket[mid] = append(byMarket[mid], pos)
 		}
+	}
+
+	// ── In-flight positions ──
+	if showInFlightPositions && !isCopytradeSettingsMode(settings) {
+		inflightStatus := styleYellow.Render("⏳ awaiting merge")
+		if ladderedMode {
+			inflightStatus = styleYellow.Render("⏳ open inventory")
+		}
+		headerCount := fmt.Sprintf("%d legs", len(positionsWithPnL))
+		if len(byMarket) > 0 {
+			headerCount = fmt.Sprintf("%d markets / %d legs", len(byMarket), len(positionsWithPnL))
+		}
+		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%s) %s",
+			headerCount, inflightStatus), clrTeal) + "\n")
+	} else {
+		sb.WriteString(sectionHeader("📦", "POSITIONS", clrTeal) + "\n")
 	}
 
 	totalMarketPnL := 0.0

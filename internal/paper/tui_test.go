@@ -1886,6 +1886,22 @@ func TestRenderOrderHistoryBackfillsSlugForOrdersRecordedBeforeAddMarket(t *test
 	}
 }
 
+func TestRenderPositionsHeaderShowsMarketsAndLegs(t *testing.T) {
+	positions := map[string]PositionPnL{
+		"m1:Up":   {Position: Position{MarketID: "m1", Outcome: "Up", Quantity: 1}},
+		"m1:Down": {Position: Position{MarketID: "m1", Outcome: "Down", Quantity: 1}},
+		"m2:Up":   {Position: Position{MarketID: "m2", Outcome: "Up", Quantity: 1}},
+		"m2:Down": {Position: Position{MarketID: "m2", Outcome: "Down", Quantity: 1}},
+	}
+	model := tuiModel{snap: tuiSnapshot{settings: TUISettings{PaperArbMode: "laddered-taker"}}}
+
+	rendered := model.renderPositions(140, positions)
+
+	if !strings.Contains(rendered, "IN-FLIGHT  (2 markets / 4 legs)") {
+		t.Fatalf("expected positions header to show market and leg counts, got %q", rendered)
+	}
+}
+
 func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
