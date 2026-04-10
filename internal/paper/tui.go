@@ -1408,6 +1408,10 @@ type tuiModel struct {
 	settingsInput  string
 	scrollOffset   int
 	contentLines   int
+	layoutVersion  uint64
+	layoutWidth    int
+	layoutHeight   int
+	layoutSettings bool
 }
 
 type WalletTruthPosition struct {
@@ -1857,12 +1861,26 @@ func (m *tuiModel) refreshScrollMetrics() {
 	if m.showSettings {
 		m.contentLines = 0
 		m.scrollOffset = 0
+		m.layoutVersion = m.snap.version
+		m.layoutWidth = m.snap.width
+		m.layoutHeight = m.snap.height
+		m.layoutSettings = true
 		return
 	}
 	w := normalizeTUIWidth(m.snap.width)
 	content := m.renderMainContent(w)
 	m.contentLines = lipgloss.Height(content)
 	m.clampScrollOffset()
+	m.layoutVersion = m.snap.version
+	m.layoutWidth = m.snap.width
+	m.layoutHeight = m.snap.height
+	m.layoutSettings = false
+}
+
+func (m *tuiModel) refreshScrollMetricsIfNeeded() {
+	if m.layoutVersion != m.snap.version || m.layoutWidth != m.snap.width || m.layoutHeight != m.snap.height || m.layoutSettings != m.showSettings {
+		m.refreshScrollMetrics()
+	}
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2022,7 +2040,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.losingRounds = losingRounds
 		m.snap.enginePositions = enginePositions
 		m.tui.mu.Unlock()
-		m.refreshScrollMetrics()
+		m.refreshScrollMetricsIfNeeded()
 
 		return m, tickCmd(m.interval)
 

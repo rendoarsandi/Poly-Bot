@@ -1125,6 +1125,27 @@ func TestMainPanelMouseWheelScrollsViewport(t *testing.T) {
 	}
 }
 
+func TestRefreshScrollMetricsIfNeededSkipsStableLayout(t *testing.T) {
+	model := tuiModel{
+		contentLines:   123,
+		layoutVersion:  7,
+		layoutWidth:    120,
+		layoutHeight:   30,
+		layoutSettings: false,
+		snap: tuiSnapshot{
+			version: 7,
+			width:   120,
+			height:  30,
+		},
+	}
+
+	model.refreshScrollMetricsIfNeeded()
+
+	if model.contentLines != 123 {
+		t.Fatalf("expected stable layout refresh to be skipped, got contentLines=%d", model.contentLines)
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {
