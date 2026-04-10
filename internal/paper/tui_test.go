@@ -1208,6 +1208,42 @@ func TestLogEventSuppressesImmediateConsecutiveDuplicates(t *testing.T) {
 	}
 }
 
+func TestUpdateMarketPricesWithSourceAtThrottlesTinyBurstMoves(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.AddMarket("BTC", "btc-updown-5m-1", []string{"Up", "Down"}, time.Now().Add(time.Minute))
+
+	base := time.Unix(100, 0)
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.45}, map[string]float64{"Up": 0.55}, "WS", base)
+	firstVersion := tui.snapshotVersion
+
+	tui.UpdateMarketPricesWithSourceAt("BTC", map[string]float64{"Up": 0.451}, map[string]float64{"Up": 0.551}, "WS", base.Add(50*time.Millisecond))
+
+	if tui.snapshotVersion != firstVersion {
+		t.Fatalf("expected tiny burst move to stay throttled at version %d, got %d", firstVersion, tui.snapshotVersion)
+	}
+	if got := tui.markets["BTC"].Bids["Up"]; math.Abs(got-0.45) > 1e-9 {
+		t.Fatalf("expected throttled tiny burst to keep displayed bid at 0.45, got %.4f", got)
+	}
+}
+
+func TestUpdateOrderBookDepthThrottlesRapidRefresh(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.AddMarket("BTC", "btc-updown-5m-1", []string{"Up", "Down"}, time.Now().Add(time.Minute))
+
+	tui.UpdateOrderBookDepth("BTC", map[string][]MarketLevel{"Up": {{Price: 0.45, Size: 10}}}, map[string][]MarketLevel{"Up": {{Price: 0.55, Size: 10}}})
+	firstVersion := tui.snapshotVersion
+	firstDepthTime := tui.markets["BTC"].LastDepthUpdate
+
+	tui.UpdateOrderBookDepth("BTC", map[string][]MarketLevel{"Up": {{Price: 0.46, Size: 11}}}, map[string][]MarketLevel{"Up": {{Price: 0.56, Size: 11}}})
+
+	if tui.snapshotVersion != firstVersion {
+		t.Fatalf("expected rapid depth refresh to stay throttled at version %d, got %d", firstVersion, tui.snapshotVersion)
+	}
+	if !tui.markets["BTC"].LastDepthUpdate.Equal(firstDepthTime) {
+		t.Fatalf("expected throttled rapid depth refresh to preserve last depth update time")
+	}
+}
+
 func TestIsRowVisibleKeepsCoreRowsVisibleWhenTakerCloseEnabled(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "taker", TakerCloseMarket: true}
 	for _, idx := range []int{settingsRowMarket, settingsRowMaxMarkets, settingsRowTimeframe, settingsRowTradeSizingMode, settingsRowTradeSizingValue, settingsRowPaperArbMode, settingsRowExecutionSlip, settingsRowTakerCloseMarket, settingsRowMaxTradeSize, settingsRowMaxDailyLoss, settingsRowExchange, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowTradingHoursMode} {

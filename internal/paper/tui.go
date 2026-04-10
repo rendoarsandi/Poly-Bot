@@ -1419,21 +1419,28 @@ type tuiModel struct {
 	// Quit callback — called before tea.Quit so parent context is cancelled first
 	onQuit func()
 	// Settings overlay state (immediate, not snapshotted)
-	showSettings   bool
-	settingsCursor int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
-	settingsEdit   bool
-	settingsInput  string
-	scrollOffset   int
-	contentLines   int
-	layoutVersion  uint64
-	layoutWidth    int
-	layoutHeight   int
-	layoutSettings bool
+	showSettings        bool
+	settingsCursor      int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
+	settingsEdit        bool
+	settingsInput       string
+	scrollOffset        int
+	contentLines        int
+	layoutVersion       uint64
+	layoutWidth         int
+	layoutHeight        int
+	layoutSettings      bool
+	mainContentVersion  uint64
+	mainContentWidth    int
+	mainContentSettings bool
+	mainContentCached   string
 }
 
 const (
 	tuiDisplayDirtyMinInterval   = 250 * time.Millisecond
 	tuiConsecutiveLogDedupWindow = 750 * time.Millisecond
+	tuiQuoteDisplayMinInterval   = 150 * time.Millisecond
+	tuiDepthDisplayMinInterval   = 500 * time.Millisecond
+	tuiQuoteDisplayMinMove       = 0.01
 )
 
 type WalletTruthPosition struct {
@@ -1821,7 +1828,7 @@ func (m *tuiModel) ensureSettingsCursorVisible(cfg TUISettings, mode string) {
 	}
 }
 
-func (m tuiModel) renderMainContent(w int) string {
+func (m tuiModel) buildMainContent(w int) string {
 	if m.showSettings {
 		return m.renderSettings(w)
 	}
@@ -1877,6 +1884,22 @@ func (m tuiModel) renderMainContent(w int) string {
 	}
 
 	return strings.Join(rows, "\n")
+}
+
+func (m *tuiModel) renderMainContent(w int) string {
+	if m.mainContentCached != "" &&
+		m.mainContentVersion == m.snap.version &&
+		m.mainContentWidth == w &&
+		m.mainContentSettings == m.showSettings {
+		return m.mainContentCached
+	}
+
+	content := m.buildMainContent(w)
+	m.mainContentCached = content
+	m.mainContentVersion = m.snap.version
+	m.mainContentWidth = w
+	m.mainContentSettings = m.showSettings
+	return content
 }
 
 func (m *tuiModel) refreshScrollMetrics() {
@@ -3169,6 +3192,14 @@ func (t *TUI) UpdateMarketPricesWithSourceAt(marketID string, bids, asks map[str
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if m, ok := t.markets[marketID]; ok {
+		if updatedAt.IsZero() {
+			updatedAt = time.Now()
+		}
+		if !m.LastUpdate.IsZero() && updatedAt.Sub(m.LastUpdate) < tuiQuoteDisplayMinInterval &&
+			!tuiQuoteMapMoved(m.Bids, bids, tuiQuoteDisplayMinMove) &&
+			!tuiQuoteMapMoved(m.Asks, asks, tuiQuoteDisplayMinMove) {
+			return
+		}
 		for k, v := range bids {
 			m.Bids[k] = v
 			if v > 0 {
@@ -3186,9 +3217,6 @@ func (t *TUI) UpdateMarketPricesWithSourceAt(marketID string, bids, asks map[str
 			} else {
 				m.ClearedAsks[k] = true
 			}
-		}
-		if updatedAt.IsZero() {
-			updatedAt = time.Now()
 		}
 		m.LastUpdate = updatedAt
 		m.DataSource = source
@@ -3220,6 +3248,9 @@ func marketDepthLevelsEqual(a, b []MarketLevel) bool {
 func (t *TUI) UpdateOrderBookDepth(marketID string, bids, asks map[string][]MarketLevel) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if market, ok := t.markets[marketID]; ok && !market.LastDepthUpdate.IsZero() && time.Since(market.LastDepthUpdate) < tuiDepthDisplayMinInterval {
+		return
+	}
 	if t.orderBookDepth[marketID] == nil {
 		t.orderBookDepth[marketID] = make(map[string][]MarketLevel)
 	}
@@ -3320,6 +3351,18 @@ func pendingOrdersEqual(a, b []PendingOrder) bool {
 		}
 	}
 	return true
+}
+
+func tuiQuoteMapMoved(existing, incoming map[string]float64, minMove float64) bool {
+	if len(incoming) == 0 {
+		return false
+	}
+	for k, v := range incoming {
+		if math.Abs(existing[k]-v) >= minMove {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *TUI) appendEventLocked(msg string) {
