@@ -2167,6 +2167,43 @@ func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	}
 }
 
+func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
+	tui := NewTUI(NewEngine(100.0), NewOrderBook())
+	tui.RecordRound(100.0, 98.0, -2.0, 10, map[string]Position{
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 4.0, TotalCost: 2.00},
+	}, nil)
+	tui.RecordRound(98.0, 99.0, 1.0, 8, map[string]Position{
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 4.0, TotalCost: 2.00},
+	}, nil)
+
+	tui.AmendMostRecentRoundForMarket("m1", 1.60, []*RedemptionResult{{
+		MarketID:       "m1",
+		WinningOutcome: "Up",
+		WinningShares:  6.0,
+		WinningPayout:  6.0,
+		WinningCost:    2.40,
+		WinningPnL:     3.60,
+		LosingOutcome:  "Down",
+		LosingShares:   4.0,
+		LosingCost:     2.00,
+		TotalPayout:    6.0,
+		TotalPnL:       1.60,
+	}})
+
+	history := tui.GetRoundHistory()
+	if len(history) != 2 {
+		t.Fatalf("expected 2 round history entries, got %d", len(history))
+	}
+	if roundHistoryHasOpenInventory(history[0]) {
+		t.Fatalf("expected older matching round to stop showing open carry after resolution, got %+v", history[0])
+	}
+	if !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
+		t.Fatalf("expected older matching round to retain resolved share summary, got %q", history[0].ShareSummary)
+	}
+}
+
 func TestRenderSettingsShowsPaperBalanceRow(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
 	tui.InitSettings(TUISettings{

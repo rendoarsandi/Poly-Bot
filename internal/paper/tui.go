@@ -3906,6 +3906,49 @@ func roundHistoryEntryHasMarket(entry RoundHistoryEntry, marketID string) bool {
 	return false
 }
 
+func roundHistoryEntryHasRedemptionForMarket(entry RoundHistoryEntry, marketID string) bool {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return false
+	}
+	for _, redemption := range entry.redemptions {
+		if redemption != nil && strings.EqualFold(strings.TrimSpace(redemption.MarketID), marketID) {
+			return true
+		}
+	}
+	return false
+}
+
+func roundHistoryRedemptionsForMarket(redemptions []*RedemptionResult, marketID string) []*RedemptionResult {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" || len(redemptions) == 0 {
+		return nil
+	}
+	filtered := make([]*RedemptionResult, 0, len(redemptions))
+	for _, redemption := range redemptions {
+		if redemption == nil || !strings.EqualFold(strings.TrimSpace(redemption.MarketID), marketID) {
+			continue
+		}
+		filtered = append(filtered, redemption)
+	}
+	return filtered
+}
+
+func roundHistoryRemoveMarketPositions(entry *RoundHistoryEntry, marketID string) {
+	if entry == nil {
+		return
+	}
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" || len(entry.positions) == 0 {
+		return
+	}
+	for key, pos := range entry.positions {
+		if strings.EqualFold(strings.TrimSpace(pos.MarketID), marketID) {
+			delete(entry.positions, key)
+		}
+	}
+}
+
 // AmendLatestRound updates the most recent round history entry with late background redemptions
 func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionResult) {
 	t.mu.Lock()
@@ -3944,6 +3987,18 @@ func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, n
 
 	redemptionDelta := amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
 	rebaseSubsequentRoundHistoryEntries(t.roundHistory, targetIdx+1, redemptionDelta)
+
+	filteredRedemptions := roundHistoryRedemptionsForMarket(newRedemptions, marketID)
+	for i := range t.roundHistory {
+		if i == targetIdx || !roundHistoryEntryHasMarket(t.roundHistory[i], marketID) {
+			continue
+		}
+		roundHistoryRemoveMarketPositions(&t.roundHistory[i], marketID)
+		if len(filteredRedemptions) > 0 && !roundHistoryEntryHasRedemptionForMarket(t.roundHistory[i], marketID) {
+			t.roundHistory[i].redemptions = append(t.roundHistory[i].redemptions, filteredRedemptions...)
+		}
+		t.roundHistory[i].ShareSummary = roundHistoryShareSummary(t.roundHistory[i].positions, t.roundHistory[i].redemptions)
+	}
 
 	t.markDirtyLocked()
 }
