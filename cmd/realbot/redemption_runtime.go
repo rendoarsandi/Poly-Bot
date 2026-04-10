@@ -252,7 +252,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		if !realbotHasEnginePositionsForMarket(engine, id) && pendingPayout <= 0.000001 {
 			return
 		}
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(realbotEmbeddedPaperRedemptionPollInterval)
 		defer ticker.Stop()
 		pendingLogged := false
 		for {

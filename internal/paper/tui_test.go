@@ -2109,6 +2109,37 @@ func TestRenderAccountStatusRealModeUsesRealizedForEquityChangeDisplay(t *testin
 	}
 }
 
+func TestRenderAccountStatusRealbotPaperBackendUsesMarkToMarketEquityChange(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				ExecutionBackend: core.ExecutionBackendPaper,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  55.57,
+		StartingBalance: 97.77,
+		RealizedPnL:     4.09,
+	}, 48.52, 109.63, 101.86, 101.86, 1.0, 97.77, 2, 1, 1, map[string]Position{
+		"btc-updown-5m-1:Up":   {MarketID: "btc-updown-5m-1", Outcome: "Up", Quantity: 53.04, AvgPrice: 0.48, TotalCost: 25.46},
+		"btc-updown-5m-1:Down": {MarketID: "btc-updown-5m-1", Outcome: "Down", Quantity: 53.04, AvgPrice: 0.58, TotalCost: 30.76},
+	})
+
+	if !strings.Contains(rendered, "Equity $101.86") {
+		t.Fatalf("expected paper-backend realbot account status to keep mtm equity, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(+$4.09)") {
+		t.Fatalf("expected net change to follow mtm equity on paper backend, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Realized +$4.09") {
+		t.Fatalf("expected realized pnl line to remain explicit on paper backend, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusRealModeShowsWalletCashSeparatelyFromSpendableBalance(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

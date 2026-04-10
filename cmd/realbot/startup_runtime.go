@@ -173,6 +173,7 @@ func run() error {
 
 	_, _, _ = realbotSyncRuntimeBalance(ctx, realTrader, engine, tui, 8*time.Second)
 	realbotStartBalanceSyncLoop(ctx, realTrader, engine, tui)
+	realbotStartEmbeddedPaperResolutionSweep(ctx, realTrader, engine, tui, restClient, resolutionCache)
 
 	globalSplitStatus := make(map[string]bool)
 	globalSplitInventories := make(map[string]*paper.SplitInventory)

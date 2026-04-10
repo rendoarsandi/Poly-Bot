@@ -1250,6 +1250,54 @@ func TestCheckRedemptionEmbeddedPaperSettlesResolvedPayout(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPaperResolutionSweepSettlesHeldExpiredMarketBySlug(t *testing.T) {
+	marketID := "btc-updown-5m-1700000000"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/markets/"+marketID {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"condition_id":"cond-btc-1","slug":"` + marketID + `","closed":true,"tokens":[{"token_id":"down-token","outcome":"Down","winner":false},{"token_id":"up-token","outcome":"Up","winner":true}]}`))
+	}))
+	defer server.Close()
+
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk(marketID, "Up", 0.99, 1.00)
+	engine.UpdateMarketBidAsk(marketID, "Down", 0.01, 0.02)
+
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	restClient := api.NewRestClient("polymarket")
+	restClient.BaseURL = server.URL
+	resCache := api.NewResolutionCache(nil, nil, restClient)
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	realbotStartEmbeddedPaperResolutionSweep(ctx, trader, engine, tui, restClient, resCache)
+
+	deadline := time.Now().Add(1200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := engine.GetBalance(); math.Abs(got-102.0) <= 0.000001 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if got := engine.GetBalance(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected background embedded-paper sweep to settle to 102.00, got %.2f", got)
+	}
+	if got := engine.GetPendingRedemptions()[marketID]; got != 0 {
+		t.Fatalf("expected no pending redemption after background settle, got %.2f", got)
+	}
+	if realbotHasEnginePositionsForMarket(engine, marketID) {
+		t.Fatal("expected held expired market inventory to be redeemed and cleared")
+	}
+}
+
 func TestRealbotPanicBuyCompletionGuardBlocksUnprofitableCompletion(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("mkt-1", "Yes", 0.62, 10); err != nil {

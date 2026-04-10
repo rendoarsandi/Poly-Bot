@@ -606,6 +606,10 @@ func realbotPaperBackendDisablesSplit(cfg TUISettings, mode string) bool {
 	return strings.EqualFold(mode, "Real") && strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper)
 }
 
+func usesPaperExecutionSemantics(cfg TUISettings, mode string) bool {
+	return strings.EqualFold(mode, "Paper") || realbotPaperBackendDisablesMaker(cfg, mode)
+}
+
 func settingsArbModes(cfg TUISettings, mode string) []string {
 	modes := []string{"taker", "laddered-taker", "binance-gap", "copytrade"}
 	if !realbotPaperBackendDisablesMaker(cfg, mode) {
@@ -4597,14 +4601,19 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	copytradeMode := isCopytradeSettingsMode(settings)
 	ladderedMode := isLadderedTakerSettingsMode(settings)
 	isRealMode := strings.EqualFold(s.mode, "Real") || strings.EqualFold(s.mode, "Live")
+	paperExecutionMode := usesPaperExecutionSemantics(settings, s.mode)
+	displayMode := s.mode
+	if paperExecutionMode {
+		displayMode = "Paper"
+	}
 
 	displayEquity := equity
-	if isRealMode {
+	if isRealMode && !paperExecutionMode {
 		displayEquity = bookEquity
 	}
 	displayCash := stats.CurrentBalance
 	displayMTMEquity := equity
-	if isRealMode && s.hasWalletCash {
+	if isRealMode && !paperExecutionMode && s.hasWalletCash {
 		displayCash = s.walletCash
 		displayEquity += s.walletCash - stats.CurrentBalance
 		displayMTMEquity += s.walletCash - stats.CurrentBalance
@@ -4630,7 +4639,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		displayRealized = netChange
 	}
 	displayNetChange := netChange
-	if isRealMode {
+	if isRealMode && !paperExecutionMode {
 		displayNetChange = displayRealized
 	} else if totalExposure <= 0.0001 && len(positions) == 0 && !hasWalletTruthInventory && math.Abs(displayRealized-netChange) >= 0.005 {
 		displayNetChange = displayRealized
@@ -4730,10 +4739,10 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		} else {
 			tradeLine = fmt.Sprintf("  Ladder $%.2f cap  ·  ", settings.LadderedTakerSizeUSDC)
 		}
-	} else if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(s.mode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, settings.TradeSizeUSDC, s.maxTradeSize, multiplier, settings.TradeSizingMode); baseTradeCost > 0 {
+	} else if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(displayMode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, settings.TradeSizeUSDC, s.maxTradeSize, multiplier, settings.TradeSizingMode); baseTradeCost > 0 {
 		if strings.EqualFold(settings.TradeSizingMode, core.TradeSizingModeUSDC) {
 			tradeLine = fmt.Sprintf("  Trade $%.2f fixed  ·  ", baseTradeCost)
-		} else if strings.EqualFold(s.mode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
+		} else if strings.EqualFold(displayMode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
 		} else {
 			tradeLine = fmt.Sprintf("  Trade %.1f%%  ($%.2f/trade)  ·  ", s.tradeFactor*100, baseTradeCost)

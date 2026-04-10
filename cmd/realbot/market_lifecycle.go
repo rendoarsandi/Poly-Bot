@@ -32,7 +32,11 @@ type realbotMarketClosureState struct {
 }
 
 func realbotLaunchRedemptionCheck(marketID, conditionID string, outcomes []string, marketEndTime time.Time, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, resolutionCache *api.ResolutionCache) {
+	if !realbotTryReserveRedemptionCheck(marketID) {
+		return
+	}
 	go func() {
+		defer realbotReleaseRedemptionCheck(marketID)
 		checkRedemption(context.Background(), marketID, conditionID, append([]string(nil), outcomes...), marketEndTime, trader, engine, tui, resolutionCache)
 	}()
 }
@@ -43,6 +47,7 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 	}
 
 	args.tui.LogEvent("[%s] ⏰ Closed", args.marketID)
+	realbotClearEngineMarketQuotes(args.engine, args.marketID, args.outcomes)
 	cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 10*time.Second)
 	realbotCancelAllMakerQuotes(cancelMakerCtx, args.marketID, "market closed", args.trader, args.engine, args.tui, args.makerQuotes)
 	cancelMaker()
