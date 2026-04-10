@@ -67,8 +67,8 @@ const (
 	defaultOneColRoundRows  = 3
 	defaultTwoColOrderRows  = 12
 	defaultOneColOrderRows  = 10
-	defaultTwoColEventRows  = 6
-	defaultOneColEventRows  = 5
+	defaultTwoColEventRows  = 4
+	defaultOneColEventRows  = 3
 	recentQuoteDisplayGrace = 10 * time.Second
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
@@ -4696,9 +4696,9 @@ func (m tuiModel) eventLogRows(twoColumn bool) int {
 	}
 	extra := max(0, h-24)
 	if twoColumn {
-		return clamp(defaultTwoColEventRows+extra/2, defaultTwoColEventRows, 40)
+		return clamp(defaultTwoColEventRows+extra/4, defaultTwoColEventRows, 16)
 	}
-	return clamp(defaultOneColEventRows+extra/2, defaultOneColEventRows, 32)
+	return clamp(defaultOneColEventRows+extra/5, defaultOneColEventRows, 10)
 }
 
 func (m tuiModel) renderSingleMarketPrices(outcomes []string, bids, asks, realBids, realAsks map[string]float64, innerW int) string {
@@ -5833,9 +5833,9 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 	var sb strings.Builder
 
 	visible := min(len(s.eventLog), maxItems)
-	label := "EVENT LOG"
+	label := "EVENTS"
 	if len(s.eventLog) > 0 {
-		label = fmt.Sprintf("EVENT LOG  (showing %d/%d)", visible, len(s.eventLog))
+		label = fmt.Sprintf("EVENTS  (%d/%d)", visible, len(s.eventLog))
 	}
 	sb.WriteString(sectionHeader("📜", label, clrSlate) + "\n")
 	if len(s.eventLog) == 0 {
@@ -5845,8 +5845,12 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 		if len(s.eventLog) > maxItems {
 			startIdx = len(s.eventLog) - maxItems
 		}
+		maxLineWidth := inner - 2
+		if maxLineWidth < 8 {
+			maxLineWidth = 8
+		}
 		for i := startIdx; i < len(s.eventLog); i++ {
-			sb.WriteString("  " + s.eventLog[i] + "\n")
+			sb.WriteString("  " + truncateText(s.eventLog[i], maxLineWidth) + "\n")
 		}
 	}
 	return makePanel(inner, clrSlate, sb.String())

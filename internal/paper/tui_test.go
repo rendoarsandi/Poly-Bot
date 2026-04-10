@@ -1936,7 +1936,7 @@ func TestTUIEventLogRowsPrioritizeLargerVisibleHistory(t *testing.T) {
 func TestRenderEventLogShowsVisibleVsRetainedCount(t *testing.T) {
 	model := tuiModel{snap: tuiSnapshot{eventLog: []string{"one", "two", "three"}}}
 	rendered := model.renderEventLog(120, 2)
-	if !strings.Contains(rendered, "showing 2/3") {
+	if !strings.Contains(rendered, "EVENTS  (2/3)") {
 		t.Fatalf("expected render to show visible/retained counts, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "two") || !strings.Contains(rendered, "three") {
@@ -1944,6 +1944,14 @@ func TestRenderEventLogShowsVisibleVsRetainedCount(t *testing.T) {
 	}
 	if strings.Contains(rendered, "one") {
 		t.Fatalf("expected render to omit trimmed events, got %q", rendered)
+	}
+}
+
+func TestRenderEventLogTruncatesLongLinesToSingleRow(t *testing.T) {
+	model := tuiModel{snap: tuiSnapshot{eventLog: []string{"[10:00:00] this is a very long event log line that should be truncated instead of wrapping across many columns"}}}
+	rendered := model.renderEventLog(50, 1)
+	if !strings.Contains(rendered, "…") {
+		t.Fatalf("expected long event line to be truncated, got %q", rendered)
 	}
 }
 
