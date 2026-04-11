@@ -789,6 +789,36 @@ func TestEngine_GetPositionsWithPnL_ClearedMarketBidSuppressesOutcomeFallback(t 
 	}
 }
 
+func TestEngine_ClearMarketDataPreservesOpenInventoryAndPendingRedemptions(t *testing.T) {
+	engine := NewEngine(100.0)
+	if _, err := engine.BuyForMarket("BTC#1775911200", "Up", 0.60, 5); err != nil {
+		t.Fatalf("BuyForMarket failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk("BTC#1775911200", "Up", 0.70, 0.71)
+	engine.SetPendingRedemption("BTC#old", 3.25)
+
+	engine.ClearMarketData()
+
+	positions := engine.GetPositions()
+	pos, ok := positions["BTC#1775911200:Up"]
+	if !ok {
+		t.Fatalf("expected unresolved position to survive round cleanup, got %+v", positions)
+	}
+	if absFloat(pos.Quantity-5.0) > 1e-9 {
+		t.Fatalf("expected unresolved quantity 5.0 after cleanup, got %.4f", pos.Quantity)
+	}
+
+	pending := engine.GetPendingRedemptions()
+	if got := pending["BTC#old"]; absFloat(got-3.25) > 1e-9 {
+		t.Fatalf("expected pending redemption 3.25 to survive cleanup, got %.4f", got)
+	}
+
+	withPnL := engine.GetPositionsWithPnL()
+	if got := withPnL["BTC#1775911200:Up"].CurrentBid; absFloat(got-0.70) > 1e-9 {
+		t.Fatalf("expected active market bid 0.70 to survive cleanup, got %.4f", got)
+	}
+}
+
 func TestEngine_RedeemWithDetails(t *testing.T) {
 	engine := NewEngine(100.0)
 

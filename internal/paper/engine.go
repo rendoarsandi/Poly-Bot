@@ -180,34 +180,27 @@ func (e *Engine) ClearMarketData() {
 		e.currentBalance += inventoryValue
 	}
 
-	// Liquidate all regular positions back to cash at their full book value.
-	// This prevents orphaned positions from getting stuck "IN-FLIGHT" 
-	// when settings change or a round is force-restarted. By using book value,
-	// we preserve matched-pair profit in the user's cash balance and Realized PnL.
-	bookValue := e.getPositionBookValue()
-	costBasis := 0.0
-	for _, pos := range e.positions {
-		costBasis += pos.TotalCost
-	}
-
-	if bookValue > 0 {
-		e.currentBalance += bookValue
-		e.realizedPnL += (bookValue - costBasis)
-	} else if costBasis > 0 {
-		e.currentBalance += costBasis
-	}
-	
-	// Clear all positions since they are now refunded
-	e.positions = make(map[string]*Position)
-
 	e.currentPrices = make(map[string]float64)
 	e.currentBids = make(map[string]float64)
 	e.currentAsks = make(map[string]float64)
 
-	// Since all positions are cleared, we can clear all market bids and asks
-	e.marketBids = make(map[string]float64)
-	e.marketAsks = make(map[string]float64)
-	
+	// Keep market prices for markets we still hold positions in (unresolved)
+	activeMarkets := make(map[string]bool)
+	for k := range e.positions {
+		activeMarkets[k] = true
+	}
+
+	for k := range e.marketBids {
+		if !activeMarkets[k] {
+			delete(e.marketBids, k)
+		}
+	}
+	for k := range e.marketAsks {
+		if !activeMarkets[k] {
+			delete(e.marketAsks, k)
+		}
+	}
+
 	// Clear split inventory references since they are recreated per round
 	e.splitInventories = nil
 }
