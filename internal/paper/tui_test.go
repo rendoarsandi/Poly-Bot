@@ -2219,8 +2219,8 @@ func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
 	if roundHistoryHasOpenInventory(history[0]) {
 		t.Fatalf("expected older matching round to stop showing open carry after resolution, got %+v", history[0])
 	}
-	if !strings.Contains(history[0].ShareSummary, "m1:") || !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
-		t.Fatalf("expected older matching round to retain resolved share summary, got %q", history[0].ShareSummary)
+	if history[0].ShareSummary != "" {
+		t.Fatalf("expected older matching round to drop duplicate resolved share summary, got %q", history[0].ShareSummary)
 	}
 }
 

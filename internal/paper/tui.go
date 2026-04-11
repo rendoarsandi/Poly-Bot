@@ -4038,15 +4038,11 @@ func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, n
 	redemptionDelta := amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
 	rebaseSubsequentRoundHistoryEntries(t.roundHistory, targetIdx+1, redemptionDelta)
 
-	filteredRedemptions := roundHistoryRedemptionsForMarket(newRedemptions, marketID)
 	for i := range t.roundHistory {
 		if i == targetIdx || !roundHistoryEntryHasMarket(t.roundHistory[i], marketID) {
 			continue
 		}
 		roundHistoryRemoveMarketPositions(&t.roundHistory[i], marketID)
-		if len(filteredRedemptions) > 0 && !roundHistoryEntryHasRedemptionForMarket(t.roundHistory[i], marketID) {
-			t.roundHistory[i].redemptions = append(t.roundHistory[i].redemptions, filteredRedemptions...)
-		}
 		t.roundHistory[i].ShareSummary = roundHistoryShareSummary(t.roundHistory[i].positions, t.roundHistory[i].redemptions)
 	}
 
