@@ -3767,6 +3767,27 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 	redClone := make([]*RedemptionResult, len(redemptions))
 	copy(redClone, redemptions)
 
+	// Clear open carry positions from all older rounds so they don't linger as "OPEN".
+	// The new round will act as the sole carrier of any currently open inventory.
+	for i := range t.roundHistory {
+		if len(t.roundHistory[i].positions) > 0 {
+			initialLen := len(t.roundHistory[i].positions)
+			for _, pos := range posClone {
+				if pos.MarketID != "" {
+					roundHistoryRemoveMarketPositions(&t.roundHistory[i], pos.MarketID)
+				}
+			}
+			for _, red := range redClone {
+				if red != nil && red.MarketID != "" {
+					roundHistoryRemoveMarketPositions(&t.roundHistory[i], red.MarketID)
+				}
+			}
+			if len(t.roundHistory[i].positions) != initialLen {
+				t.roundHistory[i].ShareSummary = roundHistoryShareSummary(t.roundHistory[i].positions, t.roundHistory[i].redemptions)
+			}
+		}
+	}
+
 	entry := RoundHistoryEntry{
 		Number:         len(t.roundHistory) + 1,
 		Timestamp:      time.Now(),
