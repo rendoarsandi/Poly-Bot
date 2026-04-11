@@ -183,25 +183,36 @@ func truncateText(s string, maxLen int) string {
 }
 
 func orderHistoryMarketLabel(marketID, marketSlug string) string {
-	label := marketDisplayLabel(marketID)
-	slug := strings.TrimSpace(strings.ToLower(marketSlug))
-	if slug == "" {
-		return label
+	if suffix := marketTimeSuffix(marketSlug); suffix != "" {
+		return suffix
 	}
-	parts := strings.Split(slug, "-")
+	if suffix := marketTimeSuffix(marketID); suffix != "" {
+		return suffix
+	}
+	return marketDisplayLabel(marketID)
+}
+
+func marketTimeSuffix(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '-' || r == '#' || r == ':' || r == '/'
+	})
 	if len(parts) == 0 {
-		return label
+		return ""
 	}
 	suffix := strings.TrimSpace(parts[len(parts)-1])
 	if suffix == "" {
-		return label
+		return ""
 	}
 	for _, r := range suffix {
 		if r < '0' || r > '9' {
-			return label
+			return ""
 		}
 	}
-	return label + "#" + suffix
+	return suffix
 }
 
 func resolveOrderHistoryMarketSlug(entry OrderHistoryEntry, markets map[string]*MarketData) string {
@@ -3637,70 +3648,109 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 		cost   float64
 		isWin  bool
 	}
-	byOutcome := make(map[string]*outcomeTotal)
+	type marketTotals struct {
+		marketID string
+		outcomes map[string]*outcomeTotal
+	}
+	byMarket := make(map[string]*marketTotals)
 
-	getOt := func(outcome string) *outcomeTotal {
+	getMarket := func(marketID string) *marketTotals {
+		marketID = strings.TrimSpace(marketID)
+		if marketID == "" {
+			marketID = "UNKNOWN"
+		}
+		if _, ok := byMarket[marketID]; !ok {
+			byMarket[marketID] = &marketTotals{
+				marketID: marketID,
+				outcomes: make(map[string]*outcomeTotal),
+			}
+		}
+		return byMarket[marketID]
+	}
+
+	getOt := func(marketID, outcome string) *outcomeTotal {
 		outcome = strings.TrimSpace(outcome)
 		if outcome == "" {
 			outcome = "Unknown"
 		}
-		if _, ok := byOutcome[outcome]; !ok {
-			byOutcome[outcome] = &outcomeTotal{}
+		market := getMarket(marketID)
+		if _, ok := market.outcomes[outcome]; !ok {
+			market.outcomes[outcome] = &outcomeTotal{}
 		}
-		return byOutcome[outcome]
+		return market.outcomes[outcome]
 	}
 
 	for _, pos := range positions {
-		ot := getOt(pos.Outcome)
+		ot := getOt(pos.MarketID, pos.Outcome)
 		ot.shares += pos.Quantity
 		ot.cost += pos.TotalCost
 	}
 
 	for _, req := range redemptions {
 		if req.WinningShares > 0 && req.WinningOutcome != "" {
-			ot := getOt(req.WinningOutcome)
+			ot := getOt(req.MarketID, req.WinningOutcome)
 			ot.shares += req.WinningShares
 			ot.cost += req.WinningCost
 			ot.isWin = true
 		}
 		if req.LosingShares > 0 && req.LosingOutcome != "" {
-			ot := getOt(req.LosingOutcome)
+			ot := getOt(req.MarketID, req.LosingOutcome)
 			ot.shares += req.LosingShares
 			ot.cost += req.LosingCost
 		}
 	}
 
-	if len(byOutcome) == 0 {
+	if len(byMarket) == 0 {
 		return ""
 	}
 
-	type orderedItem struct {
-		outcome string
-		total   *outcomeTotal
+	marketIDs := make([]string, 0, len(byMarket))
+	for marketID := range byMarket {
+		marketIDs = append(marketIDs, marketID)
 	}
-	ordered := make([]orderedItem, 0, len(byOutcome))
-	for outcome, total := range byOutcome {
-		ordered = append(ordered, orderedItem{outcome: outcome, total: total})
-	}
-	sort.Slice(ordered, func(i, j int) bool {
-		return outcomeLess(ordered[i].outcome, ordered[j].outcome)
-	})
+	marketIDs = orderedMarketIDs(marketIDs)
 
-	parts := make([]string, 0, len(ordered))
-	for _, item := range ordered {
-		avgPrice := 0.0
-		if item.total.shares > 0 {
-			avgPrice = item.total.cost / item.total.shares
+	marketLines := make([]string, 0, len(marketIDs))
+	for _, marketID := range marketIDs {
+		market := byMarket[marketID]
+		if market == nil || len(market.outcomes) == 0 {
+			continue
 		}
-		text := fmt.Sprintf("%s %s@$%.2f", core.SanitizeString(item.outcome), formatDisplayShareQty(item.total.shares), avgPrice)
-		if item.total.isWin {
-			text += styleGreen.Render(" ✓")
-		} else if len(redemptions) > 0 {
-			text += styleRed.Render(" ✗")
+
+		type orderedItem struct {
+			outcome string
+			total   *outcomeTotal
 		}
-		parts = append(parts, text)
+		ordered := make([]orderedItem, 0, len(market.outcomes))
+		for outcome, total := range market.outcomes {
+			ordered = append(ordered, orderedItem{outcome: outcome, total: total})
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			return outcomeLess(ordered[i].outcome, ordered[j].outcome)
+		})
+
+		parts := make([]string, 0, len(ordered))
+		for _, item := range ordered {
+			avgPrice := 0.0
+			if item.total.shares > 0 {
+				avgPrice = item.total.cost / item.total.shares
+			}
+			text := fmt.Sprintf("%s %s@$%.2f", core.SanitizeString(item.outcome), formatDisplayShareQty(item.total.shares), avgPrice)
+			if item.total.isWin {
+				text += styleGreen.Render(" ✓")
+			} else if len(redemptions) > 0 {
+				text += styleRed.Render(" ✗")
+			}
+			parts = append(parts, text)
+		}
+
+		prefix := marketTimeSuffix(market.marketID)
+		if prefix == "" {
+			prefix = marketDisplayLabel(market.marketID)
+		}
+		marketLines = append(marketLines, prefix+": "+strings.Join(parts, "  |  "))
 	}
-	return strings.Join(parts, "  |  ")
+	return strings.Join(marketLines, "\n")
 }
 
 func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int, positions map[string]Position, redemptions []*RedemptionResult) {
@@ -5711,7 +5761,14 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			resultStyle.Render(resultLabel),
 		))
 		if entry.ShareSummary != "" {
-			sb.WriteString("        " + styleDimmed.Render("Shares: ") + styleWhite.Render(entry.ShareSummary) + "\n")
+			summaryLines := strings.Split(entry.ShareSummary, "\n")
+			for idx, line := range summaryLines {
+				if idx == 0 {
+					sb.WriteString("        " + styleDimmed.Render("Shares: ") + styleWhite.Render(line) + "\n")
+				} else {
+					sb.WriteString("                " + styleWhite.Render(line) + "\n")
+				}
+			}
 		}
 	}
 

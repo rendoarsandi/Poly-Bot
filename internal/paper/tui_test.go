@@ -1996,6 +1996,9 @@ func TestRenderOrderHistoryShowsMarketRoundSuffixFromSlug(t *testing.T) {
 	if !strings.Contains(rendered, "1775816700") {
 		t.Fatalf("expected order history to include market round suffix from slug, got %q", rendered)
 	}
+	if strings.Contains(rendered, "btc-updown") {
+		t.Fatalf("expected order history market label to collapse to suffix only, got %q", rendered)
+	}
 }
 
 func TestRenderOrderHistoryBackfillsSlugForOrdersRecordedBeforeAddMarket(t *testing.T) {
@@ -2010,6 +2013,9 @@ func TestRenderOrderHistoryBackfillsSlugForOrdersRecordedBeforeAddMarket(t *test
 
 	if !strings.Contains(rendered, "1775817900") {
 		t.Fatalf("expected order history to backfill market round suffix after AddMarket, got %q", rendered)
+	}
+	if strings.Contains(rendered, "btc-updown") {
+		t.Fatalf("expected order history backfill label to use suffix only, got %q", rendered)
 	}
 }
 
@@ -2033,9 +2039,9 @@ func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			roundHistory: []RoundHistoryEntry{
-				{Number: 1, Timestamp: time.Unix(0, 0), StartingEquity: 100.0, EndingEquity: 104.65, PnL: 4.65, Trades: 3, ShareSummary: "Up 118  |  Down 103"},
-				{Number: 2, Timestamp: time.Unix(1, 0), StartingEquity: 104.65, EndingEquity: 101.15, PnL: -3.50, Trades: 2, ShareSummary: "Up 90  |  Down 120"},
-				{Number: 3, Timestamp: time.Unix(2, 0), StartingEquity: 101.15, EndingEquity: 101.15, PnL: 0.00, Trades: 0, ShareSummary: "Up 0  |  Down 0"},
+				{Number: 1, Timestamp: time.Unix(0, 0), StartingEquity: 100.0, EndingEquity: 104.65, PnL: 4.65, Trades: 3, ShareSummary: "m1: Up 118  |  Down 103"},
+				{Number: 2, Timestamp: time.Unix(1, 0), StartingEquity: 104.65, EndingEquity: 101.15, PnL: -3.50, Trades: 2, ShareSummary: "m2: Up 90  |  Down 120"},
+				{Number: 3, Timestamp: time.Unix(2, 0), StartingEquity: 101.15, EndingEquity: 101.15, PnL: 0.00, Trades: 0, ShareSummary: "m3: Up 0  |  Down 0"},
 			},
 		},
 	}
@@ -2055,6 +2061,9 @@ func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Shares: ") || !strings.Contains(rendered, "Up 118") || !strings.Contains(rendered, "Down 103") {
 		t.Fatalf("expected per-round share summary, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "m1: Up 118") || !strings.Contains(rendered, "m2: Up 90") {
+		t.Fatalf("expected round history shares to be grouped by market, got %q", rendered)
 	}
 }
 
@@ -2125,6 +2134,9 @@ func TestRecordRoundCapturesOutcomeShares(t *testing.T) {
 	if !strings.Contains(history[0].ShareSummary, "Up 118") || !strings.Contains(history[0].ShareSummary, "Down 103") {
 		t.Fatalf("expected up/down shares in round summary, got %q", history[0].ShareSummary)
 	}
+	if !strings.Contains(history[0].ShareSummary, "m1:") {
+		t.Fatalf("expected round summary to be grouped by market, got %q", history[0].ShareSummary)
+	}
 }
 
 func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
@@ -2170,7 +2182,7 @@ func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	if got := history[1].PnL; math.Abs(got-1.0) > 0.0001 {
 		t.Fatalf("expected later round pnl to remain unchanged, got %.2f", got)
 	}
-	if !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
+	if !strings.Contains(history[0].ShareSummary, "m1:") || !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
 		t.Fatalf("expected amended round summary to keep redemption outcomes, got %q", history[0].ShareSummary)
 	}
 }
@@ -2207,7 +2219,7 @@ func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
 	if roundHistoryHasOpenInventory(history[0]) {
 		t.Fatalf("expected older matching round to stop showing open carry after resolution, got %+v", history[0])
 	}
-	if !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
+	if !strings.Contains(history[0].ShareSummary, "m1:") || !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") || !strings.Contains(history[0].ShareSummary, "Down 4@$0.50") {
 		t.Fatalf("expected older matching round to retain resolved share summary, got %q", history[0].ShareSummary)
 	}
 }
