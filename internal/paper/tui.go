@@ -1530,7 +1530,21 @@ func settingsRowSupportsTypedEdit(cfg TUISettings, mode string, row int) bool {
 		settingsRowTakerCloseSlippage,
 		settingsRowTakerCloseMinPrice,
 		settingsRowRPCEdit,
-		settingsRowPrivateKeyEdit:
+		settingsRowPrivateKeyEdit,
+		settingsRowLadderCooldown,
+		settingsRowMinMargin,
+		settingsRowBinanceExecutionDelay,
+		settingsRowCopytradePoll,
+		settingsRowSplitMinMargin,
+		settingsRowSplitInitialCap,
+		settingsRowSplitReplenishCap,
+		settingsRowMakerMergeBuffer,
+		settingsRowMakerQuoteGap,
+		settingsRowMakerTargetMult,
+		settingsRowMakerCapMult,
+		settingsRowMakerMinQuoteValue,
+		settingsRowMaxTradeSize,
+		settingsRowMaxDailyLoss:
 		return true
 	default:
 		return false
@@ -1634,6 +1648,62 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 			return false
 		}
 		cfg.TradeScaleFactor = value
+		return true
+	case settingsRowLadderCooldown:
+		if cfg.LadderedTakerReentryMoveCents == value { return false }
+		cfg.LadderedTakerReentryMoveCents = value
+		return true
+	case settingsRowMinMargin:
+		if cfg.MinMarginPercent == value { return false }
+		cfg.MinMarginPercent = value
+		return true
+	case settingsRowBinanceExecutionDelay:
+		if float64(cfg.PaperBinanceExecutionDelayMs) == value { return false }
+		cfg.PaperBinanceExecutionDelayMs = int(value)
+		return true
+	case settingsRowCopytradePoll:
+		if float64(cfg.CopytradePollIntervalMs) == value { return false }
+		cfg.CopytradePollIntervalMs = int(value)
+		return true
+	case settingsRowSplitMinMargin:
+		if cfg.SplitMinMarginSell == value { return false }
+		cfg.SplitMinMarginSell = value
+		return true
+	case settingsRowSplitInitialCap:
+		if cfg.SplitInitialCapPct == value { return false }
+		cfg.SplitInitialCapPct = value
+		return true
+	case settingsRowSplitReplenishCap:
+		if cfg.SplitReplenishCapPct == value { return false }
+		cfg.SplitReplenishCapPct = value
+		return true
+	case settingsRowMakerMergeBuffer:
+		if float64(cfg.MakerMergeBufferSeconds) == value { return false }
+		cfg.MakerMergeBufferSeconds = int(value)
+		return true
+	case settingsRowMakerQuoteGap:
+		if cfg.MakerQuoteGap == value { return false }
+		cfg.MakerQuoteGap = value
+		return true
+	case settingsRowMakerTargetMult:
+		if cfg.MakerInventoryTargetMult == value { return false }
+		cfg.MakerInventoryTargetMult = value
+		return true
+	case settingsRowMakerCapMult:
+		if cfg.MakerInventoryCapMult == value { return false }
+		cfg.MakerInventoryCapMult = value
+		return true
+	case settingsRowMakerMinQuoteValue:
+		if cfg.MakerMinQuoteValue == value { return false }
+		cfg.MakerMinQuoteValue = value
+		return true
+	case settingsRowMaxTradeSize:
+		if cfg.MaxTradeSize == value { return false }
+		cfg.MaxTradeSize = value
+		return true
+	case settingsRowMaxDailyLoss:
+		if cfg.MaxDailyLoss == value { return false }
+		cfg.MaxDailyLoss = value
 		return true
 	case settingsRowExecutionSlip:
 		if isCopytradeSettingsMode(*cfg) {
@@ -6072,7 +6142,12 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowPaperBalance),
-			value: fmt.Sprintf(" $%.2f ", cfg.PaperBalance),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowPaperBalance {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" $%.2f ", cfg.PaperBalance)
+			}(),
 			bar:   renderBar(cfg.PaperBalance/1000.0, 20),
 		},
 		{
@@ -6155,7 +6230,12 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowLadderCooldown),
-			value: fmt.Sprintf(" %4.1fc ", cfg.LadderedTakerReentryMoveCents),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowLadderCooldown {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %4.1fc ", cfg.LadderedTakerReentryMoveCents)
+			}(),
 			bar:   renderBar(cfg.LadderedTakerReentryMoveCents/5.0, 20),
 		},
 		{
@@ -6165,11 +6245,21 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMinMargin),
-			value: fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMinMargin {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent)
+			}(),
 			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
 		{
-			label: settingsRowLabel(cfg, settingsRowBinanceExecutionDelay), value: fmt.Sprintf(" %dms ", cfg.PaperBinanceExecutionDelayMs),
+			label: settingsRowLabel(cfg, settingsRowBinanceExecutionDelay), value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowBinanceExecutionDelay {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %dms ", cfg.PaperBinanceExecutionDelayMs)
+			}(),
 			bar: renderBar(float64(cfg.PaperBinanceExecutionDelayMs)/1000.0, 20),
 		},
 		{
@@ -6202,7 +6292,12 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowCopytradePoll),
-			value: fmt.Sprintf(" %4dms ", cfg.CopytradePollIntervalMs),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowCopytradePoll {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %4dms ", cfg.CopytradePollIntervalMs)
+			}(),
 			bar:   renderBar(float64(cfg.CopytradePollIntervalMs)/5000.0, 20),
 		},
 		{
@@ -6222,7 +6317,12 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowSplitMinMargin),
-			value: fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowSplitMinMargin {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell)
+			}(),
 			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
 		},
 		{
@@ -6237,12 +6337,22 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowSplitInitialCap),
-			value: fmtPct(cfg.SplitInitialCapPct),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowSplitInitialCap {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmtPct(cfg.SplitInitialCapPct)
+			}(),
 			bar:   renderBar(cfg.SplitInitialCapPct, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowSplitReplenishCap),
-			value: fmtPct(cfg.SplitReplenishCapPct),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowSplitReplenishCap {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmtPct(cfg.SplitReplenishCapPct)
+			}(),
 			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 		{
@@ -6277,32 +6387,60 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerMergeBuffer),
-			value: fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMakerMergeBuffer {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds)
+			}(),
 			bar:   renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerQuoteGap),
-			value: fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMakerQuoteGap {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap)
+			}(),
 			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerTargetMult),
-			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryTargetMult),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMakerTargetMult {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %.1fx ", cfg.MakerInventoryTargetMult)
+			}(),
 			bar:   renderBar(cfg.MakerInventoryTargetMult/10.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerCapMult),
-			value: fmt.Sprintf(" %.1fx ", cfg.MakerInventoryCapMult),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMakerCapMult {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %.1fx ", cfg.MakerInventoryCapMult)
+			}(),
 			bar:   renderBar(cfg.MakerInventoryCapMult/20.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerMinQuoteValue),
-			value: fmt.Sprintf(" $%.1f ", cfg.MakerMinQuoteValue),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMakerMinQuoteValue {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" $%.1f ", cfg.MakerMinQuoteValue)
+			}(),
 			bar:   renderBar(cfg.MakerMinQuoteValue/50.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMaxTradeSize),
 			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMaxTradeSize {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
 				if cfg.MaxTradeSize <= 0 {
 					return styleMuted.Render(" disabled ")
 				}
@@ -6318,6 +6456,9 @@ func (m tuiModel) renderSettings(w int) string {
 		{
 			label: settingsRowLabel(cfg, settingsRowMaxDailyLoss),
 			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowMaxDailyLoss {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
 				if cfg.MaxDailyLoss <= 0 {
 					return styleMuted.Render(" disabled ")
 				}
