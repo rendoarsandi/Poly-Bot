@@ -5706,16 +5706,17 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 	var sb strings.Builder
 
 	if len(s.roundHistory) == 0 {
-		sb.WriteString(sectionHeader("🧮", "ROUND HISTORY", clrSlate) + "\n")
+		sb.WriteString(sectionHeader("🧮", "ROUND SNAPSHOTS", clrSlate) + "\n")
 		sb.WriteString(styleDimmed.Render("  (no completed rounds yet)"))
 		return makePanel(inner, clrSlate, sb.String())
 	}
 
 	wins, losses, flats := roundOutcomeCounts(s.roundHistory)
 
-	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND HISTORY  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
+	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND SNAPSHOTS  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
+	sb.WriteString(styleDimmed.Render("  historical round-close snapshots; current live round is not included until it closes") + "\n")
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
-		"#", "END", "START", "END EQ", "PNL", "TRDS", "RESULT")) + "\n")
+		"#", "END", "START", "CLOSE EQ", "SNAP PNL", "TRDS", "RESULT")) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 86))) + "\n")
 
 	displayCount := len(s.roundHistory)
