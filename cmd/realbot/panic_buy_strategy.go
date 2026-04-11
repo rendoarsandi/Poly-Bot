@@ -303,11 +303,25 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		if !directionalReady {
 			return true
 		}
+		
+		pendingAsk1 := ask1
+		pendingAsk2 := ask2
+		entries := derefLadderedEntries(stateEntries(state))
+		if len(entries) > 0 {
+			last := entries[len(entries)-1]
+			threshold := realbotLadderedMoveThreshold(realbotCfg.LadderedTakerReentryMoveCents)
+			if ladderedDirection == 0 && ask1 > last.ask0+threshold {
+				pendingAsk1 = last.ask0 + threshold
+			} else if ladderedDirection == 1 && ask2 > last.ask1+threshold {
+				pendingAsk2 = last.ask1 + threshold
+			}
+		}
+
 		if state != nil && state.nextLadderedEntrySeq != nil {
 			*state.nextLadderedEntrySeq = *state.nextLadderedEntrySeq + 1
 			ladderedEntrySeq = *state.nextLadderedEntrySeq
 		}
-		pendingLadderedEntry = realbotLadderedEntry{seq: ladderedEntrySeq, ask0: ask1, ask1: ask2}
+		pendingLadderedEntry = realbotLadderedEntry{seq: ladderedEntrySeq, ask0: pendingAsk1, ask1: pendingAsk2}
 	}
 
 	requestSize1, requestSize2 := shares, shares
@@ -396,7 +410,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	token0, token1 := realbotPairTokenIDs(args.tokenToOutcome, args.outcomes)
 
 	acquiredGate := false
-	if args.entryGate != nil {
+	if !ladderedMode && args.entryGate != nil {
 		if !args.entryGate.TryAcquire() {
 			setEntryCooldown(500 * time.Millisecond)
 			args.tui.LogEvent("[%s] ⏳ Skipping buy: another market is executing a live entry", args.marketID)
