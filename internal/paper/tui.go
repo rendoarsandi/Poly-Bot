@@ -1650,59 +1650,87 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 		cfg.TradeScaleFactor = value
 		return true
 	case settingsRowLadderCooldown:
-		if cfg.LadderedTakerReentryMoveCents == value { return false }
+		if cfg.LadderedTakerReentryMoveCents == value {
+			return false
+		}
 		cfg.LadderedTakerReentryMoveCents = value
 		return true
 	case settingsRowMinMargin:
-		if cfg.MinMarginPercent == value { return false }
+		if cfg.MinMarginPercent == value {
+			return false
+		}
 		cfg.MinMarginPercent = value
 		return true
 	case settingsRowBinanceExecutionDelay:
-		if float64(cfg.PaperBinanceExecutionDelayMs) == value { return false }
+		if float64(cfg.PaperBinanceExecutionDelayMs) == value {
+			return false
+		}
 		cfg.PaperBinanceExecutionDelayMs = int(value)
 		return true
 	case settingsRowCopytradePoll:
-		if float64(cfg.CopytradePollIntervalMs) == value { return false }
+		if float64(cfg.CopytradePollIntervalMs) == value {
+			return false
+		}
 		cfg.CopytradePollIntervalMs = int(value)
 		return true
 	case settingsRowSplitMinMargin:
-		if cfg.SplitMinMarginSell == value { return false }
+		if cfg.SplitMinMarginSell == value {
+			return false
+		}
 		cfg.SplitMinMarginSell = value
 		return true
 	case settingsRowSplitInitialCap:
-		if cfg.SplitInitialCapPct == value { return false }
+		if cfg.SplitInitialCapPct == value {
+			return false
+		}
 		cfg.SplitInitialCapPct = value
 		return true
 	case settingsRowSplitReplenishCap:
-		if cfg.SplitReplenishCapPct == value { return false }
+		if cfg.SplitReplenishCapPct == value {
+			return false
+		}
 		cfg.SplitReplenishCapPct = value
 		return true
 	case settingsRowMakerMergeBuffer:
-		if float64(cfg.MakerMergeBufferSeconds) == value { return false }
+		if float64(cfg.MakerMergeBufferSeconds) == value {
+			return false
+		}
 		cfg.MakerMergeBufferSeconds = int(value)
 		return true
 	case settingsRowMakerQuoteGap:
-		if cfg.MakerQuoteGap == value { return false }
+		if cfg.MakerQuoteGap == value {
+			return false
+		}
 		cfg.MakerQuoteGap = value
 		return true
 	case settingsRowMakerTargetMult:
-		if cfg.MakerInventoryTargetMult == value { return false }
+		if cfg.MakerInventoryTargetMult == value {
+			return false
+		}
 		cfg.MakerInventoryTargetMult = value
 		return true
 	case settingsRowMakerCapMult:
-		if cfg.MakerInventoryCapMult == value { return false }
+		if cfg.MakerInventoryCapMult == value {
+			return false
+		}
 		cfg.MakerInventoryCapMult = value
 		return true
 	case settingsRowMakerMinQuoteValue:
-		if cfg.MakerMinQuoteValue == value { return false }
+		if cfg.MakerMinQuoteValue == value {
+			return false
+		}
 		cfg.MakerMinQuoteValue = value
 		return true
 	case settingsRowMaxTradeSize:
-		if cfg.MaxTradeSize == value { return false }
+		if cfg.MaxTradeSize == value {
+			return false
+		}
 		cfg.MaxTradeSize = value
 		return true
 	case settingsRowMaxDailyLoss:
-		if cfg.MaxDailyLoss == value { return false }
+		if cfg.MaxDailyLoss == value {
+			return false
+		}
 		cfg.MaxDailyLoss = value
 		return true
 	case settingsRowExecutionSlip:
@@ -5747,9 +5775,9 @@ func (m tuiModel) renderOrders(w int, orders []ScopedLimitOrder) string {
 	return makePanel(inner, clrSlate, sb.String())
 }
 
-func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
+func roundHistoryOpenInventoryCounts(entry RoundHistoryEntry) (markets, legs int) {
 	if len(entry.positions) == 0 {
-		return false
+		return 0, 0
 	}
 	resolvedMarkets := make(map[string]struct{}, len(entry.redemptions))
 	for _, redemption := range entry.redemptions {
@@ -5762,15 +5790,47 @@ func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
 		}
 		resolvedMarkets[strings.ToLower(marketID)] = struct{}{}
 	}
+	openMarkets := make(map[string]struct{})
 	for _, pos := range entry.positions {
-		if _, ok := resolvedMarkets[strings.ToLower(strings.TrimSpace(pos.MarketID))]; ok {
+		marketID := strings.TrimSpace(pos.MarketID)
+		if marketID == "" {
+			marketID = "UNKNOWN"
+		}
+		marketKey := strings.ToLower(marketID)
+		if _, ok := resolvedMarkets[marketKey]; ok {
 			continue
 		}
-		if pos.Quantity > 0.000001 {
-			return true
+		if pos.Quantity <= 0.000001 {
+			continue
 		}
+		openMarkets[marketKey] = struct{}{}
+		legs++
 	}
-	return false
+	return len(openMarkets), legs
+}
+
+func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
+	_, legs := roundHistoryOpenInventoryCounts(entry)
+	return legs > 0
+}
+
+func positionsWithPnLOpenInventoryCounts(positions map[string]PositionPnL) (markets, legs int) {
+	if len(positions) == 0 {
+		return 0, 0
+	}
+	openMarkets := make(map[string]struct{})
+	for _, pos := range positions {
+		if pos.Quantity <= 0.000001 {
+			continue
+		}
+		marketID := strings.TrimSpace(pos.MarketID)
+		if marketID == "" {
+			marketID = "UNKNOWN"
+		}
+		openMarkets[strings.ToLower(marketID)] = struct{}{}
+		legs++
+	}
+	return len(openMarkets), legs
 }
 
 func roundOutcomeCounts(history []RoundHistoryEntry) (wins, losses, flats int) {
@@ -5806,6 +5866,22 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 
 	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND SNAPSHOTS  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
 	sb.WriteString(styleDimmed.Render("  historical round-close snapshots; current live round is not included until it closes") + "\n")
+	carryMarkets, carryLegs := 0, 0
+	for i := len(s.roundHistory) - 1; i >= 0; i-- {
+		markets, legs := roundHistoryOpenInventoryCounts(s.roundHistory[i])
+		if legs <= 0 {
+			continue
+		}
+		carryMarkets, carryLegs = markets, legs
+		break
+	}
+	liveMarkets, liveLegs := positionsWithPnLOpenInventoryCounts(s.positions)
+	if carryLegs > 0 || liveLegs > 0 {
+		sb.WriteString(styleDimmed.Render(
+			fmt.Sprintf("  open carry (latest close): %d markets / %d legs  ·  live in-flight now: %d markets / %d legs",
+				carryMarkets, carryLegs, liveMarkets, liveLegs),
+		) + "\n")
+	}
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
 		"#", "END", "START", "CLOSE EQ", "SNAP PNL", "TRDS", "RESULT")) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 86))) + "\n")
@@ -6148,7 +6224,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" $%.2f ", cfg.PaperBalance)
 			}(),
-			bar:   renderBar(cfg.PaperBalance/1000.0, 20),
+			bar: renderBar(cfg.PaperBalance/1000.0, 20),
 		},
 		{
 			label: "Timeframe",
@@ -6236,7 +6312,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" %4.1fc ", cfg.LadderedTakerReentryMoveCents)
 			}(),
-			bar:   renderBar(cfg.LadderedTakerReentryMoveCents/5.0, 20),
+			bar: renderBar(cfg.LadderedTakerReentryMoveCents/5.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowLadderSlippage),
@@ -6251,7 +6327,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf("%5.1f%%", cfg.MinMarginPercent)
 			}(),
-			bar:   renderBar(cfg.MinMarginPercent/20.0, 20),
+			bar: renderBar(cfg.MinMarginPercent/20.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowBinanceExecutionDelay), value: func() string {
@@ -6298,7 +6374,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" %4dms ", cfg.CopytradePollIntervalMs)
 			}(),
-			bar:   renderBar(float64(cfg.CopytradePollIntervalMs)/5000.0, 20),
+			bar: renderBar(float64(cfg.CopytradePollIntervalMs)/5000.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowExecutionSlip),
@@ -6323,7 +6399,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf("%5.1f%%", cfg.SplitMinMarginSell)
 			}(),
-			bar:   renderBar(cfg.SplitMinMarginSell/20.0, 20),
+			bar: renderBar(cfg.SplitMinMarginSell/20.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowSplitStrategy),
@@ -6343,7 +6419,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmtPct(cfg.SplitInitialCapPct)
 			}(),
-			bar:   renderBar(cfg.SplitInitialCapPct, 20),
+			bar: renderBar(cfg.SplitInitialCapPct, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowSplitReplenishCap),
@@ -6353,7 +6429,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmtPct(cfg.SplitReplenishCapPct)
 			}(),
-			bar:   renderBar(cfg.SplitReplenishCapPct, 20),
+			bar: renderBar(cfg.SplitReplenishCapPct, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowTakerCloseMarket),
@@ -6393,7 +6469,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" %3ds ", cfg.MakerMergeBufferSeconds)
 			}(),
-			bar:   renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20),
+			bar: renderBar(float64(cfg.MakerMergeBufferSeconds)/120.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerQuoteGap),
@@ -6403,7 +6479,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" $%.3f ", cfg.MakerQuoteGap)
 			}(),
-			bar:   renderBar(cfg.MakerQuoteGap/0.05, 20),
+			bar: renderBar(cfg.MakerQuoteGap/0.05, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerTargetMult),
@@ -6413,7 +6489,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" %.1fx ", cfg.MakerInventoryTargetMult)
 			}(),
-			bar:   renderBar(cfg.MakerInventoryTargetMult/10.0, 20),
+			bar: renderBar(cfg.MakerInventoryTargetMult/10.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerCapMult),
@@ -6423,7 +6499,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" %.1fx ", cfg.MakerInventoryCapMult)
 			}(),
-			bar:   renderBar(cfg.MakerInventoryCapMult/20.0, 20),
+			bar: renderBar(cfg.MakerInventoryCapMult/20.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMakerMinQuoteValue),
@@ -6433,7 +6509,7 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return fmt.Sprintf(" $%.1f ", cfg.MakerMinQuoteValue)
 			}(),
-			bar:   renderBar(cfg.MakerMinQuoteValue/50.0, 20),
+			bar: renderBar(cfg.MakerMinQuoteValue/50.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMaxTradeSize),
