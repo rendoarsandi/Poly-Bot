@@ -42,7 +42,7 @@ func realbotLaunchRedemptionCheck(marketID, conditionID string, outcomes []strin
 }
 
 func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMarketClosureState) bool {
-	if !time.Now().After(args.endTime.Add(5 * time.Second)) {
+	if !time.Now().After(args.endTime) {
 		return false
 	}
 
