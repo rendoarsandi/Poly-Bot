@@ -117,7 +117,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return false
 	}
 
-	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
+	if !ladderedMode && state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
 		return true
 	}
 	if args.blockNewEntries {
