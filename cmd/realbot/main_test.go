@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -870,6 +871,59 @@ func TestRealbotNewEntryBlockReasonDisabledSettingAllowsEntries(t *testing.T) {
 	})
 	if blocked || reason != "" {
 		t.Fatalf("expected setting OFF to allow entries, got blocked=%v reason=%q", blocked, reason)
+	}
+}
+
+func TestRealbotLateRedeemBlocksLadderEntryUntilNextWindow(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	now := time.Now()
+	currentStart := now.Add(-2 * time.Minute).Unix()
+	previousStart := now.Add(-7 * time.Minute).Unix()
+	previousMarketID := fmt.Sprintf("btc-updown-5m-%d", previousStart)
+	currentMarketID := fmt.Sprintf("btc-updown-5m-%d", currentStart)
+
+	engine.SetPendingRedemption(previousMarketID, 7.5)
+	if got := engine.SettlePendingRedemption(previousMarketID); math.Abs(got-7.5) > 0.000001 {
+		t.Fatalf("expected pending redemption settle 7.5, got %.2f", got)
+	}
+
+	settled := engine.GetSettledRedemptions()
+	settledAt := settled[previousMarketID]
+	if settledAt.IsZero() {
+		t.Fatal("expected settled redemption timestamp to be recorded")
+	}
+
+	marketStart, ok := realbotMarketWindowStart(currentMarketID)
+	if !ok {
+		t.Fatal("expected to parse current market window start")
+	}
+	if settledAt.Before(marketStart) {
+		t.Fatal("expected settlement timestamp to occur after current market start in this test")
+	}
+
+	reason, blocked := realbotEntryBlockReason(currentMarketID, engine, nil, paper.TUISettings{
+		PaperArbMode:                       "laddered-taker",
+		BlockNewEntriesOnPendingRedemption: true,
+	})
+	if !blocked || !strings.Contains(reason, "fresh next market") {
+		t.Fatalf("expected late redemption to block current ladder market, got blocked=%v reason=%q", blocked, reason)
+	}
+}
+
+func TestRealbotLateRedeemDoesNotBlockNonLadderModes(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	now := time.Now()
+	previousMarketID := fmt.Sprintf("btc-updown-5m-%d", now.Add(-7*time.Minute).Unix())
+	currentMarketID := fmt.Sprintf("btc-updown-5m-%d", now.Add(-2*time.Minute).Unix())
+	engine.SetPendingRedemption(previousMarketID, 5.0)
+	_ = engine.SettlePendingRedemption(previousMarketID)
+
+	reason, blocked := realbotEntryBlockReason(currentMarketID, engine, nil, paper.TUISettings{
+		PaperArbMode:                       "taker",
+		BlockNewEntriesOnPendingRedemption: true,
+	})
+	if blocked || reason != "" {
+		t.Fatalf("expected non-ladder mode to ignore late redemption window block, got blocked=%v reason=%q", blocked, reason)
 	}
 }
 

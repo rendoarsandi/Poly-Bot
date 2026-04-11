@@ -81,7 +81,7 @@ type realbotPostQuoteIterationState struct {
 }
 
 func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *realbotPostQuoteIterationState) bool {
-	blockNewEntriesReason, blockNewEntries := realbotNewEntryBlockReason(args.marketID, args.engine, args.splitInventory, args.preQuoteLiveCfg)
+	blockNewEntriesReason, blockNewEntries := realbotEntryBlockReason(args.marketID, args.engine, args.splitInventory, args.preQuoteLiveCfg)
 	realbotHandleEntryBlockNotice(args.marketID, blockNewEntries, blockNewEntriesReason, args.tui, state.lastEntryBlockReason)
 
 	if realbotHandleTakerCloseWindow(realbotTakerCloseStrategyArgs{

@@ -70,6 +70,7 @@ type Engine struct {
 	// Pending on-chain redemption payouts that are already economically locked in
 	// but have not yet returned to wallet cash.
 	pendingRedemptions map[string]float64
+	settledRedemptions map[string]time.Time
 
 	// Trade history (capped to prevent memory growth)
 	trades    []Trade
@@ -112,6 +113,7 @@ func NewEngine(startingBalance float64) *Engine {
 		maxTrades:          1000, // Cap trade history to prevent memory growth
 		positions:          make(map[string]*Position),
 		pendingRedemptions: make(map[string]float64),
+		settledRedemptions: make(map[string]time.Time),
 		trades:             make([]Trade, 0),
 		currentPrices:      make(map[string]float64),
 		currentBids:        make(map[string]float64),
@@ -1275,8 +1277,21 @@ func (e *Engine) SettlePendingRedemption(marketID string) float64 {
 
 	e.currentBalance += payout
 	delete(e.pendingRedemptions, marketID)
+	e.settledRedemptions[marketID] = time.Now()
 	e.recalculateDrawdown()
 	return payout
+}
+
+// GetSettledRedemptions returns a snapshot of market payout settlement timestamps.
+func (e *Engine) GetSettledRedemptions() map[string]time.Time {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	result := make(map[string]time.Time, len(e.settledRedemptions))
+	for marketID, settledAt := range e.settledRedemptions {
+		result[marketID] = settledAt
+	}
+	return result
 }
 
 // DeductBalance removes amount from balance (for split operations)

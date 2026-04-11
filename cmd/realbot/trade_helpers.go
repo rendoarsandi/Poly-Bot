@@ -40,6 +40,61 @@ func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISetting
 	return sizing
 }
 
+func realbotMarketWindowDuration(marketID string) time.Duration {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return 0
+	}
+	parts := strings.Split(marketID, "-")
+	for _, part := range parts {
+		if len(part) < 2 {
+			continue
+		}
+		unit := part[len(part)-1]
+		value := part[:len(part)-1]
+		switch unit {
+		case 'm', 'h', 'd':
+			n := 0
+			if _, err := fmt.Sscanf(value, "%d", &n); err != nil || n <= 0 {
+				continue
+			}
+			switch unit {
+			case 'm':
+				return time.Duration(n) * time.Minute
+			case 'h':
+				return time.Duration(n) * time.Hour
+			case 'd':
+				return time.Duration(n) * 24 * time.Hour
+			}
+		}
+	}
+	return 0
+}
+
+func realbotMarketWindowStart(marketID string) (time.Time, bool) {
+	endTime, err := paper.ParseEndTimeFromSlug(marketID)
+	if err != nil || endTime.IsZero() {
+		return time.Time{}, false
+	}
+	window := realbotMarketWindowDuration(marketID)
+	if window <= 0 {
+		return time.Time{}, false
+	}
+	return endTime.Add(-window), true
+}
+
+func realbotMarketSeriesKey(marketID string) string {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return ""
+	}
+	idx := strings.LastIndex(marketID, "-")
+	if idx <= 0 {
+		return marketID
+	}
+	return marketID[:idx]
+}
+
 func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
 	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil {
 		return "", false
@@ -86,6 +141,58 @@ func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, sp
 	sort.Strings(marketIDs)
 	marketID := marketIDs[0]
 	return fmt.Sprintf("waiting for prior inventory on %s (%s shares)", marketID, formatShareQty(sharesByMarket[marketID])), true
+}
+
+func realbotEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
+	if reason, blocked := realbotNewEntryBlockReason(currentMarketID, engine, splitInventory, liveCfg); blocked {
+		return reason, true
+	}
+	return realbotLateRedeemBlocksLadderEntry(currentMarketID, engine, liveCfg)
+}
+
+func realbotLateRedeemBlocksLadderEntry(currentMarketID string, engine *paper.Engine, liveCfg paper.TUISettings) (string, bool) {
+	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil || normalizePaperArbMode(liveCfg.PaperArbMode) != paperArbModeLaddered {
+		return "", false
+	}
+	currentStart, ok := realbotMarketWindowStart(currentMarketID)
+	if !ok {
+		return "", false
+	}
+	seriesKey := realbotMarketSeriesKey(currentMarketID)
+	if seriesKey == "" {
+		return "", false
+	}
+
+	settled := engine.GetSettledRedemptions()
+	if len(settled) == 0 {
+		return "", false
+	}
+
+	type lateRedeem struct {
+		marketID  string
+		settledAt time.Time
+	}
+	var latest lateRedeem
+	found := false
+	for marketID, settledAt := range settled {
+		if marketID == "" || marketID == currentMarketID || settledAt.IsZero() {
+			continue
+		}
+		if realbotMarketSeriesKey(marketID) != seriesKey {
+			continue
+		}
+		if settledAt.Before(currentStart) {
+			continue
+		}
+		if !found || settledAt.After(latest.settledAt) {
+			latest = lateRedeem{marketID: marketID, settledAt: settledAt}
+			found = true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return fmt.Sprintf("waiting for fresh next market after %s redeemed mid-window", latest.marketID), true
 }
 
 func realbotCanonicalizeMarketTokens(market *api.Market, info *api.MarketInfo) (changed bool, matched int) {
