@@ -372,7 +372,31 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		}
 	}
 
-	if !ladderedMode {
+	if ladderedMode {
+		var activeLimitPrice float64
+		if ladderedDirection == 1 {
+			activeLimitPrice = limitPrice2
+		} else {
+			activeLimitPrice = limitPrice1
+		}
+		safeShares := realbotClampBuySharesToBudget(shares, args.currentBalance, activeLimitPrice)
+		if safeShares < shares {
+			args.tui.LogEvent("[%s] 📉 Downscaling ladder chunk from %s to %s shares to fit $%.2f balance limit", args.marketID, formatShareQty(shares), formatShareQty(safeShares), args.currentBalance)
+			shares = safeShares
+			if ladderedDirection == 1 {
+				requestSize2 = shares
+			} else {
+				requestSize1 = shares
+			}
+		}
+		if shares < minEntryShares {
+			if state != nil && state.lastDustRecoveryNotice != nil && time.Since(*state.lastDustRecoveryNotice) > 60*time.Second {
+				args.tui.LogEvent("[%s] ⚠️ Skipping buy: ladder chunk no longer fits available balance", args.marketID)
+				*state.lastDustRecoveryNotice = time.Now()
+			}
+			return true
+		}
+	} else {
 		safeShares := realbotClampBuySharesToBudget(shares, args.currentBalance, limitPrice1, limitPrice2)
 		if safeShares < shares {
 			args.tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", args.marketID, formatShareQty(shares), formatShareQty(safeShares), args.currentBalance)
