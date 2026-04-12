@@ -2206,17 +2206,17 @@ func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("expected 2 round history entries, got %d", len(history))
 	}
-	if got := history[0].EndingEquity; math.Abs(got-101.20) > 0.0001 {
-		t.Fatalf("expected matching round ending equity to be amended by redemption delta to 101.20, got %.2f", got)
+	if got := history[0].EndingEquity; math.Abs(got-100.00) > 0.0001 {
+		t.Fatalf("expected matching round ending equity to remain unchanged at 100.00, got %.2f", got)
 	}
-	if got := history[0].PnL; math.Abs(got-1.20) > 0.0001 {
-		t.Fatalf("expected matching round pnl to be amended by redemption delta to 1.20, got %.2f", got)
+	if got := history[0].PnL; math.Abs(got-0.00) > 0.0001 {
+		t.Fatalf("expected matching round pnl to remain unchanged at 0.00, got %.2f", got)
 	}
-	if got := history[1].StartingEquity; math.Abs(got-101.20) > 0.0001 {
-		t.Fatalf("expected later round starting equity to be rebased to 101.20, got %.2f", got)
+	if got := history[1].StartingEquity; math.Abs(got-100.00) > 0.0001 {
+		t.Fatalf("expected later round starting equity to remain unchanged at 100.00, got %.2f", got)
 	}
-	if got := history[1].EndingEquity; math.Abs(got-102.20) > 0.0001 {
-		t.Fatalf("expected later round ending equity to be rebased to 102.20, got %.2f", got)
+	if got := history[1].EndingEquity; math.Abs(got-101.00) > 0.0001 {
+		t.Fatalf("expected later round ending equity to remain unchanged at 101.00, got %.2f", got)
 	}
 	if got := history[1].PnL; math.Abs(got-1.0) > 0.0001 {
 		t.Fatalf("expected later round pnl to remain unchanged, got %.2f", got)

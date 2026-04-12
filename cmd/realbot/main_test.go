@@ -1326,11 +1326,11 @@ func TestCheckRedemptionEmbeddedPaperSettlesResolvedPayout(t *testing.T) {
 	if len(history) != 1 {
 		t.Fatalf("expected one round history entry, got %d", len(history))
 	}
-	if got := history[0].EndingEquity; math.Abs(got-99.0) > 0.000001 {
-		t.Fatalf("expected round ending equity 99.00 after redemption delta, got %.2f", got)
+	if got := history[0].EndingEquity; math.Abs(got-97.0) > 0.000001 {
+		t.Fatalf("expected round ending equity 97.00 after redemption delta, got %.2f", got)
 	}
-	if got := history[0].PnL; math.Abs(got-(-1.0)) > 0.000001 {
-		t.Fatalf("expected round pnl -1.00 after redemption delta, got %.2f", got)
+	if got := history[0].PnL; math.Abs(got-(-3.0)) > 0.000001 {
+		t.Fatalf("expected round pnl -3.00 after redemption delta, got %.2f", got)
 	}
 }
 
