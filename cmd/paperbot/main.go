@@ -3015,6 +3015,7 @@ func run() error {
 
 		// Track starting equity for compounding calculation
 		startingEquity := engine.GetBookEquity()
+		tui.StartRound()
 		roundStartTrades := engine.GetStats().TotalTrades
 		compoundMultiplier := engine.GetCompoundMultiplier()
 		logEvent(tui, csvLogger, engine, "INFO", "SYSTEM", "ROUND_START", "Round starting with %d markets | Multiplier: %.2fx", len(markets), compoundMultiplier)

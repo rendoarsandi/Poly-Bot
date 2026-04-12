@@ -1303,8 +1303,9 @@ type TUI struct {
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
 	settings         TUISettings
 	onSettingsChange func(TUISettings)
-
 	restartReq bool
+
+	amendedPnLForNextRound float64
 
 	program     *tea.Program
 	issueLogger *core.CSVLogger
@@ -3544,6 +3545,14 @@ func (t *TUI) SetPendingOrders(marketID string, orders map[string][]PendingOrder
 	t.markDisplayDirtyLocked(time.Now())
 }
 
+// StartRound marks the beginning of a new round, clearing any pending amendment deltas.
+// Call this immediately after sampling the round's starting equity.
+func (t *TUI) StartRound() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.amendedPnLForNextRound = 0
+}
+
 func (t *TUI) LogEvent(format string, args ...interface{}) {
 	now := time.Now()
 	body := core.SanitizeString(fmt.Sprintf(format, args...))
@@ -3895,6 +3904,12 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if math.Abs(t.amendedPnLForNextRound) > 0.000001 {
+		startingEquity += t.amendedPnLForNextRound
+		pnl -= t.amendedPnLForNextRound
+		t.amendedPnLForNextRound = 0
+	}
+
 	// Clone positions map
 	posClone := make(map[string]Position, len(positions))
 	for k, v := range positions {
@@ -4157,7 +4172,9 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 	lastIdx := len(t.roundHistory) - 1
 	beforeEnding := t.roundHistory[lastIdx].EndingEquity
 	amendRoundHistoryEntry(&t.roundHistory[lastIdx], pnlDelta, newRedemptions)
-	rebaseSubsequentRoundHistoryEntries(t.roundHistory, lastIdx+1, t.roundHistory[lastIdx].EndingEquity-beforeEnding)
+	delta := t.roundHistory[lastIdx].EndingEquity - beforeEnding
+	rebaseSubsequentRoundHistoryEntries(t.roundHistory, lastIdx+1, delta)
+	t.amendedPnLForNextRound += delta
 
 	t.markDirtyLocked()
 }
@@ -4185,7 +4202,9 @@ func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, n
 
 	beforeEnding := t.roundHistory[targetIdx].EndingEquity
 	amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
-	rebaseSubsequentRoundHistoryEntries(t.roundHistory, targetIdx+1, t.roundHistory[targetIdx].EndingEquity-beforeEnding)
+	delta := t.roundHistory[targetIdx].EndingEquity - beforeEnding
+	rebaseSubsequentRoundHistoryEntries(t.roundHistory, targetIdx+1, delta)
+	t.amendedPnLForNextRound += delta
 
 	for i := range t.roundHistory {
 		if i == targetIdx || !roundHistoryEntryHasMarket(t.roundHistory[i], marketID) {

@@ -34,6 +34,7 @@ func realbotBeginRound(ctx context.Context, trader *trading.RealTrader, engine *
 	}
 
 	snapshot.startingEquity = engine.GetBookEquity()
+	tui.StartRound()
 	snapshot.startTrades = engine.GetStats().TotalTrades
 	tui.LogEvent("📊 Balance $%.2f | %.2fx", currentBalance, engine.GetCompoundMultiplier())
 	return snapshot, currentBalance
