@@ -2404,7 +2404,7 @@ func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	}
 }
 
-func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
+func TestAmendMostRecentRoundForMarketAttributesCarryResolutionToOriginRound(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
 	tui.RecordRound(100.0, 98.0, -2.0, 10, map[string]Position{
 		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
@@ -2413,6 +2413,8 @@ func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
 	tui.RecordRound(98.0, 99.0, 1.0, 8, map[string]Position{
 		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
 		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 4.0, TotalCost: 2.00},
+		"m2:Up":   {MarketID: "m2", Outcome: "Up", Quantity: 3.0, TotalCost: 1.50},
+		"m2:Down": {MarketID: "m2", Outcome: "Down", Quantity: 2.0, TotalCost: 1.20},
 	}, nil)
 
 	tui.AmendMostRecentRoundForMarket("m1", 1.60, []*RedemptionResult{{
@@ -2433,11 +2435,41 @@ func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("expected 2 round history entries, got %d", len(history))
 	}
-	if roundHistoryHasOpenInventory(history[0]) {
-		t.Fatalf("expected older matching round to stop showing open carry after resolution, got %+v", history[0])
+	if got := history[0].EndingEquity; math.Abs(got-99.20) > 0.0001 {
+		t.Fatalf("expected carry-origin round ending equity to include redemption delta, got %.2f", got)
 	}
-	if history[0].ShareSummary != "" {
-		t.Fatalf("expected older matching round to drop duplicate resolved share summary, got %q", history[0].ShareSummary)
+	if got := history[0].PnL; math.Abs(got-(-0.80)) > 0.0001 {
+		t.Fatalf("expected carry-origin round pnl to include redemption delta, got %.2f", got)
+	}
+	if !strings.Contains(history[0].ShareSummary, "m1:") || !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") {
+		t.Fatalf("expected carry-origin round to retain resolved m1 detail, got %q", history[0].ShareSummary)
+	}
+	if got := history[1].StartingEquity; math.Abs(got-99.20) > 0.0001 {
+		t.Fatalf("expected later round starting equity to rebase after redemption delta, got %.2f", got)
+	}
+	if got := history[1].EndingEquity; math.Abs(got-100.20) > 0.0001 {
+		t.Fatalf("expected later round ending equity to rebase after redemption delta, got %.2f", got)
+	}
+	if got := history[1].PnL; math.Abs(got-1.0) > 0.0001 {
+		t.Fatalf("expected later round pnl to remain unchanged, got %.2f", got)
+	}
+	if _, ok := history[1].positions["m1:Up"]; ok {
+		t.Fatalf("expected later carry-forward row to drop duplicate m1 up leg after resolution, got %+v", history[1].positions["m1:Up"])
+	}
+	if _, ok := history[1].positions["m1:Down"]; ok {
+		t.Fatalf("expected later carry-forward row to drop duplicate m1 down leg after resolution, got %+v", history[1].positions["m1:Down"])
+	}
+	if got, ok := history[1].positions["m2:Up"]; !ok || math.Abs(got.Quantity-3.0) > 0.0001 || math.Abs(got.TotalCost-1.50) > 0.0001 {
+		t.Fatalf("expected unrelated m2 up leg preserved in later row, got %+v exists=%v", got, ok)
+	}
+	if got, ok := history[1].positions["m2:Down"]; !ok || math.Abs(got.Quantity-2.0) > 0.0001 || math.Abs(got.TotalCost-1.20) > 0.0001 {
+		t.Fatalf("expected unrelated m2 down leg preserved in later row, got %+v exists=%v", got, ok)
+	}
+	if strings.Contains(history[1].ShareSummary, "m1:") {
+		t.Fatalf("expected later carry-forward row to drop duplicate resolved m1 summary, got %q", history[1].ShareSummary)
+	}
+	if !strings.Contains(history[1].ShareSummary, "m2:") {
+		t.Fatalf("expected later row to keep unrelated market summary, got %q", history[1].ShareSummary)
 	}
 }
 

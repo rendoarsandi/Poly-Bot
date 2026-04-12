@@ -4166,6 +4166,65 @@ func roundHistoryRemoveMarketPositions(entry *RoundHistoryEntry, marketID string
 	}
 }
 
+func roundHistoryMarketPositions(entry RoundHistoryEntry, marketID string) map[string]Position {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" || len(entry.positions) == 0 {
+		return nil
+	}
+
+	filtered := make(map[string]Position)
+	for _, pos := range entry.positions {
+		if !strings.EqualFold(strings.TrimSpace(pos.MarketID), marketID) {
+			continue
+		}
+		outcomeKey := strings.ToLower(strings.TrimSpace(pos.Outcome))
+		if outcomeKey == "" {
+			outcomeKey = strings.ToLower(strings.TrimSpace(pos.MarketID))
+		}
+		filtered[outcomeKey] = pos
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func roundHistoryMarketStateChanged(prev, cur RoundHistoryEntry, marketID string) bool {
+	prevPositions := roundHistoryMarketPositions(prev, marketID)
+	curPositions := roundHistoryMarketPositions(cur, marketID)
+	if len(prevPositions) != len(curPositions) {
+		return true
+	}
+	for key, curPos := range curPositions {
+		prevPos, ok := prevPositions[key]
+		if !ok || roundHistoryPositionChanged(prevPos, curPos) {
+			return true
+		}
+	}
+
+	prevRedemptions := roundHistoryRedemptionsForMarket(prev.redemptions, marketID)
+	curRedemptions := roundHistoryRedemptionsForMarket(cur.redemptions, marketID)
+	if len(prevRedemptions) != len(curRedemptions) {
+		return true
+	}
+	prevKeys := make(map[string]struct{}, len(prevRedemptions))
+	for _, redemption := range prevRedemptions {
+		if key := roundHistoryRedemptionKey(redemption); key != "" {
+			prevKeys[key] = struct{}{}
+		}
+	}
+	for _, redemption := range curRedemptions {
+		key := roundHistoryRedemptionKey(redemption)
+		if key == "" {
+			continue
+		}
+		if _, ok := prevKeys[key]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 // AmendLatestRound updates the most recent round history entry with late background redemptions
 func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionResult) {
 	t.mu.Lock()
@@ -4185,8 +4244,9 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 	t.markDirtyLocked()
 }
 
-// AmendMostRecentRoundForMarket updates the newest round-history entry that still
-// carries inventory or prior redemption details for the given market.
+// AmendMostRecentRoundForMarket updates the round-history entry where the
+// market's carried state most recently changed, then rebases later snapshots
+// that were only carrying that same unresolved inventory forward.
 func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, newRedemptions []*RedemptionResult) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -4204,6 +4264,11 @@ func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, n
 	}
 	if targetIdx < 0 {
 		return
+	}
+	for targetIdx > 0 &&
+		roundHistoryEntryHasMarket(t.roundHistory[targetIdx-1], marketID) &&
+		!roundHistoryMarketStateChanged(t.roundHistory[targetIdx-1], t.roundHistory[targetIdx], marketID) {
+		targetIdx--
 	}
 
 	beforeEnding := t.roundHistory[targetIdx].EndingEquity
