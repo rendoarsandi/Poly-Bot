@@ -12,10 +12,8 @@
 
 ## Build, Test, and Development Commands
 - `go build ./cmd/realbot` builds the live trading bot.
-- `go build ./cmd/paperbot` builds the paper trading bot.
 - `go test ./...` runs the full Go test suite.
 - `go test ./cmd/realbot ./internal/paper` is a good targeted check after trading or TUI changes.
-- `go run cmd/paperbot/main.go` starts the simulated bot.
 - `go run cmd/realbot/main.go` starts the real bot and requires `.env` credentials.
 - `node scripts/derive-api-key.js 0xYOUR_PRIVATE_KEY` is available for credential tooling. `npm test` is not implemented here.
 
@@ -46,3 +44,4 @@
 - Keep secrets in `.env`, not in `config/*.json` or committed files.
 - Treat `config/realbot.settings.json` as runtime behavior, not secret storage.
 - Validate changes touching order sizing, cleanup, merge, or redemption with extra care; these paths can affect live funds.
+ing order sizing, cleanup, merge, or redemption with extra care; these paths can affect live funds.

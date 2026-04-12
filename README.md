@@ -249,9 +249,10 @@ That means:
 ```bash
 go test ./...
 # or the smaller scope I usually care about
-go test ./internal/paper ./cmd/paperbot ./cmd/realbot
+go test ./internal/paper ./cmd/realbot
 ```
 
 ## Personal reminder
 
 If I change actual bot behavior, I should update this README so it stays honest instead of drifting back into fake polished documentation.
+polished documentation.
