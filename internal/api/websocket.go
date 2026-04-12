@@ -522,10 +522,19 @@ func (m *WSManager) processInboundMessage(p []byte) ([]byte, bool) {
 	return p, false
 }
 
+const wsStreamingBufferSize = 100000
+
 // StartStreaming starts a goroutine that continuously reads messages and sends to channel
-// Returns a channel that receives messages in real-time
+// Returns a channel that receives messages in real-time.
 func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
-	msgChan := make(chan []byte, 100000) // Massive buffer to prevent dropping ticks
+	return m.startStreamingWithBuffer(ctx, wsStreamingBufferSize)
+}
+
+func (m *WSManager) startStreamingWithBuffer(ctx context.Context, bufferSize int) <-chan []byte {
+	if bufferSize < 1 {
+		bufferSize = 1
+	}
+	msgChan := make(chan []byte, bufferSize)
 
 	go func() {
 		defer close(msgChan)
@@ -616,23 +625,12 @@ func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
 				continue
 			}
 
-			// Send to channel - prioritize newest message
-			// Uses labeled loop for clarity (avoids goto)
-		sendLoop:
-			for {
-				select {
-				case msgChan <- msg:
-					// Successfully sent
-					break sendLoop
-				default:
-					// Channel full - drain oldest message to make room
-					select {
-					case <-msgChan:
-						// Drained, loop will try to send again
-					default:
-						// Channel was drained by consumer, loop will try to send again
-					}
-				}
+			// Preserve message ordering. If the consumer falls behind, block here
+			// until it catches up or the stream context is cancelled.
+			select {
+			case <-ctx.Done():
+				return
+			case msgChan <- msg:
 			}
 		}
 	}()

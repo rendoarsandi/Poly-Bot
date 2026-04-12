@@ -3980,12 +3980,17 @@ func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedem
 
 	// Deduct the newly redeemed shares from the snapshot so they aren't double counted
 	for _, req := range newRedemptions {
+		reqMarketID := strings.TrimSpace(req.MarketID)
 		winShares := req.WinningShares
 		winCost := req.WinningCost
 		loseShares := req.LosingShares
 		loseCost := req.LosingCost
 
 		for k, pos := range entry.positions {
+			if reqMarketID != "" && !strings.EqualFold(strings.TrimSpace(pos.MarketID), reqMarketID) {
+				continue
+			}
+
 			if winShares > 0 && strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(req.WinningOutcome)) {
 				deductShares := winShares
 				if deductShares > pos.Quantity {

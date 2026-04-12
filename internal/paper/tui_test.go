@@ -2263,6 +2263,52 @@ func TestAmendMostRecentRoundForMarketClearsOlderOpenCarryRows(t *testing.T) {
 	}
 }
 
+func TestAmendMostRecentRoundForMarketOnlyTouchesTargetMarket(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		tui := NewTUI(NewEngine(100.0), NewOrderBook())
+		tui.RecordRound(100.0, 100.0, 0.0, 10, map[string]Position{
+			"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
+			"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 4.0, TotalCost: 2.00},
+			"m2:Up":   {MarketID: "m2", Outcome: "Up", Quantity: 3.0, TotalCost: 1.50},
+			"m2:Down": {MarketID: "m2", Outcome: "Down", Quantity: 2.0, TotalCost: 1.20},
+		}, nil)
+
+		tui.AmendMostRecentRoundForMarket("m1", 1.60, []*RedemptionResult{{
+			MarketID:       "m1",
+			WinningOutcome: "Up",
+			WinningShares:  6.0,
+			WinningPayout:  6.0,
+			WinningCost:    2.40,
+			WinningPnL:     3.60,
+			LosingOutcome:  "Down",
+			LosingShares:   4.0,
+			LosingCost:     2.00,
+			TotalPayout:    6.0,
+			TotalPnL:       1.60,
+		}})
+
+		history := tui.GetRoundHistory()
+		if len(history) != 1 {
+			t.Fatalf("expected 1 round history entry, got %d", len(history))
+		}
+
+		entry := history[0]
+		if _, ok := entry.positions["m1:Up"]; ok {
+			t.Fatalf("expected redeemed m1 up leg removed from snapshot on iteration %d", i)
+		}
+		if _, ok := entry.positions["m1:Down"]; ok {
+			t.Fatalf("expected redeemed m1 down leg removed from snapshot on iteration %d", i)
+		}
+
+		if got, ok := entry.positions["m2:Up"]; !ok || math.Abs(got.Quantity-3.0) > 0.0001 || math.Abs(got.TotalCost-1.50) > 0.0001 {
+			t.Fatalf("expected unrelated m2 up leg untouched on iteration %d, got %+v exists=%v", i, got, ok)
+		}
+		if got, ok := entry.positions["m2:Down"]; !ok || math.Abs(got.Quantity-2.0) > 0.0001 || math.Abs(got.TotalCost-1.20) > 0.0001 {
+			t.Fatalf("expected unrelated m2 down leg untouched on iteration %d, got %+v exists=%v", i, got, ok)
+		}
+	}
+}
+
 func TestRoundHistoryHasOpenInventoryIgnoresResolvedMarketResiduals(t *testing.T) {
 	entry := RoundHistoryEntry{
 		positions: map[string]Position{

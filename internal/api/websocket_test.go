@@ -148,3 +148,52 @@ func TestWSManagerReadMessageSkipsPONGAndTracksPingLatency(t *testing.T) {
 		t.Fatalf("expected recent data message timestamp, got age %v", got)
 	}
 }
+
+func TestWSManagerStartStreamingPreservesQueuedMessagesWhenBufferFills(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close(websocket.StatusNormalClosure, "")
+
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"seq":1}`))
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"seq":2}`))
+
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	mgr := NewWSManager("polymarket", "", "", wsURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := mgr.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer mgr.Close()
+
+	msgChan := mgr.startStreamingWithBuffer(ctx, 1)
+
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case msg := <-msgChan:
+		if string(msg) != `{"seq":1}` {
+			t.Fatalf("expected first queued message, got %s", string(msg))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first queued message")
+	}
+
+	select {
+	case msg := <-msgChan:
+		if string(msg) != `{"seq":2}` {
+			t.Fatalf("expected second queued message, got %s", string(msg))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second queued message")
+	}
+}
