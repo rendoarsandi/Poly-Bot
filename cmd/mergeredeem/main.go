@@ -191,18 +191,55 @@ func main() {
 			} else {
 				fmt.Printf("   🏁 Result: %s Won\n", decision.winnerOutcome)
 			}
-			fmt.Printf("   👉 ACTION: Auto redeem winning shares (forced).\n")
 
+			var winningTokenID string
+			var winningSize float64
+			for i, t := range m.Tokens {
+				if strings.EqualFold(strings.TrimSpace(t.Outcome), strings.TrimSpace(decision.winnerOutcome)) {
+					winningTokenID = t.TokenID
+					winningSize = remainingBalances[i]
+					break
+				}
+			}
+
+			fmt.Printf("   👉 ACTION: Attempting gasless 99c slippage CLOB sell for %s shares: %.4f\n", decision.winnerOutcome, winningSize)
 			redeemCtx, cancelRedeem := context.WithTimeout(ctx, 20*time.Second)
-			tx, err := trader.SubmitRedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
+			res, err := trader.Sell(redeemCtx, winningTokenID, decision.winnerOutcome, 0.01, winningSize, api.OrderTypeLimit, api.TIFFillAndKill, 100)
 			cancelRedeem()
 
-			if err != nil {
-				if !isSkippableRedeemError(err) {
-					fmt.Printf("   ❌ Redeem failed: %v\n", err)
+			clobSuccess := false
+			if err == nil && res != nil && res.Success {
+				clobSuccess = true
+				fmt.Printf("   ✅ Gasless sell successful! Order ID: %s\n", res.OrderID)
+				for i, t := range m.Tokens {
+					if strings.EqualFold(strings.TrimSpace(t.Outcome), strings.TrimSpace(decision.winnerOutcome)) {
+						remainingBalances[i] -= winningSize
+						break
+					}
 				}
-			} else {
-				fmt.Printf("   ⏳ Redeem submitted! Tx: %s\n", tx)
+			}
+
+			if !clobSuccess {
+				errMsg := "unknown error"
+				if err != nil {
+					errMsg = err.Error()
+				} else if res != nil {
+					errMsg = res.Message
+				}
+				fmt.Printf("   ⚠️ CLOB sell failed: %v. Falling back to on-chain redeem...\n", errMsg)
+
+				fmt.Printf("   👉 ACTION: Auto redeem winning shares (forced).\n")
+				redeemCtx, cancelRedeem = context.WithTimeout(ctx, 20*time.Second)
+				tx, err := trader.SubmitRedeemOnChainForce(redeemCtx, m.ConditionID, len(m.Tokens))
+				cancelRedeem()
+
+				if err != nil {
+					if !isSkippableRedeemError(err) {
+						fmt.Printf("   ❌ Redeem failed: %v\n", err)
+					}
+				} else {
+					fmt.Printf("   ⏳ Redeem submitted! Tx: %s\n", tx)
+				}
 			}
 		}
 	}
