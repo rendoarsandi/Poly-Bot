@@ -129,9 +129,19 @@ func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, mo
 }
 
 func realbotPendingLadderedEntry(entries []realbotLadderedEntry, seq uint64, ask0, ask1, moveCents float64) realbotLadderedEntry {
-	// Always anchor to the actual current quote to prevent multiple "catch-up" buys
-	// from triggering overtrading when the market gaps significantly.
-	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1}
+	pendingAsk0 := ask0
+	pendingAsk1 := ask1
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		threshold := realbotLadderedMoveThreshold(moveCents)
+		if ask0 > last.ask0+threshold {
+			pendingAsk0 = last.ask0 + threshold
+		}
+		if ask1 > last.ask1+threshold {
+			pendingAsk1 = last.ask1 + threshold
+		}
+	}
+	return realbotLadderedEntry{seq: seq, ask0: pendingAsk0, ask1: pendingAsk1}
 }
 
 func realbotResolveLadderedEntry(entries []realbotLadderedEntry, seq uint64, confirmed bool) []realbotLadderedEntry {

@@ -330,9 +330,9 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
 			return true
 		}
-		shares = activeSize * float64(ladderedMultiplier)
+		shares = activeSize
 		if ladderedMultiplier > 1 {
-			args.tui.LogEvent("[%s] ℹ️ Ladder missed %d steps, scaling size up to %s shares", args.marketID, ladderedMultiplier, formatShareQty(shares))
+			args.tui.LogEvent("[%s] ℹ️ Ladder gap spans %d steps; replaying missed rungs one entry at a time", args.marketID, ladderedMultiplier)
 		}
 		if ladderedDirection == 1 {
 			requestSize2 = shares
