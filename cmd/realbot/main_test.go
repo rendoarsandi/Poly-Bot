@@ -171,46 +171,29 @@ func TestRealbotLadderedDirectionalSideMatchesPaperbotCases(t *testing.T) {
 	}
 }
 
-func TestRealbotPendingLadderedEntryAdvancesOneRungAtATimeOnLargeGaps(t *testing.T) {
+func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
 	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.36}}
 
 	pending := realbotPendingLadderedEntry(entries, 2, 0.62, 0.36, 2.0)
-	if math.Abs(pending.ask0-0.52) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
-		t.Fatalf("expected pending anchor to advance exactly one rung, got %+v", pending)
+	if math.Abs(pending.ask0-0.62) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
+		t.Fatalf("expected pending anchor to jump to the current quote, got %+v", pending)
 	}
 
 	entries = append(entries, pending)
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.62, 0.36, 2.0); !ok || side != 0 || mult != 5 {
-		t.Fatalf("expected unchanged quote to keep replaying remaining rungs, got side=%d mult=%d ok=%v", side, mult, ok)
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.62, 0.36, 2.0); ok {
+		t.Fatalf("expected unchanged quote to stop replaying missed rungs, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
 
-func TestRealbotPendingLadderedEntryEventuallyCatchesUpToLargeGap(t *testing.T) {
+func TestRealbotLargeGapRequiresFreshStepAfterAnchorReset(t *testing.T) {
 	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.36}}
-	currentAsk0 := 0.62
-	currentAsk1 := 0.36
+	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.62, 0.36, 2.0))
 
-	steps := 0
-	for steps < 10 {
-		side, _, ok := ladderedTakerDirectionalSide(entries, currentAsk0, currentAsk1, 2.0)
-		if !ok {
-			break
-		}
-		if side != 0 {
-			t.Fatalf("expected only the up side to replay, got side=%d", side)
-		}
-		seq := uint64(len(entries) + 1)
-		entries = append(entries, realbotPendingLadderedEntry(entries, seq, currentAsk0, currentAsk1, 2.0))
-		steps++
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.639, 0.36, 2.0); ok {
+		t.Fatalf("expected move below the next full 2c step to stay blocked, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
-
-	if steps != 6 {
-		t.Fatalf("expected six rung re-entries to catch up a 12c move at 2c spacing, got %d", steps)
-	}
-
-	last := entries[len(entries)-1]
-	if math.Abs(last.ask0-currentAsk0) > 1e-9 || math.Abs(last.ask1-currentAsk1) > 1e-9 {
-		t.Fatalf("expected final ladder anchor to catch up to the live quote, got %+v", last)
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.64, 0.36, 2.0); !ok || side != 0 || mult != 1 {
+		t.Fatalf("expected the next fresh 2c move to allow exactly one new re-entry, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
 

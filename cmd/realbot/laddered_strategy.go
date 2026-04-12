@@ -104,44 +104,24 @@ func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, mo
 	move0 := ask0 - lastAsk0
 	move1 := ask1 - lastAsk1
 
-	calcMult := func(move float64) int {
-		mult := int((move + 1e-9) / threshold)
-		if mult < 1 {
-			return 1
-		}
-		return mult
-	}
-
 	switch {
 	case move0 >= threshold-1e-9 && move0 > move1+1e-9:
-		return 0, calcMult(move0), true
+		return 0, 1, true
 	case move1 >= threshold-1e-9 && move1 > move0+1e-9:
-		return 1, calcMult(move1), true
+		return 1, 1, true
 	case move0 >= threshold-1e-9 && move1 >= threshold-1e-9:
 		if ask0 > ask1+1e-9 {
-			return 0, calcMult(move0), true
+			return 0, 1, true
 		}
 		if ask1 > ask0+1e-9 {
-			return 1, calcMult(move1), true
+			return 1, 1, true
 		}
 	}
 	return -1, 0, false
 }
 
-func realbotPendingLadderedEntry(entries []realbotLadderedEntry, seq uint64, ask0, ask1, moveCents float64) realbotLadderedEntry {
-	pendingAsk0 := ask0
-	pendingAsk1 := ask1
-	if len(entries) > 0 {
-		last := entries[len(entries)-1]
-		threshold := realbotLadderedMoveThreshold(moveCents)
-		if ask0 > last.ask0+threshold {
-			pendingAsk0 = last.ask0 + threshold
-		}
-		if ask1 > last.ask1+threshold {
-			pendingAsk1 = last.ask1 + threshold
-		}
-	}
-	return realbotLadderedEntry{seq: seq, ask0: pendingAsk0, ask1: pendingAsk1}
+func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, _ float64) realbotLadderedEntry {
+	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1}
 }
 
 func realbotResolveLadderedEntry(entries []realbotLadderedEntry, seq uint64, confirmed bool) []realbotLadderedEntry {

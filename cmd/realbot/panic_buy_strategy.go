@@ -295,12 +295,11 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 
 	ladderedDirection := -1
-	ladderedMultiplier := 1
 	ladderedEntrySeq := uint64(0)
 	var pendingLadderedEntry realbotLadderedEntry
 	if ladderedMode {
 		var directionalReady bool
-		ladderedDirection, ladderedMultiplier, directionalReady = ladderedTakerDirectionalSide(derefLadderedEntries(stateEntries(state)), ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(derefLadderedEntries(stateEntries(state)), ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 		if !directionalReady {
 			return true
 		}
@@ -309,8 +308,8 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			*state.nextLadderedEntrySeq = *state.nextLadderedEntrySeq + 1
 			ladderedEntrySeq = *state.nextLadderedEntrySeq
 		}
-		// Anchor the next ladder step exactly at the current execution quote to prevent
-		// multiple "catch-up" buys from triggering overtrading when the market gaps.
+		// Reset the ladder anchor to the current live quote after each actionable re-entry
+		// so large gaps do not trigger a backlog of catch-up buys at worse prices.
 		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
@@ -331,9 +330,6 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			return true
 		}
 		shares = activeSize
-		if ladderedMultiplier > 1 {
-			args.tui.LogEvent("[%s] ℹ️ Ladder gap spans %d steps; replaying missed rungs one entry at a time", args.marketID, ladderedMultiplier)
-		}
 		if ladderedDirection == 1 {
 			requestSize2 = shares
 		} else {
