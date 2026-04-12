@@ -171,6 +171,32 @@ func TestRealbotLadderedDirectionalSideMatchesPaperbotCases(t *testing.T) {
 	}
 }
 
+func TestRealbotPendingLadderedEntryCatchesUpLargeGapOneRungAtATime(t *testing.T) {
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.36}}
+	wantAnchors := []float64{0.52, 0.54, 0.56, 0.58, 0.60, 0.62}
+	for i, want := range wantAnchors {
+		pending := realbotPendingLadderedEntry(entries, uint64(i+2), 0.62, 0.36, 2.0)
+		if math.Abs(pending.ask0-want) > 1e-9 {
+			t.Fatalf("step %d: expected pending anchor %.2f, got %+v", i, want, pending)
+		}
+		entries = append(entries, pending)
+	}
+	if side, ok := ladderedTakerDirectionalSide(entries, 0.62, 0.36, 2.0); ok {
+		t.Fatalf("expected unchanged quote to stop after full catch-up, got side=%d ok=%v", side, ok)
+	}
+}
+
+func TestRealbotPendingLadderedEntryUsesCurrentQuoteForSingleRungMove(t *testing.T) {
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.68, ask1: 0.30}}
+	pending := realbotPendingLadderedEntry(entries, 2, 0.70, 0.30, 2.0)
+	if pending.ask0 != 0.70 || pending.ask1 != 0.30 {
+		t.Fatalf("expected exact one-rung move to use the current quote, got %+v", pending)
+	}
+	if side, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{pending}, 0.70, 0.30, 2.0); ok {
+		t.Fatalf("expected unchanged single-rung quote to block duplicate ladder entry, got side=%d ok=%v", side, ok)
+	}
+}
+
 func TestRealbotLadderedRequestedQtySharesModePreservesConfiguredSize(t *testing.T) {
 	cfg := paper.TUISettings{
 		LadderedTakerSizingMode: core.LadderedTakerSizingModeShares,

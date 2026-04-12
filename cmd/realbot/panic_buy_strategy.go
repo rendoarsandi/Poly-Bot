@@ -303,25 +303,14 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		if !directionalReady {
 			return true
 		}
-		
-		pendingAsk1 := ask1
-		pendingAsk2 := ask2
-		entries := derefLadderedEntries(stateEntries(state))
-		if len(entries) > 0 {
-			last := entries[len(entries)-1]
-			threshold := realbotLadderedMoveThreshold(realbotCfg.LadderedTakerReentryMoveCents)
-			if ladderedDirection == 0 && ask1 > last.ask0+threshold {
-				pendingAsk1 = last.ask0 + threshold
-			} else if ladderedDirection == 1 && ask2 > last.ask1+threshold {
-				pendingAsk2 = last.ask1 + threshold
-			}
-		}
 
 		if state != nil && state.nextLadderedEntrySeq != nil {
 			*state.nextLadderedEntrySeq = *state.nextLadderedEntrySeq + 1
 			ladderedEntrySeq = *state.nextLadderedEntrySeq
 		}
-		pendingLadderedEntry = realbotLadderedEntry{seq: ladderedEntrySeq, ask0: pendingAsk1, ask1: pendingAsk2}
+		// Advance the pending anchor one ladder step at a time so large quote gaps can
+		// catch up across multiple rungs without double-counting an unchanged quote.
+		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
 	requestSize1, requestSize2 := shares, shares
