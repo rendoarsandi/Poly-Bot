@@ -3742,9 +3742,10 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 	}
 
 	type outcomeTotal struct {
-		shares float64
-		cost   float64
-		isWin  bool
+		shares  float64
+		cost    float64
+		settled bool
+		isWin   bool
 	}
 	type marketTotals struct {
 		marketID string
@@ -3785,16 +3786,21 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 	}
 
 	for _, req := range redemptions {
+		if req == nil {
+			continue
+		}
 		if req.WinningShares > 0 && req.WinningOutcome != "" {
 			ot := getOt(req.MarketID, req.WinningOutcome)
 			ot.shares += req.WinningShares
 			ot.cost += req.WinningCost
+			ot.settled = true
 			ot.isWin = true
 		}
 		if req.LosingShares > 0 && req.LosingOutcome != "" {
 			ot := getOt(req.MarketID, req.LosingOutcome)
 			ot.shares += req.LosingShares
 			ot.cost += req.LosingCost
+			ot.settled = true
 		}
 	}
 
@@ -3834,9 +3840,9 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 				avgPrice = item.total.cost / item.total.shares
 			}
 			text := fmt.Sprintf("%s %s@$%.2f", core.SanitizeString(item.outcome), formatDisplayShareQty(item.total.shares), avgPrice)
-			if item.total.isWin {
+			if item.total.settled && item.total.isWin {
 				text += styleGreen.Render(" ✓")
-			} else if len(redemptions) > 0 {
+			} else if item.total.settled {
 				text += styleRed.Render(" ✗")
 			}
 			parts = append(parts, text)
@@ -3849,6 +3855,40 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 		marketLines = append(marketLines, prefix+": "+strings.Join(parts, "  |  "))
 	}
 	return strings.Join(marketLines, "\n")
+}
+
+func roundHistoryDisplayRedemptions(entry RoundHistoryEntry, redemptions []*RedemptionResult) []*RedemptionResult {
+	if len(redemptions) == 0 {
+		return nil
+	}
+
+	openMarkets := make(map[string]struct{})
+	for _, pos := range entry.positions {
+		if pos.Quantity <= 0.000001 {
+			continue
+		}
+		marketID := strings.ToLower(strings.TrimSpace(pos.MarketID))
+		if marketID == "" {
+			continue
+		}
+		openMarkets[marketID] = struct{}{}
+	}
+	if len(openMarkets) == 0 {
+		return redemptions
+	}
+
+	filtered := make([]*RedemptionResult, 0, len(redemptions))
+	for _, redemption := range redemptions {
+		if redemption == nil {
+			continue
+		}
+		marketID := strings.ToLower(strings.TrimSpace(redemption.MarketID))
+		if _, ok := openMarkets[marketID]; !ok {
+			continue
+		}
+		filtered = append(filtered, redemption)
+	}
+	return filtered
 }
 
 func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int, positions map[string]Position, redemptions []*RedemptionResult) {
@@ -3954,6 +3994,14 @@ func roundHistoryRedemptionDelta(entry RoundHistoryEntry, pnlDelta float64, newR
 }
 
 func amendRoundHistoryEntry(entry *RoundHistoryEntry, pnlDelta float64, newRedemptions []*RedemptionResult) {
+	if entry == nil {
+		return
+	}
+	if delta := roundHistoryRedemptionDelta(*entry, pnlDelta, newRedemptions); math.Abs(delta) >= 0.000001 {
+		entry.PnL += delta
+		entry.EndingEquity += delta
+	}
+
 	// Append new redemptions
 	entry.redemptions = append(entry.redemptions, newRedemptions...)
 
@@ -4107,7 +4155,9 @@ func (t *TUI) AmendLatestRound(pnlDelta float64, newRedemptions []*RedemptionRes
 	}
 
 	lastIdx := len(t.roundHistory) - 1
+	beforeEnding := t.roundHistory[lastIdx].EndingEquity
 	amendRoundHistoryEntry(&t.roundHistory[lastIdx], pnlDelta, newRedemptions)
+	rebaseSubsequentRoundHistoryEntries(t.roundHistory, lastIdx+1, t.roundHistory[lastIdx].EndingEquity-beforeEnding)
 
 	t.markDirtyLocked()
 }
@@ -4133,7 +4183,9 @@ func (t *TUI) AmendMostRecentRoundForMarket(marketID string, pnlDelta float64, n
 		return
 	}
 
+	beforeEnding := t.roundHistory[targetIdx].EndingEquity
 	amendRoundHistoryEntry(&t.roundHistory[targetIdx], pnlDelta, newRedemptions)
+	rebaseSubsequentRoundHistoryEntries(t.roundHistory, targetIdx+1, t.roundHistory[targetIdx].EndingEquity-beforeEnding)
 
 	for i := range t.roundHistory {
 		if i == targetIdx || !roundHistoryEntryHasMarket(t.roundHistory[i], marketID) {
@@ -5818,7 +5870,7 @@ func roundHistoryDisplaySummary(history []RoundHistoryEntry, idx int) string {
 		return entry.ShareSummary
 	}
 	if idx == 0 {
-		return roundHistoryShareSummary(entry.positions, entry.redemptions)
+		return roundHistoryShareSummary(entry.positions, roundHistoryDisplayRedemptions(entry, entry.redemptions))
 	}
 
 	prev := history[idx-1]
@@ -5848,6 +5900,8 @@ func roundHistoryDisplaySummary(history []RoundHistoryEntry, idx int) string {
 		}
 		filteredRedemptions = append(filteredRedemptions, redemption)
 	}
+
+	filteredRedemptions = roundHistoryDisplayRedemptions(entry, filteredRedemptions)
 
 	return roundHistoryShareSummary(filteredPositions, filteredRedemptions)
 }

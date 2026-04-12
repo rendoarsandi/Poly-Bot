@@ -2242,6 +2242,95 @@ func TestRenderRoundHistorySuppressesUnchangedCarryFromLaterRows(t *testing.T) {
 	}
 }
 
+func TestRoundHistoryShareSummaryLeavesOpenCarryUnmarkedWhenOtherMarketRedeemed(t *testing.T) {
+	summary := roundHistoryShareSummary(map[string]Position{
+		"m2:Up":   {MarketID: "m2", Outcome: "Up", Quantity: 9.04519, TotalCost: 9.04519 * 0.47},
+		"m2:Down": {MarketID: "m2", Outcome: "Down", Quantity: 12.10775, TotalCost: 12.10775 * 0.70},
+	}, []*RedemptionResult{
+		{
+			MarketID:       "m1",
+			WinningOutcome: "Down",
+			WinningShares:  12.13305,
+			WinningCost:    12.13305 * 0.75,
+			LosingOutcome:  "Up",
+			LosingShares:   6.04569,
+			LosingCost:     6.04569 * 0.36,
+		},
+	})
+
+	if !strings.Contains(summary, "m2: Up 9.04519@$0.47  |  Down 12.10775@$0.70") {
+		t.Fatalf("expected unresolved carry market summary to remain visible, got %q", summary)
+	}
+	if strings.Contains(summary, "m2: Up 9.04519@$0.47 ✗") || strings.Contains(summary, "m2: Down 12.10775@$0.70 ✗") {
+		t.Fatalf("expected unresolved carry market not to be marked as settled loss, got %q", summary)
+	}
+}
+
+func TestRoundHistoryDisplaySummarySuppressesResolvedMarketsWhenOtherCarryRemains(t *testing.T) {
+	history := []RoundHistoryEntry{
+		{
+			Number: 1,
+		},
+		{
+			Number: 2,
+			positions: map[string]Position{
+				"m2:Up":   {MarketID: "m2", Outcome: "Up", Quantity: 9.04519, TotalCost: 9.04519 * 0.47},
+				"m2:Down": {MarketID: "m2", Outcome: "Down", Quantity: 12.10775, TotalCost: 12.10775 * 0.70},
+			},
+			redemptions: []*RedemptionResult{
+				{
+					MarketID:       "m1",
+					WinningOutcome: "Down",
+					WinningShares:  12.13305,
+					WinningCost:    12.13305 * 0.75,
+					LosingOutcome:  "Up",
+					LosingShares:   6.04569,
+					LosingCost:     6.04569 * 0.36,
+				},
+			},
+		},
+	}
+
+	summary := roundHistoryDisplaySummary(history, 1)
+	if !strings.Contains(summary, "m2: Up 9.04519@$0.47  |  Down 12.10775@$0.70") {
+		t.Fatalf("expected unresolved carry market to remain in display summary, got %q", summary)
+	}
+	if strings.Contains(summary, "m1:") {
+		t.Fatalf("expected resolved market to be suppressed while other carry remains, got %q", summary)
+	}
+}
+
+func TestRoundHistoryDisplaySummaryKeepsResolvedMarketsWhenNoCarryRemains(t *testing.T) {
+	history := []RoundHistoryEntry{
+		{
+			Number: 1,
+			positions: map[string]Position{
+				"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 6.0, TotalCost: 2.40},
+				"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 4.0, TotalCost: 2.00},
+			},
+		},
+		{
+			Number: 2,
+			redemptions: []*RedemptionResult{
+				{
+					MarketID:       "m1",
+					WinningOutcome: "Up",
+					WinningShares:  6.0,
+					WinningCost:    2.40,
+					LosingOutcome:  "Down",
+					LosingShares:   4.0,
+					LosingCost:     2.00,
+				},
+			},
+		},
+	}
+
+	summary := roundHistoryDisplaySummary(history, 1)
+	if !strings.Contains(summary, "m1: Up 6@$0.40") || !strings.Contains(summary, "Down 4@$0.50") {
+		t.Fatalf("expected fully resolved round to keep redemption detail, got %q", summary)
+	}
+}
+
 func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
 	tui.RecordRound(100.0, 100.0, 0.0, 10, map[string]Position{
@@ -2270,17 +2359,17 @@ func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("expected 2 round history entries, got %d", len(history))
 	}
-	if got := history[0].EndingEquity; math.Abs(got-100.00) > 0.0001 {
-		t.Fatalf("expected matching round ending equity to remain unchanged at 100.00, got %.2f", got)
+	if got := history[0].EndingEquity; math.Abs(got-101.20) > 0.0001 {
+		t.Fatalf("expected matching round ending equity to include redemption delta, got %.2f", got)
 	}
-	if got := history[0].PnL; math.Abs(got-0.00) > 0.0001 {
-		t.Fatalf("expected matching round pnl to remain unchanged at 0.00, got %.2f", got)
+	if got := history[0].PnL; math.Abs(got-1.20) > 0.0001 {
+		t.Fatalf("expected matching round pnl to include redemption delta, got %.2f", got)
 	}
-	if got := history[1].StartingEquity; math.Abs(got-100.00) > 0.0001 {
-		t.Fatalf("expected later round starting equity to remain unchanged at 100.00, got %.2f", got)
+	if got := history[1].StartingEquity; math.Abs(got-101.20) > 0.0001 {
+		t.Fatalf("expected later round starting equity to rebase after redemption delta, got %.2f", got)
 	}
-	if got := history[1].EndingEquity; math.Abs(got-101.00) > 0.0001 {
-		t.Fatalf("expected later round ending equity to remain unchanged at 101.00, got %.2f", got)
+	if got := history[1].EndingEquity; math.Abs(got-102.20) > 0.0001 {
+		t.Fatalf("expected later round ending equity to rebase after redemption delta, got %.2f", got)
 	}
 	if got := history[1].PnL; math.Abs(got-1.0) > 0.0001 {
 		t.Fatalf("expected later round pnl to remain unchanged, got %.2f", got)
@@ -2369,6 +2458,12 @@ func TestAmendMostRecentRoundForMarketOnlyTouchesTargetMarket(t *testing.T) {
 		}
 		if got, ok := entry.positions["m2:Down"]; !ok || math.Abs(got.Quantity-2.0) > 0.0001 || math.Abs(got.TotalCost-1.20) > 0.0001 {
 			t.Fatalf("expected unrelated m2 down leg untouched on iteration %d, got %+v exists=%v", i, got, ok)
+		}
+		if got := entry.PnL; math.Abs(got-1.20) > 0.0001 {
+			t.Fatalf("expected target round pnl to reflect redeemed m1 delta on iteration %d, got %.2f", i, got)
+		}
+		if got := entry.EndingEquity; math.Abs(got-101.20) > 0.0001 {
+			t.Fatalf("expected target round ending equity to reflect redeemed m1 delta on iteration %d, got %.2f", i, got)
 		}
 	}
 }
