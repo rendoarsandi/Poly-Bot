@@ -2061,6 +2061,51 @@ func getPaperMarketPosition(positions map[string]paper.Position, marketID, outco
 	return pos, ok
 }
 
+func paperRoundSnapshotPositions(positions map[string]paper.Position, activeMarketIDs map[string]struct{}, redemptions []*paper.RedemptionResult) map[string]paper.Position {
+	if len(positions) == 0 {
+		return map[string]paper.Position{}
+	}
+
+	include := make(map[string]struct{}, len(activeMarketIDs)+len(redemptions))
+	for marketID := range activeMarketIDs {
+		marketID = strings.ToLower(strings.TrimSpace(marketID))
+		if marketID == "" {
+			continue
+		}
+		include[marketID] = struct{}{}
+	}
+	for _, redemption := range redemptions {
+		if redemption == nil {
+			continue
+		}
+		marketID := strings.ToLower(strings.TrimSpace(redemption.MarketID))
+		if marketID == "" {
+			continue
+		}
+		include[marketID] = struct{}{}
+	}
+
+	filtered := make(map[string]paper.Position, len(positions))
+	if len(include) == 0 {
+		for key, pos := range positions {
+			filtered[key] = pos
+		}
+		return filtered
+	}
+
+	for key, pos := range positions {
+		marketID := strings.ToLower(strings.TrimSpace(pos.MarketID))
+		if marketID == "" {
+			continue
+		}
+		if _, ok := include[marketID]; !ok {
+			continue
+		}
+		filtered[key] = pos
+	}
+	return filtered
+}
+
 func estimatePaperWinner(outcomes []string, bids, asks, floatPrices map[string]float64) (string, float64) {
 	if len(outcomes) == 0 {
 		return "", 0
@@ -2978,10 +3023,14 @@ func run() error {
 		var wg sync.WaitGroup
 		results := make(chan *marketResult, len(markets))
 		errors := make(chan error, len(markets))
+		activeRoundMarketIDs := make(map[string]struct{}, len(markets))
 
 		tradersStarted := 0
 		for assetID, market := range markets {
 			marketID := mkt.ScopedMarketID(assetID, market)
+			if trimmedMarketID := strings.TrimSpace(marketID); trimmedMarketID != "" {
+				activeRoundMarketIDs[trimmedMarketID] = struct{}{}
+			}
 			// Parse end time and outcomes
 			endTime, err := paper.ParseEndTimeFromSlug(market.Slug)
 			if err != nil {
@@ -3108,7 +3157,7 @@ func run() error {
 		// overlapping per-trader deltas from concurrent goroutines.
 		roundPnL, roundEquity, roundTrades, _ := summarizePaperRound(engine, startingEquity, roundStartTrades)
 
-		displayPositions := engine.GetPositions()
+		displayPositions := paperRoundSnapshotPositions(engine.GetPositions(), activeRoundMarketIDs, allRedemptions)
 		if len(displayPositions) == 0 && len(allRedemptions) == 0 {
 			// Reconstruct gross bought positions from the round's trades
 			// This ensures the round history consistently shows the shares the bot

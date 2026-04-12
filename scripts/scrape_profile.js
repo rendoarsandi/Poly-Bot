@@ -1,7 +1,7 @@
 const https = require('https');
 const fs = require('fs');
 
-const URL = 'https://polymarket.com/@distinct-baguette';
+const URL = 'https://polymarket.com/profile/0xe0229e10a858860218b6132f4234602c47bd6603';
 
 https.get(URL, (res) => {
     let data = '';

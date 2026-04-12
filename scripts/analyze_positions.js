@@ -1,6 +1,6 @@
 const https = require('https');
 
-const ADDRESS = '0xe00740bce98a594e26861838885ab310ec3b548c';
+const ADDRESS = '0xe0229e10a858860218b6132f4234602c47bd6603';
 const URL = `https://data-api.polymarket.com/positions?user=${ADDRESS}`;
 
 console.log(`Fetching detailed position data for ${ADDRESS}...\n`);

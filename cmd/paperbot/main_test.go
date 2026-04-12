@@ -146,6 +146,68 @@ func TestPaperbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	}
 }
 
+func TestPaperRoundSnapshotPositionsFiltersCarryMarkets(t *testing.T) {
+	positions := map[string]paper.Position{
+		"old:up":   {MarketID: "m-old", Outcome: "Up", Quantity: 10, TotalCost: 5},
+		"old:down": {MarketID: "m-old", Outcome: "Down", Quantity: 8, TotalCost: 4},
+		"new:up":   {MarketID: "m-new", Outcome: "Up", Quantity: 12, TotalCost: 6},
+		"new:down": {MarketID: "m-new", Outcome: "Down", Quantity: 9, TotalCost: 4.5},
+	}
+
+	filtered := paperRoundSnapshotPositions(positions, map[string]struct{}{"m-new": {}}, nil)
+
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 filtered positions for active market, got %d", len(filtered))
+	}
+	if _, ok := filtered["new:up"]; !ok {
+		t.Fatalf("expected active market up leg to remain, got %+v", filtered)
+	}
+	if _, ok := filtered["new:down"]; !ok {
+		t.Fatalf("expected active market down leg to remain, got %+v", filtered)
+	}
+	if _, ok := filtered["old:up"]; ok {
+		t.Fatalf("expected carry market up leg to be removed, got %+v", filtered)
+	}
+	if _, ok := filtered["old:down"]; ok {
+		t.Fatalf("expected carry market down leg to be removed, got %+v", filtered)
+	}
+}
+
+func TestPaperRoundSnapshotPositionsKeepsRedemptionMarkets(t *testing.T) {
+	positions := map[string]paper.Position{
+		"old:up":   {MarketID: "m-old", Outcome: "Up", Quantity: 10, TotalCost: 5},
+		"old:down": {MarketID: "m-old", Outcome: "Down", Quantity: 8, TotalCost: 4},
+		"new:up":   {MarketID: "m-new", Outcome: "Up", Quantity: 12, TotalCost: 6},
+		"new:down": {MarketID: "m-new", Outcome: "Down", Quantity: 9, TotalCost: 4.5},
+	}
+	redemptions := []*paper.RedemptionResult{{MarketID: "m-old"}}
+
+	filtered := paperRoundSnapshotPositions(positions, map[string]struct{}{"m-new": {}}, redemptions)
+
+	if len(filtered) != 4 {
+		t.Fatalf("expected redemption market to remain in snapshot, got %d entries (%+v)", len(filtered), filtered)
+	}
+}
+
+func TestPaperRoundSnapshotPositionsKeepsAllWhenNoScope(t *testing.T) {
+	positions := map[string]paper.Position{
+		"m1:up":   {MarketID: "m1", Outcome: "Up", Quantity: 1, TotalCost: 0.5},
+		"m1:down": {MarketID: "m1", Outcome: "Down", Quantity: 1, TotalCost: 0.5},
+	}
+
+	filtered := paperRoundSnapshotPositions(positions, nil, nil)
+
+	if len(filtered) != len(positions) {
+		t.Fatalf("expected unscoped snapshot to keep all positions, got %d want %d", len(filtered), len(positions))
+	}
+	if _, ok := filtered["m1:up"]; !ok {
+		t.Fatalf("expected m1 up leg retained, got %+v", filtered)
+	}
+	if _, ok := filtered["m1:down"]; !ok {
+		t.Fatalf("expected m1 down leg retained, got %+v", filtered)
+	}
+}
+
 func TestPaperbotCopytradeMarketSelectableAllowsFinalSeconds(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 
