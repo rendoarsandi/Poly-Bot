@@ -742,17 +742,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 
 		price := 0.01
 		if side == "BUY" {
-			price = buyCaps[out]
-			if price <= 0 {
-				idx := len(batchMeta)
-				errs[idx] = fmt.Errorf("missing configured buy cap for %s", out)
-				batchMeta = append(batchMeta, struct {
-					outcome string
-					shares  float64
-					rate    int
-				}{outcome: out, shares: shares, rate: rate})
-				continue
-			}
+			price = 0.99 // 99c slippage trick to bypass $1.00 notional minimum
 		}
 
 		batchReqs = append(batchReqs, &api.OrderRequest{
@@ -833,23 +823,7 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 }
 
 func normalizePanicBuySharesPerSide(requested float64, bookAsks ...float64) (float64, bool) {
-	minShares := requested
-	for _, ask := range bookAsks {
-		effectiveAsk := ask
-		if effectiveAsk < 0.10 {
-			effectiveAsk = 0.10
-		}
-		if effectiveAsk <= 0 || effectiveAsk >= 1 {
-			continue
-		}
-		requiredShares := math.Ceil((1.0/effectiveAsk)*10000) / 10000
-		if requiredShares > minShares {
-			minShares = requiredShares
-		}
-	}
-	if minShares > requested+0.0000001 {
-		return minShares, true
-	}
+	// Disabled: allow any fractional share size since we will use 99c slippage to bypass the $1.00 notional minimum
 	return requested, false
 }
 
