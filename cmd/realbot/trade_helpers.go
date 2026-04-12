@@ -323,14 +323,11 @@ func realbotDirectionalProfitTargetPrice(avgPrice, profitTargetPct float64) floa
 	return target
 }
 
-func realbotDirectionalBuyLimitPrice(ask, maxAskPrice, maxSlippagePct float64) float64 {
+func realbotDirectionalBuyLimitPrice(ask, _ float64, maxSlippagePct float64) float64 {
 	if ask <= 0 {
 		return 0
 	}
 	limit := ask + (maxSlippagePct / 100.0)
-	if maxAskPrice > 0 && maxAskPrice < limit {
-		limit = maxAskPrice
-	}
 	if limit < ask {
 		limit = ask
 	}

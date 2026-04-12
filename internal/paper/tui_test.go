@@ -2178,6 +2178,70 @@ func TestRecordRoundCapturesOutcomeShares(t *testing.T) {
 	}
 }
 
+func TestRecordRoundPreservesEarlierCarrySnapshots(t *testing.T) {
+	tui := NewTUI(NewEngine(100.0), NewOrderBook())
+	tui.RecordRound(100.0, 99.0, -1.0, 6, map[string]Position{
+		"m2:Up": {MarketID: "m2", Outcome: "Up", Quantity: 10.0, TotalCost: 6.60},
+	}, nil)
+	tui.RecordRound(99.0, 98.0, -1.0, 8, map[string]Position{
+		"m2:Up":   {MarketID: "m2", Outcome: "Up", Quantity: 10.0, TotalCost: 6.60},
+		"m3:Up":   {MarketID: "m3", Outcome: "Up", Quantity: 14.0, TotalCost: 7.98},
+		"m3:Down": {MarketID: "m3", Outcome: "Down", Quantity: 10.0, TotalCost: 6.10},
+	}, nil)
+
+	history := tui.GetRoundHistory()
+	if len(history) != 2 {
+		t.Fatalf("expected 2 round history entries, got %d", len(history))
+	}
+	if !strings.Contains(history[0].ShareSummary, "m2: Up 10") {
+		t.Fatalf("expected earlier round to keep its carry snapshot, got %q", history[0].ShareSummary)
+	}
+	if strings.Contains(history[0].ShareSummary, "m3:") {
+		t.Fatalf("expected earlier round not to absorb later market carry, got %q", history[0].ShareSummary)
+	}
+}
+
+func TestRenderRoundHistorySuppressesUnchangedCarryFromLaterRows(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			roundHistory: []RoundHistoryEntry{
+				{
+					Number:         2,
+					Timestamp:      time.Unix(1, 0),
+					StartingEquity: 100.0,
+					EndingEquity:   99.0,
+					PnL:            -1.0,
+					Trades:         6,
+					positions: map[string]Position{
+						"m2:Up": {MarketID: "m2", Outcome: "Up", Quantity: 10.0, TotalCost: 6.60},
+					},
+				},
+				{
+					Number:         3,
+					Timestamp:      time.Unix(2, 0),
+					StartingEquity: 99.0,
+					EndingEquity:   98.0,
+					PnL:            -1.0,
+					Trades:         8,
+					positions: map[string]Position{
+						"m2:Up":   {MarketID: "m2", Outcome: "Up", Quantity: 10.0, TotalCost: 6.60},
+						"m3:Up":   {MarketID: "m3", Outcome: "Up", Quantity: 14.0, TotalCost: 7.98},
+						"m3:Down": {MarketID: "m3", Outcome: "Down", Quantity: 10.0, TotalCost: 6.10},
+					},
+				},
+			},
+		},
+	}
+
+	rendered := model.renderRoundHistory(140, 5)
+	if count := strings.Count(rendered, "m2: Up 10"); count != 1 {
+		t.Fatalf("expected unchanged carry market to render only on its original round, found %d copies in %q", count, rendered)
+	}
+	if !strings.Contains(rendered, "m3: Up 14@$0.57  |  Down 10@$0.61") {
+		t.Fatalf("expected later round to keep only its new pair, got %q", rendered)
+	}
+}
+
 func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
 	tui.RecordRound(100.0, 100.0, 0.0, 10, map[string]Position{

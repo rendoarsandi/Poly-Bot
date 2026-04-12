@@ -104,9 +104,9 @@ func TestRealbotPriceWithinConfiguredRange(t *testing.T) {
 	}
 }
 
-func TestRealbotDirectionalBuyLimitPriceRespectsConfiguredMax(t *testing.T) {
-	if got := realbotDirectionalBuyLimitPrice(0.95, 0.95, 99); math.Abs(got-0.95) > 0.000001 {
-		t.Fatalf("expected buy cap to stay at configured max 0.95, got %.3f", got)
+func TestRealbotDirectionalBuyLimitPriceUsesAbsoluteSlippageCap(t *testing.T) {
+	if got := realbotDirectionalBuyLimitPrice(0.95, 0.95, 99); math.Abs(got-0.99) > 0.000001 {
+		t.Fatalf("expected buy cap to use 99c slippage limit instead of max ask filter, got %.3f", got)
 	}
 }
 

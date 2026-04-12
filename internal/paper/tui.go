@@ -3865,27 +3865,6 @@ func (t *TUI) RecordRound(startingEquity, endingEquity, pnl float64, trades int,
 	redClone := make([]*RedemptionResult, len(redemptions))
 	copy(redClone, redemptions)
 
-	// Clear open carry positions from all older rounds so they don't linger as "OPEN".
-	// The new round will act as the sole carrier of any currently open inventory.
-	for i := range t.roundHistory {
-		if len(t.roundHistory[i].positions) > 0 {
-			initialLen := len(t.roundHistory[i].positions)
-			for _, pos := range posClone {
-				if pos.MarketID != "" {
-					roundHistoryRemoveMarketPositions(&t.roundHistory[i], pos.MarketID)
-				}
-			}
-			for _, red := range redClone {
-				if red != nil && red.MarketID != "" {
-					roundHistoryRemoveMarketPositions(&t.roundHistory[i], red.MarketID)
-				}
-			}
-			if len(t.roundHistory[i].positions) != initialLen {
-				t.roundHistory[i].ShareSummary = roundHistoryShareSummary(t.roundHistory[i].positions, t.roundHistory[i].redemptions)
-			}
-		}
-	}
-
 	entry := RoundHistoryEntry{
 		Number:         len(t.roundHistory) + 1,
 		Timestamp:      time.Now(),
@@ -5813,6 +5792,66 @@ func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
 	return legs > 0
 }
 
+func roundHistoryPositionChanged(prev Position, cur Position) bool {
+	return !strings.EqualFold(strings.TrimSpace(prev.MarketID), strings.TrimSpace(cur.MarketID)) ||
+		!strings.EqualFold(strings.TrimSpace(prev.Outcome), strings.TrimSpace(cur.Outcome)) ||
+		math.Abs(prev.Quantity-cur.Quantity) > 0.000001 ||
+		math.Abs(prev.TotalCost-cur.TotalCost) > 0.000001
+}
+
+func roundHistoryRedemptionKey(redemption *RedemptionResult) string {
+	if redemption == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(redemption.MarketID)) + "|" +
+		strings.ToLower(strings.TrimSpace(redemption.WinningOutcome)) + "|" +
+		strings.ToLower(strings.TrimSpace(redemption.LosingOutcome)) + "|" +
+		fmt.Sprintf("%.6f|%.6f|%.6f", redemption.WinningShares, redemption.LosingShares, redemption.TotalPayout)
+}
+
+func roundHistoryDisplaySummary(history []RoundHistoryEntry, idx int) string {
+	if idx < 0 || idx >= len(history) {
+		return ""
+	}
+	entry := history[idx]
+	if len(entry.positions) == 0 && len(entry.redemptions) == 0 {
+		return entry.ShareSummary
+	}
+	if idx == 0 {
+		return roundHistoryShareSummary(entry.positions, entry.redemptions)
+	}
+
+	prev := history[idx-1]
+	filteredPositions := make(map[string]Position)
+	for key, pos := range entry.positions {
+		prevPos, ok := prev.positions[key]
+		if ok && !roundHistoryPositionChanged(prevPos, pos) {
+			continue
+		}
+		filteredPositions[key] = pos
+	}
+
+	prevRedemptions := make(map[string]struct{}, len(prev.redemptions))
+	for _, redemption := range prev.redemptions {
+		if key := roundHistoryRedemptionKey(redemption); key != "" {
+			prevRedemptions[key] = struct{}{}
+		}
+	}
+	filteredRedemptions := make([]*RedemptionResult, 0, len(entry.redemptions))
+	for _, redemption := range entry.redemptions {
+		key := roundHistoryRedemptionKey(redemption)
+		if key == "" {
+			continue
+		}
+		if _, seen := prevRedemptions[key]; seen {
+			continue
+		}
+		filteredRedemptions = append(filteredRedemptions, redemption)
+	}
+
+	return roundHistoryShareSummary(filteredPositions, filteredRedemptions)
+}
+
 func positionsWithPnLOpenInventoryCounts(positions map[string]PositionPnL) (markets, legs int) {
 	if len(positions) == 0 {
 		return 0, 0
@@ -5923,8 +5962,9 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			entry.Trades,
 			resultStyle.Render(resultLabel),
 		))
-		if entry.ShareSummary != "" {
-			summaryLines := strings.Split(entry.ShareSummary, "\n")
+		displaySummary := roundHistoryDisplaySummary(s.roundHistory, i)
+		if displaySummary != "" {
+			summaryLines := strings.Split(displaySummary, "\n")
 			for idx, line := range summaryLines {
 				if idx == 0 {
 					sb.WriteString("        " + styleDimmed.Render("Shares: ") + styleWhite.Render(line) + "\n")
