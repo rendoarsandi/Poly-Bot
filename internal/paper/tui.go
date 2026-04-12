@@ -5531,11 +5531,36 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 		aStyle := getAssetStyle(marketID)
 		marketStatus := styleYellow.Render(" [TRADING]")
+		isResolving := false
+
 		if mkt, ok := s.markets[marketID]; ok && mkt != nil {
 			if !mkt.EndTime.IsZero() && time.Now().After(mkt.EndTime) {
-				marketStatus = styleDimmed.Render(" [WAITING RESOLVE]")
+				isResolving = true
+			}
+		} else {
+			parts := strings.Split(marketID, "-")
+			if len(parts) > 1 {
+				lastPart := parts[len(parts)-1]
+				if ts, err := strconv.ParseInt(lastPart, 10, 64); err == nil && ts > 1000000000 {
+					if time.Now().After(time.Unix(ts, 0)) {
+						isResolving = true
+					}
+				}
 			}
 		}
+
+		for _, wt := range walletTruthPositions {
+			if wt.MarketID == marketID && wt.ResolutionStatus != "" && wt.ResolutionStatus != "unresolved" {
+				marketStatus = styleDimmed.Render(" [" + strings.ToUpper(wt.ResolutionStatus) + "]")
+				isResolving = false
+				break
+			}
+		}
+
+		if isResolving {
+			marketStatus = styleDimmed.Render(" [WAITING RESOLUTION]")
+		}
+
 		sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + marketStatus + "  ")
 
 		sort.Slice(mps, func(i, j int) bool { return outcomeSortLess(mps[i].Outcome, mps[j].Outcome) })
@@ -5570,6 +5595,15 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 			hasMarketPrices = true
 			sg, pSt := signOf(summary.currentPnL)
 			sb.WriteString("  →  " + pSt.Render(fmt.Sprintf("%s$%.2f", sg, summary.currentPnL)))
+
+			if math.Abs(summary.bestResolvePnL) >= 0.005 || math.Abs(summary.worstResolvePnL) >= 0.005 {
+				bestSign, bestStyle := signOf(summary.bestResolvePnL)
+				worstSign, worstStyle := signOf(summary.worstResolvePnL)
+				bestOut := core.SanitizeString(summary.bestOutcome)
+				worstOut := core.SanitizeString(summary.worstOutcome)
+				sb.WriteString("  │  🏁 " + bestStyle.Render(fmt.Sprintf("If %s wins: %s$%.2f", bestOut, bestSign, summary.bestResolvePnL)) + " / " +
+					worstStyle.Render(fmt.Sprintf("If %s wins: %s$%.2f", worstOut, worstSign, summary.worstResolvePnL)))
+			}
 		} else if math.Abs(summary.bestResolvePnL-summary.worstResolvePnL) < 0.005 {
 			sg, pSt := signOf(summary.bestResolvePnL)
 			sb.WriteString("  →  🔒" + pSt.Render(fmt.Sprintf("%s$%.2f", sg, summary.bestResolvePnL)))

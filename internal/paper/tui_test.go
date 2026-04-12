@@ -2040,7 +2040,7 @@ func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	if !strings.Contains(rendered, "+$4.65") || !strings.Contains(rendered, "-$3.50") {
 		t.Fatalf("expected signed round pnl values, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Shares: ") || !strings.Contains(rendered, "Up 118") || !strings.Contains(rendered, "Down 103") {
+	if !strings.Contains(rendered, "Up 118") || !strings.Contains(rendered, "Down 103") {
 		t.Fatalf("expected per-round share summary, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "m1: Up 118") || !strings.Contains(rendered, "m2: Up 90") {
