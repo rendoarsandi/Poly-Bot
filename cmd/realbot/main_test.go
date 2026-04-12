@@ -1319,6 +1319,49 @@ func TestCheckRedemptionEmbeddedPaperSettlesResolvedPayout(t *testing.T) {
 	}
 }
 
+func TestRealbotFinalizePendingRedemptionClearsAlreadyReflectedBalance(t *testing.T) {
+	engine := paper.NewEngine(92.0)
+	engine.SetPendingRedemption("BTC", 10.0)
+
+	neutralized := engine.SyncBalanceNeutral(102.0)
+	if math.Abs(neutralized-10.0) > 0.000001 {
+		t.Fatalf("expected neutralized reflected payout 10.00, got %.2f", neutralized)
+	}
+
+	cleared := realbotFinalizePendingRedemption(engine, "BTC", true)
+	if math.Abs(cleared-10.0) > 0.000001 {
+		t.Fatalf("expected cleared payout 10.00, got %.2f", cleared)
+	}
+	if got := engine.GetBalance(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected reflected balance to stay 102.00 without double credit, got %.2f", got)
+	}
+	if got := engine.GetBookEquity(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected book equity to stay 102.00 after clearing reflected payout, got %.2f", got)
+	}
+	if got := engine.GetPendingRedemptions()["BTC"]; got != 0 {
+		t.Fatalf("expected pending redemption cleared after reflected payout, got %.2f", got)
+	}
+}
+
+func TestRealbotFinalizePendingRedemptionSettlesWhenBalanceNotYetReflected(t *testing.T) {
+	engine := paper.NewEngine(92.0)
+	engine.SetPendingRedemption("BTC", 10.0)
+
+	cleared := realbotFinalizePendingRedemption(engine, "BTC", false)
+	if math.Abs(cleared-10.0) > 0.000001 {
+		t.Fatalf("expected settled payout 10.00, got %.2f", cleared)
+	}
+	if got := engine.GetBalance(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected settle path to credit balance to 102.00, got %.2f", got)
+	}
+	if got := engine.GetBookEquity(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected book equity 102.00 after settle path, got %.2f", got)
+	}
+	if got := engine.GetPendingRedemptions()["BTC"]; got != 0 {
+		t.Fatalf("expected no pending redemption after settle path, got %.2f", got)
+	}
+}
+
 func TestEmbeddedPaperResolutionSweepSettlesHeldExpiredMarketBySlug(t *testing.T) {
 	marketID := "btc-updown-5m-1700000000"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

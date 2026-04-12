@@ -127,6 +127,27 @@ func realbotShouldKeepPendingRedeemTx(txHash string, err error) bool {
 	return strings.Contains(errStr, "confirmation pending") || strings.Contains(errStr, "timeout waiting for transaction")
 }
 
+func realbotFinalizePendingRedemption(engine *paper.Engine, marketID string, payoutAlreadyInBalance bool) float64 {
+	if engine == nil || strings.TrimSpace(marketID) == "" {
+		return 0
+	}
+
+	payout := engine.GetPendingRedemptions()[marketID]
+	if payout <= 0.000001 {
+		engine.ClearPendingRedemption(marketID)
+		return 0
+	}
+
+	// If wallet cash has already been synced upward to include the redemption,
+	// only clear the receivable marker. Settling here would add the payout twice.
+	if payoutAlreadyInBalance {
+		engine.ClearPendingRedemption(marketID)
+		return payout
+	}
+
+	return engine.SettlePendingRedemption(marketID)
+}
+
 func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	go func() {
 		attempt := 0
@@ -227,7 +248,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 						tui.LogEvent("[%s] ⚠️ Clearing pending redemption after timeout without explicit balance confirmation (start=%.2f peak=%.2f expected +%.2f)",
 							marketID, redeemStartBalance, highestObservedBalance, pendingPayout)
 					}
-					engine.SettlePendingRedemption(marketID)
+					realbotFinalizePendingRedemption(engine, marketID, cashReflectsPayout)
 					return
 				}
 				if time.Since(winnerDepletedAt) <= realbotRedeemRetryInterval {
