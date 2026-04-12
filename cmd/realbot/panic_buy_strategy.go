@@ -308,8 +308,8 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			*state.nextLadderedEntrySeq = *state.nextLadderedEntrySeq + 1
 			ladderedEntrySeq = *state.nextLadderedEntrySeq
 		}
-		// Advance the pending anchor one ladder step at a time so large quote gaps can
-		// catch up across multiple rungs without double-counting an unchanged quote.
+		// Anchor the next ladder step exactly at the current execution quote to prevent
+		// multiple "catch-up" buys from triggering overtrading when the market gaps.
 		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
