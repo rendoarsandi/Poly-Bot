@@ -1435,6 +1435,7 @@ type tuiModel struct {
 	settingsCursor      int // 0=TradeScale, 1=MinMargin, 2=SplitMargin, 3=SplitEnabled
 	settingsEdit        bool
 	settingsInput       string
+	settingsBackup      TUISettings
 	scrollOffset        int
 	contentLines        int
 	layoutVersion       uint64
@@ -2266,14 +2267,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "p", "P":
 				m.snap.manualTradingPause = m.tui.ToggleTradingPause()
 				return m, nil
-			case "s", "S":
-				m.showSettings = false
-				m.refreshScrollMetrics()
-				return m, nil
-			case "r", "R":
-				m.tui.mu.Lock()
-				m.tui.restartReq = true
-				m.tui.mu.Unlock()
+			case "s", "S", "r", "R":
 				m.showSettings = false
 				m.refreshScrollMetrics()
 				return m, nil
@@ -2288,6 +2282,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.showSettings = false
 				m.refreshScrollMetrics()
+				m.tui.mu.Lock()
+				m.tui.settings = m.settingsBackup
+				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
+				notify := m.tui.settingsChangeHookLocked()
+				m.tui.mu.Unlock()
+				if notify != nil {
+					notify()
+				}
 				return m, nil
 			case "up", "k":
 				for {
@@ -2938,6 +2940,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settingsEdit = false
 			m.settingsInput = ""
 			m.scrollOffset = 0
+			m.tui.mu.Lock()
+			m.settingsBackup = m.tui.settings
+			m.tui.mu.Unlock()
 			if !isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
 				m.settingsCursor = 0
 				for m.settingsCursor < settingsRowCount-1 && !isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
@@ -6288,11 +6293,11 @@ func (m tuiModel) renderSettings(w int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
 	title := titleStyle.Render("⚙  LIVE SETTINGS")
 
-	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
+	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [1/2/3] Presets  [r/s] Apply  [Esc] Dismiss")
 	if m.settingsEdit {
 		keysLine = styleDimmed.Render("  Type value  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
 	} else if isCopytradeSettingsMode(cfg) {
-		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [Enter] Paste Target  [1/2/3] Presets  [r] Restart Round  [s/Esc] Close")
+		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [Enter] Paste Target  [1/2/3] Presets  [r/s] Apply  [Esc] Dismiss")
 	}
 
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
@@ -6862,7 +6867,6 @@ func (m tuiModel) renderSettings(w int) string {
 	if strings.EqualFold(mode, "Paper") || strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper) {
 		balanceResetNote = styleDimmed.Render("  Paper Balance updates available paper USDC. When flat it resets the session bankroll; with open inventory it applies as a neutral cash sync.") + "\n"
 	}
-	restartNote := styleDimmed.Render("  Press r to reload the active round after changing market, exchange, or strategy mode. Execution backend changes require a full bot restart.")
 
 	contentLines := []string{
 		title,
@@ -6886,7 +6890,7 @@ func (m tuiModel) renderSettings(w int) string {
 	if balanceResetNote != "" {
 		contentLines = append(contentLines, strings.TrimRight(balanceResetNote, "\n"))
 	}
-	contentLines = append(contentLines, balanceNote, restartNote)
+	contentLines = append(contentLines, balanceNote)
 
 	visibleLines, _, _ := viewportLines(contentLines, m.scrollOffset, m.settingsViewportHeight())
 	content := strings.Join(visibleLines, "\n")

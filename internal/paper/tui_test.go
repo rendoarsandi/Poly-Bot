@@ -1644,25 +1644,6 @@ func TestSettingsCloseKeyDoesNotRequestRestart(t *testing.T) {
 	}
 }
 
-func TestSettingsRestartKeyRequestsRestart(t *testing.T) {
-	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
-	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)
-
-	model := tuiModel{
-		tui:          tui,
-		showSettings: true,
-	}
-
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	updated := next.(tuiModel)
-
-	if updated.showSettings {
-		t.Fatalf("expected r to close the settings overlay")
-	}
-	if !tui.GetAndClearRestart() {
-		t.Fatalf("expected r to request a restart")
-	}
-}
 
 func TestTUIToggleTradingPause(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
