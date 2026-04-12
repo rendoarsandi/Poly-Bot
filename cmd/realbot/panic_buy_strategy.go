@@ -295,11 +295,12 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 
 	ladderedDirection := -1
+	ladderedMultiplier := 1
 	ladderedEntrySeq := uint64(0)
 	var pendingLadderedEntry realbotLadderedEntry
 	if ladderedMode {
 		var directionalReady bool
-		ladderedDirection, directionalReady = ladderedTakerDirectionalSide(derefLadderedEntries(stateEntries(state)), ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		ladderedDirection, ladderedMultiplier, directionalReady = ladderedTakerDirectionalSide(derefLadderedEntries(stateEntries(state)), ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 		if !directionalReady {
 			return true
 		}
@@ -329,7 +330,15 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
 			return true
 		}
-		shares = activeSize
+		shares = activeSize * float64(ladderedMultiplier)
+		if ladderedMultiplier > 1 {
+			args.tui.LogEvent("[%s] ℹ️ Ladder missed %d steps, scaling size up to %s shares", args.marketID, ladderedMultiplier, formatShareQty(shares))
+		}
+		if ladderedDirection == 1 {
+			requestSize2 = shares
+		} else {
+			requestSize1 = shares
+		}
 	} else if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
 		args.tui.LogEvent("[%s] ⚠️ Actionable arb legs below %.2f share minimum: %s/%s", args.marketID, minEntryShares, formatShareQty(requestSize1), formatShareQty(requestSize2))
 		return true
