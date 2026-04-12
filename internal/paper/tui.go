@@ -5380,6 +5380,8 @@ type marketPnLSummary struct {
 	hasCurrentPnL   bool
 	bestResolvePnL  float64
 	worstResolvePnL float64
+	bestOutcome     string
+	worstOutcome    string
 }
 
 func summarizeMarketPnL(positions []PositionPnL) marketPnLSummary {
@@ -5409,19 +5411,23 @@ func summarizeMarketPnL(positions []PositionPnL) marketPnLSummary {
 	}
 
 	first := true
-	for _, payout := range outcomePayouts {
+	for outcome, payout := range outcomePayouts {
 		pnl := payout - totalCost
 		if first {
 			summary.bestResolvePnL = pnl
 			summary.worstResolvePnL = pnl
+			summary.bestOutcome = outcome
+			summary.worstOutcome = outcome
 			first = false
 			continue
 		}
 		if pnl > summary.bestResolvePnL {
 			summary.bestResolvePnL = pnl
+			summary.bestOutcome = outcome
 		}
 		if pnl < summary.worstResolvePnL {
 			summary.worstResolvePnL = pnl
+			summary.worstOutcome = outcome
 		}
 	}
 
@@ -5429,9 +5435,11 @@ func summarizeMarketPnL(positions []PositionPnL) marketPnLSummary {
 		fullLoss := -totalCost
 		if fullLoss < summary.worstResolvePnL {
 			summary.worstResolvePnL = fullLoss
+			summary.worstOutcome = "Other"
 		}
 		if fullLoss > summary.bestResolvePnL {
 			summary.bestResolvePnL = fullLoss
+			summary.bestOutcome = "Other"
 		}
 	}
 
@@ -5522,7 +5530,13 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 
 		aStyle := getAssetStyle(marketID)
-		sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + "  ")
+		marketStatus := styleYellow.Render(" [TRADING]")
+		if mkt, ok := s.markets[marketID]; ok && mkt != nil {
+			if !mkt.EndTime.IsZero() && time.Now().After(mkt.EndTime) {
+				marketStatus = styleDimmed.Render(" [WAITING RESOLVE]")
+			}
+		}
+		sb.WriteString("  " + aStyle.Render("["+marketDisplayLabel(marketID)+"]") + marketStatus + "  ")
 
 		sort.Slice(mps, func(i, j int) bool { return outcomeSortLess(mps[i].Outcome, mps[j].Outcome) })
 
@@ -5562,8 +5576,10 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		} else if math.Abs(summary.bestResolvePnL) >= 0.005 || math.Abs(summary.worstResolvePnL) >= 0.005 {
 			bestSign, bestStyle := signOf(summary.bestResolvePnL)
 			worstSign, worstStyle := signOf(summary.worstResolvePnL)
-			sb.WriteString("  →  🏁 " + bestStyle.Render(fmt.Sprintf("%s$%.2f", bestSign, summary.bestResolvePnL)) + "/" +
-				worstStyle.Render(fmt.Sprintf("%s$%.2f", worstSign, summary.worstResolvePnL)))
+			bestOut := core.SanitizeString(summary.bestOutcome)
+			worstOut := core.SanitizeString(summary.worstOutcome)
+			sb.WriteString("  →  🏁 " + bestStyle.Render(fmt.Sprintf("If %s wins: %s$%.2f", bestOut, bestSign, summary.bestResolvePnL)) + " / " +
+				worstStyle.Render(fmt.Sprintf("If %s wins: %s$%.2f", worstOut, worstSign, summary.worstResolvePnL)))
 		}
 		sb.WriteString("\n")
 	}
@@ -6045,9 +6061,9 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			summaryLines := strings.Split(displaySummary, "\n")
 			for idx, line := range summaryLines {
 				if idx == 0 {
-					sb.WriteString("        " + styleDimmed.Render("Shares: ") + styleWhite.Render(line) + "\n")
+					sb.WriteString("        " + styleDimmed.Render("↳ ") + styleWhite.Render(line) + "\n")
 				} else {
-					sb.WriteString("                " + styleWhite.Render(line) + "\n")
+					sb.WriteString("          " + styleWhite.Render(line) + "\n")
 				}
 			}
 		}
