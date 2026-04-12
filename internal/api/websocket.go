@@ -525,7 +525,7 @@ func (m *WSManager) processInboundMessage(p []byte) ([]byte, bool) {
 // StartStreaming starts a goroutine that continuously reads messages and sends to channel
 // Returns a channel that receives messages in real-time
 func (m *WSManager) StartStreaming(ctx context.Context) <-chan []byte {
-	msgChan := make(chan []byte, 1000) // Increased buffer for bursts
+	msgChan := make(chan []byte, 100000) // Massive buffer to prevent dropping ticks
 
 	go func() {
 		defer close(msgChan)
