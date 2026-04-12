@@ -11,6 +11,7 @@ import (
 
 	"Market-bot/internal/core"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestTUI_RegisterSplitInventory(t *testing.T) {
@@ -1644,7 +1645,6 @@ func TestSettingsCloseKeyDoesNotRequestRestart(t *testing.T) {
 	}
 }
 
-
 func TestTUIToggleTradingPause(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	if tui.IsTradingPaused() {
@@ -2218,8 +2218,52 @@ func TestRenderRoundHistorySuppressesUnchangedCarryFromLaterRows(t *testing.T) {
 	if count := strings.Count(rendered, "m2: Up 10"); count != 1 {
 		t.Fatalf("expected unchanged carry market to render only on its original round, found %d copies in %q", count, rendered)
 	}
-	if !strings.Contains(rendered, "m3: Up 14@$0.57  |  Down 10@$0.61") {
-		t.Fatalf("expected later round to keep only its new pair, got %q", rendered)
+	if !strings.Contains(rendered, "m3: Up 14@$0.57") || !strings.Contains(rendered, "Down 10@$0.61") {
+		t.Fatalf("expected later round to keep only its new pair across wrapped lines, got %q", rendered)
+	}
+}
+
+func TestRenderRoundHistoryWrapsSummaryWithinPanelWidth(t *testing.T) {
+	const panelWidth = 50
+
+	model := tuiModel{
+		snap: tuiSnapshot{
+			roundHistory: []RoundHistoryEntry{
+				{
+					Number:         3,
+					Timestamp:      time.Unix(2, 0),
+					StartingEquity: 501.41,
+					EndingEquity:   505.13,
+					PnL:            3.72,
+					Trades:         11,
+					ShareSummary: strings.Join([]string{
+						"1776036300: Up 9.07207@$0.67 ✓  |  Down 2.01672@$0.31 ✗",
+						"1776036600: Up 3.01786@$0.42 ✗  |  Down 8.06188@$0.67 ✓",
+					}, "\n"),
+				},
+			},
+		},
+	}
+
+	rendered := model.renderRoundHistory(panelWidth, 5)
+
+	if !strings.Contains(rendered, "1776036300: Up 9.07207@$0.67") {
+		t.Fatalf("expected first market summary to remain visible, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Down 2.01672@$0.31") {
+		t.Fatalf("expected first market second outcome to wrap onto its own line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "1776036600: Up 3.01786@$0.42") {
+		t.Fatalf("expected second market summary to remain on its own line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Down 8.06188@$0.67") {
+		t.Fatalf("expected second market second outcome to wrap onto its own line, got %q", rendered)
+	}
+
+	for _, line := range strings.Split(rendered, "\n") {
+		if width := ansi.StringWidth(line); width > panelWidth {
+			t.Fatalf("expected rendered round-history line width <= %d, got %d for %q", panelWidth, width, line)
+		}
 	}
 }
 

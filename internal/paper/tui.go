@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"Market-bot/internal/core"
 )
@@ -1303,7 +1304,7 @@ type TUI struct {
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
 	settings         TUISettings
 	onSettingsChange func(TUISettings)
-	restartReq bool
+	restartReq       bool
 
 	amendedPnLForNextRound float64
 
@@ -5980,6 +5981,69 @@ func roundHistoryDisplaySummary(history []RoundHistoryEntry, idx int) string {
 	return roundHistoryShareSummary(filteredPositions, filteredRedemptions)
 }
 
+func wrapRoundHistoryDisplaySummary(summary string, width int) []string {
+	if strings.TrimSpace(summary) == "" {
+		return nil
+	}
+	if width < 12 {
+		width = 12
+	}
+
+	lines := make([]string, 0, strings.Count(summary, "\n")+1)
+	for _, rawLine := range strings.Split(summary, "\n") {
+		rawLine = strings.TrimRight(rawLine, " ")
+		if rawLine == "" {
+			continue
+		}
+		for _, expandedLine := range expandRoundHistoryOutcomeLine(rawLine) {
+			expandedLine = strings.TrimRight(expandedLine, " ")
+			if expandedLine == "" {
+				continue
+			}
+			for _, wrappedLine := range strings.Split(ansi.Wordwrap(expandedLine, width, " "), "\n") {
+				wrappedLine = strings.TrimRight(wrappedLine, " ")
+				if wrappedLine == "" {
+					continue
+				}
+				lines = append(lines, wrappedLine)
+			}
+		}
+	}
+	return lines
+}
+
+func expandRoundHistoryOutcomeLine(line string) []string {
+	idx := strings.Index(line, ": ")
+	if idx < 0 {
+		return []string{line}
+	}
+
+	prefix := line[:idx+2]
+	remainder := line[idx+2:]
+	parts := strings.Split(remainder, "  |  ")
+	if len(parts) <= 1 {
+		return []string{line}
+	}
+
+	lines := make([]string, 0, len(parts))
+	continuationPrefix := strings.Repeat(" ", lipgloss.Width(prefix))
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if i == 0 {
+			lines = append(lines, prefix+part)
+		} else {
+			lines = append(lines, continuationPrefix+part)
+		}
+	}
+	if len(lines) == 0 {
+		return []string{line}
+	}
+	return lines
+}
+
 func positionsWithPnLOpenInventoryCounts(positions map[string]PositionPnL) (markets, legs int) {
 	if len(positions) == 0 {
 		return 0, 0
@@ -6092,7 +6156,7 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 		))
 		displaySummary := roundHistoryDisplaySummary(s.roundHistory, i)
 		if displaySummary != "" {
-			summaryLines := strings.Split(displaySummary, "\n")
+			summaryLines := wrapRoundHistoryDisplaySummary(displaySummary, max(12, inner-10))
 			for idx, line := range summaryLines {
 				if idx == 0 {
 					sb.WriteString("        " + styleDimmed.Render("↳ ") + styleWhite.Render(line) + "\n")
