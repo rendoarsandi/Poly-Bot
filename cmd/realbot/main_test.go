@@ -226,7 +226,7 @@ func TestRealbotLadderedRequestedQtyUSDCRespectsMaxTradeSize(t *testing.T) {
 		MaxTradeSize:            4.0,
 	}
 
-	want := normalizeMarketBuyShares(4.0 / 0.61)
+	want := normalizeMarketBuyShares(4.0 / 0.60)
 	if got := realbotLadderedRequestedQty(0.90, cfg, 0.60, 0.61); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("expected max trade size to cap directional ladder sizing at %.4f, got %.4f", want, got)
 	}

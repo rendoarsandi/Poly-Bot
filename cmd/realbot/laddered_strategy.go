@@ -30,15 +30,17 @@ func realbotLadderedRequestedQty(pairSum float64, liveCfg paper.TUISettings, ask
 		budget = liveCfg.MaxTradeSize
 	}
 
-	sizingPrice := limitPrice
+	sizingPrice := ask
 	if sizingPrice <= 0 {
-		sizingPrice = ask
+		sizingPrice = limitPrice
 	}
 	if sizingPrice <= 0 {
 		return 0
 	}
 
 	requestedQty := normalizeMarketBuyShares(budget / sizingPrice)
+	// We size against the expected ask price to get the true notional amount requested,
+	// rather than artificially shrinking the size due to high slippage limits.
 	return realbotClampSingleBuySharesToBudget(requestedQty, budget, sizingPrice)
 }
 
