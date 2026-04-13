@@ -639,6 +639,10 @@ func isLadderedTakerSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "laddered-taker")
 }
 
+func isLadderedTakerShareSizingMode(cfg TUISettings) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.LadderedTakerSizingMode), core.LadderedTakerSizingModeShares)
+}
+
 func isBinanceGapSettingsMode(cfg TUISettings) bool {
 	return strings.EqualFold(cfg.PaperArbMode, "binance-gap")
 }
@@ -808,7 +812,7 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 			return "Copy Size (USDC)"
 		}
 		if laddered {
-			if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+			if isLadderedTakerShareSizingMode(cfg) {
 				return "Ladder Size (Shares)"
 			}
 			return "Ladder Size (USDC)"
@@ -1485,7 +1489,7 @@ func settingsEditValue(cfg TUISettings, row int) string {
 			return fmt.Sprintf("%.2f", cfg.CopytradeSizeUSDC)
 		}
 		if isLadderedTakerSettingsMode(cfg) {
-			if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+			if isLadderedTakerShareSizingMode(cfg) {
 				return fmt.Sprintf("%.2f", cfg.LadderedTakerSizeShares)
 			}
 			return fmt.Sprintf("%.2f", cfg.LadderedTakerSizeUSDC)
@@ -1627,7 +1631,7 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 			return true
 		}
 		if isLadderedTakerSettingsMode(*cfg) {
-			if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+			if isLadderedTakerShareSizingMode(*cfg) {
 				if cfg.LadderedTakerSizeShares == value {
 					return false
 				}
@@ -2395,7 +2399,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					} else if isLadderedTakerSettingsMode(m.tui.settings) {
-						if strings.EqualFold(m.tui.settings.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+						if isLadderedTakerShareSizingMode(m.tui.settings) {
 							m.tui.settings.LadderedTakerSizeShares -= 0.25
 							if m.tui.settings.LadderedTakerSizeShares < 0.01 {
 								m.tui.settings.LadderedTakerSizeShares = 0.01
@@ -2673,7 +2677,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.tui.settings.CopytradeSizeUSDC += 0.1
 						}
 					} else if isLadderedTakerSettingsMode(m.tui.settings) {
-						if strings.EqualFold(m.tui.settings.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+						if isLadderedTakerShareSizingMode(m.tui.settings) {
 							m.tui.settings.LadderedTakerSizeShares += 0.25
 						} else {
 							m.tui.settings.LadderedTakerSizeUSDC += 0.1
@@ -5215,7 +5219,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 			tradeLine = fmt.Sprintf("  Copy $%.2f cap  ·  ", settings.CopytradeSizeUSDC)
 		}
 	} else if ladderedMode {
-		if strings.EqualFold(settings.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+		if isLadderedTakerShareSizingMode(settings) {
 			tradeLine = fmt.Sprintf("  Ladder %.5g shares  ·  ", settings.LadderedTakerSizeShares)
 		} else {
 			tradeLine = fmt.Sprintf("  Ladder $%.2f cap  ·  ", settings.LadderedTakerSizeUSDC)
@@ -6540,7 +6544,7 @@ func (m tuiModel) renderSettings(w int) string {
 					return styleGreen.Render(" USDC ")
 				}
 				if ladderedMode {
-					if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+					if isLadderedTakerShareSizingMode(cfg) {
 						return styleCyan.Render(" SHARES ")
 					}
 					return styleGreen.Render(" USDC ")
@@ -6568,7 +6572,7 @@ func (m tuiModel) renderSettings(w int) string {
 					return fmt.Sprintf(" $%.2f ", cfg.CopytradeSizeUSDC)
 				}
 				if ladderedMode {
-					if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+					if isLadderedTakerShareSizingMode(cfg) {
 						return fmt.Sprintf(" %s sh ", fmtFloatTrim(cfg.LadderedTakerSizeShares, 2))
 					}
 					return fmt.Sprintf(" $%.2f ", cfg.LadderedTakerSizeUSDC)
@@ -6589,7 +6593,7 @@ func (m tuiModel) renderSettings(w int) string {
 					return renderBar(cfg.CopytradeSizeUSDC/tradeSizeBarMax, 20)
 				}
 				if ladderedMode {
-					if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+					if isLadderedTakerShareSizingMode(cfg) {
 						return renderBar(cfg.LadderedTakerSizeShares/25.0, 20)
 					}
 					return renderBar(cfg.LadderedTakerSizeUSDC/tradeSizeBarMax, 20)
@@ -7029,7 +7033,7 @@ func (m tuiModel) renderSettings(w int) string {
 		}
 		modeNote = styleDimmed.Render("  Copytrade mode: buy when the target wallet/profile holds an outcome, sell when it exits. Enter a wallet, @handle, or profile URL on the target row.") + "\n"
 	} else if ladderedMode {
-		if strings.EqualFold(cfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeShares) {
+		if isLadderedTakerShareSizingMode(cfg) {
 			balanceNote = styleDimmed.Render(fmt.Sprintf(
 				"  Laddered taker share sizing active → buy paired slices of %s shares per entry",
 				fmtFloatTrim(cfg.LadderedTakerSizeShares, 2),

@@ -1488,6 +1488,80 @@ func TestSettingsTradeSizingValueSupportsDirectTypedEdit(t *testing.T) {
 	}
 }
 
+func TestSettingsTradeSizingValueSupportsDirectTypedEditInLadderedUSDCMode(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "laddered-taker",
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   1.0,
+		LadderedTakerSizeShares: 7.5,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowTradeSizingValue,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	updated := next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected typing on the ladder usdc size row to enter edit mode")
+	}
+	if updated.settingsInput != "2" {
+		t.Fatalf("expected typed input to seed edit buffer, got %q", updated.settingsInput)
+	}
+
+	for _, r := range []rune{'.', '7'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if updated.settingsEdit {
+		t.Fatal("expected enter to commit the typed ladder usdc edit")
+	}
+	if got := tui.GetSettings().LadderedTakerSizeUSDC; got != 2.7 {
+		t.Fatalf("expected typed ladder usdc size 2.7, got %.2f", got)
+	}
+	if got := tui.GetSettings().LadderedTakerSizeShares; got != 7.5 {
+		t.Fatalf("expected ladder share size to remain unchanged, got %.2f", got)
+	}
+}
+
+func TestSettingsTradeSizingValueEnterUsesLadderedUSDCValueAfterModeSwitch(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "laddered-taker",
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeShares,
+		LadderedTakerSizeShares: 4.25,
+		LadderedTakerSizeUSDC:   1.7,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowTradeSizingMode,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated := next.(tuiModel)
+	if got := tui.GetSettings().LadderedTakerSizingMode; got != core.LadderedTakerSizingModeUSDC {
+		t.Fatalf("expected ladder sizing mode to switch to usdc, got %q", got)
+	}
+
+	updated.settingsCursor = settingsRowTradeSizingValue
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected enter on the ladder size row to start edit mode")
+	}
+	if updated.settingsInput != "1.70" {
+		t.Fatalf("expected usdc edit buffer to seed from ladder usdc value, got %q", updated.settingsInput)
+	}
+}
+
 func TestSettingsExecutionSlipSupportsDirectTypedEditInCopytradeMode(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
