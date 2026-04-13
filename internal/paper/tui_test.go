@@ -1448,6 +1448,32 @@ func TestRenderSettingsShowsLadderCooldownAndHidesUnrelatedRows(t *testing.T) {
 	}
 }
 
+func TestRenderSettingsShowsLadderUSDCSizingText(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.InitSettings(TUISettings{
+		PaperArbMode:                   "laddered-taker",
+		LadderedTakerSizingMode:        core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:          2.7,
+		LadderedTakerSizeShares:        9.5,
+		LadderedTakerReentryMoveCents:  2.0,
+		BuyExecutionMarginFloorPercent: -0.02,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	for _, want := range []string{"Ladder Size Mode", "Ladder Size (USDC)", "USDC", "$2.70", "Laddered taker USDC sizing active"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("renderSettings() missing %q\n%s", want, view)
+		}
+	}
+	for _, hidden := range []string{"Ladder Size (Shares)", "9.5 shares per entry", "share sizing active"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("renderSettings() unexpectedly showed %q\n%s", hidden, view)
+		}
+	}
+}
+
 func TestSettingsTradeSizingValueSupportsDirectTypedEdit(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -3030,6 +3056,36 @@ func TestRenderAccountStatusUsesMatchedLabelInLadderedMode(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Equity ") {
 		t.Fatalf("expected real account status to show equity labels, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsLadderUSDCCapWhenConfigured(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode: "Real",
+			settings: TUISettings{
+				PaperArbMode:                "laddered-taker",
+				LadderedTakerSizingMode:     core.LadderedTakerSizingModeUSDC,
+				LadderedTakerSizeUSDC:       2.7,
+				LadderedTakerSizeShares:     9.5,
+				LadderedTakerMaxSlippagePct: 5.0,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  65.0,
+		StartingBalance: 100.0,
+	}, 35.0, 0, 92.25, 92.25, 1.0, 100.0, 0, 0, 0, map[string]Position{
+		"m1:Down": {MarketID: "m1", Outcome: "Down", Quantity: 27.1186, AvgPrice: 0.74, TotalCost: 20.067764},
+		"m1:Up":   {MarketID: "m1", Outcome: "Up", Quantity: 40.5598, AvgPrice: 0.37, TotalCost: 15.007126},
+	})
+
+	if !strings.Contains(rendered, "Ladder $2.70 cap") {
+		t.Fatalf("expected ladder usdc account status to show usdc cap, got %q", rendered)
+	}
+	if strings.Contains(rendered, "9.5 shares") {
+		t.Fatalf("expected ladder usdc account status to avoid share sizing text, got %q", rendered)
 	}
 }
 
