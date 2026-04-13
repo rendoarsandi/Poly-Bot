@@ -22,7 +22,6 @@ import (
 	"flag"
 	"fmt"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -143,65 +142,6 @@ func (s *summary) add(marketID int, reg regime, r result) {
 		s.WorstMarketReg = reg
 		s.WorstMarketPnL = r.PnL
 		s.worstMarketSet = true
-	}
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-func randomRegime(rng *rand.Rand) regime {
-	all := []regime{regimeTrendUp, regimeTrendDown, regimeChop, regimeAmbiguous}
-	return all[rng.Intn(len(all))]
-}
-
-func generateMarket(rng *rand.Rand, id, ticks int) marketCase {
-	r := randomRegime(rng)
-	prices := make([]float64, 0, ticks)
-	price := clamp(0.50+rng.NormFloat64()*0.03, 0.18, 0.82)
-	start := price
-	drift := rng.Float64()*0.004 - 0.002
-	prices = append(prices, price)
-
-	for i := 1; i < ticks; i++ {
-		price = clamp(price+nextDelta(rng, r, start, price, drift, i), 0.05, 0.95)
-		prices = append(prices, price)
-	}
-
-	return marketCase{
-		ID:     id,
-		Regime: r,
-		Slug:   fmt.Sprintf("random-%d", id),
-		Prices: prices,
-	}
-}
-
-func nextDelta(rng *rand.Rand, r regime, start, current, drift float64, tick int) float64 {
-	switch r {
-	case regimeTrendUp:
-		return 0.009 + rng.NormFloat64()*0.008
-	case regimeTrendDown:
-		return -0.009 + rng.NormFloat64()*0.008
-	case regimeChop:
-		revert := (start - current) * 0.35
-		flip := 0.008
-		if tick%2 == 0 {
-			flip = -flip
-		}
-		return revert + flip + rng.NormFloat64()*0.010
-	default:
-		shock := 0.0
-		if rng.Float64() < 0.12 {
-			shock = (rng.Float64()*0.06 - 0.03)
-		}
-		revert := (start - current) * 0.12
-		return drift + revert + shock + rng.NormFloat64()*0.016
 	}
 }
 
@@ -643,46 +583,30 @@ func fetchTokenPricePath(ctx context.Context, tokenID string, startTS, endTS int
 func main() {
 	var (
 		marketCount = flag.Int("markets", 50, "number of random markets to simulate")
-		ticks       = flag.Int("ticks", 80, "number of price updates per market")
-		seed        = flag.Int64("seed", 42, "random seed for deterministic runs")
 		csvPrefix   = flag.String("csv-prefix", "", "output prefix for detail/summary CSV files")
-		source      = flag.String("source", "random", "data source: random or btc15m")
 		shareSize   = flag.Float64("share-size", 1.0, "fixed shares per entry when mode=shares")
 		usdcSize    = flag.Float64("usdc-size", 1.0, "fixed USDC budget per entry when mode=usdc")
 	)
 	flag.Parse()
 
-	if *marketCount <= 0 || *ticks < 2 || *shareSize <= 0 || *usdcSize <= 0 {
-		fmt.Fprintln(os.Stderr, "markets must be > 0, ticks must be >= 2, and share/usdc sizes must be > 0")
+	if *marketCount <= 0 || *shareSize <= 0 || *usdcSize <= 0 {
+		fmt.Fprintln(os.Stderr, "markets must be > 0, and share/usdc sizes must be > 0")
 		os.Exit(1)
 	}
 
 	var markets []marketCase
 	regimeCounts := map[regime]int{}
-	switch *source {
-	case "random":
-		rng := rand.New(rand.NewSource(*seed))
-		markets = make([]marketCase, 0, *marketCount)
-		for i := 0; i < *marketCount; i++ {
-			m := generateMarket(rng, i+1, *ticks)
-			markets = append(markets, m)
-			regimeCounts[m.Regime]++
-		}
-	case "btc15m":
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		var err error
-		markets, err = fetchRecentBTC15mMarkets(ctx, *marketCount)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to fetch BTC 15m history: %v\n", err)
-			os.Exit(1)
-		}
-		for _, m := range markets {
-			regimeCounts[m.Regime]++
-		}
-	default:
-		fmt.Fprintf(os.Stderr, "unsupported source %q\n", *source)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var err error
+	markets, err = fetchRecentBTC15mMarkets(ctx, *marketCount)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to fetch BTC 15m history: %v\n", err)
 		os.Exit(1)
+	}
+	for _, m := range markets {
+		regimeCounts[m.Regime]++
 	}
 
 	overall := make(map[int]map[string]summary)
@@ -730,11 +654,7 @@ func main() {
 
 	prefix := *csvPrefix
 	if prefix == "" {
-		if *source == "random" {
-			prefix = filepath.Join("logs", fmt.Sprintf("ladder_reentry_%s_seed%d", *source, *seed))
-		} else {
-			prefix = filepath.Join("logs", fmt.Sprintf("ladder_reentry_%s_%dmarkets", *source, len(markets)))
-		}
+		prefix = filepath.Join("logs", fmt.Sprintf("ladder_reentry_btc15m_%dmarkets", len(markets)))
 	}
 	if err := os.MkdirAll(filepath.Dir(prefix), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create csv output dir: %v\n", err)
@@ -752,11 +672,7 @@ func main() {
 	}
 
 	fmt.Printf("Ladder re-entry simulation\n")
-	if *source == "random" {
-		fmt.Printf("source=%s markets=%d ticks=%d seed=%d\n", *source, *marketCount, *ticks, *seed)
-	} else {
-		fmt.Printf("source=%s markets=%d\n", *source, len(markets))
-	}
+	fmt.Printf("source=btc15m markets=%d\n", len(markets))
 	fmt.Printf("re-entry presets=1c..5c | entry sizing compares fixed %.2f share vs fixed %.2f USDC\n", *shareSize, *usdcSize)
 	fmt.Printf("PnL is mark-to-final-price, not settlement payout\n\n")
 	fmt.Printf("CSV detail: %s\n", detailCSV)
