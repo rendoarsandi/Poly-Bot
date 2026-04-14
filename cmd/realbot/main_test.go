@@ -936,6 +936,24 @@ func TestRealbotLateRedeemBlocksLadderEntryUntilNextWindow(t *testing.T) {
 	}
 }
 
+func TestRealbotLateRedeemAllowsImmediateLadderReentryWhenConfigured(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	now := time.Now()
+	previousMarketID := fmt.Sprintf("btc-updown-5m-%d", now.Add(-7*time.Minute).Unix())
+	currentMarketID := fmt.Sprintf("btc-updown-5m-%d", now.Add(-2*time.Minute).Unix())
+	engine.SetPendingRedemption(previousMarketID, 5.0)
+	_ = engine.SettlePendingRedemption(previousMarketID)
+
+	reason, blocked := realbotEntryBlockReason(currentMarketID, engine, nil, paper.TUISettings{
+		PaperArbMode:                       "laddered-taker",
+		BlockNewEntriesOnPendingRedemption: true,
+		RedeemEntryTiming:                  core.RedeemEntryTimingImmediate,
+	})
+	if blocked || reason != "" {
+		t.Fatalf("expected immediate mode to skip next-window wait, got blocked=%v reason=%q", blocked, reason)
+	}
+}
+
 func TestRealbotLateRedeemDoesNotBlockNonLadderModes(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	now := time.Now()

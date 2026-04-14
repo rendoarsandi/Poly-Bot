@@ -556,6 +556,7 @@ type TUISettings struct {
 	MaxDailyLoss                       float64 // e.g. 0.0 = disabled, else max drawdown limit
 	TakerCloseMarket                   bool    // e.g. force buy higher side close to end
 	BlockNewEntriesOnPendingRedemption bool    // block fresh entries while prior-round inventory is still awaiting redemption
+	RedeemEntryTiming                  string  // when wait-redeem is ON: "immediate" or "next-market" re-entry behavior
 	TakerCloseMarketTime               int     // e.g. 5 seconds
 	TakerCloseMarketSlippage           float64 // e.g. 0.99 limit price
 	TakerCloseMarketMinPrice           float64 // e.g. 0.60 min spike price
@@ -591,6 +592,7 @@ const (
 	settingsRowSplitReplenishCap
 	settingsRowTakerCloseMarket
 	settingsRowBlockPendingRedemption
+	settingsRowRedeemEntryTiming
 	settingsRowMinAskPrice
 	settingsRowMaxAskPrice
 	settingsRowMakerMergeBuffer
@@ -696,6 +698,9 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	}
 	if idx == settingsRowExecutionBackend {
 		return !strings.EqualFold(mode, "Paper")
+	}
+	if idx == settingsRowRedeemEntryTiming {
+		return laddered && cfg.BlockNewEntriesOnPendingRedemption
 	}
 
 	if kalshi {
@@ -862,6 +867,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Taker Close Market"
 	case settingsRowBlockPendingRedemption:
 		return "Wait Redeem Before Entry"
+	case settingsRowRedeemEntryTiming:
+		return "Redeem Re-entry Timing"
 	case settingsRowMinAskPrice:
 		if maker {
 			return "Maker Min Buy Price"
@@ -1050,6 +1057,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		s.LadderedTakerSizeShares = 0.01
 	}
 	s.LadderedTakerReentryMoveCents = normalizeLadderedTakerReentryMoveCents(s.LadderedTakerReentryMoveCents)
+	s.RedeemEntryTiming = normalizeRedeemEntryTiming(s.RedeemEntryTiming)
 	if s.LadderedTakerMaxSlippagePct < 0 {
 		s.LadderedTakerMaxSlippagePct = 0
 	} else if s.LadderedTakerMaxSlippagePct > 99.0 {
@@ -1103,6 +1111,32 @@ func cycleLadderedTakerSizingMode(mode string, delta int) string {
 		core.LadderedTakerSizingModeShares,
 	}
 	current := normalizeTUISettings(TUISettings{LadderedTakerSizingMode: mode}).LadderedTakerSizingMode
+	idx := 0
+	for i, candidate := range modes {
+		if current == candidate {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(modes)) % len(modes)
+	return modes[idx]
+}
+
+func normalizeRedeemEntryTiming(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case core.RedeemEntryTimingImmediate:
+		return core.RedeemEntryTimingImmediate
+	default:
+		return core.RedeemEntryTimingNextMarket
+	}
+}
+
+func cycleRedeemEntryTiming(mode string, delta int) string {
+	modes := []string{
+		core.RedeemEntryTimingNextMarket,
+		core.RedeemEntryTimingImmediate,
+	}
+	current := normalizeRedeemEntryTiming(mode)
 	idx := 0
 	for i, candidate := range modes {
 		if current == candidate {
@@ -2499,6 +2533,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowBlockPendingRedemption:
 					m.tui.settings.BlockNewEntriesOnPendingRedemption = !m.tui.settings.BlockNewEntriesOnPendingRedemption
 					changed = true
+				case settingsRowRedeemEntryTiming:
+					m.tui.settings.RedeemEntryTiming = cycleRedeemEntryTiming(m.tui.settings.RedeemEntryTiming, -1)
+					changed = true
 				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
@@ -2767,6 +2804,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowBlockPendingRedemption:
 					m.tui.settings.BlockNewEntriesOnPendingRedemption = !m.tui.settings.BlockNewEntriesOnPendingRedemption
+					changed = true
+				case settingsRowRedeemEntryTiming:
+					m.tui.settings.RedeemEntryTiming = cycleRedeemEntryTiming(m.tui.settings.RedeemEntryTiming, 1)
 					changed = true
 				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice += 0.01
@@ -6748,6 +6788,16 @@ func (m tuiModel) renderSettings(w int) string {
 					return styleGreen.Render("  ON ")
 				}
 				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowRedeemEntryTiming),
+			value: func() string {
+				if normalizeRedeemEntryTiming(cfg.RedeemEntryTiming) == core.RedeemEntryTimingImmediate {
+					return styleGreen.Render(" IMMEDIATE ")
+				}
+				return styleYellow.Render(" NEXT FULL ")
 			}(),
 			bar: "",
 		},

@@ -30,6 +30,8 @@ const (
 	CopytradeSizingModePercent    = "percent"
 	LadderedTakerSizingModeUSDC   = "usdc"
 	LadderedTakerSizingModeShares = "shares"
+	RedeemEntryTimingImmediate    = "immediate"
+	RedeemEntryTimingNextMarket   = "next-market"
 
 	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
@@ -128,6 +130,7 @@ type Config struct {
 	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only"
 	TakerCloseMarket                   bool    // Force GTC buy right before market closes
 	BlockNewEntriesOnPendingRedemption bool    // Block fresh entries while prior-round inventory/payout is still unresolved
+	RedeemEntryTiming                  string  // Re-entry timing after redemption wait: "immediate" or "next-market"
 	TakerCloseMarketTime               int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage           float64 // Limit price for taker close (default: 0.99)
 	TakerCloseMarketMinPrice           float64 // Min price to trigger close buy (default: 0.60)
@@ -201,6 +204,7 @@ type RuntimeSettings struct {
 	TradingHoursMode                   string  `json:"tradingHoursMode"`
 	TakerCloseMarket                   bool    `json:"takerCloseMarket"`
 	BlockNewEntriesOnPendingRedemption bool    `json:"blockNewEntriesOnPendingRedemption"`
+	RedeemEntryTiming                  string  `json:"redeemEntryTiming"`
 	TakerCloseMarketTime               int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage           float64 `json:"takerCloseMarketSlippage"`
 	TakerCloseMarketMinPrice           float64 `json:"takerCloseMarketMinPrice"`
@@ -295,6 +299,7 @@ func LoadConfig() (*Config, error) {
 		TradingHoursMode:                   parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
 		CopytradeTarget:                    strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		BlockNewEntriesOnPendingRedemption: os.Getenv("BLOCK_NEW_ENTRIES_ON_PENDING_REDEMPTION") == "true",
+		RedeemEntryTiming:                  normalizeRedeemEntryTiming(parseEnvString("REDEEM_ENTRY_TIMING", RedeemEntryTimingNextMarket)),
 		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
 		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
 		CopytradeSizingMode:                normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
@@ -357,6 +362,15 @@ func normalizeLadderedTakerSizingMode(mode string) string {
 		return LadderedTakerSizingModeShares
 	default:
 		return LadderedTakerSizingModeUSDC
+	}
+}
+
+func normalizeRedeemEntryTiming(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case RedeemEntryTimingImmediate:
+		return RedeemEntryTimingImmediate
+	default:
+		return RedeemEntryTimingNextMarket
 	}
 }
 
@@ -749,6 +763,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TradingHoursMode:                   c.TradingHoursMode,
 		TakerCloseMarket:                   c.TakerCloseMarket,
 		BlockNewEntriesOnPendingRedemption: c.BlockNewEntriesOnPendingRedemption,
+		RedeemEntryTiming:                  normalizeRedeemEntryTiming(c.RedeemEntryTiming),
 		TakerCloseMarketTime:               c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:           c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:           c.TakerCloseMarketMinPrice,
@@ -824,6 +839,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TradingHoursMode = s.TradingHoursMode
 	c.TakerCloseMarket = s.TakerCloseMarket
 	c.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
+	c.RedeemEntryTiming = normalizeRedeemEntryTiming(s.RedeemEntryTiming)
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
@@ -891,6 +907,7 @@ func (c *Config) SaveSettings() error {
 	envMap["SPLIT_INITIAL_CAP_PCT"] = strconv.FormatFloat(c.SplitInitialCapPct, 'f', -1, 64)
 	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
 	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
+	envMap["REDEEM_ENTRY_TIMING"] = normalizeRedeemEntryTiming(c.RedeemEntryTiming)
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 	envMap["COPYTRADE_MAX_SLIPPAGE_PCT"] = strconv.FormatFloat(normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct), 'f', -1, 64)

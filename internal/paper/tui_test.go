@@ -3318,6 +3318,18 @@ func TestNormalizeTUISettingsClampsLadderedTakerMaxSlippagePct(t *testing.T) {
 	}
 }
 
+func TestNormalizeTUISettingsDefaultsRedeemEntryTimingToNextMarket(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{})
+	if got.RedeemEntryTiming != core.RedeemEntryTimingNextMarket {
+		t.Fatalf("expected default redeem entry timing %q, got %q", core.RedeemEntryTimingNextMarket, got.RedeemEntryTiming)
+	}
+
+	got = normalizeTUISettings(TUISettings{RedeemEntryTiming: "immediate"})
+	if got.RedeemEntryTiming != core.RedeemEntryTimingImmediate {
+		t.Fatalf("expected redeem entry timing %q, got %q", core.RedeemEntryTimingImmediate, got.RedeemEntryTiming)
+	}
+}
+
 func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

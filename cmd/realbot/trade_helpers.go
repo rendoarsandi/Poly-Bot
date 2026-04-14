@@ -154,6 +154,9 @@ func realbotLateRedeemBlocksLadderEntry(currentMarketID string, engine *paper.En
 	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil || normalizePaperArbMode(liveCfg.PaperArbMode) != paperArbModeLaddered {
 		return "", false
 	}
+	if realbotNormalizeRedeemEntryTiming(liveCfg.RedeemEntryTiming) != core.RedeemEntryTimingNextMarket {
+		return "", false
+	}
 	currentStart, ok := realbotMarketWindowStart(currentMarketID)
 	if !ok {
 		return "", false
@@ -248,6 +251,15 @@ func normalizePaperArbMode(mode string) string {
 		return paperArbModeMaker
 	default:
 		return paperArbModeTaker
+	}
+}
+
+func realbotNormalizeRedeemEntryTiming(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case core.RedeemEntryTimingImmediate:
+		return core.RedeemEntryTimingImmediate
+	default:
+		return core.RedeemEntryTimingNextMarket
 	}
 }
 
@@ -524,6 +536,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		PolygonRPC:                         cfg.PolygonRPCURL,
 		PolygonPrivateKey:                  cfg.PK,
 		BlockNewEntriesOnPendingRedemption: cfg.BlockNewEntriesOnPendingRedemption,
+		RedeemEntryTiming:                  cfg.RedeemEntryTiming,
 	}
 }
 
@@ -575,6 +588,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
 	cfg.TradingHoursMode = s.TradingHoursMode
 	cfg.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
+	cfg.RedeemEntryTiming = realbotNormalizeRedeemEntryTiming(s.RedeemEntryTiming)
 	if cfg.ExecutionBackend == core.ExecutionBackendPaper {
 		cfg.SplitStrategyEnabled = false
 		if normalizePaperArbMode(cfg.PaperArbMode) == paperArbModeMaker {
