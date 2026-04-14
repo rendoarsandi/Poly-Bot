@@ -3771,6 +3771,8 @@ func (t *TUI) RecordOrderWithMode(marketID, outcome, side string, shares, price,
 }
 
 func (t *TUI) RecordWalletSyncAdjustment(marketID, outcome string, deltaShares, markPrice float64, direction string) {
+	// Silenced per user request to not show sync adjustments
+	/*
 	if math.Abs(deltaShares) < 1e-9 {
 		return
 	}
@@ -3785,6 +3787,7 @@ func (t *TUI) RecordWalletSyncAdjustment(marketID, outcome string, deltaShares, 
 		side = trimmed
 	}
 	t.RecordOrderWithMode(marketID, outcome, side, math.Abs(deltaShares), markPrice, 0.0, 0.0, 0.0, "wallet-sync", "SYNCED")
+	*/
 }
 
 func (t *TUI) GetOrderHistory() []OrderHistoryEntry {
@@ -5137,11 +5140,8 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		displayEquity = bookEquity
 	}
 	displayCash := stats.CurrentBalance
-	displayMTMEquity := equity
 	if isRealMode && !paperExecutionMode && s.hasWalletCash {
 		displayCash = s.walletCash
-		displayEquity += s.walletCash - stats.CurrentBalance
-		displayMTMEquity += s.walletCash - stats.CurrentBalance
 	}
 	sizingEquity := bookEquity
 
@@ -5348,10 +5348,6 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	cashText := fmt.Sprintf("$%.2f", displayCash)
 	if isRealMode {
 		cashLabel = "Spendable"
-		cashText = fmt.Sprintf("$%.2f", stats.CurrentBalance)
-		if s.hasWalletCash && math.Abs(s.walletCash-stats.CurrentBalance) >= 0.005 {
-			cashText = fmt.Sprintf("$%.2f (wallet USDC $%.2f)", stats.CurrentBalance, s.walletCash)
-		}
 	}
 	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  DD %s",
 		cashLabel,

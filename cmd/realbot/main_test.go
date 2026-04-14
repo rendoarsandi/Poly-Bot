@@ -2458,14 +2458,8 @@ func TestSyncWalletTruthOutcomePositionTrimsExcessLocalInventory(t *testing.T) {
 	}
 
 	history := tui.GetOrderHistory()
-	if len(history) != 1 {
-		t.Fatalf("expected one wallet-sync history entry, got %d", len(history))
-	}
-	if history[0].Side != "ADJ-" {
-		t.Fatalf("expected trim history side ADJ-, got %q", history[0].Side)
-	}
-	if history[0].ExecutionMode != "wallet-sync" {
-		t.Fatalf("expected wallet-sync execution mode, got %q", history[0].ExecutionMode)
+	if len(history) != 0 {
+		t.Fatalf("expected zero wallet-sync history entry because it was silenced, got %d", len(history))
 	}
 }
 

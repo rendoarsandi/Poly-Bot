@@ -15,6 +15,7 @@ import (
 )
 
 func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string, deltaShares, localShares, onChainShares, splitShares, markPrice float64, action string) {
+	/*
 	if tui == nil || math.Abs(deltaShares) < realbotWalletTruthLogMinDelta {
 		return
 	}
@@ -30,16 +31,18 @@ func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string
 	if math.Abs(deltaShares) < realbotWalletTruthEventMinDelta {
 		return
 	}
-	tui.LogEvent("[%s] 🧾 Wallet sync %s %s %s%s (local %.4f, on-chain %.4f, split %.4f)",
-		marketID,
-		action,
-		outcome,
-		sign,
-		formatShareQty(math.Abs(deltaShares)),
-		localShares,
-		onChainShares,
-		splitShares,
-	)
+	// Silenced per user request
+	// tui.LogEvent("[%s] 🧾 Wallet sync %s %s %s%s (local %.4f, on-chain %.4f, split %.4f)",
+	// 	marketID,
+	// 	action,
+	// 	outcome,
+	// 	sign,
+	// 	formatShareQty(math.Abs(deltaShares)),
+	// 	localShares,
+	// 	onChainShares,
+	// 	splitShares,
+	// )
+	*/
 }
 
 func syncWalletTruthOutcomePosition(engine *paper.Engine, tui *paper.TUI, marketID, outcome string, localBoughtShares, onChainShares, splitShares float64) (float64, bool) {
