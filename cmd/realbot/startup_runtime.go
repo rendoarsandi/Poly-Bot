@@ -255,6 +255,6 @@ func run() error {
 shutdown:
 	tui.Stop()
 	fmt.Println("\n👋 Bot stopped.")
-	realbotEmergencyCleanup(realTrader)
+	// realbotEmergencyCleanup(realTrader) // Disabled terminal cleanup
 	return nil
 }
