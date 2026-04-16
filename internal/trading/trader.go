@@ -346,6 +346,9 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		trader.userWS.SetOnFill(func(fill api.OrderFillData) {
 			trader.applyLiveFill(fill)
 		})
+		trader.userWS.SetOnAssetBalance(func(assetID string, balance string) {
+			trader.applyLiveAssetBalance(assetID, balance)
+		})
 	}
 
 	return trader, nil
@@ -597,6 +600,25 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 	if fill.OrderID != "" {
 		t.confirmedOrderFills[fill.OrderID] += size
 	}
+}
+
+func (t *RealTrader) applyLiveAssetBalance(assetID, balance string) {
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		return
+	}
+
+	size, err := strconv.ParseFloat(strings.TrimSpace(balance), 64)
+	if err != nil {
+		return
+	}
+	if size < 0 {
+		size = 0
+	}
+
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	t.livePositions[assetID] = size
 }
 
 // Exchange returns the underlying ExchangeClient for direct API access.

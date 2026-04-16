@@ -21,6 +21,8 @@ import (
 type stubExchangeClient struct {
 	balanceAllowance *api.BalanceAllowance
 	address          string
+	positions        []api.Position
+	positionsErr     error
 }
 
 func (s *stubExchangeClient) PlaceOrder(ctx context.Context, req *api.OrderRequest) (*api.OrderResponse, error) {
@@ -36,6 +38,12 @@ func (s *stubExchangeClient) CancelAllOrders(ctx context.Context) error {
 }
 
 func (s *stubExchangeClient) GetPositions(ctx context.Context) ([]api.Position, error) {
+	if s.positionsErr != nil {
+		return nil, s.positionsErr
+	}
+	if s.positions != nil {
+		return append([]api.Position(nil), s.positions...), nil
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -956,6 +964,62 @@ func TestRealTrader_WaitForLivePairPositionsObservesAsyncWSUpdate(t *testing.T) 
 	}
 	if bal0 != 2.00 || bal1 != 1.50 {
 		t.Fatalf("unexpected balances %.2f / %.2f", bal0, bal1)
+	}
+}
+
+func TestRealTrader_ApplyLiveAssetBalanceOverridesDriftedWSSize(t *testing.T) {
+	trader := &RealTrader{
+		livePositions: map[string]float64{
+			"yes-token": 2.00,
+		},
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	trader.applyLiveFill(api.OrderFillData{AssetID: "yes-token", Side: "BUY", Size: "1.50"})
+	if got := trader.GetLivePositionSize("yes-token"); got != 3.50 {
+		t.Fatalf("expected incremental fill update to reach 3.50, got %.2f", got)
+	}
+
+	trader.applyLiveAssetBalance("yes-token", "2.25")
+	if got := trader.GetLivePositionSize("yes-token"); got != 2.25 {
+		t.Fatalf("expected asset balance snapshot to replace live size with 2.25, got %.2f", got)
+	}
+
+	trader.applyLiveAssetBalance("yes-token", "-1")
+	if got := trader.GetLivePositionSize("yes-token"); got != 0 {
+		t.Fatalf("expected negative asset balance to clamp to 0, got %.2f", got)
+	}
+}
+
+func TestRealTrader_ForceRefreshPositionsRebuildsLiveCacheFromExternalSnapshot(t *testing.T) {
+	trader := &RealTrader{
+		client: &stubExchangeClient{
+			positions: []api.Position{
+				{TokenID: "yes-token", Size: 1.25, Outcome: "Yes", ConditionID: "cond-1"},
+				{TokenID: "no-token", Size: 0.75, Outcome: "No", ConditionID: "cond-1"},
+			},
+		},
+		livePositions: map[string]float64{
+			"stale-token": 99,
+		},
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	positions, err := trader.ForceRefreshPositions(context.Background())
+	if err != nil {
+		t.Fatalf("ForceRefreshPositions failed: %v", err)
+	}
+	if len(positions) != 2 {
+		t.Fatalf("expected 2 refreshed positions, got %d", len(positions))
+	}
+	if got := trader.GetLivePositionSize("yes-token"); got != 1.25 {
+		t.Fatalf("expected yes-token size 1.25 after refresh, got %.2f", got)
+	}
+	if got := trader.GetLivePositionSize("no-token"); got != 0.75 {
+		t.Fatalf("expected no-token size 0.75 after refresh, got %.2f", got)
+	}
+	if got := trader.GetLivePositionSize("stale-token"); got != 0 {
+		t.Fatalf("expected stale-token to be cleared by external refresh, got %.2f", got)
 	}
 }
 

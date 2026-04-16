@@ -173,6 +173,7 @@ func run() error {
 
 	_, _, _ = realbotSyncRuntimeBalance(ctx, realTrader, engine, tui, 8*time.Second)
 	realbotStartBalanceSyncLoop(ctx, realTrader, engine, tui)
+	// realbotStartPositionSyncLoop(ctx, realTrader, tui) // Disabled: REST polling overwrites real-time WS fills
 	realbotStartEmbeddedPaperResolutionSweep(ctx, realTrader, engine, tui, restClient, resolutionCache)
 
 	globalSplitStatus := make(map[string]bool)

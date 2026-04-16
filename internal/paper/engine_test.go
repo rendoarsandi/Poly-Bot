@@ -622,7 +622,7 @@ func TestEngine_GetBookEquityKeepsOpenPositionsAtCostBasis(t *testing.T) {
 	}
 }
 
-func TestEngine_GetBookEquityCountsMatchedPairsAtLockedPayout(t *testing.T) {
+func TestEngine_GetBookEquityKeepsMatchedPairsNeutralUntilRealized(t *testing.T) {
 	engine := NewEngine(100.0)
 	if _, err := engine.BuyForMarket("ETH", "Up", 0.48, 3.1); err != nil {
 		t.Fatalf("BuyForMarket Up failed: %v", err)
@@ -631,9 +631,9 @@ func TestEngine_GetBookEquityCountsMatchedPairsAtLockedPayout(t *testing.T) {
 		t.Fatalf("BuyForMarket Down failed: %v", err)
 	}
 
-	expected := 100.0 + (3.1 - (3.1 * (0.48 + 0.49)))
+	expected := 100.0
 	if got := engine.GetBookEquity(); math.Abs(got-expected) > 0.000001 {
-		t.Fatalf("expected locked pair book equity %.6f, got %.6f", expected, got)
+		t.Fatalf("expected matched pair book equity %.6f until realized, got %.6f", expected, got)
 	}
 }
 

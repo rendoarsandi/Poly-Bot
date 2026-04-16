@@ -171,6 +171,18 @@ func realbotSyncRuntimeBalance(ctx context.Context, trader *trading.RealTrader, 
 	return newBal, delta, nil
 }
 
+func realbotSyncRuntimePositions(ctx context.Context, trader *trading.RealTrader, timeout time.Duration) error {
+	if trader == nil || trader.IsEmbeddedPaperMode() {
+		return nil
+	}
+
+	positionCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	_, err := trader.ForceRefreshPositions(positionCtx)
+	return err
+}
+
 func realbotStartBalanceSyncLoop(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	go func() {
 		ticker := time.NewTicker(realbotBalanceSyncInterval)
@@ -183,6 +195,28 @@ func realbotStartBalanceSyncLoop(ctx context.Context, trader *trading.RealTrader
 				_, _, err := realbotSyncRuntimeBalance(ctx, trader, engine, tui, realbotBalanceSyncTimeout)
 				if err != nil {
 					continue
+				}
+			}
+		}
+	}()
+}
+
+func realbotStartPositionSyncLoop(ctx context.Context, trader *trading.RealTrader, tui *paper.TUI) {
+	if trader == nil || trader.IsEmbeddedPaperMode() {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(realbotPositionSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := realbotSyncRuntimePositions(ctx, trader, realbotPositionSyncTimeout); err != nil && tui != nil {
+					tui.LogEventDedup("position-sync:"+strings.TrimSpace(err.Error()), 15*time.Second,
+						"⚠️ Position sync failed: %v", err)
 				}
 			}
 		}

@@ -109,6 +109,23 @@ func TestUserWSClientProcessMessage_BatchedTradeArrayEmitsUniqueConfirmedOnly(t 
 	}
 }
 
+func TestUserWSClientProcessAssetBalancesEvent(t *testing.T) {
+	client := NewUserWSClient("key", "secret", "pass")
+	got := make(map[string]string)
+	client.SetOnAssetBalance(func(assetID string, balance string) {
+		got[assetID] = balance
+	})
+
+	client.processMessage([]byte(`{"event_type":"asset_balances","balances":[{"asset_id":"asset-1","balance":"2.5"},{"asset_id":"asset-2","balance":"0"}]}`))
+
+	if got["asset-1"] != "2.5" {
+		t.Fatalf("expected asset-1 balance 2.5, got %q", got["asset-1"])
+	}
+	if got["asset-2"] != "0" {
+		t.Fatalf("expected asset-2 balance 0, got %q", got["asset-2"])
+	}
+}
+
 func TestUserWSClientSubscribeMarketsSendsAuthAndDynamicSubscribe(t *testing.T) {
 	messages := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

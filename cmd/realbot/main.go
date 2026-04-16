@@ -53,6 +53,8 @@ const (
 	realbotExecutionGuardQuoteMaxAge = 1500 * time.Millisecond
 	realbotBalanceSyncInterval       = 60 * time.Second
 	realbotBalanceSyncTimeout        = 8 * time.Second
+	realbotPositionSyncInterval      = 5 * time.Second
+	realbotPositionSyncTimeout       = 5 * time.Second
 	realbotHealthProbeInterval       = 20 * time.Second
 	realbotHealthProbeTimeout        = 3 * time.Second
 	realbotMakerQuoteStep            = 0.001

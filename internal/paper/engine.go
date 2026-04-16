@@ -937,45 +937,9 @@ func (e *Engine) getSplitInventoryValue() float64 {
 }
 
 func (e *Engine) getPositionBookValue() float64 {
-	byMarket := make(map[string][]*Position)
-	for _, pos := range e.positions {
-		marketID := pos.MarketID
-		if marketID == "" {
-			marketID = "__default__"
-		}
-		byMarket[marketID] = append(byMarket[marketID], pos)
-	}
-
 	value := 0.0
-	for _, positions := range byMarket {
-		if len(positions) < 2 {
-			for _, pos := range positions {
-				value += pos.TotalCost
-			}
-			continue
-		}
-
-		matchedQty := positions[0].Quantity
-		for _, pos := range positions[1:] {
-			if pos.Quantity < matchedQty {
-				matchedQty = pos.Quantity
-			}
-		}
-		if matchedQty < 0 {
-			matchedQty = 0
-		}
-
-		value += matchedQty
-		for _, pos := range positions {
-			if pos.Quantity <= 0 {
-				continue
-			}
-			unmatchedQty := pos.Quantity - matchedQty
-			if unmatchedQty <= 0 {
-				continue
-			}
-			value += (pos.TotalCost / pos.Quantity) * unmatchedQty
-		}
+	for _, pos := range e.positions {
+		value += pos.TotalCost
 	}
 	return value
 }
