@@ -172,6 +172,16 @@ func run() error {
 	}()
 
 	_, _, _ = realbotSyncRuntimeBalance(ctx, realTrader, engine, tui, 8*time.Second)
+
+	if positions, err := realbotSyncRuntimePositions(ctx, realTrader, 10*time.Second); err == nil && len(positions) > 0 {
+		for _, pos := range positions {
+			engine.SyncExternalPosition(pos.ConditionID, pos.Outcome, pos.Size, pos.AvgPrice)
+		}
+		tui.LogEvent("✅ Loaded %d existing positions from exchange", len(positions))
+	} else if err != nil {
+		tui.LogEvent("⚠️ Failed to load existing positions: %v", err)
+	}
+
 	realbotStartBalanceSyncLoop(ctx, realTrader, engine, tui)
 	// realbotStartPositionSyncLoop(ctx, realTrader, tui) // Disabled: REST polling overwrites real-time WS fills
 	realbotStartEmbeddedPaperResolutionSweep(ctx, realTrader, engine, tui, restClient, resolutionCache)

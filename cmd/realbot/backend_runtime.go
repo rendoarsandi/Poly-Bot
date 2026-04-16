@@ -171,16 +171,15 @@ func realbotSyncRuntimeBalance(ctx context.Context, trader *trading.RealTrader, 
 	return newBal, delta, nil
 }
 
-func realbotSyncRuntimePositions(ctx context.Context, trader *trading.RealTrader, timeout time.Duration) error {
+func realbotSyncRuntimePositions(ctx context.Context, trader *trading.RealTrader, timeout time.Duration) ([]trading.PositionInfo, error) {
 	if trader == nil || trader.IsEmbeddedPaperMode() {
-		return nil
+		return nil, nil
 	}
 
 	positionCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	_, err := trader.ForceRefreshPositions(positionCtx)
-	return err
+	return trader.ForceRefreshPositions(positionCtx)
 }
 
 func realbotStartBalanceSyncLoop(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
@@ -214,7 +213,7 @@ func realbotStartPositionSyncLoop(ctx context.Context, trader *trading.RealTrade
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := realbotSyncRuntimePositions(ctx, trader, realbotPositionSyncTimeout); err != nil && tui != nil {
+				if _, err := realbotSyncRuntimePositions(ctx, trader, realbotPositionSyncTimeout); err != nil && tui != nil {
 					tui.LogEventDedup("position-sync:"+strings.TrimSpace(err.Error()), 15*time.Second,
 						"⚠️ Position sync failed: %v", err)
 				}

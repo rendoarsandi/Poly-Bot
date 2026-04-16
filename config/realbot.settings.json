@@ -1,8 +1,8 @@
 {
   "exchange": "polymarket",
-  "executionBackend": "paper",
+  "executionBackend": "live",
   "marketSlug": "BTC",
-  "timeframe": "5m",
+  "timeframe": "15m",
   "maxMarkets": 1,
   "baseBalance": 1000,
   "baseTradeSize": 10,

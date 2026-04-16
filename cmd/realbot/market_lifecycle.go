@@ -156,11 +156,14 @@ func realbotHandleMarketShutdown(args realbotMarketShutdownArgs, state *realbotM
 		return true
 	}
 
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancelCleanup()
-	if err := settleMarketInventory(cleanupCtx, args.marketID, args.market, args.outcomes, args.tokenFeeRates, args.trader, args.engine, args.splitInventory, args.tui, args.restClient, timeToExpiry > 2*time.Second, args.tui.GetSettings().MinAskPrice, "EMERGENCY EXIT", realbotShouldAutoMergeBalancedInventory(args.tui.GetSettings()), args.mergeCoordinator); err != nil {
-		args.tui.LogEvent("[%s] ⚠️ Emergency cleanup failed: %v", args.marketID, err)
+	if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if state != nil && state.preserveWalletTruth != nil {
+			*state.preserveWalletTruth = true
+		}
+		args.refreshWalletTruth(5 * time.Second)
+		args.tui.LogEvent("[%s] ⏳ Trader stopping: preserving inventory for next run", args.marketID)
 	}
+
 	return true
 }
 
