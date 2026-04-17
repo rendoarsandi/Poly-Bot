@@ -4572,7 +4572,22 @@ func (m tuiModel) renderMarketInfo(w int) string {
 func (m tuiModel) renderMultiMarketGrid(w int) string {
 	s := m.snap
 	active := make([]string, 0, len(s.markets))
-	for id := range s.markets {
+	for id, mkt := range s.markets {
+		skip := false
+		if mkt != nil && !mkt.EndTime.IsZero() && time.Now().After(mkt.EndTime) {
+			skip = true
+		}
+		if !skip {
+			for _, wt := range s.walletTruth {
+				if wt.MarketID == id && wt.ResolutionStatus != "" && wt.ResolutionStatus != "unresolved" {
+					skip = true
+					break
+				}
+			}
+		}
+		if skip {
+			continue // Skip resolving or resolved markets
+		}
 		active = append(active, id)
 	}
 	active = orderedMarketIDs(active)
