@@ -473,6 +473,27 @@ func realbotFilterStartupCarryPositions(ctx context.Context, reader realbotStart
 	return filtered, skippedPositions, skippedShares
 }
 
+func realbotFilterDustStartupCarryPositions(positions []trading.PositionInfo) ([]trading.PositionInfo, int, float64) {
+	if len(positions) == 0 {
+		return nil, 0, 0
+	}
+
+	filtered := make([]trading.PositionInfo, 0, len(positions))
+	skippedPositions := 0
+	skippedShares := 0.0
+
+	for _, pos := range positions {
+		if isDustCleanupRemainder(pos.Size) {
+			skippedPositions++
+			skippedShares += pos.Size
+			continue
+		}
+		filtered = append(filtered, pos)
+	}
+
+	return filtered, skippedPositions, skippedShares
+}
+
 func realbotStartupCarryMarkets(ctx context.Context, reader realbotStartupMarketInfoReader, positions []trading.PositionInfo) map[string]realbotStartupCarryMarket {
 	if len(positions) == 0 {
 		return nil

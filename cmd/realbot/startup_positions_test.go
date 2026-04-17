@@ -180,6 +180,24 @@ func TestStartupCarryImportSkipsResolvedLosersFromExposure(t *testing.T) {
 	}
 }
 
+func TestRealbotFilterDustStartupCarryPositions(t *testing.T) {
+	positions := []trading.PositionInfo{
+		{ConditionID: "cond-dust", Outcome: "Up", Size: 0.009, AvgPrice: 0.61},
+		{ConditionID: "cond-keep", Outcome: "Down", Size: 0.015, AvgPrice: 0.29},
+	}
+
+	filtered, skippedPositions, skippedShares := realbotFilterDustStartupCarryPositions(positions)
+	if skippedPositions != 1 {
+		t.Fatalf("expected 1 skipped dust startup position, got %d", skippedPositions)
+	}
+	if math.Abs(skippedShares-0.009) > 0.000001 {
+		t.Fatalf("expected 0.009 skipped dust shares, got %.6f", skippedShares)
+	}
+	if len(filtered) != 1 || filtered[0].ConditionID != "cond-keep" {
+		t.Fatalf("unexpected filtered startup carry positions: %+v", filtered)
+	}
+}
+
 func TestRealbotStartupCarryMarketIDPrefersSlug(t *testing.T) {
 	pos := trading.PositionInfo{
 		ConditionID: "0xc55fe114eac7a91fc5c0bbe248f65b8bf863aad990785db8bd04d8022cb0c08c",

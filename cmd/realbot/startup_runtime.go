@@ -55,6 +55,7 @@ func realbotLoadStartupPositionsAsync(ctx context.Context, realTrader *trading.R
 		}
 
 		positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(ctx, realTrader, positions)
+		positions, skippedDustPositions, skippedDustShares := realbotFilterDustStartupCarryPositions(positions)
 		startupCarryMarkets := realbotStartupCarryMarkets(ctx, realTrader, positions)
 		for _, carry := range startupCarryMarkets {
 			tui.AddMarket(carry.MarketID, carry.Slug, carry.Outcomes, carry.EndTime)
@@ -68,6 +69,9 @@ func realbotLoadStartupPositionsAsync(ctx context.Context, realTrader *trading.R
 		}
 		if skippedPositions > 0 {
 			tui.LogEvent("⏭️ Ignored %d resolved losing startup position(s) (%.2f shares)", skippedPositions, skippedShares)
+		}
+		if skippedDustPositions > 0 {
+			tui.LogEvent("⏭️ Ignored %d dust startup carry position(s) (%.4f shares below %.2f-share redemption minimum)", skippedDustPositions, skippedDustShares, minOnChainActionShares)
 		}
 		for _, carry := range startupCarryMarkets {
 			if carry.ConditionID == "" || len(carry.Outcomes) == 0 || carry.EndTime.IsZero() || carry.EndTime.After(time.Now()) {

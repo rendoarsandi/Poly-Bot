@@ -132,6 +132,53 @@ func realbotHasEnginePositionsForMarket(engine *paper.Engine, marketID string) b
 	return false
 }
 
+func realbotHasActionableEnginePositionsForMarket(engine *paper.Engine, marketID string) bool {
+	if engine == nil || marketID == "" {
+		return false
+	}
+	for _, pos := range engine.GetPositions() {
+		if pos.MarketID == marketID && hasActionableCleanupRemainder(pos.Quantity) {
+			return true
+		}
+	}
+	return false
+}
+
+func realbotDropDustOnlyEnginePositionsForMarket(engine *paper.Engine, marketID string) (int, float64) {
+	if engine == nil || marketID == "" {
+		return 0, 0
+	}
+
+	type dustPosition struct {
+		outcome string
+		qty     float64
+	}
+
+	dust := make([]dustPosition, 0, 2)
+	for _, pos := range engine.GetPositions() {
+		if pos.MarketID != marketID || !shouldAttemptCleanupSell(pos.Quantity) {
+			continue
+		}
+		if hasActionableCleanupRemainder(pos.Quantity) {
+			return 0, 0
+		}
+		dust = append(dust, dustPosition{outcome: pos.Outcome, qty: pos.Quantity})
+	}
+	if len(dust) == 0 {
+		return 0, 0
+	}
+
+	dropped := 0
+	totalShares := 0.0
+	for _, pos := range dust {
+		if engine.SyncExternalPosition(marketID, pos.outcome, 0, 0) {
+			dropped++
+			totalShares += pos.qty
+		}
+	}
+	return dropped, totalShares
+}
+
 func realbotShouldRunNearExpiryCleanup(cfg paper.TUISettings, timeToExpiry, mergeBuffer time.Duration) bool {
 	_ = cfg
 	_ = timeToExpiry

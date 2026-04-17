@@ -683,6 +683,65 @@ func TestRealbotHandleMarketShutdownPreservesTakerCloseInventory(t *testing.T) {
 	}
 }
 
+func TestRealbotHandleClosedMarketDropsDustInsteadOfWaitingForResolution(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{TakerCloseMarket: true}, nil)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.71, 0.009); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	preserveWalletTruth := false
+	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
+		marketID: "BTC",
+		market:   &api.Market{ConditionID: "cond-1"},
+		endTime:  time.Now().Add(-time.Minute),
+		outcomes: []string{"Down", "Up"},
+		engine:   engine,
+		tui:      tui,
+	}, &realbotMarketClosureState{
+		preserveWalletTruth: &preserveWalletTruth,
+	})
+	if !handled {
+		t.Fatal("expected closed market handler to take over")
+	}
+	if preserveWalletTruth {
+		t.Fatal("expected dust-only inventory not to be preserved for redemption")
+	}
+	if realbotHasEnginePositionsForMarket(engine, "BTC") {
+		t.Fatal("expected dust-only closed-market inventory to be cleared")
+	}
+}
+
+func TestRealbotHandleMarketShutdownDropsDustInsteadOfPreservingIt(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{TakerCloseMarket: true}, nil)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.71, 0.009); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	preserveWalletTruth := false
+	handled := realbotHandleMarketShutdown(realbotMarketShutdownArgs{
+		globalCtx: context.Background(),
+		marketID:  "BTC",
+		endTime:   time.Now().Add(time.Minute),
+		engine:    engine,
+		tui:       tui,
+	}, &realbotMarketClosureState{
+		preserveWalletTruth: &preserveWalletTruth,
+	})
+	if !handled {
+		t.Fatal("expected shutdown handler to take over")
+	}
+	if preserveWalletTruth {
+		t.Fatal("expected dust-only shutdown inventory not to be preserved")
+	}
+	if realbotHasEnginePositionsForMarket(engine, "BTC") {
+		t.Fatal("expected dust-only shutdown inventory to be cleared")
+	}
+}
+
 func TestRealbotHandleMarketGuardsRespectsManualPause(t *testing.T) {
 	engine := paper.NewEngine(100)
 	tui := paper.NewTUI(engine, nil)
@@ -1430,6 +1489,39 @@ func TestRealbotHasEnginePositionsForMarket(t *testing.T) {
 	}
 	if realbotHasEnginePositionsForMarket(engine, "eth-1") {
 		t.Fatal("did not expect engine positions for eth-1")
+	}
+}
+
+func TestRealbotDropDustOnlyEnginePositionsForMarket(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("btc-1", "Up", 0.70, 0.009); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	dropped, shares := realbotDropDustOnlyEnginePositionsForMarket(engine, "btc-1")
+	if dropped != 1 {
+		t.Fatalf("expected 1 dropped dust position, got %d", dropped)
+	}
+	if math.Abs(shares-0.009) > 0.000001 {
+		t.Fatalf("expected 0.009 dropped shares, got %.6f", shares)
+	}
+	if realbotHasEnginePositionsForMarket(engine, "btc-1") {
+		t.Fatal("expected dust-only market inventory to be cleared")
+	}
+}
+
+func TestRealbotDropDustOnlyEnginePositionsForMarketKeepsActionableInventory(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("btc-1", "Up", 0.70, 0.02); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	dropped, shares := realbotDropDustOnlyEnginePositionsForMarket(engine, "btc-1")
+	if dropped != 0 || shares != 0 {
+		t.Fatalf("expected actionable inventory to remain, got dropped=%d shares=%.6f", dropped, shares)
+	}
+	if !realbotHasActionableEnginePositionsForMarket(engine, "btc-1") {
+		t.Fatal("expected actionable market inventory to remain")
 	}
 }
 

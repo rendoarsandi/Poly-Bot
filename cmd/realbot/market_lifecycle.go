@@ -51,39 +51,42 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 	cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 10*time.Second)
 	realbotCancelAllMakerQuotes(cancelMakerCtx, args.marketID, "market closed", args.trader, args.engine, args.tui, args.makerQuotes)
 	cancelMaker()
+	if dropped, shares := realbotDropDustOnlyEnginePositionsForMarket(args.engine, args.marketID); dropped > 0 {
+		args.tui.LogEvent("[%s] ℹ️ Dropping dust-only inventory at close: %.4f shares below %.2f-share redemption minimum", args.marketID, shares, minOnChainActionShares)
+	}
 
 	liveCfg := args.tui.GetSettings()
 	if realbotTakerCloseHoldMode(liveCfg) {
-		if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {
 				*state.preserveWalletTruth = true
 			}
 			args.refreshWalletTruth(5 * time.Second)
 			args.tui.LogEvent("[%s] ⏳ Taker-close inventory locked in; waiting for market resolution and redemption", args.marketID)
+			realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		}
-		realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		return true
 	}
 	if realbotLadderedHoldMode(liveCfg) {
-		if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {
 				*state.preserveWalletTruth = true
 			}
 			args.refreshWalletTruth(5 * time.Second)
 			args.tui.LogEvent("[%s] ⏳ Laddered inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", args.marketID)
+			realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		}
-		realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		return true
 	}
 	if realbotCopytradeHoldMode(liveCfg) {
-		if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {
 				*state.preserveWalletTruth = true
 			}
 			args.refreshWalletTruth(5 * time.Second)
 			args.tui.LogEvent("[%s] ⏳ Copytrade inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", args.marketID)
+			realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		}
-		realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		return true
 	}
 
@@ -120,9 +123,12 @@ func realbotHandleMarketShutdown(args realbotMarketShutdownArgs, state *realbotM
 	cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 10*time.Second)
 	realbotCancelAllMakerQuotes(cancelMakerCtx, args.marketID, "trader stopping", args.trader, args.engine, args.tui, args.makerQuotes)
 	cancelMaker()
+	if dropped, shares := realbotDropDustOnlyEnginePositionsForMarket(args.engine, args.marketID); dropped > 0 {
+		args.tui.LogEvent("[%s] ℹ️ Dropping dust-only inventory on shutdown: %.4f shares below %.2f-share redemption minimum", args.marketID, shares, minOnChainActionShares)
+	}
 
 	if realbotTakerCloseHoldMode(liveCfg) {
-		if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {
 				*state.preserveWalletTruth = true
 			}
@@ -131,7 +137,7 @@ func realbotHandleMarketShutdown(args realbotMarketShutdownArgs, state *realbotM
 		return true
 	}
 	if realbotCopytradeHoldMode(liveCfg) {
-		if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {
 				*state.preserveWalletTruth = true
 			}
@@ -141,7 +147,7 @@ func realbotHandleMarketShutdown(args realbotMarketShutdownArgs, state *realbotM
 		return true
 	}
 	if realbotLadderedHoldMode(liveCfg) {
-		if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {
 				*state.preserveWalletTruth = true
 			}
@@ -156,7 +162,7 @@ func realbotHandleMarketShutdown(args realbotMarketShutdownArgs, state *realbotM
 		return true
 	}
 
-	if realbotHasEnginePositionsForMarket(args.engine, args.marketID) {
+	if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 		if state != nil && state.preserveWalletTruth != nil {
 			*state.preserveWalletTruth = true
 		}
