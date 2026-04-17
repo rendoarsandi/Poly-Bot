@@ -119,20 +119,12 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 	}
 }
 
-func TestPlaceOrder_RetriesRetryableExecutionError(t *testing.T) {
+func TestPlaceOrder_DoesNotRetryExecutionError(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt := calls.Add(1)
-		if attempt == 1 {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":"could not run the execution"}`))
-			return
-		}
-		_ = json.NewEncoder(w).Encode(OrderResponse{
-			Success: true,
-			Status:  "MATCHED",
-			OrderID: "0xretry",
-		})
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"could not run the execution"}`))
 	}))
 	defer server.Close()
 
@@ -157,28 +149,23 @@ func TestPlaceOrder_RetriesRetryableExecutionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlaceOrder failed: %v", err)
 	}
-	if !resp.Success || resp.OrderID != "0xretry" {
-		t.Fatalf("expected retry to succeed, got %+v", resp)
+	if resp.Success {
+		t.Fatalf("expected execution error to stay unsuccessful, got %+v", resp)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("expected exactly 2 attempts, got %d", calls.Load())
+	if !strings.Contains(strings.ToLower(resp.ErrorMsg), "could not run the execution") {
+		t.Fatalf("expected execution error body, got %+v", resp)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d", calls.Load())
 	}
 }
 
-func TestPlaceOrder_RetriesTooEarly(t *testing.T) {
+func TestPlaceOrder_DoesNotRetryTooEarly(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt := calls.Add(1)
-		if attempt == 1 {
-			w.WriteHeader(http.StatusTooEarly)
-			_, _ = w.Write([]byte(`{"error":"matching engine restarting"}`))
-			return
-		}
-		_ = json.NewEncoder(w).Encode(OrderResponse{
-			Success: true,
-			Status:  "MATCHED",
-			OrderID: "0x425",
-		})
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooEarly)
+		_, _ = w.Write([]byte(`{"error":"matching engine restarting"}`))
 	}))
 	defer server.Close()
 
@@ -203,24 +190,23 @@ func TestPlaceOrder_RetriesTooEarly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlaceOrder failed: %v", err)
 	}
-	if !resp.Success || resp.OrderID != "0x425" {
-		t.Fatalf("expected 425 retry to succeed, got %+v", resp)
+	if resp.Success {
+		t.Fatalf("expected 425 response to stay unsuccessful, got %+v", resp)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("expected exactly 2 attempts, got %d", calls.Load())
+	if !strings.Contains(strings.ToLower(resp.ErrorMsg), "matching engine restarting") {
+		t.Fatalf("expected 425 error body, got %+v", resp)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d", calls.Load())
 	}
 }
 
-func TestPlaceOrders_RetriesRetryableExecutionError(t *testing.T) {
+func TestPlaceOrders_DoNotRetryExecutionError(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt := calls.Add(1)
-		if attempt == 1 {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`[{"error":"could not run the execution"}]`))
-			return
-		}
-		_, _ = w.Write([]byte(`[{"success":true,"status":"matched","orderID":"0xbatch"}]`))
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`[{"error":"could not run the execution"}]`))
 	}))
 	defer server.Close()
 
@@ -245,11 +231,14 @@ func TestPlaceOrders_RetriesRetryableExecutionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlaceOrders failed: %v", err)
 	}
-	if len(resp) != 1 || !resp[0].Success || resp[0].OrderID != "0xbatch" {
-		t.Fatalf("expected batch retry to succeed, got %+v", resp)
+	if len(resp) != 1 || resp[0].Success {
+		t.Fatalf("expected failed batch response without retry, got %+v", resp)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("expected exactly 2 attempts, got %d", calls.Load())
+	if !strings.Contains(strings.ToLower(resp[0].ErrorMsg), "could not run the execution") {
+		t.Fatalf("expected execution error body, got %+v", resp[0])
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d", calls.Load())
 	}
 }
 
