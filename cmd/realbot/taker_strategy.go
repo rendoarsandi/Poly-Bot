@@ -55,12 +55,15 @@ func realbotExecuteAggressiveEntry(
 
 	var res1, res2 *trading.TradeResult
 	var err1, err2 error
-	initialSnapshot0 := trader.GetLivePositionSize(token0)
-	initialSnapshot1 := trader.GetLivePositionSize(token1)
-	initialSnapshotSource := "live WS cache"
+	initialSnapshot0, initialSnapshot1, initialSnapshotSource, initialSnapshotErr := realbotInitialPairSnapshot(ctx, trader, token0, token1, ladderedMode)
 	haveInitialSnapshot := true
 	initialBal0 := initialSnapshot0
 	initialBal1 := initialSnapshot1
+	if ladderedMode && initialSnapshotErr != nil {
+		tui.LogEvent("[%s] ⚠️ Skipping ladder buy: authoritative pre-trade snapshot unavailable (%v)", id, initialSnapshotErr)
+		asyncResult.cooldownUntil = time.Now().Add(2 * time.Second)
+		return
+	}
 
 	rate1 := tokenFeeRates[outcomes[0]]
 	if rate1 == 0 {

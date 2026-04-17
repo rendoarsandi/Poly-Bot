@@ -4,12 +4,15 @@ import (
 	"context"
 	"math"
 	"strings"
+	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 )
+
+type realbotPairSnapshotLoader func(context.Context) (float64, float64, string, error)
 
 func realbotLadderedRequestedQty(pairSum float64, liveCfg paper.TUISettings, ask, limitPrice float64) float64 {
 	if strings.EqualFold(strings.TrimSpace(liveCfg.LadderedTakerSizingMode), core.LadderedTakerSizingModeShares) {
@@ -73,6 +76,36 @@ func realbotVerifiedLadderedBuyFill(requestedQty, optimisticQty, recoveredQty fl
 	}
 	optimisticQty = clampRequestedExecutionQty(optimisticQty, requestedQty)
 	return optimisticQty, hasConfirmedExecutedQty(api.SideBuy, optimisticQty), false
+}
+
+func realbotResolveInitialPairSnapshot(ctx context.Context, ladderedMode bool, live0, live1 float64, loader realbotPairSnapshotLoader) (bal0, bal1 float64, source string, err error) {
+	bal0, bal1, source = live0, live1, "live WS cache"
+	if !ladderedMode || loader == nil {
+		return bal0, bal1, source, nil
+	}
+	auth0, auth1, authSource, authErr := loader(ctx)
+	if authErr != nil {
+		return bal0, bal1, source, authErr
+	}
+	return auth0, auth1, authSource, nil
+}
+
+func realbotInitialPairSnapshot(ctx context.Context, trader *trading.RealTrader, token0, token1 string, ladderedMode bool) (bal0, bal1 float64, source string, err error) {
+	if trader == nil {
+		return 0, 0, "live WS cache", nil
+	}
+	live0 := trader.GetLivePositionSize(token0)
+	live1 := trader.GetLivePositionSize(token1)
+
+	snapshotCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	return realbotResolveInitialPairSnapshot(snapshotCtx, ladderedMode, live0, live1, func(loadCtx context.Context) (float64, float64, string, error) {
+		if !trader.IsPaperMode() {
+			trader.InvalidateCTFBalanceCache(token0, token1)
+		}
+		return loadPairBalancesWSFirst(loadCtx, trader, token0, token1)
+	})
 }
 
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {

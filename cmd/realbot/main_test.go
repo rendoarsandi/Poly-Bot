@@ -320,6 +320,56 @@ func TestRealbotVerifiedLadderedBuyFillFallsBackWhenVerificationUnavailable(t *t
 	}
 }
 
+func TestRealbotResolveInitialPairSnapshotPrefersAuthoritativeBalanceForLadderedMode(t *testing.T) {
+	bal0, bal1, source, err := realbotResolveInitialPairSnapshot(context.Background(), true, 0.0, 0.0, func(context.Context) (float64, float64, string, error) {
+		return 0.99944, 1.94674, "live WS + on-chain backup", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if math.Abs(bal0-0.99944) > 1e-9 || math.Abs(bal1-1.94674) > 1e-9 {
+		t.Fatalf("expected authoritative ladder baseline 0.99944/1.94674, got %.5f/%.5f", bal0, bal1)
+	}
+	if source != "live WS + on-chain backup" {
+		t.Fatalf("expected authoritative source, got %q", source)
+	}
+}
+
+func TestRealbotResolveInitialPairSnapshotFallsBackToLiveWhenAuthoritativeSnapshotFails(t *testing.T) {
+	bal0, bal1, source, err := realbotResolveInitialPairSnapshot(context.Background(), true, 0.25, 0.75, func(context.Context) (float64, float64, string, error) {
+		return 0, 0, "", errors.New("snapshot failed")
+	})
+	if err == nil {
+		t.Fatal("expected authoritative snapshot error")
+	}
+	if math.Abs(bal0-0.25) > 1e-9 || math.Abs(bal1-0.75) > 1e-9 {
+		t.Fatalf("expected live fallback 0.25/0.75, got %.5f/%.5f", bal0, bal1)
+	}
+	if source != "live WS cache" {
+		t.Fatalf("expected live fallback source, got %q", source)
+	}
+}
+
+func TestRealbotResolveInitialPairSnapshotSkipsAuthoritativeLookupOutsideLadderedMode(t *testing.T) {
+	called := false
+	bal0, bal1, source, err := realbotResolveInitialPairSnapshot(context.Background(), false, 0.40, 0.60, func(context.Context) (float64, float64, string, error) {
+		called = true
+		return 9, 9, "unexpected", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if called {
+		t.Fatal("expected non-laddered mode not to call authoritative snapshot loader")
+	}
+	if math.Abs(bal0-0.40) > 1e-9 || math.Abs(bal1-0.60) > 1e-9 {
+		t.Fatalf("expected live baseline 0.40/0.60, got %.5f/%.5f", bal0, bal1)
+	}
+	if source != "live WS cache" {
+		t.Fatalf("expected live snapshot source, got %q", source)
+	}
+}
+
 func TestRealbotShouldAutoMergeBalancedInventory(t *testing.T) {
 	if realbotShouldAutoMergeBalancedInventory(paper.TUISettings{PaperArbMode: paperArbModeLaddered}) {
 		t.Fatal("expected laddered mode to keep balanced inventory parked")
