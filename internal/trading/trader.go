@@ -147,16 +147,7 @@ func NewPaperTrader(engine *paper.Engine, orderBook *paper.OrderBook) *PaperTrad
 
 func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
 	cost := price * size
-	// Calculate simulated fee using Polymarket dynamic curve
-	fee := 0.0
-	if feeRateBps > 0 {
-		feeRate := 0.25
-		exponent := 2.0
-		// curve fee = shares * feeRate * (p * (1-p))^exponent
-		feeTokens := size * feeRate * math.Pow(price*(1.0-price), exponent)
-		// For buy orders, fee is collected in shares. We convert to USDC equivalent.
-		fee = feeTokens * price
-	}
+	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 
 	_, err := t.engine.Buy(outcome, price, size)
 	if err != nil {
@@ -186,16 +177,7 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 }
 
 func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
-	// Calculate simulated fee using Polymarket dynamic curve
-	fee := 0.0
-	if feeRateBps > 0 {
-		feeRate := 0.25
-		exponent := 2.0
-		// For sell orders, fees are collected directly in USDC.
-		// curve fee = shares * feeRate * (p * (1-p))^exponent
-		feeTokens := size * feeRate * math.Pow(price*(1.0-price), exponent)
-		fee = feeTokens
-	}
+	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 
 	_, err := t.engine.Sell(outcome, price, size)
 	if err != nil {
@@ -458,7 +440,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	}
 	safetyAmount := price * size
 	if side == api.SideBuy && feeRateBps > 0 {
-		safetyAmount += safetyAmount * (float64(feeRateBps) / 10000.0)
+		safetyAmount += core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 	}
 	if err := t.checkSafetyLimits(safetyAmount); err != nil {
 		return &TradeResult{
@@ -777,7 +759,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			}
 			cost := req.Price * req.Size
 			if req.FeeRateBps > 0 {
-				cost += cost * (float64(req.FeeRateBps) / 10000.0)
+				cost += core.PolymarketTakerFeeUSDC(req.Size, req.Price, req.FeeRateBps)
 			}
 			totalCost += cost
 		}
@@ -805,10 +787,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 	for _, req := range reqs {
 		if req.Side == api.SideBuy {
 			cost := req.Price * req.Size
-			fee := 0.0
-			if req.FeeRateBps > 0 {
-				fee = cost * (float64(req.FeeRateBps) / 10000.0)
-			}
+			fee := core.PolymarketTakerFeeUSDC(req.Size, req.Price, req.FeeRateBps)
 			totalCost += (cost + fee)
 		}
 	}
@@ -851,7 +830,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 		}
 		fee := 0.0
 		if reqs[i].FeeRateBps > 0 {
-			fee = reqs[i].Price * reqs[i].Size * (float64(reqs[i].FeeRateBps) / 10000.0)
+			fee = core.PolymarketTakerFeeUSDC(reqs[i].Size, reqs[i].Price, reqs[i].FeeRateBps)
 		}
 
 		results[i] = &TradeResult{
@@ -890,10 +869,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	// Check safety limits
 	cost := price * size
 	// Add estimated fee to cost check
-	fee := 0.0
-	if feeRateBps > 0 {
-		fee = cost * (float64(feeRateBps) / 10000.0)
-	}
+	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 
 	if err := t.checkSafetyLimits(cost + fee); err != nil {
 		return &TradeResult{
@@ -995,10 +971,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
-	fee := 0.0
-	if feeRateBps > 0 {
-		fee = proceeds * (float64(feeRateBps) / 10000.0)
-	}
+	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 
 	if resp.Success {
 		t.mu.Lock()

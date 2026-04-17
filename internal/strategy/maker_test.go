@@ -87,8 +87,8 @@ func TestComputeMakerQuoteSizesRespectNormalizationAndCaps(t *testing.T) {
 }
 
 func TestComputeMakerSellFeeUsdc(t *testing.T) {
-	if got := ComputeMakerSellFeeUsdc(100, 0.5, 100); got != 0.78125 {
-		t.Fatalf("expected fee 0.78125, got %.8f", got)
+	if got := ComputeMakerSellFeeUsdc(100, 0.5, 100); got != 0.25 {
+		t.Fatalf("expected fee 0.25, got %.8f", got)
 	}
 	if got := ComputeMakerSellFeeUsdc(100, 0.5, 0); got != 0 {
 		t.Fatalf("expected zero fee when fee rate disabled, got %.8f", got)

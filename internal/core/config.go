@@ -75,9 +75,9 @@ type Config struct {
 	TradeSizeUSDC    float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 
 	// Fee settings (for paper trading simulation)
-	// Polymarket fees use price-curve: fee_tokens = shares * base_rate * 2 * p * (1-p)
-	// Default: 312 bps base rate calibrated to match ~1.6% effective at p=0.50
-	FeeRateBps int // Base fee rate in basis points (312 = ~1.6% effective at p=0.50)
+	// Polymarket taker fees follow the official docs:
+	// fee_usdc = shares * (feeRateBps/10000) * price * (1-price)
+	FeeRateBps int // Taker fee rate in basis points
 
 	// Safety settings for real trading
 	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)

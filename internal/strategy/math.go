@@ -2,8 +2,9 @@ package strategy
 
 import (
 	"fmt"
-	"math"
 	"strconv"
+
+	"Market-bot/internal/core"
 )
 
 // CalculateDiscountSum converts string prices to float64 and returns their sum.
@@ -29,31 +30,15 @@ type TradeMetrics struct {
 	Net      float64 // Net profit after fees: Gross − Overhead
 }
 
-// CalculateTradeMetricsCurve computes trade metrics using Polymarket's
-// price-curve fee formula:
-//
-//	fee_per_side = shares × feeRate × (p × (1−p))^exponent
-//
-// This accurately models the actual on-chain fee for crypto markets
-// where feeRate = 0.25, exponent = 2.0. The curve is lowest near 0/1 and highest at 0.5.
+// CalculateTradeMetricsCurve computes trade metrics using Polymarket's documented
+// taker fee formula across both legs.
 func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) TradeMetrics {
 	sum := price1 + price2
 	cost := shares * sum
 	gross := shares * (1.0 - sum)
 
-	overhead := 0.0
-	if feeRateBps > 0 {
-		feeRate := 0.25
-		exponent := 2.0
-
-		fee1Tokens := shares * feeRate * math.Pow(price1*(1.0-price1), exponent)
-		fee2Tokens := shares * feeRate * math.Pow(price2*(1.0-price2), exponent)
-
-		fee1Usdc := fee1Tokens * price1
-		fee2Usdc := fee2Tokens * price2
-
-		overhead = fee1Usdc + fee2Usdc
-	}
+	overhead := core.PolymarketTakerFeeUSDC(shares, price1, feeRateBps) +
+		core.PolymarketTakerFeeUSDC(shares, price2, feeRateBps)
 
 	return TradeMetrics{
 		Cost:     cost,
@@ -64,12 +49,12 @@ func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) 
 }
 
 // CalculateTradeMetricsFlat computes trade metrics using a simple flat fee rate
-// applied to the total cost:
+// applied to the total cost when only the combined entry price is known:
 //
 //	overhead = cost × (feeRateBps/10000)
 //
-// This is a conservative approximation used in real-bot order sizing where the
-// per-side curve fee is not known precisely at order time.
+// This remains an approximation and should only be used when per-leg prices are
+// unavailable. Prefer CalculateTradeMetricsCurve whenever both prices are known.
 func CalculateTradeMetricsFlat(shares, sum float64, feeRateBps int) TradeMetrics {
 	cost := shares * sum
 	gross := shares * (1.0 - sum)

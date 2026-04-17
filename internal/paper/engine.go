@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"Market-bot/internal/core"
 )
 
 // Trade represents a single executed trade
@@ -442,8 +444,7 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, i
 	// Calculate fee (collected in shares for BUY)
 	feeTokens := 0.0
 	if !isMaker && e.feeRateBps > 0 {
-		// Calculate curve fee for crypto markets (feeRate=0.25, exponent=2.0)
-		feeTokens = quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
+		feeTokens = core.PolymarketBuyFeeShares(quantity, price, e.feeRateBps)
 	}
 	netQuantity := quantity - feeTokens
 
@@ -517,8 +518,7 @@ func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, is
 	// Calculate fee (collected in USDC for SELL)
 	feeUsdc := 0.0
 	if !isMaker && e.feeRateBps > 0 {
-		feeTokens := quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
-		feeUsdc = feeTokens * price
+		feeUsdc = core.PolymarketTakerFeeUSDC(quantity, price, e.feeRateBps)
 	}
 
 	// Calculate PnL for this sale
@@ -818,8 +818,7 @@ func (e *Engine) LiquidateAll() float64 {
 		// Calculate fee (collected in USDC for SELL)
 		feeUsdc := 0.0
 		if e.feeRateBps > 0 {
-			feeTokens := pos.Quantity * 0.25 * math.Pow(price*(1.0-price), 2.0)
-			feeUsdc = feeTokens * price
+			feeUsdc = core.PolymarketTakerFeeUSDC(pos.Quantity, price, e.feeRateBps)
 		}
 
 		proceeds := (pos.Quantity * price) - feeUsdc

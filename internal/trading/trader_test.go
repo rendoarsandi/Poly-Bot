@@ -143,16 +143,15 @@ func TestPaperTrader_FeeCalculation(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Buy triggers the dynamic curve fee because feeRateBps > 0
+	// Buy fee uses the documented Polymarket formula.
 	result, err := trader.Buy(ctx, "token123", "Up", 0.50, 100, api.OrderTypeMarket, api.TIFGoodTilCancelled, 100)
 	if err != nil {
 		t.Fatalf("Buy failed: %v", err)
 	}
 
-	// Crypto curve: feeTokens = size * 0.25 * (p * (1-p))^2
-	// feeTokens = 100 * 0.25 * (0.5 * 0.5)^2 = 1.5625 shares
-	// USDC fee equivalent = 1.5625 * 0.50 = 0.78125
-	expectedFee := 0.78125
+	// fee_usdc = shares * feeRate * price * (1-price)
+	//          = 100 * 0.01 * 0.50 * 0.50 = 0.25
+	expectedFee := 0.25
 	if result.Fee != expectedFee {
 		t.Errorf("Expected fee $%.4f, got $%.4f", expectedFee, result.Fee)
 	}

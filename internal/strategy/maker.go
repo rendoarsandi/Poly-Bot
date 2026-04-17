@@ -3,6 +3,8 @@ package strategy
 import (
 	"math"
 	"time"
+
+	"Market-bot/internal/core"
 )
 
 type MakerParams struct {
@@ -18,7 +20,7 @@ func ComputeMakerSellFeeUsdc(shares, price float64, feeRateBps int) float64 {
 	if feeRateBps <= 0 || shares <= 0 || price <= 0 {
 		return 0
 	}
-	return shares * 0.25 * math.Pow(price*(1.0-price), 2.0) * price
+	return core.PolymarketTakerFeeUSDC(shares, price, feeRateBps)
 }
 
 func ComputeMakerInventorySkew(positionShares, peerShares, targetShares float64) float64 {
