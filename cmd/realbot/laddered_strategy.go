@@ -64,6 +64,17 @@ func realbotRecoverLateLadderedBuyFill(ctx context.Context, trader *trading.Real
 	return 0, source, nil
 }
 
+func realbotVerifiedLadderedBuyFill(requestedQty, optimisticQty, recoveredQty float64, recoverErr error) (filledQty float64, confirmed bool, authoritative bool) {
+	if hasConfirmedExecutedQty(api.SideBuy, recoveredQty) {
+		return clampRequestedExecutionQty(recoveredQty, requestedQty), true, true
+	}
+	if recoverErr == nil {
+		return 0, false, true
+	}
+	optimisticQty = clampRequestedExecutionQty(optimisticQty, requestedQty)
+	return optimisticQty, hasConfirmedExecutedQty(api.SideBuy, optimisticQty), false
+}
+
 func ladderedTakerAskBounds(minAsk, maxAsk float64) (float64, float64) {
 	if maxAsk > ladderedTakerMaxAsk || maxAsk <= 0 {
 		maxAsk = ladderedTakerMaxAsk

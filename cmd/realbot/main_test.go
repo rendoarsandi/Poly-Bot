@@ -281,6 +281,45 @@ func TestRealbotLadderedRecoveredFillQtyUsesRequestedSideOnly(t *testing.T) {
 	}
 }
 
+func TestRealbotVerifiedLadderedBuyFillUsesRecoveredBalanceDelta(t *testing.T) {
+	filledQty, confirmed, authoritative := realbotVerifiedLadderedBuyFill(1.02, 1.02, 0.61, nil)
+	if math.Abs(filledQty-0.61) > 1e-9 {
+		t.Fatalf("expected recovered ladder qty 0.61, got %.4f", filledQty)
+	}
+	if !confirmed {
+		t.Fatal("expected recovered ladder fill to stay confirmed")
+	}
+	if !authoritative {
+		t.Fatal("expected recovered ladder fill to be authoritative")
+	}
+}
+
+func TestRealbotVerifiedLadderedBuyFillRejectsMissingVerifiedShares(t *testing.T) {
+	filledQty, confirmed, authoritative := realbotVerifiedLadderedBuyFill(1.02, 1.02, 0, nil)
+	if filledQty != 0 {
+		t.Fatalf("expected missing verified ladder fill to zero out optimistic qty, got %.4f", filledQty)
+	}
+	if confirmed {
+		t.Fatal("expected missing verified ladder fill to fail confirmation")
+	}
+	if !authoritative {
+		t.Fatal("expected clean zero-qty verification to be authoritative")
+	}
+}
+
+func TestRealbotVerifiedLadderedBuyFillFallsBackWhenVerificationUnavailable(t *testing.T) {
+	filledQty, confirmed, authoritative := realbotVerifiedLadderedBuyFill(1.02, 0.98, 0, errors.New("refresh failed"))
+	if math.Abs(filledQty-0.98) > 1e-9 {
+		t.Fatalf("expected optimistic ladder qty fallback 0.98, got %.4f", filledQty)
+	}
+	if !confirmed {
+		t.Fatal("expected optimistic ladder qty fallback to preserve confirmation")
+	}
+	if authoritative {
+		t.Fatal("expected verification error fallback not to claim authoritative fill")
+	}
+}
+
 func TestRealbotShouldAutoMergeBalancedInventory(t *testing.T) {
 	if realbotShouldAutoMergeBalancedInventory(paper.TUISettings{PaperArbMode: paperArbModeLaddered}) {
 		t.Fatal("expected laddered mode to keep balanced inventory parked")

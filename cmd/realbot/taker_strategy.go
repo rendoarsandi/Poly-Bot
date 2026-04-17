@@ -174,28 +174,40 @@ func realbotExecuteAggressiveEntry(
 	}
 	if ladderedMode {
 		requestedQty := requestSize1
+		optimisticFilled := filled1
 		confirmed := side1Success
+		activeOutcome := outcomes[0]
+		activeRes := res1
 		if ladderedDirection == 1 {
 			requestedQty = requestSize2
+			optimisticFilled = filled2
 			confirmed = side2Success
+			activeOutcome = outcomes[1]
+			activeRes = res2
 		}
-		if !confirmed {
-			recoverCtx, cancelRecover := context.WithTimeout(ctx, 3*time.Second)
-			recoveredQty, recoverSource, recoverErr := realbotRecoverLateLadderedBuyFill(recoverCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, ladderedDirection, requestedQty)
-			cancelRecover()
-			if hasConfirmedExecutedQty(api.SideBuy, recoveredQty) {
-				if ladderedDirection == 1 {
-					filled2 = math.Max(filled2, recoveredQty)
-					side2Success = true
-				} else {
-					filled1 = math.Max(filled1, recoveredQty)
-					side1Success = true
-				}
-				recoveredLateLadderFill = true
-				recoveredLateLadderSource = recoverSource
-			} else if recoverErr != nil {
-				tui.LogEvent("[%s] ⚠️ Ladder late-fill check failed: %v", id, recoverErr)
+		recoverCtx, cancelRecover := context.WithTimeout(ctx, 3*time.Second)
+		recoveredQty, recoverSource, recoverErr := realbotRecoverLateLadderedBuyFill(recoverCtx, trader, token0, token1, initialSnapshot0, initialSnapshot1, ladderedDirection, requestedQty)
+		cancelRecover()
+		verifiedQty, verifiedConfirmed, authoritativeRecovery := realbotVerifiedLadderedBuyFill(requestedQty, optimisticFilled, recoveredQty, recoverErr)
+		if ladderedDirection == 1 {
+			filled2 = verifiedQty
+			side2Success = verifiedConfirmed
+		} else {
+			filled1 = verifiedQty
+			side1Success = verifiedConfirmed
+		}
+		switch {
+		case authoritativeRecovery && verifiedConfirmed && !confirmed:
+			recoveredLateLadderFill = true
+			recoveredLateLadderSource = recoverSource
+		case authoritativeRecovery && verifiedConfirmed && math.Abs(verifiedQty-optimisticFilled) > 0.000001:
+			tui.LogEvent("[%s] 🧾 Ladder fill adjusted via %s: %s %s→%s", id, recoverSource, activeOutcome, formatShareQty(optimisticFilled), formatShareQty(verifiedQty))
+		case authoritativeRecovery && !verifiedConfirmed:
+			if activeRes != nil && strings.TrimSpace(activeRes.Message) == "" {
+				activeRes.Message = "No fresh ladder buy delta attributable after verification"
 			}
+		case recoverErr != nil && !confirmed:
+			tui.LogEvent("[%s] ⚠️ Ladder late-fill check failed: %v", id, recoverErr)
 		}
 	}
 
