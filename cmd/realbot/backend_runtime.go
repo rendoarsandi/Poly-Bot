@@ -76,22 +76,37 @@ func realbotInitBackend(ctx context.Context, cfg *core.Config) (*realbotBackendS
 		fmt.Printf("💵 Available Balance: $%.2f USDC\n", balance)
 	}
 
+	restClient := api.NewRestClient(cfg.Exchange)
 	positions, err := trader.GetPositions(initCtx)
 	if err != nil {
 		fmt.Printf("⚠️  Could not fetch positions: %v\n", err)
-	} else if len(positions) > 0 {
-		positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(initCtx, trader, positions)
-		fmt.Println()
+	} else {
+		recoveredPositions := 0
+		if recovered, recoveredCount, recoverErr := realbotRecoverStartupCarryPositions(initCtx, trader, restClient, positions); recoverErr != nil {
+			fmt.Printf("⚠️  Startup carry recovery incomplete: %v\n", recoverErr)
+			positions = recovered
+			recoveredPositions = recoveredCount
+		} else {
+			positions = recovered
+			recoveredPositions = recoveredCount
+		}
 		if len(positions) > 0 {
-			fmt.Println(startupPositionsSummary(positions))
+			positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(initCtx, trader, positions)
+			fmt.Println()
+			if len(positions) > 0 {
+				fmt.Println(startupPositionsSummary(positions))
+			} else {
+				fmt.Println("📊 No open positions")
+			}
+			if recoveredPositions > 0 {
+				fmt.Printf("🧾 Recovered %d startup carry position(s) from wallet scan\n", recoveredPositions)
+			}
+			if skippedPositions > 0 {
+				fmt.Printf("⏭️  Ignoring %d resolved losing position(s) from prior runs (%.2f shares)\n", skippedPositions, skippedShares)
+			}
 		} else {
 			fmt.Println("📊 No open positions")
 		}
-		if skippedPositions > 0 {
-			fmt.Printf("⏭️  Ignoring %d resolved losing position(s) from prior runs (%.2f shares)\n", skippedPositions, skippedShares)
-		}
-	} else {
-		fmt.Println("📊 No open positions")
 	}
 
 	if state.polygonClient != nil {

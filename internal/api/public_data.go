@@ -146,6 +146,10 @@ func (c *RestClient) GetPublicPositions(ctx context.Context, user string, market
 }
 
 func (c *RestClient) GetPublicTrades(ctx context.Context, user string, markets []string, limit int) ([]PublicTrade, error) {
+	return c.GetPublicTradesPage(ctx, user, markets, limit, 0)
+}
+
+func (c *RestClient) GetPublicTradesPage(ctx context.Context, user string, markets []string, limit int, offset int) ([]PublicTrade, error) {
 	user = NormalizeWalletAddress(user)
 	if !IsWalletAddress(user) {
 		return nil, fmt.Errorf("invalid wallet address %q", user)
@@ -164,6 +168,9 @@ func (c *RestClient) GetPublicTrades(ctx context.Context, user string, markets [
 	q := u.Query()
 	q.Set("user", user)
 	q.Set("limit", fmt.Sprintf("%d", limit))
+	if offset > 0 {
+		q.Set("offset", fmt.Sprintf("%d", offset))
+	}
 	q.Set("takerOnly", "false")
 	if len(markets) > 0 {
 		q.Set("market", strings.Join(markets, ","))

@@ -173,26 +173,38 @@ func run() error {
 
 	_, _, _ = realbotSyncRuntimeBalance(ctx, realTrader, engine, tui, 8*time.Second)
 
-	if positions, err := realbotSyncRuntimePositions(ctx, realTrader, 10*time.Second); err == nil && len(positions) > 0 {
-		positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(ctx, realTrader, positions)
-		startupCarryMarkets := realbotStartupCarryMarkets(ctx, realTrader, positions)
-		for _, carry := range startupCarryMarkets {
-			tui.AddMarket(carry.MarketID, carry.Slug, carry.Outcomes, carry.EndTime)
-		}
-		for _, pos := range positions {
-			engine.SyncExternalPosition(realbotStartupCarryMarketID(pos), pos.Outcome, pos.Size, pos.AvgPrice)
+	if positions, err := realbotSyncRuntimePositions(ctx, realTrader, 10*time.Second); err == nil {
+		recoveredPositions := 0
+		if recovered, recoveredCount, recoverErr := realbotRecoverStartupCarryPositions(ctx, realTrader, restClient, positions); recoverErr != nil {
+			tui.LogEvent("⚠️ Startup carry recovery incomplete: %v", recoverErr)
+			positions = recovered
+			recoveredPositions = recoveredCount
+		} else {
+			positions = recovered
+			recoveredPositions = recoveredCount
 		}
 		if len(positions) > 0 {
-			tui.LogEvent("✅ Loaded %d existing positions from exchange", len(positions))
-		}
-		if skippedPositions > 0 {
-			tui.LogEvent("⏭️ Ignored %d resolved losing startup position(s) (%.2f shares)", skippedPositions, skippedShares)
-		}
-		for _, carry := range startupCarryMarkets {
-			if carry.ConditionID == "" || len(carry.Outcomes) == 0 || carry.EndTime.IsZero() || carry.EndTime.After(time.Now()) {
-				continue
+			positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(ctx, realTrader, positions)
+			startupCarryMarkets := realbotStartupCarryMarkets(ctx, realTrader, positions)
+			for _, carry := range startupCarryMarkets {
+				tui.AddMarket(carry.MarketID, carry.Slug, carry.Outcomes, carry.EndTime)
 			}
-			realbotLaunchRedemptionCheck(carry.MarketID, carry.ConditionID, carry.Outcomes, carry.EndTime, realTrader, engine, tui, resolutionCache)
+			for _, pos := range positions {
+				engine.SyncExternalPosition(realbotStartupCarryMarketID(pos), pos.Outcome, pos.Size, pos.AvgPrice)
+			}
+			tui.LogEvent("✅ Loaded %d startup carry position(s)", len(positions))
+			if recoveredPositions > 0 {
+				tui.LogEvent("🧾 Recovered %d startup carry position(s) from wallet scan", recoveredPositions)
+			}
+			if skippedPositions > 0 {
+				tui.LogEvent("⏭️ Ignored %d resolved losing startup position(s) (%.2f shares)", skippedPositions, skippedShares)
+			}
+			for _, carry := range startupCarryMarkets {
+				if carry.ConditionID == "" || len(carry.Outcomes) == 0 || carry.EndTime.IsZero() || carry.EndTime.After(time.Now()) {
+					continue
+				}
+				realbotLaunchRedemptionCheck(carry.MarketID, carry.ConditionID, carry.Outcomes, carry.EndTime, realTrader, engine, tui, resolutionCache)
+			}
 		}
 	} else if err != nil {
 		tui.LogEvent("⚠️ Failed to load existing positions: %v", err)

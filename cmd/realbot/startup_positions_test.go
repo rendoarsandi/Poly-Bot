@@ -18,6 +18,51 @@ type stubRealbotStartupMarketInfoReader struct {
 	calls map[string]int
 }
 
+type stubRealbotStartupCarryBalanceReader struct {
+	address  string
+	balances map[string]float64
+	errs     map[string]error
+}
+
+func (s *stubRealbotStartupCarryBalanceReader) Address() string {
+	return s.address
+}
+
+func (s *stubRealbotStartupCarryBalanceReader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
+	_ = ctx
+	if err := s.errs[tokenID]; err != nil {
+		return 0, err
+	}
+	return s.balances[tokenID], nil
+}
+
+type stubRealbotStartupCarryRecoverySource struct {
+	marketsByTimeframe map[string][]api.Market
+	marketErrs         map[string]error
+	tradesByOffset     map[int][]api.PublicTrade
+	tradeErrs          map[int]error
+}
+
+func (s *stubRealbotStartupCarryRecoverySource) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]api.Market, error) {
+	_ = ctx
+	_ = assets
+	if err := s.marketErrs[timeframe]; err != nil {
+		return nil, err
+	}
+	return append([]api.Market(nil), s.marketsByTimeframe[timeframe]...), nil
+}
+
+func (s *stubRealbotStartupCarryRecoverySource) GetPublicTradesPage(ctx context.Context, user string, markets []string, limit int, offset int) ([]api.PublicTrade, error) {
+	_ = ctx
+	_ = user
+	_ = markets
+	_ = limit
+	if err := s.tradeErrs[offset]; err != nil {
+		return nil, err
+	}
+	return append([]api.PublicTrade(nil), s.tradesByOffset[offset]...), nil
+}
+
 func (s *stubRealbotStartupMarketInfoReader) GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error) {
 	_ = ctx
 	if s.calls == nil {
@@ -189,5 +234,83 @@ func TestRealbotStartupCarryMarketsBuildsCanonicalMetadata(t *testing.T) {
 	wantEnd := time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC)
 	if !carry.EndTime.Equal(wantEnd) {
 		t.Fatalf("expected startup carry end time %s, got %s", wantEnd, carry.EndTime)
+	}
+}
+
+func TestRealbotStartupCarryAvgPriceFromTradesUsesAverageCostMath(t *testing.T) {
+	trades := []api.PublicTrade{
+		{Asset: "up-token", Side: "BUY", Size: 10, Price: 0.20, Timestamp: 1},
+		{Asset: "up-token", Side: "BUY", Size: 10, Price: 0.80, Timestamp: 2},
+		{Asset: "up-token", Side: "SELL", Size: 10, Price: 0.90, Timestamp: 3},
+	}
+
+	avgPrice, ok := realbotStartupCarryAvgPriceFromTrades(trades, 10)
+	if !ok {
+		t.Fatal("expected average-cost reconstruction to succeed")
+	}
+	if math.Abs(avgPrice-0.50) > 0.000001 {
+		t.Fatalf("expected remaining average cost 0.50, got %.6f", avgPrice)
+	}
+}
+
+func TestRealbotRecoverStartupCarryPositionsRestoresClosedCarryFromWalletScan(t *testing.T) {
+	trader := &stubRealbotStartupCarryBalanceReader{
+		address: "0xe0229e10a858860218b6132f4234602c47bd6603",
+		balances: map[string]float64{
+			"up-token": 1.0163,
+		},
+	}
+	source := &stubRealbotStartupCarryRecoverySource{
+		marketsByTimeframe: map[string][]api.Market{
+			"5m": {
+				{
+					ConditionID: "cond-1",
+					Slug:        "btc-updown-5m-1776400200",
+					Tokens: []api.Token{
+						{TokenID: "up-token", Outcome: "Up"},
+						{TokenID: "down-token", Outcome: "Down"},
+					},
+				},
+			},
+		},
+		tradesByOffset: map[int][]api.PublicTrade{
+			0: {
+				{
+					Asset:       "up-token",
+					ConditionID: "cond-1",
+					Slug:        "btc-updown-5m-1776400200",
+					Side:        "BUY",
+					Size:        1.0163,
+					Price:       0.95,
+					Timestamp:   10,
+					Outcome:     "Up",
+				},
+			},
+		},
+	}
+
+	positions, recovered, err := realbotRecoverStartupCarryPositions(context.Background(), trader, source, nil)
+	if err != nil {
+		t.Fatalf("expected startup carry recovery to succeed, got %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("expected 1 recovered startup carry position, got %d", recovered)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("expected 1 recovered position, got %+v", positions)
+	}
+
+	pos := positions[0]
+	if pos.TokenID != "up-token" || pos.ConditionID != "cond-1" || pos.Slug != "btc-updown-5m-1776400200" {
+		t.Fatalf("unexpected recovered startup position identity: %+v", pos)
+	}
+	if pos.Outcome != "Up" || pos.OppositeOutcome != "Down" || pos.OppositeAsset != "down-token" {
+		t.Fatalf("unexpected recovered startup outcomes: %+v", pos)
+	}
+	if math.Abs(pos.Size-1.0163) > 0.000001 {
+		t.Fatalf("expected 1.0163 recovered shares, got %.6f", pos.Size)
+	}
+	if math.Abs(pos.AvgPrice-0.95) > 0.000001 {
+		t.Fatalf("expected recovered startup avg price 0.95, got %.6f", pos.AvgPrice)
 	}
 }
