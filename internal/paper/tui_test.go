@@ -1198,6 +1198,27 @@ func TestTickFlushesPendingDisplayDirty(t *testing.T) {
 	}
 }
 
+func TestClearMarketsPreservesMetadataForHeldCarry(t *testing.T) {
+	engine := NewEngine(100.0)
+	tui := NewTUI(engine, NewOrderBook())
+	endTime := time.Now().Add(-time.Minute)
+	tui.AddMarket("btc-updown-5m-1776383100", "btc-updown-5m-1776383100", []string{"Up", "Down"}, endTime)
+
+	if !engine.SyncExternalPosition("btc-updown-5m-1776383100", "Up", 1.0163, 0.95) {
+		t.Fatal("expected carry position sync to change engine state")
+	}
+
+	tui.ClearMarkets()
+
+	market, ok := tui.markets["btc-updown-5m-1776383100"]
+	if !ok || market == nil {
+		t.Fatalf("expected ClearMarkets to preserve metadata for held carry, got %+v", tui.markets)
+	}
+	if !market.EndTime.Equal(endTime) {
+		t.Fatalf("expected preserved carry market end time %s, got %s", endTime, market.EndTime)
+	}
+}
+
 func TestLogEventSuppressesImmediateConsecutiveDuplicates(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/paper"
@@ -125,11 +126,68 @@ func TestStartupCarryImportSkipsResolvedLosersFromExposure(t *testing.T) {
 
 	engine := paper.NewEngine(100)
 	for _, pos := range filtered {
-		engine.SyncExternalPosition(pos.ConditionID, pos.Outcome, pos.Size, pos.AvgPrice)
+		engine.SyncExternalPosition(realbotStartupCarryMarketID(pos), pos.Outcome, pos.Size, pos.AvgPrice)
 	}
 
 	totalExposure, _ := engine.GetExposure()
 	if math.Abs(totalExposure-1.8) > 0.000001 {
 		t.Fatalf("expected only unresolved carry to count toward exposure (1.80), got %.6f", totalExposure)
+	}
+}
+
+func TestRealbotStartupCarryMarketIDPrefersSlug(t *testing.T) {
+	pos := trading.PositionInfo{
+		ConditionID: "0xc55fe114eac7a91fc5c0bbe248f65b8bf863aad990785db8bd04d8022cb0c08c",
+		Slug:        "btc-updown-5m-1776383100",
+	}
+
+	if got := realbotStartupCarryMarketID(pos); got != "btc-updown-5m-1776383100" {
+		t.Fatalf("expected startup carry market id to prefer slug, got %q", got)
+	}
+}
+
+func TestRealbotStartupCarryMarketsBuildsCanonicalMetadata(t *testing.T) {
+	reader := &stubRealbotStartupMarketInfoReader{
+		infos: map[string]*api.MarketInfo{
+			"cond-1": {
+				Closed:     true,
+				EndDateISO: "2026-04-17T00:00:00Z",
+				Tokens: []struct {
+					TokenID string      `json:"token_id"`
+					Outcome string      `json:"outcome"`
+					Winner  bool        `json:"winner"`
+					Price   interface{} `json:"price"`
+				}{
+					{TokenID: "up-token", Outcome: "Up"},
+					{TokenID: "down-token", Outcome: "Down"},
+				},
+			},
+		},
+	}
+
+	positions := []trading.PositionInfo{
+		{
+			ConditionID:     "cond-1",
+			Slug:            "btc-updown-5m-1776383100",
+			Outcome:         "Up",
+			OppositeOutcome: "Down",
+			Size:            1.0163,
+		},
+	}
+
+	markets := realbotStartupCarryMarkets(context.Background(), reader, positions)
+	carry, ok := markets["btc-updown-5m-1776383100"]
+	if !ok {
+		t.Fatalf("expected canonical startup carry market keyed by slug, got %+v", markets)
+	}
+	if carry.ConditionID != "cond-1" {
+		t.Fatalf("expected condition id cond-1, got %+v", carry)
+	}
+	if len(carry.Outcomes) != 2 || carry.Outcomes[0] != "Down" || carry.Outcomes[1] != "Up" {
+		t.Fatalf("expected canonical outcomes from startup carry metadata, got %+v", carry.Outcomes)
+	}
+	wantEnd := time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC)
+	if !carry.EndTime.Equal(wantEnd) {
+		t.Fatalf("expected startup carry end time %s, got %s", wantEnd, carry.EndTime)
 	}
 }

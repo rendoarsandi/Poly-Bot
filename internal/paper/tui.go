@@ -3244,7 +3244,62 @@ func (t *TUI) SetMarketBinanceSignal(marketID string, signal MarketBinanceSignal
 func (t *TUI) ClearMarkets() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.markets = make(map[string]*MarketData)
+
+	const eps = 1e-6
+	preservedMarkets := make(map[string]*MarketData)
+	if t.engine != nil {
+		for _, pos := range t.engine.GetPositions() {
+			marketID := strings.TrimSpace(pos.MarketID)
+			if marketID == "" || pos.Quantity <= eps {
+				continue
+			}
+			if existing, ok := t.markets[marketID]; ok && existing != nil {
+				preserved := *existing
+				preserved.Bids = make(map[string]float64)
+				preserved.Asks = make(map[string]float64)
+				preserved.ClearedBids = make(map[string]bool)
+				preserved.ClearedAsks = make(map[string]bool)
+				preserved.RealBids = make(map[string]float64)
+				preserved.RealAsks = make(map[string]float64)
+				preserved.LastUpdate = time.Time{}
+				preserved.LastDepthUpdate = time.Time{}
+				preserved.DataSource = ""
+				preserved.BinanceSignal = MarketBinanceSignal{}
+				preservedMarkets[marketID] = &preserved
+			}
+		}
+	}
+	for marketID, positions := range t.walletTruth {
+		marketID = strings.TrimSpace(marketID)
+		if marketID == "" {
+			continue
+		}
+		if _, exists := preservedMarkets[marketID]; exists {
+			continue
+		}
+		for _, wt := range positions {
+			if wt.LocalShares <= eps && wt.OnChainShares <= eps {
+				continue
+			}
+			if existing, ok := t.markets[marketID]; ok && existing != nil {
+				preserved := *existing
+				preserved.Bids = make(map[string]float64)
+				preserved.Asks = make(map[string]float64)
+				preserved.ClearedBids = make(map[string]bool)
+				preserved.ClearedAsks = make(map[string]bool)
+				preserved.RealBids = make(map[string]float64)
+				preserved.RealAsks = make(map[string]float64)
+				preserved.LastUpdate = time.Time{}
+				preserved.LastDepthUpdate = time.Time{}
+				preserved.DataSource = ""
+				preserved.BinanceSignal = MarketBinanceSignal{}
+				preservedMarkets[marketID] = &preserved
+			}
+			break
+		}
+	}
+
+	t.markets = preservedMarkets
 	t.lastPrices = make(map[string]float64)
 	t.lastBids = make(map[string]float64)
 	t.lastAsks = make(map[string]float64)
