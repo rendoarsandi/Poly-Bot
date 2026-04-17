@@ -6476,8 +6476,29 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 		if maxLineWidth < 8 {
 			maxLineWidth = 8
 		}
+		
+		// Use lipgloss to safely wrap strings with ANSI codes
+		wrapStyle := lipgloss.NewStyle().Width(maxLineWidth)
+		var wrappedLines []string
 		for i := startIdx; i < len(s.eventLog); i++ {
-			sb.WriteString("  " + truncateText(s.eventLog[i], maxLineWidth) + "\n")
+			wrapped := wrapStyle.Render(s.eventLog[i])
+			lines := strings.Split(wrapped, "\n")
+			for j, line := range lines {
+				if j == 0 {
+					wrappedLines = append(wrappedLines, "  "+line)
+				} else {
+					wrappedLines = append(wrappedLines, "    "+line) // Indent continuation
+				}
+			}
+		}
+		
+		// Only display the last maxItems lines
+		displayStart := 0
+		if len(wrappedLines) > maxItems {
+			displayStart = len(wrappedLines) - maxItems
+		}
+		for i := displayStart; i < len(wrappedLines); i++ {
+			sb.WriteString(wrappedLines[i] + "\n")
 		}
 	}
 	return makePanel(inner, clrSlate, sb.String())

@@ -1396,6 +1396,24 @@ func (e *Engine) SyncBalanceNeutral(balance float64) float64 {
 	defer e.mu.Unlock()
 
 	delta := balance - e.currentBalance
+
+	if delta > 0.01 && len(e.pendingRedemptions) > 0 {
+		remainingDelta := delta
+		for marketID, payout := range e.pendingRedemptions {
+			if remainingDelta >= payout-0.01 {
+				delete(e.pendingRedemptions, marketID)
+				e.settledRedemptions[marketID] = time.Now()
+				remainingDelta -= payout
+			} else if remainingDelta > 0.01 {
+				e.pendingRedemptions[marketID] -= remainingDelta
+				remainingDelta = 0
+			}
+			if remainingDelta <= 0.01 {
+				break
+			}
+		}
+	}
+
 	e.currentBalance = balance
 
 	neutralized := 0.0
