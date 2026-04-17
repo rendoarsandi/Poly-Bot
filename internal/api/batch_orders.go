@@ -29,6 +29,35 @@ func normalizeBatchOrderResponse(resp *OrderResponse) {
 	}
 }
 
+func clobShouldRetryBatchOrders(statusCode int, bodyBytes []byte) bool {
+	if statusCode == http.StatusTooEarly {
+		return true
+	}
+	if statusCode != http.StatusInternalServerError {
+		return false
+	}
+
+	var result []OrderResponse
+	if err := json.Unmarshal(bodyBytes, &result); err == nil && len(result) > 0 {
+		for i := range result {
+			if clobOrderResponseShowsExecutionStarted(&result[i]) || !clobIsRetryableExecutionFailure(result[i].Status, result[i].ErrorMsg) {
+				return false
+			}
+		}
+		return true
+	}
+
+	var singleResp OrderResponse
+	if err := json.Unmarshal(bodyBytes, &singleResp); err == nil {
+		if clobOrderResponseShowsExecutionStarted(&singleResp) {
+			return false
+		}
+		return clobIsRetryableExecutionFailure(singleResp.Status, singleResp.ErrorMsg)
+	}
+
+	return clobIsRetryableExecutionFailure("", string(bodyBytes))
+}
+
 // PlaceOrders places multiple new limit/market orders in a single request.
 func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*OrderResponse, error) {
 	if len(reqs) == 0 {
@@ -218,34 +247,46 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 		return nil, fmt.Errorf("batch orders not fully supported in testMode")
 	}
 
-	authStart := time.Now()
-	timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
-	captureLatency(latencyMs, "auth_ms", authStart)
-	postStart := time.Now()
-	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	var resp *http.Response
+	var bodyBytes []byte
+	var statusCode int
+	for attempt := 0; attempt < clobRetryMaxAttempts; attempt++ {
+		authStart := time.Now()
+		timestamp, signature := c.auth.SignL2Request("POST", path, string(body))
+		captureLatency(latencyMs, "auth_ms", authStart)
+		postStart := time.Now()
+		req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+		req.Header.Set("POLY_ADDRESS", c.signer.Address())
+		req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+		req.Header.Set("POLY_TIMESTAMP", timestamp)
+		req.Header.Set("POLY_SIGNATURE", signature)
+
+		resp, err = httpClient.Do(req)
+		captureLatency(latencyMs, "post_ms", postStart)
+		if err != nil {
+			c.logRawLatencyDebug(path, latencyMs, "submit_error")
+			return nil, fmt.Errorf("failed to submit batch orders: %w", err)
+		}
+		readStart := time.Now()
+		bodyBytes, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		captureLatency(latencyMs, "read_ms", readStart)
+		statusCode = resp.StatusCode
+		if !clobShouldRetryBatchOrders(statusCode, bodyBytes) || attempt == clobRetryMaxAttempts-1 {
+			break
+		}
+		if waitErr := clobWaitForRetry(ctx, attempt); waitErr != nil {
+			break
+		}
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
-	req.Header.Set("POLY_ADDRESS", c.signer.Address())
-	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
-	req.Header.Set("POLY_TIMESTAMP", timestamp)
-	req.Header.Set("POLY_SIGNATURE", signature)
-
-	resp, err := httpClient.Do(req)
-	captureLatency(latencyMs, "post_ms", postStart)
-	if err != nil {
-		c.logRawLatencyDebug(path, latencyMs, "submit_error")
-		return nil, fmt.Errorf("failed to submit batch orders: %w", err)
-	}
-	defer resp.Body.Close()
-	readStart := time.Now()
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	captureLatency(latencyMs, "read_ms", readStart)
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
 		c.logRawLatencyDebug(path, latencyMs, "http_error")
 		var result []OrderResponse
 		if err := json.Unmarshal(bodyBytes, &result); err != nil {
@@ -254,7 +295,7 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 				singleResp.Success = false
 				return []*OrderResponse{&singleResp}, nil
 			}
-			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+			return nil, fmt.Errorf("HTTP %d: %s", statusCode, string(bodyBytes))
 		}
 		resPtrs := make([]*OrderResponse, len(result))
 		for i := range result {

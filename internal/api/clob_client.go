@@ -25,6 +25,11 @@ type CLOBClient struct {
 	rawLogger *rawAPILogger
 }
 
+const (
+	clobRetryMaxAttempts = 3
+	clobRetryBaseDelay   = 200 * time.Millisecond
+)
+
 // NewCLOBClient creates a new authenticated CLOB client
 func NewCLOBClient(privateKeyHex, apiKey, apiSecret, apiPassphrase string) (*CLOBClient, error) {
 	signer, err := NewSigner(privateKeyHex)
@@ -77,6 +82,70 @@ func (c *CLOBClient) CloseRawAPILog() error {
 	err := c.rawLogger.Close()
 	c.rawLogger = nil
 	return err
+}
+
+func clobExecutionRetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := clobRetryBaseDelay << attempt
+	if delay > 2*time.Second {
+		delay = 2 * time.Second
+	}
+	return delay
+}
+
+func clobWaitForRetry(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(clobExecutionRetryDelay(attempt))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func clobOrderResponseShowsExecutionStarted(resp *OrderResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.OrderID != "" || len(resp.TransactionsHashes) > 0 || len(resp.TradeIDs) > 0 {
+		return true
+	}
+	switch strings.ToUpper(strings.TrimSpace(resp.Status)) {
+	case "LIVE", "MATCHED", "FILLED", "DELAYED", "UNMATCHED", "CONFIRMED":
+		return true
+	}
+	return false
+}
+
+func clobIsRetryableExecutionFailure(status string, msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	status = strings.ToUpper(strings.TrimSpace(status))
+	if status == "EXECUTION_ERROR" {
+		return true
+	}
+	return strings.Contains(msg, "could not run the execution") ||
+		strings.Contains(msg, "execution_error") ||
+		strings.Contains(msg, "system error executing the trade")
+}
+
+func clobShouldRetrySingleOrder(statusCode int, bodyBytes []byte) bool {
+	if statusCode == http.StatusTooEarly {
+		return true
+	}
+	if statusCode != http.StatusInternalServerError {
+		return false
+	}
+	var resp OrderResponse
+	if err := json.Unmarshal(bodyBytes, &resp); err == nil {
+		if clobOrderResponseShowsExecutionStarted(&resp) {
+			return false
+		}
+		return clobIsRetryableExecutionFailure(resp.Status, resp.ErrorMsg)
+	}
+	return clobIsRetryableExecutionFailure("", string(bodyBytes))
 }
 
 // Address returns the wallet address
@@ -492,13 +561,23 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		return resp.StatusCode, bodyBytes, nil
 	}
 
-	submitStart := time.Now()
-	statusCode, bodyBytes, err := doSubmit(body)
-	captureLatency(latencyMs, "submit_ms", submitStart)
-	if err != nil {
-		c.logRawOrderDebug("POST", path, body, nil, 0, err, "submit_error")
-		c.logRawLatencyDebug(path, latencyMs, "submit_error")
-		return nil, err
+	var statusCode int
+	var bodyBytes []byte
+	for attempt := 0; attempt < clobRetryMaxAttempts; attempt++ {
+		submitStart := time.Now()
+		statusCode, bodyBytes, err = doSubmit(body)
+		captureLatency(latencyMs, "submit_ms", submitStart)
+		if err != nil {
+			c.logRawOrderDebug("POST", path, body, nil, 0, err, "submit_error")
+			c.logRawLatencyDebug(path, latencyMs, "submit_error")
+			return nil, err
+		}
+		if !clobShouldRetrySingleOrder(statusCode, bodyBytes) || attempt == clobRetryMaxAttempts-1 {
+			break
+		}
+		if waitErr := clobWaitForRetry(ctx, attempt); waitErr != nil {
+			break
+		}
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {

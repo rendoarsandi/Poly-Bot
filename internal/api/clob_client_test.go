@@ -119,6 +119,140 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 	}
 }
 
+func TestPlaceOrder_RetriesRetryableExecutionError(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := calls.Add(1)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"could not run the execution"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(OrderResponse{
+			Success: true,
+			Status:  "MATCHED",
+			OrderID: "0xretry",
+		})
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	resp, err := client.PlaceOrder(context.Background(), &OrderRequest{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10.0,
+		Side:        SideBuy,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillAndKill,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder failed: %v", err)
+	}
+	if !resp.Success || resp.OrderID != "0xretry" {
+		t.Fatalf("expected retry to succeed, got %+v", resp)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", calls.Load())
+	}
+}
+
+func TestPlaceOrder_RetriesTooEarly(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := calls.Add(1)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusTooEarly)
+			_, _ = w.Write([]byte(`{"error":"matching engine restarting"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(OrderResponse{
+			Success: true,
+			Status:  "MATCHED",
+			OrderID: "0x425",
+		})
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	resp, err := client.PlaceOrder(context.Background(), &OrderRequest{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10.0,
+		Side:        SideBuy,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillAndKill,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder failed: %v", err)
+	}
+	if !resp.Success || resp.OrderID != "0x425" {
+		t.Fatalf("expected 425 retry to succeed, got %+v", resp)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", calls.Load())
+	}
+}
+
+func TestPlaceOrders_RetriesRetryableExecutionError(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := calls.Add(1)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`[{"error":"could not run the execution"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"success":true,"status":"matched","orderID":"0xbatch"}]`))
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	resp, err := client.PlaceOrders(context.Background(), []*OrderRequest{{
+		TokenID:     "123456",
+		Price:       0.5,
+		Size:        10.0,
+		Side:        SideBuy,
+		OrderType:   OrderTypeMarket,
+		TimeInForce: TIFFillAndKill,
+	}})
+	if err != nil {
+		t.Fatalf("PlaceOrders failed: %v", err)
+	}
+	if len(resp) != 1 || !resp[0].Success || resp[0].OrderID != "0xbatch" {
+		t.Fatalf("expected batch retry to succeed, got %+v", resp)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", calls.Load())
+	}
+}
+
 func TestPlaceOrders_FAK_Killed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/orders" {
