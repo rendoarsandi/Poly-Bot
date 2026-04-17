@@ -56,18 +56,22 @@ func (w *ResolutionWatcher) Start(ctx context.Context, logf func(string, ...inte
 			if ctx.Err() != nil {
 				return
 			}
+			connectedAt := time.Now()
 			err := w.dialAndListen(ctx, logf)
 			if err != nil && ctx.Err() == nil {
-				logf("📡 [ResolutionWatcher] Disconnected: %v. Reconnecting in %s...", err, backoff)
+				if summary, benign := watcherDisconnectSummary(err); benign {
+					logf("📡 [ResolutionWatcher] Connection closed: %s. Reconnecting in %s...", summary, backoff)
+				} else {
+					logf("📡 [ResolutionWatcher] Disconnected: %v. Reconnecting in %s...", err, backoff)
+				}
 			} else if ctx.Err() != nil {
 				return
 			}
 
-			time.Sleep(backoff)
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
+			if !watcherSleep(ctx, backoff) {
+				return
 			}
+			backoff = watcherNextBackoff(backoff, time.Since(connectedAt))
 		}
 	}()
 }
@@ -111,7 +115,7 @@ func (w *ResolutionWatcher) dialAndListen(ctx context.Context, logf func(string,
 	if err != nil {
 		return fmt.Errorf("subscribe read: %w", err)
 	}
-	
+
 	logf("📡 [ResolutionWatcher] Subscribed to ConditionResolved events")
 
 	for {
@@ -136,12 +140,12 @@ func (w *ResolutionWatcher) dialAndListen(ctx context.Context, logf func(string,
 		if event.Method == "eth_subscription" && len(event.Params.Result.Topics) >= 2 {
 			// Typically, conditionId is the second topic (index 1) for ConditionResolved
 			// ConditionResolved(bytes32 indexed conditionId, address indexed oracle, bytes32 indexed questionId, uint256 outcomeSlotCount, uint256[] payoutNumerators)
-			conditionID := strings.TrimPrefix(event.Params.Result.Topics[1], "0x") 
+			conditionID := strings.TrimPrefix(event.Params.Result.Topics[1], "0x")
 			if len(conditionID) > 64 {
 				conditionID = conditionID[len(conditionID)-64:]
 			}
 			conditionID = "0x" + conditionID
-			
+
 			w.mu.Lock()
 			callbacks := append([]func(string){}, w.callbacks...)
 			w.mu.Unlock()

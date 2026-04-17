@@ -58,18 +58,22 @@ func (w *InventoryWatcher) Start(ctx context.Context, logf func(string, ...inter
 			if ctx.Err() != nil {
 				return
 			}
+			connectedAt := time.Now()
 			err := w.dialAndListen(ctx, logf)
 			if err != nil && ctx.Err() == nil {
-				logf("📡 [InventoryWatcher] Disconnected: %v. Reconnecting in %s...", err, backoff)
+				if summary, benign := watcherDisconnectSummary(err); benign {
+					logf("📡 [InventoryWatcher] Connection closed: %s. Reconnecting in %s...", summary, backoff)
+				} else {
+					logf("📡 [InventoryWatcher] Disconnected: %v. Reconnecting in %s...", err, backoff)
+				}
 			} else if ctx.Err() != nil {
 				return
 			}
 
-			time.Sleep(backoff)
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
+			if !watcherSleep(ctx, backoff) {
+				return
 			}
+			backoff = watcherNextBackoff(backoff, time.Since(connectedAt))
 		}
 	}()
 }
@@ -85,9 +89,9 @@ func (w *InventoryWatcher) dialAndListen(ctx context.Context, logf func(string, 
 
 	// ERC-1155 TransferSingle: 0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62
 	// ERC-1155 TransferBatch:  0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7ce
-	
+
 	addressPadded := "0x000000000000000000000000" + strings.TrimPrefix(w.address, "0x")
-	
+
 	// Subscribe to incoming transfers
 	subMsgIn := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -102,14 +106,14 @@ func (w *InventoryWatcher) dialAndListen(ctx context.Context, logf func(string, 
 						"0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62",
 						"0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7ce",
 					},
-					nil, 
+					nil,
 					nil,
 					addressPadded, // to
 				},
 			},
 		},
 	}
-	
+
 	// Subscribe to outgoing transfers
 	subMsgOut := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -132,18 +136,27 @@ func (w *InventoryWatcher) dialAndListen(ctx context.Context, logf func(string, 
 	}
 
 	subCtx, subCancel := context.WithTimeout(ctx, 10*time.Second)
-	_ = wsjson.Write(subCtx, c, subMsgIn)
-	_ = wsjson.Write(subCtx, c, subMsgOut)
+	if err := wsjson.Write(subCtx, c, subMsgIn); err != nil {
+		subCancel()
+		return fmt.Errorf("subscribe write incoming: %w", err)
+	}
+	if err := wsjson.Write(subCtx, c, subMsgOut); err != nil {
+		subCancel()
+		return fmt.Errorf("subscribe write outgoing: %w", err)
+	}
 	subCancel()
 
 	// Read both subscription responses
 	for i := 0; i < 2; i++ {
 		var subResp map[string]interface{}
 		subReadCtx, subReadCancel := context.WithTimeout(ctx, 10*time.Second)
-		_ = wsjson.Read(subReadCtx, c, &subResp)
+		if err := wsjson.Read(subReadCtx, c, &subResp); err != nil {
+			subReadCancel()
+			return fmt.Errorf("subscribe read %d: %w", i+1, err)
+		}
 		subReadCancel()
 	}
-	
+
 	logf("📡 [InventoryWatcher] Subscribed to CTF Transfer events for %s", w.address)
 
 	for {

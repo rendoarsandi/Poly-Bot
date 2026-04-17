@@ -47,6 +47,30 @@ type realbotSplitStrategyState struct {
 	lastSplitSell    *time.Time
 }
 
+func realbotApplySplitSellAccounting(engine *paper.Engine, splitInventory *paper.SplitInventory, marketID, outcome string, soldQty, price, proceeds float64, kalshiHoldMode bool) float64 {
+	if soldQty <= 0 {
+		return 0
+	}
+
+	profit := 0.0
+	if kalshiHoldMode {
+		profit = (price - 0.5) * soldQty
+	} else if splitInventory != nil {
+		profit = splitInventory.RecordSell(marketID, outcome, soldQty, price)
+	}
+
+	if engine != nil {
+		if proceeds > 0 {
+			engine.AddBalance(proceeds)
+		}
+		if math.Abs(profit) >= 0.000001 {
+			engine.AddRealizedPnL(profit)
+		}
+	}
+
+	return profit
+}
+
 func realbotHandleSplitStrategy(args realbotSplitStrategyArgs, state *realbotSplitStrategyState) bool {
 	// SPLIT STRATEGY: Sell to panic buyers when bid_sum > $1.03.
 	// This is separate from the panic-buy path; split inventory is only for sells.
@@ -387,6 +411,8 @@ func realbotHandleSplitStrategy(args realbotSplitStrategyArgs, state *realbotSpl
 	if eff := venueExecutionEffectivePrice(exec2); eff > 0 {
 		price2 = eff
 	}
+	proceeds1 := reportedSellProceeds(exec1, price1, sold1, sharesToSell)
+	proceeds2 := reportedSellProceeds(exec2, price2, sold2, sharesToSell)
 
 	if haveInitialSnapshot && (side1Success || side2Success) {
 		verifyCtx, cancelVerify := context.WithTimeout(context.Background(), realbotCleanupVerifyTTL)
@@ -427,34 +453,28 @@ func realbotHandleSplitStrategy(args realbotSplitStrategyArgs, state *realbotSpl
 		var totalProfit float64
 		var profit1, profit2 float64
 		if kalshiHoldMode {
-			profit1 = (price1 - 0.5) * sold1
-			profit2 = (price2 - 0.5) * sold2
+			profit1 = realbotApplySplitSellAccounting(args.engine, args.splitInventory, args.marketID, args.outcomes[0], sold1, price1, proceeds1, true)
+			profit2 = realbotApplySplitSellAccounting(args.engine, args.splitInventory, args.marketID, args.outcomes[1], sold2, price2, proceeds2, true)
 			totalProfit = profit1 + profit2
-			args.engine.AddRealizedPnL(totalProfit)
 			args.tui.LogEvent("[%s] ✅ PANIC SOLD! %s: %.2f, %s: %.2f | Profit: ~+$%.2f", args.marketID, args.outcomes[0], sold1, args.outcomes[1], sold2, totalProfit)
 		} else {
-			profit1 = args.splitInventory.RecordSell(args.marketID, args.outcomes[0], sold1, price1)
-			profit2 = args.splitInventory.RecordSell(args.marketID, args.outcomes[1], sold2, price2)
+			profit1 = realbotApplySplitSellAccounting(args.engine, args.splitInventory, args.marketID, args.outcomes[0], sold1, price1, proceeds1, false)
+			profit2 = realbotApplySplitSellAccounting(args.engine, args.splitInventory, args.marketID, args.outcomes[1], sold2, price2, proceeds2, false)
 			totalProfit = profit1 + profit2
-			args.engine.AddRealizedPnL(totalProfit)
 			args.tui.LogEvent("[%s] ✅ SPLIT SOLD! %s: %.2f, %s: %.2f | Profit: +$%.2f", args.marketID, args.outcomes[0], sold1, args.outcomes[1], sold2, totalProfit)
 		}
 
-		args.tui.RecordOrder(args.marketID, args.outcomes[0], "SELL", sold1, price1, sold1*price1, sellMargin, profit1, "FILLED")
-		args.tui.RecordOrder(args.marketID, args.outcomes[1], "SELL", sold2, price2, sold2*price2, sellMargin, profit2, "FILLED")
+		args.tui.RecordOrder(args.marketID, args.outcomes[0], "SELL", sold1, price1, proceeds1, sellMargin, profit1, "FILLED")
+		args.tui.RecordOrder(args.marketID, args.outcomes[1], "SELL", sold2, price2, proceeds2, sellMargin, profit2, "FILLED")
 		_, _ = args.trader.ForceRefreshBalance(args.ctx)
 		args.tui.LogEvent("[%s] ✅ Execution complete after successful panic/split sell.", args.marketID)
 	} else {
 		if side1Success {
-			if !kalshiHoldMode {
-				args.splitInventory.RecordSell(args.marketID, args.outcomes[0], sold1, price1)
-			}
+			_ = realbotApplySplitSellAccounting(args.engine, args.splitInventory, args.marketID, args.outcomes[0], sold1, price1, proceeds1, kalshiHoldMode)
 			args.tui.LogEvent("[%s] ⚠️ SELL: Only %s sold %.2f (one-shot)", args.marketID, args.outcomes[0], sold1)
 		}
 		if side2Success {
-			if !kalshiHoldMode {
-				args.splitInventory.RecordSell(args.marketID, args.outcomes[1], sold2, price2)
-			}
+			_ = realbotApplySplitSellAccounting(args.engine, args.splitInventory, args.marketID, args.outcomes[1], sold2, price2, proceeds2, kalshiHoldMode)
 			args.tui.LogEvent("[%s] ⚠️ SELL: Only %s sold %.2f (one-shot)", args.marketID, args.outcomes[1], sold2)
 		}
 	}

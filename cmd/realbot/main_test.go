@@ -3659,6 +3659,41 @@ func TestReportedBuyCostUsesAttributedSizeWhenAcknowledgedSizeDrifts(t *testing.
 	}
 }
 
+func TestReportedSellProceedsUsesAcknowledgedNotionalWhenAttributedSizeMatches(t *testing.T) {
+	exec := directMarketExecution{AcknowledgedQty: 3.14, AcknowledgedNotional: 1.884}
+	got := reportedSellProceeds(exec, 0.58, 3.12, 3.14)
+	if math.Abs(got-1.884) > 0.000001 {
+		t.Fatalf("expected acknowledged proceeds 1.8840, got %.6f", got)
+	}
+}
+
+func TestReportedSellProceedsUsesAttributedSizeWhenAcknowledgedSizeDrifts(t *testing.T) {
+	exec := directMarketExecution{AcknowledgedQty: 3.14, AcknowledgedNotional: 1.884}
+	got := reportedSellProceeds(exec, 0.58, 3.00, 3.14)
+	expected := 1.74
+	if math.Abs(got-expected) > 0.000001 {
+		t.Fatalf("expected attributed proceeds %.6f, got %.6f", expected, got)
+	}
+}
+
+func TestRealbotApplySplitSellAccountingCreditsBalanceAndRealizedPnL(t *testing.T) {
+	engine := paper.NewEngine(10)
+	engine.DeductBalance(2)
+	inv := paper.NewSplitInventory()
+	inv.RecordSplit("BTC", "Up", "Down", 2)
+
+	profit := realbotApplySplitSellAccounting(engine, inv, "BTC", "Up", 1.5, 0.57, 0.855, false)
+	if math.Abs(profit-0.105) > 0.000001 {
+		t.Fatalf("expected split sell profit 0.1050, got %.6f", profit)
+	}
+	if got := engine.GetBalance(); math.Abs(got-8.855) > 0.000001 {
+		t.Fatalf("expected engine balance 8.8550 after sell proceeds, got %.6f", got)
+	}
+	if got := engine.GetStats().RealizedPnL; math.Abs(got-0.105) > 0.000001 {
+		t.Fatalf("expected realized pnl 0.1050 after split sell, got %.6f", got)
+	}
+}
+
 func TestStartupPositionsSummarySuppressesDetailedDump(t *testing.T) {
 	summary := startupPositionsSummary([]trading.PositionInfo{
 		{TokenID: "token-a", Outcome: "YES", Size: 2.89, AvgPrice: 0},
