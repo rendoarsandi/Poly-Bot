@@ -522,7 +522,9 @@ func (m *WSManager) processInboundMessage(p []byte) ([]byte, bool) {
 	return p, false
 }
 
-const wsStreamingBufferSize = 100000
+// Keep this bounded to avoid building large in-process backlogs that make
+// trading decisions act on stale WS data under bursty message rates.
+const wsStreamingBufferSize = 2048
 
 // StartStreaming starts a goroutine that continuously reads messages and sends to channel
 // Returns a channel that receives messages in real-time.

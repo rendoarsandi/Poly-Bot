@@ -103,6 +103,53 @@ func TestGetMarketsByEventSlug(t *testing.T) {
 	}
 }
 
+func TestGetMarketsByTimeframeFetchesSlugsConcurrently(t *testing.T) {
+	var inFlight int32
+	var maxInFlight int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := atomic.AddInt32(&inFlight, 1)
+		for {
+			prev := atomic.LoadInt32(&maxInFlight)
+			if current <= prev || atomic.CompareAndSwapInt32(&maxInFlight, prev, current) {
+				break
+			}
+		}
+		defer atomic.AddInt32(&inFlight, -1)
+
+		time.Sleep(40 * time.Millisecond)
+		slug := r.URL.Query().Get("slug")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{
+			"slug":"` + slug + `",
+			"endDate":"2026-03-08T12:34:56Z",
+			"markets":[{
+				"conditionId":"` + slug + `",
+				"slug":"` + slug + `",
+				"clobTokenIds":"[\"yes-token\",\"no-token\"]",
+				"outcomes":"[\"Yes\",\"No\"]",
+				"active":true,
+				"closed":false
+			}]
+		}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.GammaURL = server.URL
+
+	markets, err := client.GetMarketsByTimeframe(context.Background(), []string{"btc", "eth"}, "15m")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(markets) != 14 {
+		t.Fatalf("expected 14 markets from 2 assets across 7 windows, got %d", len(markets))
+	}
+	if atomic.LoadInt32(&maxInFlight) < 2 {
+		t.Fatalf("expected concurrent slug fetches, max in flight was %d", maxInFlight)
+	}
+}
+
 func TestParseOrderBookTimestamp(t *testing.T) {
 	msTs, err := ParseOrderBookTimestamp("1710000000123")
 	if err != nil {

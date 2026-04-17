@@ -353,6 +353,74 @@ func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []s
 	return markets, nil
 }
 
+func (c *RestClient) getGammaTimeframeMarket(ctx context.Context, slug string) (*Market, error) {
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	lookupURL := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, url.QueryEscape(slug))
+	req, err := http.NewRequestWithContext(ctx, "GET", lookupURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch market by slug %q: status %d", slug, resp.StatusCode)
+	}
+
+	var events []GammaEvent
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&events); err != nil {
+		return nil, err
+	}
+	if len(events) == 0 || len(events[0].Markets) == 0 {
+		return nil, nil
+	}
+
+	event := events[0]
+	gm := event.Markets[0]
+	eventEndTime := parseGammaEventEndTime(event.EndDate)
+
+	var tokenIDs []string
+	if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
+		return nil, nil
+	}
+
+	var outcomes []string
+	if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+		outcomes = []string{"Up", "Down"}
+	}
+
+	tokenWinners := gammaWinnerFlags(gm, outcomes)
+	marketSlug := core.SanitizeString(gm.Slug)
+	if marketSlug == "" {
+		marketSlug = core.SanitizeString(slug)
+	}
+	marketEndTime := parseGammaEventEndTime(gm.EndDate)
+	if marketEndTime.IsZero() {
+		marketEndTime = eventEndTime
+	}
+
+	return &Market{
+		ConditionID: gm.ConditionID,
+		Slug:        marketSlug,
+		Active:      gm.Active,
+		Closed:      gm.Closed,
+		EndTime:     marketEndTime,
+		Tokens: []Token{
+			{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
+			{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
+		},
+	}, nil
+}
+
 func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
 	if c.Exchange == "kalshi" {
 		return c.kalshiGetMarketsByTimeframe(ctx, assets, timeframe)
@@ -377,8 +445,6 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 	// Calculate the current window START
 	currentWindowStart := (currentTs / interval) * interval
 
-	var markets []Market
-
 	// Check multiple windows to handle edge cases:
 	// - Current window (most likely)
 	// - Next window (might be pre-created near end of current window)
@@ -394,84 +460,60 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 		currentWindowStart - 4*interval, // 4 windows ago
 	}
 
+	type timeframeTask struct {
+		index int
+		slug  string
+	}
+	type timeframeResult struct {
+		index  int
+		market *Market
+		err    error
+	}
+
+	tasks := make([]timeframeTask, 0, len(assets)*len(windowsToCheck))
 	for _, asset := range assets {
 		for _, windowStart := range windowsToCheck {
-			// Rate limit check
-			select {
-			case <-c.limiter:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+			tasks = append(tasks, timeframeTask{
+				index: len(tasks),
+				slug:  fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart),
+			})
+		}
+	}
 
-			slug := fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart)
+	results := make(chan timeframeResult, len(tasks))
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		task := task
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			market, err := c.getGammaTimeframeMarket(ctx, task.slug)
+			results <- timeframeResult{index: task.index, market: market, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-			url := fmt.Sprintf("%s/events?slug=%s", c.GammaURL, slug)
-			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-			if err != nil {
-				continue
-			}
+	ordered := make([]*Market, len(tasks))
+	var lastErr error
+	for result := range results {
+		if result.err != nil {
+			lastErr = result.err
+			continue
+		}
+		ordered[result.index] = result.market
+	}
 
-			resp, err := httpClient.Do(req)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				if resp != nil {
-					resp.Body.Close()
-				}
-				continue
-			}
-
-			var events []GammaEvent
-			if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&events); err != nil || len(events) == 0 {
-				resp.Body.Close()
-				continue
-			}
-			resp.Body.Close()
-
-			if len(events) == 0 || len(events[0].Markets) == 0 {
-				continue
-			}
-
-			event := events[0]
-			gm := event.Markets[0]
-			eventEndTime := parseGammaEventEndTime(event.EndDate)
-
-			// Parse clobTokenIds (it's a JSON-encoded string array)
-			var tokenIds []string
-			if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIds); err != nil || len(tokenIds) < 2 {
-				continue
-			}
-
-			// Parse outcomes (also JSON-encoded string array)
-			var outcomes []string
-			if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
-				// Fallback to default
-				outcomes = []string{"Up", "Down"}
-			}
-
-			// Build Market from Gamma data
-			tokenWinners := gammaWinnerFlags(gm, outcomes)
-			marketSlug := core.SanitizeString(gm.Slug)
-			if marketSlug == "" {
-				marketSlug = core.SanitizeString(slug)
-			}
-			marketEndTime := parseGammaEventEndTime(gm.EndDate)
-			if marketEndTime.IsZero() {
-				marketEndTime = eventEndTime
-			}
-
-			market := &Market{
-				ConditionID: gm.ConditionID,
-				Slug:        marketSlug,
-				Active:      gm.Active,
-				Closed:      gm.Closed,
-				EndTime:     marketEndTime,
-				Tokens: []Token{
-					{TokenID: tokenIds[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
-					{TokenID: tokenIds[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
-				},
-			}
-
+	markets := make([]Market, 0, len(tasks))
+	for _, market := range ordered {
+		if market != nil {
 			markets = append(markets, *market)
 		}
+	}
+	if len(markets) == 0 && lastErr != nil {
+		return nil, lastErr
 	}
 
 	return markets, nil

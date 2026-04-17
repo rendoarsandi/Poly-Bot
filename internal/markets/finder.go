@@ -7,11 +7,14 @@ package markets
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"Market-bot/internal/api"
 	"Market-bot/internal/paper"
 )
+
+const finderTimeframeLookupTimeout = 1500 * time.Millisecond
 
 func requestedAssetsFromSettings(cfg paper.TUISettings) []string {
 	marketSlug := strings.TrimSpace(cfg.MarketSlug)
@@ -36,6 +39,12 @@ func requestedAssetsFromSettings(cfg paper.TUISettings) []string {
 		return []string{"btc", "eth", "sol", "xrp"}
 	}
 	return assets
+}
+
+func finderGetMarketsByTimeframe(ctx context.Context, restClient *api.RestClient, assets []string, timeframe string) ([]api.Market, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, finderTimeframeLookupTimeout)
+	defer cancel()
+	return restClient.GetMarketsByTimeframe(lookupCtx, assets, timeframe)
 }
 
 // FindMarkets polls the REST API until at least one active BTC or ETH 15-minute
@@ -77,12 +86,9 @@ func FindMarkets(
 
 		var markets []api.Market
 		var exactMarkets []api.Market
-
-		// Fetch the primary requested timeframe first so it takes priority
-		primaryMarkets, errPrimary := restClient.GetMarketsByTimeframe(ctx, assets, timeframe)
-		if errPrimary == nil {
-			markets = append(markets, primaryMarkets...)
-		}
+		var primaryMarkets []api.Market
+		var secondaryMarkets []api.Market
+		var errPrimary error
 
 		// If the user didn't request a specific timeframe, or if they requested 15m/5m,
 		// we fetch the other one to provide maximum coverage for copytrading.
@@ -95,11 +101,25 @@ func FindMarkets(
 
 		var errSecondary error
 		if secondaryTimeframe != "" {
-			secondaryMarkets, errSec := restClient.GetMarketsByTimeframe(ctx, assets, secondaryTimeframe)
-			errSecondary = errSec
-			if errSecondary == nil {
-				markets = append(markets, secondaryMarkets...)
-			}
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				primaryMarkets, errPrimary = finderGetMarketsByTimeframe(ctx, restClient, assets, timeframe)
+			}()
+			go func() {
+				defer wg.Done()
+				secondaryMarkets, errSecondary = finderGetMarketsByTimeframe(ctx, restClient, assets, secondaryTimeframe)
+			}()
+			wg.Wait()
+		} else {
+			primaryMarkets, errPrimary = finderGetMarketsByTimeframe(ctx, restClient, assets, timeframe)
+		}
+		if errPrimary == nil {
+			markets = append(markets, primaryMarkets...)
+		}
+		if errSecondary == nil {
+			markets = append(markets, secondaryMarkets...)
 		}
 
 		if errPrimary != nil && (secondaryTimeframe == "" || errSecondary != nil) {

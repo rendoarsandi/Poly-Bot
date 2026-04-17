@@ -11,6 +11,39 @@ import (
 	"Market-bot/internal/trading"
 )
 
+func realbotWaitForMarketWake(args realbotMarketQuoteArgs, timeout time.Duration, lastPairUpdate *time.Time, entryExecutionDone <-chan realbotAsyncEntryResult, entryState *realbotAsyncEntryState, wsChannelClosed *bool) {
+	if timeout <= 0 {
+		timeout = time.Millisecond
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-args.ctx.Done():
+		return
+	case result, ok := <-entryExecutionDone:
+		if ok {
+			realbotApplyAsyncEntryResult(result, entryState)
+		}
+		return
+	case msg, ok := <-args.wsMsgChan:
+		if !ok {
+			if wsChannelClosed != nil {
+				*wsChannelClosed = true
+			}
+			return
+		}
+		if wsChannelClosed != nil {
+			*wsChannelClosed = false
+		}
+		realbotHandleMarketWSMessage(args, msg, lastPairUpdate)
+		return
+	case <-timer.C:
+		return
+	}
+}
+
 func tradeMarket(globalCtx context.Context, ctx context.Context, id string, market *api.Market, endTime time.Time,
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
@@ -177,7 +210,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		killSwitchActive := riskMgr.IsKillSwitchTriggered()
 
-		if realbotProcessMarketQuotes(realbotMarketQuoteArgs{
+		quoteArgs := realbotMarketQuoteArgs{
 			ctx:                    ctx,
 			marketID:               id,
 			wsMgr:                  wsMgr,
@@ -200,7 +233,8 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			tui:                    tui,
 			restFallbackQuoteAge:   restFallbackQuoteAge,
 			restFallbackPollPeriod: restFallbackPollInterval,
-		}, realbotMarketQuoteRuntime{
+		}
+		if realbotProcessMarketQuotes(quoteArgs, realbotMarketQuoteRuntime{
 			lastPairUpdate:       &lastPairUpdate,
 			lastPublishedQuoteAt: &lastPublishedQuoteAt,
 			lastReconnectCount:   &lastReconnectCount,
@@ -218,7 +252,12 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		latestQuoteAt, _ := realbotLatestQuoteUpdate(outcomes, quoteState)
 		decisionInterval := realbotDecisionEvalInterval(liveCfg, timeToExpiry, entryExecutionInFlight)
 		if !realbotShouldRunDecisionLoop(now, lastDecisionEvalAt, lastDecisionQuoteAt, latestQuoteAt, decisionInterval) {
-			time.Sleep(realbotTraderLoopInterval(liveCfg))
+			realbotWaitForMarketWake(quoteArgs, realbotTraderLoopInterval(liveCfg), &lastPairUpdate, entryExecutionDone, &realbotAsyncEntryState{
+				entryExecutionInFlight: &entryExecutionInFlight,
+				ladderedEntries:        &ladderedEntries,
+				lastTrade:              &lastTrade,
+				panicBuyCooldown:       &panicBuyCooldown,
+			}, &wsChannelClosed)
 			continue
 		}
 		lastDecisionEvalAt = now
@@ -295,6 +334,11 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			continue
 		}
 
-		time.Sleep(realbotTraderLoopInterval(liveCfg))
+		realbotWaitForMarketWake(quoteArgs, realbotTraderLoopInterval(liveCfg), &lastPairUpdate, entryExecutionDone, &realbotAsyncEntryState{
+			entryExecutionInFlight: &entryExecutionInFlight,
+			ladderedEntries:        &ladderedEntries,
+			lastTrade:              &lastTrade,
+			panicBuyCooldown:       &panicBuyCooldown,
+		}, &wsChannelClosed)
 	}
 }

@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"Market-bot/internal/api"
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
 )
+
+var errNilRestOrderBook = errors.New("rest order book response was nil")
 
 type realbotMarketQuoteArgs struct {
 	ctx                    context.Context
@@ -559,19 +563,47 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 	for _, outcome := range tokenMap {
 		outcomes = append(outcomes, outcome)
 	}
+	type restBookFetchResult struct {
+		outcome string
+		book    *api.OrderBookResponse
+		latency time.Duration
+		err     error
+	}
+	results := make(chan restBookFetchResult, len(tokenMap))
+	var wg sync.WaitGroup
 	for tokenID, outcome := range tokenMap {
-		start := time.Now()
-		reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		book, err := restClient.GetOrderBook(reqCtx, tokenID)
-		latency := time.Since(start)
-		cancel()
+		wg.Add(1)
+		go func(tokenID, outcome string) {
+			defer wg.Done()
+			start := time.Now()
+			reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			book, err := restClient.GetOrderBook(reqCtx, tokenID)
+			cancel()
+			results <- restBookFetchResult{
+				outcome: outcome,
+				book:    book,
+				latency: time.Since(start),
+				err:     err,
+			}
+		}(tokenID, outcome)
+	}
+	wg.Wait()
+	close(results)
 
-		tui.UpdateRestLatency(latency)
-
+	for result := range results {
+		outcome := result.outcome
+		book := result.book
+		err := result.err
+		tui.UpdateRestLatency(result.latency)
 		if err != nil {
 			restErrors++
 			lastErr = err
-			break
+			continue
+		}
+		if book == nil {
+			restErrors++
+			lastErr = errNilRestOrderBook
+			continue
 		}
 
 		updatedAt := realbotQuoteTimestampOrNow(book.Timestamp)

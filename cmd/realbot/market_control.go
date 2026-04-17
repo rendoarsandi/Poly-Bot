@@ -16,25 +16,38 @@ type realbotAsyncEntryState struct {
 	panicBuyCooldown       *time.Time
 }
 
+func realbotApplyAsyncEntryResult(result realbotAsyncEntryResult, state *realbotAsyncEntryState) {
+	if state == nil {
+		return
+	}
+	if state.entryExecutionInFlight != nil {
+		*state.entryExecutionInFlight = false
+	}
+	if state.ladderedEntries != nil {
+		*state.ladderedEntries = realbotResolveLadderedEntry(*state.ladderedEntries, result.ladderedEntrySeq, result.ladderedEntryConfirmed)
+	}
+	if state.lastTrade != nil && !result.lastTradeAt.IsZero() {
+		*state.lastTrade = result.lastTradeAt
+	}
+	if state.panicBuyCooldown != nil && !result.cooldownUntil.IsZero() && state.panicBuyCooldown.Before(result.cooldownUntil) {
+		*state.panicBuyCooldown = result.cooldownUntil
+	}
+}
+
 func realbotConsumeAsyncEntryResult(entryExecutionDone <-chan realbotAsyncEntryResult, state *realbotAsyncEntryState) {
 	if entryExecutionDone == nil || state == nil {
 		return
 	}
-	select {
-	case result := <-entryExecutionDone:
-		if state.entryExecutionInFlight != nil {
-			*state.entryExecutionInFlight = false
+	for {
+		select {
+		case result, ok := <-entryExecutionDone:
+			if !ok {
+				return
+			}
+			realbotApplyAsyncEntryResult(result, state)
+		default:
+			return
 		}
-		if state.ladderedEntries != nil {
-			*state.ladderedEntries = realbotResolveLadderedEntry(*state.ladderedEntries, result.ladderedEntrySeq, result.ladderedEntryConfirmed)
-		}
-		if state.lastTrade != nil && !result.lastTradeAt.IsZero() {
-			*state.lastTrade = result.lastTradeAt
-		}
-		if state.panicBuyCooldown != nil && !result.cooldownUntil.IsZero() && state.panicBuyCooldown.Before(result.cooldownUntil) {
-			*state.panicBuyCooldown = result.cooldownUntil
-		}
-	default:
 	}
 }
 

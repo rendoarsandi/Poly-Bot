@@ -74,6 +74,25 @@ func realbotRefreshWalletCashDisplay(ctx context.Context, trader *trading.RealTr
 	}
 }
 
+func realbotLogGasBalance(ctx context.Context, polygonClient *api.PolygonClient, trader *trading.RealTrader, tui *paper.TUI, timeout time.Duration) {
+	if polygonClient == nil || trader == nil || tui == nil || trader.IsEmbeddedPaperMode() {
+		return
+	}
+	go func() {
+		gasCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		maticBalance, err := polygonClient.GetMATICBalance(gasCtx, trader.Address())
+		if err != nil {
+			tui.LogEvent("⚠️ Could not fetch MATIC balance: %v", err)
+			return
+		}
+		tui.LogEvent("⛽ Gas Balance: %.4f MATIC", maticBalance)
+		if maticBalance < 0.1 {
+			tui.LogEvent("⚠️ Low MATIC balance; live transactions may fail for gas")
+		}
+	}()
+}
+
 func realbotShouldReconnectWS(outcomes []string, bids, asks map[string]float64, pairQuoteAge, staleThreshold time.Duration, terminalBookState bool) bool {
 	if staleThreshold <= 0 {
 		staleThreshold = 15 * time.Second
