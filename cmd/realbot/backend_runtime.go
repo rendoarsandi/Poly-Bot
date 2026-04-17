@@ -80,8 +80,16 @@ func realbotInitBackend(ctx context.Context, cfg *core.Config) (*realbotBackendS
 	if err != nil {
 		fmt.Printf("⚠️  Could not fetch positions: %v\n", err)
 	} else if len(positions) > 0 {
+		positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(initCtx, trader, positions)
 		fmt.Println()
-		fmt.Println(startupPositionsSummary(positions))
+		if len(positions) > 0 {
+			fmt.Println(startupPositionsSummary(positions))
+		} else {
+			fmt.Println("📊 No open positions")
+		}
+		if skippedPositions > 0 {
+			fmt.Printf("⏭️  Ignoring %d resolved losing position(s) from prior runs (%.2f shares)\n", skippedPositions, skippedShares)
+		}
 	} else {
 		fmt.Println("📊 No open positions")
 	}

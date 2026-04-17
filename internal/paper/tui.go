@@ -3773,20 +3773,20 @@ func (t *TUI) RecordOrderWithMode(marketID, outcome, side string, shares, price,
 func (t *TUI) RecordWalletSyncAdjustment(marketID, outcome string, deltaShares, markPrice float64, direction string) {
 	// Silenced per user request to not show sync adjustments
 	/*
-	if math.Abs(deltaShares) < 1e-9 {
-		return
-	}
-	side := "ADJ"
-	switch {
-	case deltaShares > 0:
-		side = "ADJ+"
-	case deltaShares < 0:
-		side = "ADJ-"
-	}
-	if trimmed := strings.TrimSpace(direction); trimmed != "" {
-		side = trimmed
-	}
-	t.RecordOrderWithMode(marketID, outcome, side, math.Abs(deltaShares), markPrice, 0.0, 0.0, 0.0, "wallet-sync", "SYNCED")
+		if math.Abs(deltaShares) < 1e-9 {
+			return
+		}
+		side := "ADJ"
+		switch {
+		case deltaShares > 0:
+			side = "ADJ+"
+		case deltaShares < 0:
+			side = "ADJ-"
+		}
+		if trimmed := strings.TrimSpace(direction); trimmed != "" {
+			side = trimmed
+		}
+		t.RecordOrderWithMode(marketID, outcome, side, math.Abs(deltaShares), markPrice, 0.0, 0.0, 0.0, "wallet-sync", "SYNCED")
 	*/
 }
 
@@ -5349,7 +5349,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	if isRealMode {
 		cashLabel = "Spendable"
 	}
-	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  DD %s",
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s",
 		cashLabel,
 		styleBold.Render(cashText),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),

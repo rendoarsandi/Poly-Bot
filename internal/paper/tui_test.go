@@ -3377,7 +3377,7 @@ func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testi
 	if !strings.Contains(rendered, "Max Exp $25.00") {
 		t.Fatalf("expected account status to show max exposure as a UI stat, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "DD -$5.00") {
-		t.Fatalf("expected account status to show dollar drawdown, got %q", rendered)
+	if !strings.Contains(rendered, "Max DD -$5.00") {
+		t.Fatalf("expected account status to show max dollar drawdown explicitly, got %q", rendered)
 	}
 }

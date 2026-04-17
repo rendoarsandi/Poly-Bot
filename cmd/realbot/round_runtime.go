@@ -18,6 +18,7 @@ import (
 type realbotRoundSnapshot struct {
 	startedAt      time.Time
 	startingEquity float64
+	startRealized  float64
 	startTrades    int
 }
 
@@ -34,10 +35,18 @@ func realbotBeginRound(ctx context.Context, trader *trading.RealTrader, engine *
 	}
 
 	snapshot.startingEquity = engine.GetBookEquity()
+	snapshot.startRealized = engine.GetStats().RealizedPnL
 	tui.StartRound()
 	snapshot.startTrades = engine.GetStats().TotalTrades
 	tui.LogEvent("📊 Balance $%.2f | %.2fx", currentBalance, engine.GetCompoundMultiplier())
 	return snapshot, currentBalance
+}
+
+func realbotRoundSnapshotPnL(trader *trading.RealTrader, engine *paper.Engine, snapshot realbotRoundSnapshot, endingBookEquity, excludedDelta float64) float64 {
+	if trader != nil && !trader.IsPaperMode() && engine != nil {
+		return engine.GetStats().RealizedPnL - snapshot.startRealized
+	}
+	return realbotNeutralRoundPnL(snapshot.startingEquity, endingBookEquity, excludedDelta)
 }
 
 func realbotWaitForRound(ctx, roundCtx context.Context, roundCancel context.CancelFunc, wg *sync.WaitGroup, tui *paper.TUI) bool {
@@ -89,7 +98,7 @@ func realbotFinalizeRound(ctx context.Context, markets map[string]*api.Market, t
 	}
 
 	endingBookEquity := engine.GetBookEquity()
-	roundPnL := realbotNeutralRoundPnL(snapshot.startingEquity, endingBookEquity, reconciliationDelta+balanceSyncDelta)
+	roundPnL := realbotRoundSnapshotPnL(trader, engine, snapshot, endingBookEquity, reconciliationDelta+balanceSyncDelta)
 	roundTrades := engine.GetStats().TotalTrades - snapshot.startTrades
 	if roundTrades < 0 {
 		roundTrades = 0

@@ -174,10 +174,16 @@ func run() error {
 	_, _, _ = realbotSyncRuntimeBalance(ctx, realTrader, engine, tui, 8*time.Second)
 
 	if positions, err := realbotSyncRuntimePositions(ctx, realTrader, 10*time.Second); err == nil && len(positions) > 0 {
+		positions, skippedPositions, skippedShares := realbotFilterStartupCarryPositions(ctx, realTrader, positions)
 		for _, pos := range positions {
 			engine.SyncExternalPosition(pos.ConditionID, pos.Outcome, pos.Size, pos.AvgPrice)
 		}
-		tui.LogEvent("✅ Loaded %d existing positions from exchange", len(positions))
+		if len(positions) > 0 {
+			tui.LogEvent("✅ Loaded %d existing positions from exchange", len(positions))
+		}
+		if skippedPositions > 0 {
+			tui.LogEvent("⏭️ Ignored %d resolved losing startup position(s) (%.2f shares)", skippedPositions, skippedShares)
+		}
 	} else if err != nil {
 		tui.LogEvent("⚠️ Failed to load existing positions: %v", err)
 	}
