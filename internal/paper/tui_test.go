@@ -2149,7 +2149,7 @@ func TestRenderRoundHistoryShowsPnlAndWinLoss(t *testing.T) {
 	}
 
 	rendered := model.renderRoundHistory(120, 5)
-	if !strings.Contains(rendered, "PNL") || !strings.Contains(rendered, "WIN") || !strings.Contains(rendered, "LOSS") {
+	if !strings.Contains(rendered, "DELTA") || !strings.Contains(rendered, "WIN") || !strings.Contains(rendered, "LOSS") {
 		t.Fatalf("expected pnl and result labels in round history, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "FLAT") {

@@ -6288,7 +6288,7 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 		) + "\n")
 	}
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
-		"#", "END", "START", "CLOSE EQ", "SNAP PNL", "TRDS", "RESULT")) + "\n")
+		"#", "END", "START", "CLOSE EQ", "EQ DELTA", "TRDS", "RESULT")) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 86))) + "\n")
 
 	displayCount := len(s.roundHistory)

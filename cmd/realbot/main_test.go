@@ -1207,17 +1207,16 @@ func TestRealbotRoundSnapshotPnLUsesFundingNeutralRealizedDeltaForLiveBackend(t 
 	}
 }
 
-func TestRealbotRoundSnapshotPnLUsesRealizedDeltaForPaperMode(t *testing.T) {
+func TestRealbotRoundSnapshotPnLFallsBackToNeutralEquityDeltaForPaperMode(t *testing.T) {
 	engine := paper.NewEngine(100.0)
-	engine.AddRealizedPnL(4.50)
 	snapshot := realbotRoundSnapshot{
 		startingEquity: 64.67,
 		startRealized:  1.23,
 	}
 
 	got := realbotRoundSnapshotPnL(nil, engine, snapshot, 74.13, 9.46)
-	if math.Abs(got-3.27) > 0.000001 {
-		t.Fatalf("expected paper-mode snapshot pnl to track realized delta (4.50 - 1.23 = 3.27), got %.4f", got)
+	if math.Abs(got) > 0.000001 {
+		t.Fatalf("expected paper-mode snapshot pnl to stay neutral after excluded delta, got %.4f", got)
 	}
 }
 
