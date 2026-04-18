@@ -34,7 +34,7 @@ func realbotBeginRound(ctx context.Context, trader *trading.RealTrader, engine *
 		currentBalance = newBal
 	}
 
-	snapshot.startingEquity = engine.GetStartingBalance() + engine.GetStats().RealizedPnL
+	snapshot.startingEquity = engine.GetBookEquity()
 	snapshot.startRealized = engine.GetStats().RealizedPnL
 	tui.StartRound()
 	snapshot.startTrades = engine.GetStats().TotalTrades

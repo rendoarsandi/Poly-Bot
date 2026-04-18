@@ -1246,6 +1246,21 @@ func TestRealbotRoundSnapshotPnLUsesNeutralizedBookDeltaForPaperMode(t *testing.
 	}
 }
 
+func TestRealbotBeginRoundUsesBookEquityForSnapshotStart(t *testing.T) {
+	engine := paper.NewEngine(36.60)
+	engine.AddRealizedPnL(29.24)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+
+	snapshot, currentBalance := realbotBeginRound(context.Background(), nil, engine, tui, 36.60)
+
+	if math.Abs(snapshot.startingEquity-36.60) > 0.000001 {
+		t.Fatalf("expected round snapshot to start from book equity 36.60, got %.4f", snapshot.startingEquity)
+	}
+	if math.Abs(currentBalance-36.60) > 0.000001 {
+		t.Fatalf("expected current balance to remain 36.60 when sync fails, got %.4f", currentBalance)
+	}
+}
+
 func TestNormalizeExecutionToleranceFractionSupportsLegacyPercentAndDecimalForms(t *testing.T) {
 	if got := normalizeExecutionToleranceFraction(-1.0); math.Abs(got-0.01) > 0.000001 {
 		t.Fatalf("expected -1.0 to normalize to 1%%, got %.6f", got)
