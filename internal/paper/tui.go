@@ -73,6 +73,7 @@ const (
 	recentQuoteDisplayGrace = 10 * time.Second
 	terminalBidFloor        = 0.985
 	terminalAskCeil         = 0.015
+	inventoryDustCutoff     = 0.01
 	showOnChainInventory    = true
 	showWalletTruthPanels   = false
 )
@@ -322,21 +323,25 @@ func renderTradingHoursStatus(mode string, now time.Time) string {
 
 func walletTruthInventoryDisplayShares(wt WalletTruthPosition) (float64, bool) {
 	switch {
-	case wt.OnChainShares > 0:
+	case displayableInventoryShares(wt.OnChainShares):
 		if wt.ResolutionStatus == "resolved" && !wt.IsWinner && !wt.Redeemable {
 			return 0, false
 		}
 		return wt.OnChainShares, true
-	case wt.LocalShares > 0 && wt.ResolutionStatus != "resolved":
+	case displayableInventoryShares(wt.LocalShares) && wt.ResolutionStatus != "resolved":
 		return wt.LocalShares, true
 	default:
 		return 0, false
 	}
 }
 
+func displayableInventoryShares(qty float64) bool {
+	return qty >= inventoryDustCutoff-1e-9
+}
+
 func walletTruthInventoryStatus(wt WalletTruthPosition) string {
 	switch {
-	case wt.OnChainShares <= 0 && wt.LocalShares > 0 && wt.ResolutionStatus != "resolved":
+	case !displayableInventoryShares(wt.OnChainShares) && displayableInventoryShares(wt.LocalShares) && wt.ResolutionStatus != "resolved":
 		return styleYellow.Render("[SYNCING]")
 	case wt.Redeemable:
 		return styleGreen.Render("[REDEEMABLE]")
@@ -5634,7 +5639,13 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 	splitPositions := s.splitPositions
 	walletTruthPositions := s.walletTruth
-	showInFlightPositions := len(positionsWithPnL) > 0
+	inflightLegCount := 0
+	for _, pos := range positionsWithPnL {
+		if displayableInventoryShares(pos.Quantity) {
+			inflightLegCount++
+		}
+	}
+	showInFlightPositions := inflightLegCount > 0
 	if TakerCloseModeActive(settings) {
 		showInFlightPositions = false
 	}
@@ -5663,12 +5674,17 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	byMarket := make(map[string][]PositionPnL)
 	if showInFlightPositions {
 		for _, pos := range positionsWithPnL {
+			if !displayableInventoryShares(pos.Quantity) {
+				continue
+			}
 			mid := pos.MarketID
 			if mid == "" {
 				mid = "UNKNOWN"
 			}
 			byMarket[mid] = append(byMarket[mid], pos)
+			inflightLegCount++
 		}
+		showInFlightPositions = inflightLegCount > 0
 	}
 
 	// ── In-flight positions ──
@@ -5677,9 +5693,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		if ladderedMode {
 			inflightStatus = styleYellow.Render("⏳ open inventory")
 		}
-		headerCount := fmt.Sprintf("%d legs", len(positionsWithPnL))
+		headerCount := fmt.Sprintf("%d legs", inflightLegCount)
 		if len(byMarket) > 0 {
-			headerCount = fmt.Sprintf("%d markets / %d legs", len(byMarket), len(positionsWithPnL))
+			headerCount = fmt.Sprintf("%d markets / %d legs", len(byMarket), inflightLegCount)
 		}
 		sb.WriteString(sectionHeader("📦", fmt.Sprintf("IN-FLIGHT  (%s) %s",
 			headerCount, inflightStatus), clrTeal) + "\n")
@@ -5950,6 +5966,9 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		truthByMarket := make(map[string][]WalletTruthPosition)
 		marketSet := make(map[string]struct{})
 		for _, wt := range walletTruthPositions {
+			if !displayableInventoryShares(wt.LocalShares) && !displayableInventoryShares(wt.OnChainShares) {
+				continue
+			}
 			truthByMarket[wt.MarketID] = append(truthByMarket[wt.MarketID], wt)
 			marketSet[wt.MarketID] = struct{}{}
 		}
@@ -5985,7 +6004,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 					redeemTag = styleGreen.Render(" [WINNER ✓]")
 				} else if wt.ResolutionStatus == "resolved" && !wt.IsWinner {
 					redeemTag = styleRed.Render(" [LOSER ✗]")
-				} else if wt.ResolutionStatus == "unresolved" && (wt.LocalShares > 0 || wt.OnChainShares > 0) {
+				} else if wt.ResolutionStatus == "unresolved" && (displayableInventoryShares(wt.LocalShares) || displayableInventoryShares(wt.OnChainShares)) {
 					redeemTag = styleYellow.Render(" [RESOLVING ⏳]")
 				}
 
@@ -6076,7 +6095,7 @@ func roundHistoryOpenInventoryCounts(entry RoundHistoryEntry) (markets, legs int
 		if _, ok := resolvedMarkets[marketKey]; ok {
 			continue
 		}
-		if pos.Quantity <= 0.000001 {
+		if !displayableInventoryShares(pos.Quantity) {
 			continue
 		}
 		openMarkets[marketKey] = struct{}{}
@@ -6221,7 +6240,7 @@ func positionsWithPnLOpenInventoryCounts(positions map[string]PositionPnL) (mark
 	}
 	openMarkets := make(map[string]struct{})
 	for _, pos := range positions {
-		if pos.Quantity <= 0.000001 {
+		if !displayableInventoryShares(pos.Quantity) {
 			continue
 		}
 		marketID := strings.TrimSpace(pos.MarketID)
@@ -6472,7 +6491,7 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 		if maxLineWidth < 8 {
 			maxLineWidth = 8
 		}
-		
+
 		// Use lipgloss to safely wrap strings with ANSI codes
 		wrapStyle := lipgloss.NewStyle().Width(maxLineWidth)
 		var wrappedLines []string
@@ -6487,7 +6506,7 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 				}
 			}
 		}
-		
+
 		// Only display the last maxItems lines
 		displayStart := 0
 		if len(wrappedLines) > maxItems {

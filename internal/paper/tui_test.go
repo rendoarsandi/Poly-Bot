@@ -669,6 +669,46 @@ func TestRenderPositionsHidesResolvedLosersFromOnChainInventory(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsHidesDustOnlyOnChainInventory(t *testing.T) {
+	engine := NewEngine(1000.0)
+	tui := NewTUI(engine, nil)
+	tui.SetWalletTruthPositions("BTC", []WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", OnChainShares: 0.00359, ResolutionStatus: "unresolved"},
+	})
+
+	model := tuiModel{tui: tui, snap: tuiSnapshot{walletTruth: tui.getWalletTruthPositions()}}
+	rendered := model.renderPositions(120, nil)
+
+	if strings.Contains(rendered, "ON-CHAIN INVENTORY") || strings.Contains(rendered, "0.00359") {
+		t.Fatalf("expected dust-only on-chain inventory to stay hidden, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(none)") {
+		t.Fatalf("expected positions panel to collapse for dust-only on-chain inventory, got %q", rendered)
+	}
+}
+
+func TestRenderPositionsHidesDustOnlyInFlightInventory(t *testing.T) {
+	engine := NewEngine(1000.0)
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.99, 1.00)
+	_, _ = engine.BuyForMarket("BTC", "Up", 0.50, 0.00359)
+
+	tui := NewTUI(engine, nil)
+	model := tuiModel{
+		tui: tui,
+		snap: tuiSnapshot{
+			positions: engine.GetPositionsWithPnL(),
+		},
+	}
+
+	rendered := model.renderPositions(120, engine.GetPositionsWithPnL())
+	if strings.Contains(rendered, "IN-FLIGHT") || strings.Contains(rendered, "0.00359") {
+		t.Fatalf("expected dust-only in-flight inventory to stay hidden, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(none)") {
+		t.Fatalf("expected positions panel to collapse for dust-only in-flight inventory, got %q", rendered)
+	}
+}
+
 func TestRenderPositionsHidesInFlightSectionWhenTakerCloseEnabled(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), nil)
 	tui.InitSettings(TUISettings{

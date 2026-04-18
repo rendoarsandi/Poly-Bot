@@ -17,7 +17,7 @@ func realbotWinningOnChainShares(positions []paper.WalletTruthPosition, winner s
 	}
 	total := 0.0
 	for _, pos := range positions {
-		if strings.EqualFold(pos.Outcome, winner) && pos.OnChainShares > 0 {
+		if strings.EqualFold(pos.Outcome, winner) && hasActionableCleanupRemainder(pos.OnChainShares) {
 			total += pos.OnChainShares
 		}
 	}
@@ -51,7 +51,8 @@ func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, con
 		if err != nil {
 			return nil, err
 		}
-		localShares := localByOutcome[token.Outcome]
+		onChainShares = realbotNormalizeTrackedShares(onChainShares)
+		localShares := realbotNormalizeTrackedShares(localByOutcome[token.Outcome])
 		if localShares <= 0 && onChainShares <= 0 {
 			continue
 		}
@@ -78,7 +79,7 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID 
 	}
 	enginePositions := engine.GetPositions()
 	for _, wt := range positions {
-		if wt.MarketID != marketID || wt.OnChainShares <= 0 {
+		if wt.MarketID != marketID || !hasActionableCleanupRemainder(wt.OnChainShares) {
 			continue
 		}
 		key := marketID + ":" + wt.Outcome
@@ -270,7 +271,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		if engine != nil {
 			pendingPayout = engine.GetPendingRedemptions()[id]
 		}
-		if !realbotHasEnginePositionsForMarket(engine, id) && pendingPayout <= 0.000001 {
+		if !realbotHasActionableEnginePositionsForMarket(engine, id) && pendingPayout <= 0.000001 {
 			return
 		}
 		ticker := time.NewTicker(realbotEmbeddedPaperRedemptionPollInterval)
@@ -284,7 +285,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 					tui.LogEvent("[%s] ⚠️ Paper resolution check failed: %v", id, status.Error)
 				} else if status.Winner != "" {
 					var result *paper.RedemptionResult
-					if realbotHasEnginePositionsForMarket(engine, id) {
+					if realbotHasActionableEnginePositionsForMarket(engine, id) {
 						result = engine.RedeemWithDetails(id, status.Winner)
 					}
 					settled := engine.SettlePendingRedemption(id)
@@ -317,7 +318,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		}
 	}
 	if err := refreshWalletTruthForRedemption(ctx, id, conditionID, trader, engine, tui); err != nil {
-		if !realbotHasEnginePositionsForMarket(engine, id) {
+		if !realbotHasActionableEnginePositionsForMarket(engine, id) {
 			return
 		}
 		tui.LogEvent("[%s] ⚠️ Initial redemption wallet-truth refresh failed: %v", id, err)

@@ -157,7 +157,7 @@ func realbotStartEmbeddedPaperResolutionSweep(ctx context.Context, trader *tradi
 			}
 			if winner != "" {
 				var result *paper.RedemptionResult
-				if realbotHasEnginePositionsForMarket(engine, marketID) {
+				if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 					result = engine.RedeemWithDetails(marketID, winner)
 				}
 				settled := engine.SettlePendingRedemption(marketID)

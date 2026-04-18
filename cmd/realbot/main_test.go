@@ -1423,6 +1423,7 @@ func TestRealbotWinningOnChainSharesOnlyCountsWinner(t *testing.T) {
 		{Outcome: "Up", OnChainShares: 3.1},
 		{Outcome: "Down", OnChainShares: 2.0},
 		{Outcome: "Up", OnChainShares: 0.4},
+		{Outcome: "Up", OnChainShares: 0.00359},
 	}
 	if got := realbotWinningOnChainShares(positions, "Up"); math.Abs(got-3.5) > 0.000001 {
 		t.Fatalf("expected winning on-chain shares 3.5, got %.4f", got)
@@ -2773,6 +2774,26 @@ func TestSyncWalletTruthOutcomePositionTrimsExcessLocalInventory(t *testing.T) {
 	history := tui.GetOrderHistory()
 	if len(history) != 0 {
 		t.Fatalf("expected zero wallet-sync history entry because it was silenced, got %d", len(history))
+	}
+}
+
+func TestSyncWalletTruthOutcomePositionDropsDustInventory(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	engine.UpdateMarketBidAsk("m1", "Up", 0.99, 1.00)
+	if !engine.SyncExternalPosition("m1", "Up", 0.00359, 0.50) {
+		t.Fatal("expected seed dust position to sync into engine")
+	}
+
+	desired, changed := syncWalletTruthOutcomePosition(engine, tui, "m1", "Up", 0.00359, 0.00359, 0)
+	if !changed {
+		t.Fatal("expected dust-only wallet-truth sync to clear local inventory")
+	}
+	if desired != 0 {
+		t.Fatalf("expected dust desired shares to normalize to zero, got %.5f", desired)
+	}
+	if _, ok := engine.GetPositions()["m1:Up"]; ok {
+		t.Fatal("expected dust-only engine position to be cleared")
 	}
 }
 

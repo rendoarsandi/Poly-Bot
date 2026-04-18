@@ -14,39 +14,46 @@ import (
 	"Market-bot/internal/trading"
 )
 
+func realbotNormalizeTrackedShares(qty float64) float64 {
+	if !hasActionableCleanupRemainder(qty) {
+		return 0
+	}
+	return qty
+}
+
 func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string, deltaShares, localShares, onChainShares, splitShares, markPrice float64, action string) {
 	/*
-	if tui == nil || math.Abs(deltaShares) < realbotWalletTruthLogMinDelta {
-		return
-	}
-	side := "ADJ"
-	sign := ""
-	if deltaShares > 0 {
-		side = "ADJ+"
-		sign = "+"
-	} else if deltaShares < 0 {
-		side = "ADJ-"
-	}
-	tui.RecordWalletSyncAdjustment(marketID, outcome, deltaShares, markPrice, side)
-	if math.Abs(deltaShares) < realbotWalletTruthEventMinDelta {
-		return
-	}
-	// Silenced per user request
-	// tui.LogEvent("[%s] 🧾 Wallet sync %s %s %s%s (local %.4f, on-chain %.4f, split %.4f)",
-	// 	marketID,
-	// 	action,
-	// 	outcome,
-	// 	sign,
-	// 	formatShareQty(math.Abs(deltaShares)),
-	// 	localShares,
-	// 	onChainShares,
-	// 	splitShares,
-	// )
+		if tui == nil || math.Abs(deltaShares) < realbotWalletTruthLogMinDelta {
+			return
+		}
+		side := "ADJ"
+		sign := ""
+		if deltaShares > 0 {
+			side = "ADJ+"
+			sign = "+"
+		} else if deltaShares < 0 {
+			side = "ADJ-"
+		}
+		tui.RecordWalletSyncAdjustment(marketID, outcome, deltaShares, markPrice, side)
+		if math.Abs(deltaShares) < realbotWalletTruthEventMinDelta {
+			return
+		}
+		// Silenced per user request
+		// tui.LogEvent("[%s] 🧾 Wallet sync %s %s %s%s (local %.4f, on-chain %.4f, split %.4f)",
+		// 	marketID,
+		// 	action,
+		// 	outcome,
+		// 	sign,
+		// 	formatShareQty(math.Abs(deltaShares)),
+		// 	localShares,
+		// 	onChainShares,
+		// 	splitShares,
+		// )
 	*/
 }
 
 func syncWalletTruthOutcomePosition(engine *paper.Engine, tui *paper.TUI, marketID, outcome string, localBoughtShares, onChainShares, splitShares float64) (float64, bool) {
-	desiredBoughtShares := math.Max(0, onChainShares-splitShares)
+	desiredBoughtShares := realbotNormalizeTrackedShares(math.Max(0, onChainShares-splitShares))
 	deltaShares := desiredBoughtShares - localBoughtShares
 	if math.Abs(deltaShares) <= 1e-6 {
 		return desiredBoughtShares, false
@@ -85,6 +92,7 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		if err != nil {
 			return changed, err
 		}
+		onChainShares = realbotNormalizeTrackedShares(onChainShares)
 		localBoughtShares := localByOutcome[outcome]
 		splitShares := 0.0
 		if splitInventory != nil {
@@ -95,7 +103,7 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 		if adjusted {
 			changed = true
 		}
-		localShares := localBoughtShares + splitShares
+		localShares := realbotNormalizeTrackedShares(localBoughtShares + splitShares)
 		positions = append(positions, paper.WalletTruthPosition{
 			MarketID:      marketID,
 			Outcome:       outcome,
