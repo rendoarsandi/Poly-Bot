@@ -2240,6 +2240,9 @@ func TestRenderRoundHistoryMarksOpenInventoryAsCarry(t *testing.T) {
 	if !strings.Contains(rendered, "W/L/F 0/0/1") {
 		t.Fatalf("expected carry round to count toward flat bucket, got %q", rendered)
 	}
+	if !strings.Contains(rendered, "cash est") || !strings.Contains(rendered, "carry $") {
+		t.Fatalf("expected carry round to explain book-equity split, got %q", rendered)
+	}
 }
 
 func TestRenderRoundHistoryShowsCarryAndLiveInventoryCounts(t *testing.T) {

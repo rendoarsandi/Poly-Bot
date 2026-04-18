@@ -6107,6 +6107,40 @@ func roundHistoryHasOpenInventory(entry RoundHistoryEntry) bool {
 	return legs > 0
 }
 
+func roundHistoryOpenCarryCost(entry RoundHistoryEntry) float64 {
+	if len(entry.positions) == 0 {
+		return 0
+	}
+	resolvedMarkets := make(map[string]struct{}, len(entry.redemptions))
+	for _, redemption := range entry.redemptions {
+		if redemption == nil {
+			continue
+		}
+		marketID := strings.TrimSpace(redemption.MarketID)
+		if marketID == "" {
+			continue
+		}
+		resolvedMarkets[strings.ToLower(marketID)] = struct{}{}
+	}
+
+	total := 0.0
+	for _, pos := range entry.positions {
+		marketID := strings.ToLower(strings.TrimSpace(pos.MarketID))
+		if _, ok := resolvedMarkets[marketID]; ok {
+			continue
+		}
+		if !displayableInventoryShares(pos.Quantity) {
+			continue
+		}
+		cost := pos.TotalCost
+		if cost <= 0 && pos.Quantity > 0 && pos.AvgPrice > 0 {
+			cost = pos.Quantity * pos.AvgPrice
+		}
+		total += cost
+	}
+	return total
+}
+
 func roundHistoryPositionChanged(prev Position, cur Position) bool {
 	return !strings.EqualFold(strings.TrimSpace(prev.MarketID), strings.TrimSpace(cur.MarketID)) ||
 		!strings.EqualFold(strings.TrimSpace(prev.Outcome), strings.TrimSpace(cur.Outcome)) ||
@@ -6299,6 +6333,7 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			fmt.Sprintf("  open carry (latest close): %d markets / %d legs  ·  live in-flight now: %d markets / %d legs",
 				carryMarkets, carryLegs, liveMarkets, liveLegs),
 		) + "\n")
+		sb.WriteString(styleDimmed.Render("  OPEN rows show conservative book equity: spendable cash plus unresolved carry at cost basis") + "\n")
 	}
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
 		"#", "END", "START", "CLOSE EQ", "EQ DELTA", "TRDS", "RESULT")) + "\n")
@@ -6342,6 +6377,15 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 			entry.Trades,
 			resultStyle.Render(resultLabel),
 		))
+		if openInventory {
+			carryCost := roundHistoryOpenCarryCost(entry)
+			if carryCost > 0.000001 {
+				estCash := entry.EndingEquity - carryCost
+				sb.WriteString("        " + styleDimmed.Render(
+					fmt.Sprintf("cash est $%.2f  ·  carry $%.2f", estCash, carryCost),
+				) + "\n")
+			}
+		}
 		displaySummary := roundHistoryDisplaySummary(s.roundHistory, i)
 		if displaySummary != "" {
 			summaryLines := wrapRoundHistoryDisplaySummary(displaySummary, max(12, inner-10))
