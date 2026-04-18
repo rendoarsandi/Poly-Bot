@@ -66,6 +66,7 @@ const (
 	realbotMakerRequoteInterval      = 500 * time.Millisecond
 	realbotMakerMinQuoteValue        = 5.0
 	realbotMakerCashUsagePerOutcome  = 0.35
+	realbotLadderedRetryInterval     = 1500 * time.Millisecond
 	realbotBatchBuyConfirmTimeout    = 1500 * time.Millisecond
 	realbotBuyAttributionTimeout     = 12 * time.Second
 	realbotMinDirectOrderValue       = 1.0

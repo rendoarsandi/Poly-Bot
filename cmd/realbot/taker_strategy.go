@@ -258,6 +258,24 @@ func realbotExecuteAggressiveEntry(
 		tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
 	}
 
+	if ladderedMode {
+		activeOutcome := outcomes[0]
+		activeExec := exec1
+		activeSuccess := side1Success
+		if ladderedDirection == 1 {
+			activeOutcome = outcomes[1]
+			activeExec = exec2
+			activeSuccess = side2Success
+		}
+		if !activeSuccess && realbotShouldRetryLadderedBuyFailure(activeExec) {
+			retryAt := time.Now().Add(realbotLadderedRetryInterval)
+			if asyncResult.cooldownUntil.Before(retryAt) {
+				asyncResult.cooldownUntil = retryAt
+			}
+			tui.LogEvent("[%s] 🔁 Ladder BUY retry armed for %s in %s after transient venue failure", id, activeOutcome, realbotLadderedRetryInterval)
+		}
+	}
+
 	if !ladderedMode && side1Success != side2Success {
 		if haveInitialSnapshot {
 			tui.LogEvent("[%s] 🧾 Pre-trade share snapshot (%s): %s=%.4f, %s=%.4f", id, initialSnapshotSource, outcomes[0], initialSnapshot0, outcomes[1], initialSnapshot1)

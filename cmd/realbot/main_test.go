@@ -248,6 +248,31 @@ func TestRealbotResolveLadderedEntryDropsRejectedPendingAnchor(t *testing.T) {
 	}
 }
 
+func TestRealbotShouldRetryLadderedBuyFailureTransientExecutionError(t *testing.T) {
+	exec := directMarketExecution{
+		Result: &trading.TradeResult{
+			Message: "could not run the execution",
+		},
+	}
+
+	if !realbotShouldRetryLadderedBuyFailure(exec) {
+		t.Fatal("expected transient execution error to stay retryable for laddered buy flow")
+	}
+}
+
+func TestRealbotShouldRetryLadderedBuyFailureIgnoresHardVenueRejects(t *testing.T) {
+	exec := directMarketExecution{
+		Result: &trading.TradeResult{
+			Status:  "REJECTED",
+			Message: "order rejected",
+		},
+	}
+
+	if realbotShouldRetryLadderedBuyFailure(exec) {
+		t.Fatal("expected hard venue reject not to arm laddered retries")
+	}
+}
+
 func TestHasConfirmedExecutedQtyBuyUsesMinimumActionableThreshold(t *testing.T) {
 	if !hasConfirmedExecutedQty(api.SideBuy, minOnChainActionShares) {
 		t.Fatal("expected exact minimum actionable buy fill to count as confirmed")
@@ -1787,6 +1812,84 @@ func TestRealbotHandlePanicBuyStrategySkipsCrossedLadderedQuotes(t *testing.T) {
 	}
 	if nextLadderedEntrySeq != 1 || len(ladderedEntries) != 1 {
 		t.Fatal("expected crossed laddered quotes to leave ladder state unchanged")
+	}
+}
+
+func TestRealbotHandlePanicBuyStrategySkipsLadderedEntryWhileInFlight(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+
+	entryExecutionInFlight := true
+	panicBuyCooldown := time.Time{}
+	lastPairUpdate := time.Now()
+	lastTrade := time.Time{}
+	lastDustRecoveryNotice := time.Time{}
+	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
+	nextLadderedEntrySeq := uint64(1)
+
+	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Down", "Up"},
+		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenBids:      map[string]float64{"Down": 0.40, "Up": 0.48},
+		tokenAsks:      map[string]float64{"Down": 0.39, "Up": 0.70},
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &ladderedEntries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+	if !handled {
+		t.Fatal("expected laddered in-flight execution to short-circuit the strategy")
+	}
+	if nextLadderedEntrySeq != 1 || len(ladderedEntries) != 1 {
+		t.Fatal("expected ladder state to stay unchanged while execution is still in flight")
+	}
+}
+
+func TestRealbotHandlePanicBuyStrategySkipsLadderedEntryDuringCooldown(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+
+	entryExecutionInFlight := false
+	panicBuyCooldown := time.Now().Add(2 * time.Second)
+	lastPairUpdate := time.Now()
+	lastTrade := time.Time{}
+	lastDustRecoveryNotice := time.Time{}
+	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
+	nextLadderedEntrySeq := uint64(1)
+
+	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Down", "Up"},
+		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenBids:      map[string]float64{"Down": 0.40, "Up": 0.48},
+		tokenAsks:      map[string]float64{"Down": 0.39, "Up": 0.70},
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &ladderedEntries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+	if !handled {
+		t.Fatal("expected laddered cooldown to short-circuit the strategy")
+	}
+	if nextLadderedEntrySeq != 1 || len(ladderedEntries) != 1 {
+		t.Fatal("expected ladder state to stay unchanged while cooldown is active")
 	}
 }
 

@@ -90,6 +90,64 @@ func realbotResolveInitialPairSnapshot(ctx context.Context, ladderedMode bool, l
 	return auth0, auth1, authSource, nil
 }
 
+func realbotShouldRetryLadderedBuyFailure(exec directMarketExecution) bool {
+	if exec.Success || exec.ExecutedQty > 0 || exec.AcknowledgedQty > 0 || exec.AcknowledgedNotional > 0 {
+		return false
+	}
+	if exec.Result != nil {
+		if strings.TrimSpace(exec.Result.OrderID) != "" || len(exec.Result.TransactionsHashes) > 0 || len(exec.Result.TradeIDs) > 0 {
+			return false
+		}
+		switch strings.ToUpper(strings.TrimSpace(exec.Result.Status)) {
+		case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
+			return false
+		}
+	}
+
+	combined := ""
+	if exec.Err != nil {
+		combined = exec.Err.Error()
+	}
+	if exec.Result != nil {
+		combined = strings.TrimSpace(combined + " " + exec.Result.Message + " " + exec.Result.Status)
+	}
+	message := strings.ToLower(strings.TrimSpace(combined))
+	if message == "" {
+		return false
+	}
+
+	retryableFragments := []string{
+		"could not run the execution",
+		"matching engine restarting",
+		"temporarily unavailable",
+		"temporary unavailable",
+		"too many requests",
+		"rate limit",
+		"timeout",
+		"deadline exceeded",
+		"connection reset",
+		"connection refused",
+		"broken pipe",
+		"eof",
+		"http 429",
+		"http 500",
+		"http 502",
+		"http 503",
+		"http 504",
+		"status 429",
+		"status 500",
+		"status 502",
+		"status 503",
+		"status 504",
+	}
+	for _, fragment := range retryableFragments {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func realbotInitialPairSnapshot(ctx context.Context, trader *trading.RealTrader, token0, token1 string, ladderedMode bool) (bal0, bal1 float64, source string, err error) {
 	if trader == nil {
 		return 0, 0, "live WS cache", nil

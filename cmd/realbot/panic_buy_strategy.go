@@ -86,13 +86,13 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 
 	setEntryCooldown := func(d time.Duration) {
-		if ladderedMode || state == nil || state.panicBuyCooldown == nil {
+		if state == nil || state.panicBuyCooldown == nil {
 			return
 		}
 		*state.panicBuyCooldown = time.Now().Add(d)
 	}
 
-	if !ladderedMode && state != nil && state.panicBuyCooldown != nil && time.Now().Before(*state.panicBuyCooldown) {
+	if state != nil && state.panicBuyCooldown != nil && time.Now().Before(*state.panicBuyCooldown) {
 		return true
 	}
 
@@ -117,7 +117,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return false
 	}
 
-	if !ladderedMode && state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
+	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
 		return true
 	}
 	if args.blockNewEntries {
