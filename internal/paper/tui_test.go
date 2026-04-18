@@ -2505,16 +2505,16 @@ func TestAmendMostRecentRoundForMarketTargetsMatchingRound(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("expected 2 round history entries, got %d", len(history))
 	}
-	if got := history[0].EndingEquity; math.Abs(got-101.20) > 0.0001 {
+	if got := history[0].EndingEquity; math.Abs(got-101.60) > 0.0001 {
 		t.Fatalf("expected matching round ending equity to include redemption delta, got %.2f", got)
 	}
-	if got := history[0].PnL; math.Abs(got-1.20) > 0.0001 {
+	if got := history[0].PnL; math.Abs(got-1.60) > 0.0001 {
 		t.Fatalf("expected matching round pnl to include redemption delta, got %.2f", got)
 	}
-	if got := history[1].StartingEquity; math.Abs(got-101.20) > 0.0001 {
+	if got := history[1].StartingEquity; math.Abs(got-101.60) > 0.0001 {
 		t.Fatalf("expected later round starting equity to rebase after redemption delta, got %.2f", got)
 	}
-	if got := history[1].EndingEquity; math.Abs(got-102.20) > 0.0001 {
+	if got := history[1].EndingEquity; math.Abs(got-102.60) > 0.0001 {
 		t.Fatalf("expected later round ending equity to rebase after redemption delta, got %.2f", got)
 	}
 	if got := history[1].PnL; math.Abs(got-1.0) > 0.0001 {
@@ -2556,19 +2556,19 @@ func TestAmendMostRecentRoundForMarketAttributesCarryResolutionToOriginRound(t *
 	if len(history) != 2 {
 		t.Fatalf("expected 2 round history entries, got %d", len(history))
 	}
-	if got := history[0].EndingEquity; math.Abs(got-99.20) > 0.0001 {
+	if got := history[0].EndingEquity; math.Abs(got-99.60) > 0.0001 {
 		t.Fatalf("expected carry-origin round ending equity to include redemption delta, got %.2f", got)
 	}
-	if got := history[0].PnL; math.Abs(got-(-0.80)) > 0.0001 {
+	if got := history[0].PnL; math.Abs(got-(-0.40)) > 0.0001 {
 		t.Fatalf("expected carry-origin round pnl to include redemption delta, got %.2f", got)
 	}
 	if !strings.Contains(history[0].ShareSummary, "m1:") || !strings.Contains(history[0].ShareSummary, "Up 6@$0.40") {
 		t.Fatalf("expected carry-origin round to retain resolved m1 detail, got %q", history[0].ShareSummary)
 	}
-	if got := history[1].StartingEquity; math.Abs(got-99.20) > 0.0001 {
+	if got := history[1].StartingEquity; math.Abs(got-99.60) > 0.0001 {
 		t.Fatalf("expected later round starting equity to rebase after redemption delta, got %.2f", got)
 	}
-	if got := history[1].EndingEquity; math.Abs(got-100.20) > 0.0001 {
+	if got := history[1].EndingEquity; math.Abs(got-100.60) > 0.0001 {
 		t.Fatalf("expected later round ending equity to rebase after redemption delta, got %.2f", got)
 	}
 	if got := history[1].PnL; math.Abs(got-1.0) > 0.0001 {
@@ -2637,10 +2637,10 @@ func TestAmendMostRecentRoundForMarketOnlyTouchesTargetMarket(t *testing.T) {
 		if got, ok := entry.positions["m2:Down"]; !ok || math.Abs(got.Quantity-2.0) > 0.0001 || math.Abs(got.TotalCost-1.20) > 0.0001 {
 			t.Fatalf("expected unrelated m2 down leg untouched on iteration %d, got %+v exists=%v", i, got, ok)
 		}
-		if got := entry.PnL; math.Abs(got-1.20) > 0.0001 {
+		if got := entry.PnL; math.Abs(got-1.60) > 0.0001 {
 			t.Fatalf("expected target round pnl to reflect redeemed m1 delta on iteration %d, got %.2f", i, got)
 		}
-		if got := entry.EndingEquity; math.Abs(got-101.20) > 0.0001 {
+		if got := entry.EndingEquity; math.Abs(got-101.60) > 0.0001 {
 			t.Fatalf("expected target round ending equity to reflect redeemed m1 delta on iteration %d, got %.2f", i, got)
 		}
 	}

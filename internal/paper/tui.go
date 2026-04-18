@@ -4107,10 +4107,6 @@ func roundHistoryRedemptionDelta(entry RoundHistoryEntry, pnlDelta float64, newR
 		if req == nil {
 			continue
 		}
-		if bookValue, ok := roundHistoryPositionBookValueForMarket(entry.positions, req.MarketID); ok {
-			delta += req.TotalPayout - bookValue
-			continue
-		}
 		delta += req.TotalPnL
 	}
 	return delta
