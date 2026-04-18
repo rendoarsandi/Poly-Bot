@@ -1420,7 +1420,22 @@ func (e *Engine) SyncBalanceNeutral(balance float64) float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	return e.syncBalanceNeutralLocked(balance, false)
+}
+
+// RebaseBalance applies an explicit external cash rebase that should not count
+// toward session PnL even when the engine is flat.
+func (e *Engine) RebaseBalance(balance float64) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.syncBalanceNeutralLocked(balance, true)
+}
+
+func (e *Engine) syncBalanceNeutralLocked(balance float64, forceNeutral bool) float64 {
+
 	delta := balance - e.currentBalance
+	shouldNeutralize := forceNeutral || e.hasNeutralUnsettledInventoryLocked()
 
 	if delta > 0.01 && len(e.pendingRedemptions) > 0 {
 		remainingDelta := delta
@@ -1442,7 +1457,7 @@ func (e *Engine) SyncBalanceNeutral(balance float64) float64 {
 	e.currentBalance = balance
 
 	neutralized := 0.0
-	if math.Abs(delta) >= 0.000001 {
+	if math.Abs(delta) >= 0.000001 && shouldNeutralize {
 		e.pnlBaseline += delta
 		if delta > 0 {
 			e.sizingBalance += delta

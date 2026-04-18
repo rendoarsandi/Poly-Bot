@@ -901,25 +901,39 @@ func TestEngine_BuySellWithExplicitFeeRateKeepsRealizedAlignedWithEquity(t *test
 	}
 }
 
-func TestEngine_SyncBalanceNeutralRebasesFlatCashTransfers(t *testing.T) {
+func TestEngine_SyncBalanceNeutralDoesNotRebaseFlatCashTransfers(t *testing.T) {
 	engine := NewEngine(100.0)
 
 	neutralized := engine.SyncBalanceNeutral(130.0)
+	if absFloat(neutralized) > 0.0001 {
+		t.Fatalf("expected flat deposit not to be auto-neutralized, got %.4f", neutralized)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.StartingBalance-100.0) > 0.0001 {
+		t.Fatalf("expected flat sync to keep baseline at 100.00, got %.4f", stats.StartingBalance)
+	}
+}
+
+func TestEngine_RebaseBalanceKeepsFlatCashTransfersNeutral(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	neutralized := engine.RebaseBalance(130.0)
 	if absFloat(neutralized-30.0) > 0.0001 {
-		t.Fatalf("expected deposit neutralized by 30.00, got %.4f", neutralized)
+		t.Fatalf("expected deposit rebased by 30.00, got %.4f", neutralized)
 	}
 
 	stats := engine.GetStats()
 	if absFloat(stats.StartingBalance-130.0) > 0.0001 {
-		t.Fatalf("expected starting balance rebased to 130.00 after deposit, got %.4f", stats.StartingBalance)
+		t.Fatalf("expected baseline rebased to 130.00 after deposit, got %.4f", stats.StartingBalance)
 	}
 	if absFloat(stats.RealizedPnL) > 0.0001 {
-		t.Fatalf("expected deposit to stay out of realized pnl, got %.4f", stats.RealizedPnL)
+		t.Fatalf("expected explicit rebase to stay out of realized pnl, got %.4f", stats.RealizedPnL)
 	}
 
-	neutralized = engine.SyncBalanceNeutral(120.0)
+	neutralized = engine.RebaseBalance(120.0)
 	if absFloat(neutralized+10.0) > 0.0001 {
-		t.Fatalf("expected withdrawal neutralized by -10.00, got %.4f", neutralized)
+		t.Fatalf("expected withdrawal rebased by -10.00, got %.4f", neutralized)
 	}
 
 	stats = engine.GetStats()

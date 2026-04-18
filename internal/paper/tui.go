@@ -3608,7 +3608,7 @@ func (t *TUI) applyPaperBalanceLocked(balance float64) error {
 		t.walletTruth = make(map[string][]WalletTruthPosition)
 		t.startTime = time.Now()
 	} else {
-		t.engine.SyncBalanceNeutral(balance)
+		t.engine.RebaseBalance(balance)
 	}
 	t.markDirtyLocked()
 	return nil
