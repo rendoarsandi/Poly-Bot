@@ -371,7 +371,7 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 	preLocalQty, _ := localBoughtPositionAvg(args.engine, args.marketID, bestOutcome)
 	execCost := reportedBuyCost(exec, execPrice, execQty, plan.RequestedQty)
 	if shouldMirrorEngine {
-		if _, buyErr := args.engine.BuyForMarket(args.marketID, bestOutcome, execPrice, execQty); buyErr != nil {
+		if _, buyErr := args.engine.BuyForMarketWithFeeRate(args.marketID, bestOutcome, execPrice, execQty, args.tokenFeeRates[bestOutcome]); buyErr != nil {
 			args.tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", args.marketID, buyErr)
 		}
 	}

@@ -155,6 +155,53 @@ func TestPaperTrader_FeeCalculation(t *testing.T) {
 	if result.Fee != expectedFee {
 		t.Errorf("Expected fee $%.4f, got $%.4f", expectedFee, result.Fee)
 	}
+
+	positions := engine.GetPositions()
+	pos, ok := positions["Up"]
+	if !ok {
+		t.Fatal("expected fee-aware paper buy to create an Up position")
+	}
+	if pos.Quantity >= 100.0 {
+		t.Fatalf("expected fee-aware paper buy quantity below 100 shares, got %.6f", pos.Quantity)
+	}
+}
+
+func TestPaperTrader_FeeAwareRoundTripHitsRealizedPnL(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	orderBook := paper.NewOrderBook()
+	trader := NewPaperTrader(engine, orderBook)
+
+	ctx := context.Background()
+
+	buy, err := trader.Buy(ctx, "token123", "Up", 0.50, 10, api.OrderTypeMarket, api.TIFGoodTilCancelled, 100)
+	if err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("expected buy success, got %+v", buy)
+	}
+
+	positions := engine.GetPositions()
+	pos, ok := positions["Up"]
+	if !ok {
+		t.Fatal("expected Up position after fee-aware buy")
+	}
+
+	sell, err := trader.Sell(ctx, "token123", "Up", 0.50, pos.Quantity, api.OrderTypeMarket, api.TIFFillAndKill, 100)
+	if err != nil {
+		t.Fatalf("sell failed: %v", err)
+	}
+	if !sell.Success {
+		t.Fatalf("expected sell success, got %+v", sell)
+	}
+
+	stats := engine.GetStats()
+	if stats.RealizedPnL >= 0 {
+		t.Fatalf("expected round-trip realized pnl to include fees, got %.6f", stats.RealizedPnL)
+	}
+	if math.Abs((engine.GetBookEquity()-stats.StartingBalance)-stats.RealizedPnL) > 0.000001 {
+		t.Fatalf("expected realized pnl %.6f to match equity change %.6f", stats.RealizedPnL, engine.GetBookEquity()-stats.StartingBalance)
+	}
 }
 
 // TestPaperTrader_IsPaperMode verifies mode detection

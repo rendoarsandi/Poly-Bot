@@ -874,6 +874,63 @@ func TestEngine_GetStatsRealizedPnLIgnoresBalanceSyncWhileFlat(t *testing.T) {
 	}
 }
 
+func TestEngine_BuySellWithExplicitFeeRateKeepsRealizedAlignedWithEquity(t *testing.T) {
+	engine := NewEngine(30.0)
+
+	buy, err := engine.BuyForMarketWithFeeRate("m1", "Up", 0.50, 10.0, 100)
+	if err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+	if buy.Quantity >= 10.0 {
+		t.Fatalf("expected buy quantity to be reduced by fee, got %.6f", buy.Quantity)
+	}
+
+	sell, err := engine.SellForMarketWithFeeRate("m1", "Up", 0.60, buy.Quantity, 100)
+	if err != nil {
+		t.Fatalf("sell failed: %v", err)
+	}
+
+	stats := engine.GetStats()
+	equity := engine.GetBookEquity()
+	netChange := equity - stats.StartingBalance
+	if absFloat(stats.RealizedPnL-netChange) > 0.000001 {
+		t.Fatalf("expected realized pnl %.6f to match net change %.6f after fee-aware round-trip", stats.RealizedPnL, netChange)
+	}
+	if absFloat(sell.Value-(engine.GetBalance()-25.0)) > 0.000001 {
+		t.Fatalf("expected sell proceeds %.6f to reconcile with ending cash %.6f", sell.Value, engine.GetBalance())
+	}
+}
+
+func TestEngine_SyncBalanceNeutralRebasesFlatCashTransfers(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	neutralized := engine.SyncBalanceNeutral(130.0)
+	if absFloat(neutralized-30.0) > 0.0001 {
+		t.Fatalf("expected deposit neutralized by 30.00, got %.4f", neutralized)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.StartingBalance-130.0) > 0.0001 {
+		t.Fatalf("expected starting balance rebased to 130.00 after deposit, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(stats.RealizedPnL) > 0.0001 {
+		t.Fatalf("expected deposit to stay out of realized pnl, got %.4f", stats.RealizedPnL)
+	}
+
+	neutralized = engine.SyncBalanceNeutral(120.0)
+	if absFloat(neutralized+10.0) > 0.0001 {
+		t.Fatalf("expected withdrawal neutralized by -10.00, got %.4f", neutralized)
+	}
+
+	stats = engine.GetStats()
+	if absFloat(stats.StartingBalance-120.0) > 0.0001 {
+		t.Fatalf("expected starting balance rebased to 120.00 after withdrawal, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(engine.GetBookEquity()-stats.StartingBalance) > 0.0001 {
+		t.Fatalf("expected flat cash transfer to keep book equity %.4f neutral to baseline %.4f", engine.GetBookEquity(), stats.StartingBalance)
+	}
+}
+
 func TestEngine_GetStatsRealizedPnLStaysNeutralForOpenInventory(t *testing.T) {
 	engine := NewEngine(100.0)
 

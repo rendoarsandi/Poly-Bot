@@ -1607,10 +1607,13 @@ func TestRealbotFinalizePendingRedemptionClearsAlreadyReflectedBalance(t *testin
 	if math.Abs(neutralized-10.0) > 0.000001 {
 		t.Fatalf("expected neutralized reflected payout 10.00, got %.2f", neutralized)
 	}
+	if got := engine.GetPendingRedemptions()["BTC"]; got != 0 {
+		t.Fatalf("expected reflected payout sync to clear pending redemption, got %.2f", got)
+	}
 
 	cleared := realbotFinalizePendingRedemption(engine, "BTC", true)
-	if math.Abs(cleared-10.0) > 0.000001 {
-		t.Fatalf("expected cleared payout 10.00, got %.2f", cleared)
+	if math.Abs(cleared) > 0.000001 {
+		t.Fatalf("expected finalize to no-op after payout already reflected, got %.2f", cleared)
 	}
 	if got := engine.GetBalance(); math.Abs(got-102.0) > 0.000001 {
 		t.Fatalf("expected reflected balance to stay 102.00 without double credit, got %.2f", got)

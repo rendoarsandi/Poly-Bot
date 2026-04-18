@@ -213,7 +213,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			}
 			execCost := reportedBuyCost(exec, execPrice, execQty, requestedQty)
 			if realbotShouldMirrorExecutionIntoEngine(trader) {
-				if _, buyErr := engine.BuyForMarket(marketID, outcome, execPrice, execQty); buyErr != nil {
+				if _, buyErr := engine.BuyForMarketWithFeeRate(marketID, outcome, execPrice, execQty, feeRate); buyErr != nil {
 					tui.LogEvent("[%s] ⚠️ Copytrade local buy sync failed for %s: %v", marketID, outcome, buyErr)
 				}
 			}
@@ -315,7 +315,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				execPrice = bid
 			}
 			if realbotShouldMirrorExecutionIntoEngine(trader) {
-				if _, sellErr := engine.SellForMarket(marketID, outcome, execPrice, execQty); sellErr != nil {
+				if _, sellErr := engine.SellForMarketWithFeeRate(marketID, outcome, execPrice, execQty, feeRate); sellErr != nil {
 					tui.LogEvent("[%s] ⚠️ Copytrade local sell sync failed for %s: %v", marketID, outcome, sellErr)
 				}
 			}

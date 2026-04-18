@@ -268,7 +268,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	cost := reportedBuyCost(exec, buyPrice, buyQty, shares)
 	if realbotShouldMirrorExecutionIntoEngine(trader) {
-		if _, err := engine.BuyForMarket(id, targetOutcome, buyPrice, buyQty); err != nil {
+		if _, err := engine.BuyForMarketWithFeeRate(id, targetOutcome, buyPrice, buyQty, rate); err != nil {
 			status.Ready = false
 			status.Status = "blocked"
 			status.Reason = err.Error()
