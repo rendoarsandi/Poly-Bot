@@ -43,7 +43,7 @@ func realbotBeginRound(ctx context.Context, trader *trading.RealTrader, engine *
 }
 
 func realbotRoundSnapshotPnL(trader *trading.RealTrader, engine *paper.Engine, snapshot realbotRoundSnapshot, endingBookEquity, excludedDelta float64) float64 {
-	return engine.GetStats().RealizedPnL - snapshot.startRealized
+	return realbotNeutralRoundPnL(snapshot.startingEquity, endingBookEquity, excludedDelta)
 }
 
 func realbotWaitForRound(ctx, roundCtx context.Context, roundCancel context.CancelFunc, wg *sync.WaitGroup, tui *paper.TUI) bool {

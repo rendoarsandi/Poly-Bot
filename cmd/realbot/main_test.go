@@ -1217,7 +1217,7 @@ func TestRealbotNeutralRoundPnLExcludesWalletTruthReconciliationDelta(t *testing
 	}
 }
 
-func TestRealbotRoundSnapshotPnLUsesFundingNeutralRealizedDeltaForLiveBackend(t *testing.T) {
+func TestRealbotRoundSnapshotPnLUsesNeutralizedBookDeltaForLiveBackend(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.AddRealizedPnL(0.29)
 
@@ -1227,12 +1227,12 @@ func TestRealbotRoundSnapshotPnLUsesFundingNeutralRealizedDeltaForLiveBackend(t 
 	}
 
 	got := realbotRoundSnapshotPnL(&trading.RealTrader{}, engine, snapshot, 33.66, 0.02)
-	if math.Abs(got-0.29) > 0.000001 {
-		t.Fatalf("expected live round snapshot pnl to follow realized delta 0.29, got %.4f", got)
+	if math.Abs(got-0.26) > 0.000001 {
+		t.Fatalf("expected live round snapshot pnl to follow neutralized book delta 0.26, got %.4f", got)
 	}
 }
 
-func TestRealbotRoundSnapshotPnLUsesRealizedDeltaForPaperMode(t *testing.T) {
+func TestRealbotRoundSnapshotPnLUsesNeutralizedBookDeltaForPaperMode(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.AddRealizedPnL(4.50)
 	snapshot := realbotRoundSnapshot{
@@ -1241,8 +1241,8 @@ func TestRealbotRoundSnapshotPnLUsesRealizedDeltaForPaperMode(t *testing.T) {
 	}
 
 	got := realbotRoundSnapshotPnL(nil, engine, snapshot, 74.13, 9.46)
-	if math.Abs(got-3.27) > 0.000001 {
-		t.Fatalf("expected paper-mode snapshot pnl to track realized delta (4.50 - 1.23 = 3.27), got %.4f", got)
+	if math.Abs(got) > 0.000001 {
+		t.Fatalf("expected paper-mode snapshot pnl to follow neutralized book delta 0.00, got %.4f", got)
 	}
 }
 
