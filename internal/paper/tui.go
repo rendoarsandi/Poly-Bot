@@ -5682,9 +5682,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				mid = "UNKNOWN"
 			}
 			byMarket[mid] = append(byMarket[mid], pos)
-			inflightLegCount++
 		}
-		showInFlightPositions = inflightLegCount > 0
 	}
 
 	// ── In-flight positions ──
