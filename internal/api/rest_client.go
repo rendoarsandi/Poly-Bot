@@ -466,7 +466,7 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 
 	type timeframeTask struct {
 		index int
-		slug  string
+		slugs []string
 	}
 	type timeframeResult struct {
 		index  int
@@ -479,7 +479,7 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 		for _, windowStart := range windowsToCheck {
 			tasks = append(tasks, timeframeTask{
 				index: len(tasks),
-				slug:  fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart),
+				slugs: gammaTimeframeWindowSlugCandidates(asset, timeframe, time.Unix(windowStart, 0).UTC()),
 			})
 		}
 	}
@@ -491,7 +491,14 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			market, err := c.getGammaTimeframeMarket(ctx, task.slug)
+			var market *Market
+			var err error
+			for _, slug := range task.slugs {
+				market, err = c.getGammaTimeframeMarket(ctx, slug)
+				if market != nil || err == nil {
+					break
+				}
+			}
 			results <- timeframeResult{index: task.index, market: market, err: err}
 		}()
 	}
@@ -521,6 +528,21 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 	}
 
 	return markets, nil
+}
+
+func gammaTimeframeWindowSlugCandidates(asset, timeframe string, windowStart time.Time) []string {
+	timeframe = strings.ToLower(strings.TrimSpace(timeframe))
+	asset = strings.ToLower(strings.TrimSpace(asset))
+
+	legacy := fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart.Unix())
+	if timeframe != "1h" {
+		return []string{legacy}
+	}
+
+	return []string{
+		core.PolymarketHourlyEventSlug(asset, windowStart),
+		legacy,
+	}
 }
 
 func parseGammaEventEndTime(endDate string) time.Time {

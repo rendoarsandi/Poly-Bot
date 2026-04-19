@@ -195,8 +195,8 @@ func TestGetMarketsByTimeframeSupportsOneHourWindows(t *testing.T) {
 		t.Fatalf("expected 7 one-hour slug lookups, got %d", len(requested))
 	}
 	for _, slug := range requested {
-		if !strings.Contains(slug, "-1h-") {
-			t.Fatalf("expected one-hour slug lookup, got %q", slug)
+		if !strings.HasPrefix(slug, "bitcoin-up-or-down-") || !strings.HasSuffix(slug, "-et") {
+			t.Fatalf("expected human-readable one-hour slug lookup, got %q", slug)
 		}
 	}
 }

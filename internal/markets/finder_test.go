@@ -80,17 +80,18 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 
 func TestFindMarketsSupportsOneHourMarkets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("slug"); !strings.HasPrefix(got, "btc-updown-1h-") {
+		if got := r.URL.Query().Get("slug"); !strings.HasPrefix(got, "bitcoin-up-or-down-") {
 			_ = json.NewEncoder(w).Encode([]api.GammaEvent{})
 			return
 		}
 
 		endDate := time.Now().Add(45 * time.Minute).Format(time.RFC3339)
 		event := api.GammaEvent{
-			Slug:    "btc-updown-1h",
+			Slug:    "bitcoin-up-or-down-april-19-2026-2am-et",
 			EndDate: endDate,
 			Markets: []api.GammaMarket{{
 				ConditionID:  "0x1h",
+				Slug:         "bitcoin-up-or-down-april-19-2026-2am-et",
 				ClobTokenIds: `["111","222"]`,
 				Outcomes:     `["Yes","No"]`,
 				Active:       true,

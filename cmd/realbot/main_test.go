@@ -1109,6 +1109,25 @@ func TestRealbotLateRedeemBlocksLadderEntryUntilNextWindow(t *testing.T) {
 	}
 }
 
+func TestRealbotMarketWindowHelpersSupportHumanReadableHourlySlug(t *testing.T) {
+	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
+
+	if got := realbotMarketWindowDuration(marketID); got != time.Hour {
+		t.Fatalf("expected hourly window duration, got %v", got)
+	}
+	start, ok := realbotMarketWindowStart(marketID)
+	if !ok {
+		t.Fatal("expected to parse hourly human-readable market window start")
+	}
+	wantStart := time.Date(2026, time.April, 19, 6, 0, 0, 0, time.UTC)
+	if !start.Equal(wantStart) {
+		t.Fatalf("expected hourly window start %s, got %s", wantStart, start)
+	}
+	if got := realbotMarketSeriesKey(marketID); got != "bitcoin-up-or-down-1h" {
+		t.Fatalf("expected hourly series key, got %q", got)
+	}
+}
+
 func TestRealbotLateRedeemAllowsImmediateLadderReentryWhenConfigured(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	now := time.Now()

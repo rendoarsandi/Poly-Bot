@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 )
 
@@ -48,13 +49,36 @@ func finderGetMarketsByTimeframe(ctx context.Context, restClient *api.RestClient
 }
 
 func finderMarketTimeframeSuffix(slug string) string {
+	return core.PolymarketTimeframeFromSlug(slug)
+}
+
+func finderAssetSlugAliases(asset string) []string {
+	asset = strings.ToLower(strings.TrimSpace(asset))
+	switch asset {
+	case "btc", "bitcoin":
+		return []string{"btc", "bitcoin"}
+	case "eth", "ethereum":
+		return []string{"eth", "ethereum"}
+	case "sol", "solana":
+		return []string{"sol", "solana"}
+	case "xrp":
+		return []string{"xrp"}
+	default:
+		if asset == "" {
+			return nil
+		}
+		return []string{asset}
+	}
+}
+
+func finderSlugMatchesAsset(slug, asset string) bool {
 	slug = strings.ToLower(strings.TrimSpace(slug))
-	for _, timeframe := range []string{"5m", "15m", "1h", "1d"} {
-		if strings.Contains(slug, "-"+timeframe+"-") || strings.HasSuffix(slug, "-"+timeframe) {
-			return timeframe
+	for _, alias := range finderAssetSlugAliases(asset) {
+		if alias != "" && strings.Contains(slug, alias) {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 // FindMarkets polls the REST API until at least one active market matching the
@@ -201,7 +225,7 @@ func FindMarkets(
 				}
 
 				// Otherwise, use the standard timeframe pattern matching
-				if !isExactMatch && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
+				if !isExactMatch && finderSlugMatchesAsset(slug, asset) && isTargetTimeframe {
 					if tfSuffix == "" {
 						tfSuffix = timeframe
 					}

@@ -41,34 +41,7 @@ func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISetting
 }
 
 func realbotMarketWindowDuration(marketID string) time.Duration {
-	marketID = strings.TrimSpace(marketID)
-	if marketID == "" {
-		return 0
-	}
-	parts := strings.Split(marketID, "-")
-	for _, part := range parts {
-		if len(part) < 2 {
-			continue
-		}
-		unit := part[len(part)-1]
-		value := part[:len(part)-1]
-		switch unit {
-		case 'm', 'h', 'd':
-			n := 0
-			if _, err := fmt.Sscanf(value, "%d", &n); err != nil || n <= 0 {
-				continue
-			}
-			switch unit {
-			case 'm':
-				return time.Duration(n) * time.Minute
-			case 'h':
-				return time.Duration(n) * time.Hour
-			case 'd':
-				return time.Duration(n) * 24 * time.Hour
-			}
-		}
-	}
-	return 0
+	return core.PolymarketWindowDurationFromSlug(marketID)
 }
 
 func realbotMarketWindowStart(marketID string) (time.Time, bool) {
@@ -84,15 +57,7 @@ func realbotMarketWindowStart(marketID string) (time.Time, bool) {
 }
 
 func realbotMarketSeriesKey(marketID string) string {
-	marketID = strings.TrimSpace(marketID)
-	if marketID == "" {
-		return ""
-	}
-	idx := strings.LastIndex(marketID, "-")
-	if idx <= 0 {
-		return marketID
-	}
-	return marketID[:idx]
+	return core.PolymarketSeriesKeyFromSlug(marketID)
 }
 
 func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
