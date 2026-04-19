@@ -59,9 +59,7 @@ func normalizeStartupWizardSettings(s TUISettings, mode string) TUISettings {
 	if strings.TrimSpace(s.Exchange) == "" {
 		s.Exchange = "polymarket"
 	}
-	if strings.TrimSpace(s.Timeframe) == "" {
-		s.Timeframe = "15m"
-	}
+	s.Timeframe = normalizeMarketTimeframe(s.Timeframe)
 	if strings.TrimSpace(s.PaperArbMode) == "" {
 		s.PaperArbMode = "taker"
 	}
@@ -307,7 +305,7 @@ func (m *startupWizardModel) adjustCurrent(delta int) {
 			m.settings.MaxMarkets = 20
 		}
 	case "timeframe":
-		m.settings.Timeframe = cycleString([]string{"15m", "5m"}, m.settings.Timeframe, delta)
+		m.settings.Timeframe = cycleMarketTimeframe(m.settings.Timeframe, delta)
 	case "profile":
 		profile := cycleString(startupStrategyProfiles(m.settings, m.options.Mode), startupStrategyProfile(m.settings), delta)
 		setStartupStrategyProfile(&m.settings, profile)

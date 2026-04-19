@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,6 +149,55 @@ func TestGetMarketsByTimeframeFetchesSlugsConcurrently(t *testing.T) {
 	}
 	if atomic.LoadInt32(&maxInFlight) < 2 {
 		t.Fatalf("expected concurrent slug fetches, max in flight was %d", maxInFlight)
+	}
+}
+
+func TestGetMarketsByTimeframeSupportsOneHourWindows(t *testing.T) {
+	var requested []string
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slug := r.URL.Query().Get("slug")
+		mu.Lock()
+		requested = append(requested, slug)
+		mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{
+			"slug":"` + slug + `",
+			"endDate":"2026-03-08T12:34:56Z",
+			"markets":[{
+				"conditionId":"` + slug + `",
+				"slug":"` + slug + `",
+				"clobTokenIds":"[\"yes-token\",\"no-token\"]",
+				"outcomes":"[\"Yes\",\"No\"]",
+				"active":true,
+				"closed":false
+			}]
+		}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.GammaURL = server.URL
+
+	markets, err := client.GetMarketsByTimeframe(context.Background(), []string{"btc"}, "1h")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(markets) != 7 {
+		t.Fatalf("expected 7 markets from 1 asset across 7 one-hour windows, got %d", len(markets))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requested) != 7 {
+		t.Fatalf("expected 7 one-hour slug lookups, got %d", len(requested))
+	}
+	for _, slug := range requested {
+		if !strings.Contains(slug, "-1h-") {
+			t.Fatalf("expected one-hour slug lookup, got %q", slug)
+		}
 	}
 }
 

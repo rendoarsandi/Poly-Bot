@@ -77,3 +77,50 @@ func TestFindMarkets_CaseSensitivity(t *testing.T) {
 		t.Errorf("Expected market 'BTC-15m' to be found, got %v", markets)
 	}
 }
+
+func TestFindMarketsSupportsOneHourMarkets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("slug"); !strings.HasPrefix(got, "btc-updown-1h-") {
+			_ = json.NewEncoder(w).Encode([]api.GammaEvent{})
+			return
+		}
+
+		endDate := time.Now().Add(45 * time.Minute).Format(time.RFC3339)
+		event := api.GammaEvent{
+			Slug:    "btc-updown-1h",
+			EndDate: endDate,
+			Markets: []api.GammaMarket{{
+				ConditionID:  "0x1h",
+				ClobTokenIds: `["111","222"]`,
+				Outcomes:     `["Yes","No"]`,
+				Active:       true,
+				Closed:       false,
+			}},
+		}
+		_ = json.NewEncoder(w).Encode([]api.GammaEvent{event})
+	}))
+	defer server.Close()
+
+	restClient := api.NewRestClient("")
+	restClient.BaseURL = server.URL
+	restClient.GammaURL = server.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	getConfig := func() paper.TUISettings {
+		return paper.TUISettings{
+			MarketSlug: "BTC",
+			Timeframe:  "1h",
+			MaxMarkets: 4,
+		}
+	}
+
+	markets := FindMarkets(ctx, restClient, getConfig, nil)
+	if len(markets) == 0 {
+		t.Fatalf("expected one-hour market to be discovered")
+	}
+	if _, ok := markets["BTC-1h"]; !ok {
+		t.Fatalf("expected market 'BTC-1h' to be found, got %v", markets)
+	}
+}

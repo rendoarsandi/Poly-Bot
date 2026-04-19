@@ -332,3 +332,31 @@ func TestRealbotRecoverStartupCarryPositionsRestoresClosedCarryFromWalletScan(t 
 		t.Fatalf("expected recovered startup avg price 0.95, got %.6f", pos.AvgPrice)
 	}
 }
+
+func TestRealbotStartupCarryScanMarketsIncludesOneHourBuckets(t *testing.T) {
+	source := &stubRealbotStartupCarryRecoverySource{
+		marketsByTimeframe: map[string][]api.Market{
+			"1h": {
+				{
+					ConditionID: "cond-1h",
+					Slug:        "btc-updown-1h-1776400200",
+					Tokens: []api.Token{
+						{TokenID: "up-token", Outcome: "Up"},
+						{TokenID: "down-token", Outcome: "Down"},
+					},
+				},
+			},
+		},
+	}
+
+	markets, err := realbotStartupCarryScanMarkets(context.Background(), source)
+	if err != nil {
+		t.Fatalf("expected one-hour startup scan to succeed, got %v", err)
+	}
+	if len(markets) != 1 {
+		t.Fatalf("expected 1 one-hour startup market, got %+v", markets)
+	}
+	if markets[0].ConditionID != "cond-1h" || markets[0].Slug != "btc-updown-1h-1776400200" {
+		t.Fatalf("unexpected one-hour startup market: %+v", markets[0])
+	}
+}

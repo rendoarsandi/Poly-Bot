@@ -35,7 +35,7 @@ Plain English: create split inventory first, dump both sides later when the mark
 ## Current behavior
 
 - market discovery is automatic
-- default timeframe is `15m`
+- default timeframe is `15m` with `5m` and `1h` also supported
 - WebSocket is the primary feed
 - REST is used for fallback and extra depth checks
 - UI is terminal-based and updates live
@@ -117,7 +117,7 @@ These runtime settings are stored in the bot-specific JSON files rather than `.e
 
 ### Market selection
 - `marketSlug`
-- `timeframe`
+- `timeframe` (`5m`, `15m`, or `1h`)
 - `maxMarkets`
 
 ### Buy strategy

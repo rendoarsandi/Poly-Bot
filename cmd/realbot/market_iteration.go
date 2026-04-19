@@ -118,6 +118,9 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 	}) {
 		return true
 	}
+	if realbotHandleLadderedOneHourCloseWindow(args.ctx, args.marketID, args.market, args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFeeRates, args.preQuoteLiveCfg, args.timeToExpiry, args.trader, args.engine, args.tui) {
+		return true
+	}
 
 	if args.killSwitchActive {
 		return realbotPauseMarketLoop(args.marketID, "risk pause active", args.trader, args.engine, args.tui, args.makerQuotes, args.tui.GetSettings())

@@ -428,14 +428,18 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 	if len(assets) == 0 {
 		assets = []string{"btc", "eth"}
 	}
+	timeframe = strings.ToLower(strings.TrimSpace(timeframe))
 	if timeframe == "" {
 		timeframe = "15m"
 	}
 
 	var interval int64 = 900 // 15 minutes by default
-	if timeframe == "5m" {
+	switch timeframe {
+	case "5m":
 		interval = 300 // 5 minutes
-	} else if timeframe == "1d" {
+	case "1h":
+		interval = 3600 // 1 hour
+	case "1d":
 		interval = 86400 // 1 day
 	}
 

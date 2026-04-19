@@ -774,6 +774,34 @@ func TestRenderPositionsUsesNeutralHeaderInCopytradeMode(t *testing.T) {
 	}
 }
 
+func TestRenderPositionsShowsWaitingToSellForPendingInventoryExit(t *testing.T) {
+	engine := NewEngine(1000.0)
+	if _, err := engine.BuyForMarket("btc-updown-1h-1700000000", "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	model := tuiModel{
+		snap: tuiSnapshot{
+			markets: map[string]*MarketData{
+				"btc-updown-1h-1700000000": {
+					Slug:            "btc-updown-1h-1700000000",
+					EndTime:         time.Now().Add(-time.Minute),
+					InventoryStatus: "WAITING TO SELL",
+				},
+			},
+			positions: engine.GetPositionsWithPnL(),
+		},
+	}
+
+	rendered := model.renderPositions(120, engine.GetPositionsWithPnL())
+	if !strings.Contains(rendered, "WAITING TO SELL") {
+		t.Fatalf("expected positions panel to show waiting-to-sell status, got %q", rendered)
+	}
+	if strings.Contains(rendered, "WAITING RESOLUTION") {
+		t.Fatalf("expected waiting-to-sell status to replace waiting resolution, got %q", rendered)
+	}
+}
+
 func TestRenderPositionsUsesFullMarketResolutionForUnevenTwoSidedCarry(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), nil)
 	tui.InitSettings(TUISettings{
@@ -3350,6 +3378,18 @@ func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
 	}
 	if got.MaxMarkets != 2 {
 		t.Fatalf("expected two-market selection to clamp MaxMarkets to 2, got %d", got.MaxMarkets)
+	}
+}
+
+func TestNormalizeTUISettingsNormalizesTimeframe(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{Timeframe: "1h"})
+	if got.Timeframe != "1h" {
+		t.Fatalf("expected 1h timeframe to be preserved, got %q", got.Timeframe)
+	}
+
+	got = normalizeTUISettings(TUISettings{Timeframe: "invalid"})
+	if got.Timeframe != "15m" {
+		t.Fatalf("expected invalid timeframe to fall back to 15m, got %q", got.Timeframe)
 	}
 }
 

@@ -58,7 +58,7 @@ type Config struct {
 
 	// Market settings
 	MarketSlug string
-	Timeframe  string // 5m or 15m
+	Timeframe  string // 5m, 15m, or 1h
 	MaxMarkets int    // Maximum concurrent markets to trade
 
 	// Shared execution backend used by TUI-driven bots.

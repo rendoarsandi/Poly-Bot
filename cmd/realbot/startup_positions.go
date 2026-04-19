@@ -22,7 +22,7 @@ const (
 )
 
 var realbotStartupCarryScanAssets = []string{"btc", "eth", "sol", "xrp"}
-var realbotStartupCarryScanTimeframes = []string{"5m", "15m"}
+var realbotStartupCarryScanTimeframes = []string{"5m", "15m", "1h"}
 
 type realbotStartupMarketInfoReader interface {
 	GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error)

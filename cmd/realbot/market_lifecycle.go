@@ -73,7 +73,21 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 				*state.preserveWalletTruth = true
 			}
 			args.refreshWalletTruth(5 * time.Second)
-			args.tui.LogEvent("[%s] ⏳ Laddered inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", args.marketID)
+			if realbotShouldUseLadderedOneHourClose(args.marketID, liveCfg) {
+				if _, ok := realbotPendingLadderClose(args.marketID); !ok {
+					submitCtx, submitCancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+					realbotSubmitLadderedOneHourCloseOrder(submitCtx, args.marketID, args.market, args.outcomes, nil, nil, args.tokenFeeRates, args.trader, args.engine, args.tui)
+					submitCancel()
+				}
+				if reason, ok := realbotPendingLadderCloseReason(args.marketID); ok {
+					args.tui.SetMarketInventoryStatus(args.marketID, "WAITING TO SELL")
+					args.tui.LogEvent("[%s] ⏳ Laddered 1h inventory preserved at close; %s before redemption fallback", args.marketID, reason)
+				} else {
+					args.tui.LogEvent("[%s] ⏳ Laddered inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", args.marketID)
+				}
+			} else {
+				args.tui.LogEvent("[%s] ⏳ Laddered inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", args.marketID)
+			}
 			realbotLaunchRedemptionCheck(args.marketID, args.market.ConditionID, args.outcomes, args.endTime, args.trader, args.engine, args.tui, args.resolutionCache)
 		}
 		return true

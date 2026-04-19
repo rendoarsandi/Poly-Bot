@@ -1,5 +1,5 @@
 // Package markets provides shared helpers for discovering and interacting
-// with Polymarket 15-minute binary markets. It is imported by all cmd binaries
+// with Polymarket crypto binary markets across supported expiry buckets. It is imported by all cmd binaries
 // so that common logic (market search, outcome extraction, level conversion)
 // is maintained in one place without duplicating across paperbot / realbot / utilbot.
 package markets
@@ -47,8 +47,19 @@ func finderGetMarketsByTimeframe(ctx context.Context, restClient *api.RestClient
 	return restClient.GetMarketsByTimeframe(lookupCtx, assets, timeframe)
 }
 
-// FindMarkets polls the REST API until at least one active BTC or ETH 15-minute
-// market is found, then returns a map keyed by asset (e.g. "BTC", "ETH").
+func finderMarketTimeframeSuffix(slug string) string {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	for _, timeframe := range []string{"5m", "15m", "1h", "1d"} {
+		if strings.Contains(slug, "-"+timeframe+"-") || strings.HasSuffix(slug, "-"+timeframe) {
+			return timeframe
+		}
+	}
+	return ""
+}
+
+// FindMarkets polls the REST API until at least one active market matching the
+// configured assets and timeframe is found, then returns a map keyed by asset
+// and expiry bucket (for example "BTC-15m" or "BTC-1h").
 //
 // logFn is optional; pass nil to suppress log output (utilbot style).
 // Markets that are already expired or expire in < 30 seconds are skipped.
@@ -163,9 +174,10 @@ func FindMarkets(
 			}
 
 			slug := strings.ToLower(m.Slug)
-			// Ensure matching for both 5m and 15m timeframes to provide maximum coverage
-			// For Kalshi, we bypass this check since timeframe isn't directly in the slug like this
-			isTargetTimeframe := strings.Contains(slug, "-15m-") || strings.Contains(slug, "-5m-") || restClient.Exchange == "kalshi"
+			// Ensure the market belongs to a supported timeframe bucket.
+			// For Kalshi, we bypass this check since timeframe isn't directly in the slug this way.
+			tfSuffix := finderMarketTimeframeSuffix(slug)
+			isTargetTimeframe := tfSuffix != "" || restClient.Exchange == "kalshi"
 
 			// If it's an exact market, bypass the strict name checks
 			isExactMatch := false
@@ -190,9 +202,8 @@ func FindMarkets(
 
 				// Otherwise, use the standard timeframe pattern matching
 				if !isExactMatch && strings.Contains(slug, strings.ToLower(asset)) && isTargetTimeframe {
-					tfSuffix := "15m"
-					if strings.Contains(slug, "-5m-") {
-						tfSuffix = "5m"
+					if tfSuffix == "" {
+						tfSuffix = timeframe
 					}
 					key := strings.ToUpper(asset) + "-" + tfSuffix
 					if _, exists := found[key]; !exists {
@@ -228,7 +239,7 @@ func FindMarkets(
 	}
 
 	if logFn != nil {
-		logFn("⚠️ No 15m markets found after polling")
+		logFn("⚠️ No markets found after polling")
 	}
 	return found
 }

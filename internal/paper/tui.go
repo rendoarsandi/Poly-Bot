@@ -441,6 +441,7 @@ type MarketData struct {
 	Slug            string
 	Outcomes        []string
 	EndTime         time.Time
+	InventoryStatus string
 	Bids            map[string]float64
 	Asks            map[string]float64
 	ClearedBids     map[string]bool
@@ -524,7 +525,7 @@ type TUISettings struct {
 	MarketSlug                         string  // Current selected market slug or ALL or BTC,ETH
 	MaxMarkets                         int     // Max concurrent markets to trade
 	PaperBalance                       float64 // Paper-only bankroll / session reset amount
-	Timeframe                          string  // "5m" or "15m"
+	Timeframe                          string  // "5m", "15m", or "1h"
 	TradeSizingMode                    string  // "percent" or "usdc"
 	TradeScaleFactor                   float64 // e.g. 0.05 = 5% of equity per trade
 	TradeSizeUSDC                      float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
@@ -939,8 +940,24 @@ func normalizeMarketSelection(slug string) string {
 	return strings.Join(normalized, ",")
 }
 
+func normalizeMarketTimeframe(timeframe string) string {
+	switch strings.ToLower(strings.TrimSpace(timeframe)) {
+	case "5m":
+		return "5m"
+	case "1h":
+		return "1h"
+	default:
+		return "15m"
+	}
+}
+
+func cycleMarketTimeframe(current string, delta int) string {
+	return cycleString([]string{"15m", "5m", "1h"}, normalizeMarketTimeframe(current), delta)
+}
+
 func normalizeTUISettings(s TUISettings) TUISettings {
 	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
+	s.Timeframe = normalizeMarketTimeframe(s.Timeframe)
 	if strings.EqualFold(strings.TrimSpace(s.ExecutionBackend), core.ExecutionBackendLive) {
 		s.ExecutionBackend = core.ExecutionBackendLive
 	} else {
@@ -2128,6 +2145,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Slug:            v.Slug,
 					Outcomes:        append([]string(nil), v.Outcomes...),
 					EndTime:         v.EndTime,
+					InventoryStatus: v.InventoryStatus,
 					Bids:            make(map[string]float64),
 					Asks:            make(map[string]float64),
 					ClearedBids:     make(map[string]bool),
@@ -2400,11 +2418,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowTimeframe:
-					if m.tui.settings.Timeframe == "15m" {
-						m.tui.settings.Timeframe = "5m"
-					} else {
-						m.tui.settings.Timeframe = "15m"
-					}
+					m.tui.settings.Timeframe = cycleMarketTimeframe(m.tui.settings.Timeframe, -1)
 					changed = true
 				case settingsRowTradeSizingMode:
 					if isCopytradeSettingsMode(m.tui.settings) {
@@ -2687,11 +2701,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.PaperBalance += 10.0
 					changed = true
 				case settingsRowTimeframe:
-					if m.tui.settings.Timeframe == "15m" {
-						m.tui.settings.Timeframe = "5m"
-					} else {
-						m.tui.settings.Timeframe = "15m"
-					}
+					m.tui.settings.Timeframe = cycleMarketTimeframe(m.tui.settings.Timeframe, 1)
 					changed = true
 				case settingsRowTradeSizingMode:
 					if isCopytradeSettingsMode(m.tui.settings) {
@@ -3244,6 +3254,25 @@ func (t *TUI) SetMarketBinanceSignal(marketID string, signal MarketBinanceSignal
 		market.BinanceSignal = signal
 		t.markDisplayDirtyLocked(time.Now())
 	}
+}
+
+func (t *TUI) SetMarketInventoryStatus(marketID, status string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	market, ok := t.markets[marketID]
+	if !ok || market == nil {
+		return
+	}
+	status = strings.TrimSpace(status)
+	if market.InventoryStatus == status {
+		return
+	}
+	market.InventoryStatus = status
+	t.markDisplayDirtyLocked(time.Now())
+}
+
+func (t *TUI) ClearMarketInventoryStatus(marketID string) {
+	t.SetMarketInventoryStatus(marketID, "")
 }
 
 func (t *TUI) ClearMarkets() {
@@ -5717,6 +5746,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 		aStyle := getAssetStyle(marketID)
 		marketStatus := styleYellow.Render(" [TRADING]")
+		hasResolvedStatus := false
 		isResolving := false
 
 		if mkt, ok := s.markets[marketID]; ok && mkt != nil {
@@ -5738,8 +5768,17 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		for _, wt := range walletTruthPositions {
 			if wt.MarketID == marketID && wt.ResolutionStatus != "" && wt.ResolutionStatus != "unresolved" {
 				marketStatus = styleDimmed.Render(" [" + strings.ToUpper(wt.ResolutionStatus) + "]")
+				hasResolvedStatus = true
 				isResolving = false
 				break
+			}
+		}
+		if !hasResolvedStatus {
+			if market, ok := s.markets[marketID]; ok && market != nil {
+				if status := strings.TrimSpace(market.InventoryStatus); status != "" {
+					marketStatus = styleYellow.Render(" [" + strings.ToUpper(status) + "]")
+					isResolving = false
+				}
 			}
 		}
 
@@ -6553,7 +6592,8 @@ func (m tuiModel) renderFooter(w int, scrollOffset, maxOffset int) string {
 	if maxOffset > 0 {
 		scrollText = fmt.Sprintf("Scroll %d/%d", scrollOffset, maxOffset)
 	}
-	leftText := "  Polyarb-15m  ·  " + modeText + "  ·  " + scrollText
+	timeframe := normalizeMarketTimeframe(m.snap.settings.Timeframe)
+	leftText := "  Polyarb-" + timeframe + "  ·  " + modeText + "  ·  " + scrollText
 	pauseLabel := " LIVE "
 	pauseStyle := lipgloss.NewStyle().Foreground(clrEmerald).Bold(true)
 	pauseAction := "pause"

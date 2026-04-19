@@ -375,7 +375,7 @@ func (w *PolymarketMinedWatcher) runSession(ctx context.Context) error {
 		if err := json.Unmarshal(paramsRaw, &commonParams); err != nil {
 			return nil
 		}
-		
+
 		if _, hasTopics := commonParams.Result["topics"]; hasTopics {
 			var logParams struct {
 				Result polymarketTransferLog `json:"result"`
@@ -404,7 +404,6 @@ func polygonLogTopicAddress(address string) string {
 	}
 	return "0x000000000000000000000000" + strings.TrimPrefix(address, "0x")
 }
-
 
 func decodeTransferSingleLog(data string) ([]string, []float64, error) {
 	words, err := splitPendingHexWords(data)
@@ -735,7 +734,7 @@ func (w *PolymarketMinedWatcher) handleBlock(parentCtx context.Context, block *F
 			cancel()
 			if err != nil {
 				if w.logf != nil {
-					w.logf("⚠️ Skip master trade: could not resolve token %s (5m/15m markets might not be indexed yet)", key.tokenID)
+					w.logf("⚠️ Skip master trade: could not resolve token %s (5m/15m/1h markets might not be indexed yet)", key.tokenID)
 				}
 				continue
 			}
@@ -808,9 +807,9 @@ func (w *PolymarketMinedWatcher) resolveToken(ctx context.Context, tokenID strin
 	w.lastDiscoveryFallback = time.Now()
 	w.mu.Unlock()
 
-	// FALLBACK: Proactively discover 5m/15m markets for BTC/ETH/SOL/XRP
+	// FALLBACK: Proactively discover 5m/15m/1h markets for BTC/ETH/SOL/XRP
 	// Polymarket high-frequency markets (BTC 5m) often aren't indexed by token ID in time.
-	for _, timeframe := range []string{"5m", "15m"} {
+	for _, timeframe := range []string{"5m", "15m", "1h"} {
 		markets, err := w.rest.GetMarketsByTimeframe(ctx, []string{"btc", "eth", "sol", "xrp"}, timeframe)
 		if err == nil {
 			for _, mkt := range markets {

@@ -140,6 +140,9 @@ func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, sp
 	}
 	sort.Strings(marketIDs)
 	marketID := marketIDs[0]
+	if reason, ok := realbotPendingLadderCloseReason(marketID); ok {
+		return reason, true
+	}
 	return fmt.Sprintf("waiting for prior inventory on %s (%s shares)", marketID, formatShareQty(sharesByMarket[marketID])), true
 }
 
