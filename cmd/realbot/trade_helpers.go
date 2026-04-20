@@ -60,7 +60,7 @@ func realbotMarketSeriesKey(marketID string) string {
 	return core.PolymarketSeriesKeyFromSlug(marketID)
 }
 
-func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
+func realbotNewEntryBlockReason(ladderCloseState *realbotLadderCloseState, currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
 	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil {
 		return "", false
 	}
@@ -105,14 +105,16 @@ func realbotNewEntryBlockReason(currentMarketID string, engine *paper.Engine, sp
 	}
 	sort.Strings(marketIDs)
 	marketID := marketIDs[0]
-	if reason, ok := realbotPendingLadderCloseReason(marketID); ok {
-		return reason, true
+	if ladderCloseState != nil {
+		if reason, ok := ladderCloseState.reason(marketID); ok {
+			return reason, true
+		}
 	}
 	return fmt.Sprintf("waiting for prior inventory on %s (%s shares)", marketID, formatShareQty(sharesByMarket[marketID])), true
 }
 
-func realbotEntryBlockReason(currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
-	if reason, blocked := realbotNewEntryBlockReason(currentMarketID, engine, splitInventory, liveCfg); blocked {
+func realbotEntryBlockReason(ladderCloseState *realbotLadderCloseState, currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
+	if reason, blocked := realbotNewEntryBlockReason(ladderCloseState, currentMarketID, engine, splitInventory, liveCfg); blocked {
 		return reason, true
 	}
 	return realbotLateRedeemBlocksLadderEntry(currentMarketID, engine, liveCfg)

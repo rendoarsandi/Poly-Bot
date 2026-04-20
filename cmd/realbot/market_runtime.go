@@ -14,6 +14,7 @@ import (
 )
 
 type realbotMarketRuntime struct {
+	ladderCloseState       *realbotLadderCloseState
 	embeddedPaperMode      bool
 	binanceFeed            *api.BinanceFuturesPriceFeed
 	splitInventory         *paper.SplitInventory
@@ -89,6 +90,7 @@ func realbotInitMarketRuntime(ctx context.Context, marketID, conditionID string,
 	refreshWalletTruth(5 * time.Second)
 
 	return &realbotMarketRuntime{
+		ladderCloseState:       newRealbotLadderCloseState(),
 		embeddedPaperMode:      trader != nil && trader.IsEmbeddedPaperMode(),
 		binanceFeed:            realbotInitMarketBinanceFeed(ctx, marketID, cfg, tui.GetSettings().PaperArbMode),
 		splitInventory:         splitInventory,

@@ -666,6 +666,7 @@ func TestRealbotHandleClosedMarketIgnoresActiveMarket(t *testing.T) {
 	preserveWalletTruth := false
 
 	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
+		ladderCloseState: newRealbotLadderCloseState(),
 		marketID: "BTC",
 		market:   &api.Market{ConditionID: "cond-1"},
 		endTime:  time.Now().Add(30 * time.Second),
@@ -718,6 +719,7 @@ func TestRealbotHandleClosedMarketDropsDustInsteadOfWaitingForResolution(t *test
 
 	preserveWalletTruth := false
 	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
+		ladderCloseState: newRealbotLadderCloseState(),
 		marketID: "BTC",
 		market:   &api.Market{ConditionID: "cond-1"},
 		endTime:  time.Now().Add(-time.Minute),
@@ -1016,13 +1018,13 @@ func TestRealbotNewEntryBlockReasonBlocksForPriorRoundInventory(t *testing.T) {
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
 	if !blocked || !strings.Contains(reason, "BTC-older") {
 		t.Fatalf("expected prior-round inventory block, got blocked=%v reason=%q", blocked, reason)
 	}
-	if reason, blocked = realbotNewEntryBlockReason("BTC-older", engine, nil, paper.TUISettings{
+	if reason, blocked = realbotNewEntryBlockReason(nil,"BTC-older", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	}); blocked || reason != "" {
 		t.Fatalf("expected no block on current market, got blocked=%v reason=%q", blocked, reason)
@@ -1033,7 +1035,7 @@ func TestRealbotNewEntryBlockReasonBlocksForPendingRedemptionPayout(t *testing.T
 	engine := paper.NewEngine(100.0)
 	engine.SetPendingRedemption("BTC-older", 12.0)
 
-	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
 	if !blocked || !strings.Contains(reason, "BTC-older") {
@@ -1050,7 +1052,7 @@ func TestRealbotNewEntryBlockReasonBlocksForGroupedInventory(t *testing.T) {
 		t.Fatalf("seed up buy failed: %v", err)
 	}
 
-	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
 	if !blocked || !strings.Contains(reason, "BTC-older") {
@@ -1065,7 +1067,7 @@ func TestRealbotNewEntryBlockReasonDisabledSettingAllowsEntries(t *testing.T) {
 	}
 	engine.SetPendingRedemption("BTC-older", 12.0)
 
-	reason, blocked := realbotNewEntryBlockReason("BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: false,
 	})
 	if blocked || reason != "" {
@@ -1100,7 +1102,7 @@ func TestRealbotLateRedeemBlocksLadderEntryUntilNextWindow(t *testing.T) {
 		t.Fatal("expected settlement timestamp to occur after current market start in this test")
 	}
 
-	reason, blocked := realbotEntryBlockReason(currentMarketID, engine, nil, paper.TUISettings{
+	reason, blocked := realbotEntryBlockReason(nil,currentMarketID, engine, nil, paper.TUISettings{
 		PaperArbMode:                       "laddered-taker",
 		BlockNewEntriesOnPendingRedemption: true,
 	})
@@ -1136,7 +1138,7 @@ func TestRealbotLateRedeemAllowsImmediateLadderReentryWhenConfigured(t *testing.
 	engine.SetPendingRedemption(previousMarketID, 5.0)
 	_ = engine.SettlePendingRedemption(previousMarketID)
 
-	reason, blocked := realbotEntryBlockReason(currentMarketID, engine, nil, paper.TUISettings{
+	reason, blocked := realbotEntryBlockReason(nil,currentMarketID, engine, nil, paper.TUISettings{
 		PaperArbMode:                       "laddered-taker",
 		BlockNewEntriesOnPendingRedemption: true,
 		RedeemEntryTiming:                  core.RedeemEntryTimingImmediate,
@@ -1154,7 +1156,7 @@ func TestRealbotLateRedeemDoesNotBlockNonLadderModes(t *testing.T) {
 	engine.SetPendingRedemption(previousMarketID, 5.0)
 	_ = engine.SettlePendingRedemption(previousMarketID)
 
-	reason, blocked := realbotEntryBlockReason(currentMarketID, engine, nil, paper.TUISettings{
+	reason, blocked := realbotEntryBlockReason(nil,currentMarketID, engine, nil, paper.TUISettings{
 		PaperArbMode:                       "taker",
 		BlockNewEntriesOnPendingRedemption: true,
 	})

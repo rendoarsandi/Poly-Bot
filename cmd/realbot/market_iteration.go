@@ -13,6 +13,7 @@ import (
 
 type realbotPostQuoteIterationArgs struct {
 	ctx                 context.Context
+	ladderCloseState    *realbotLadderCloseState
 	marketID            string
 	market              *api.Market
 	endTime             time.Time
@@ -81,7 +82,7 @@ type realbotPostQuoteIterationState struct {
 }
 
 func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *realbotPostQuoteIterationState) bool {
-	blockNewEntriesReason, blockNewEntries := realbotEntryBlockReason(args.marketID, args.engine, args.splitInventory, args.preQuoteLiveCfg)
+	blockNewEntriesReason, blockNewEntries := realbotEntryBlockReason(args.ladderCloseState, args.marketID, args.engine, args.splitInventory, args.preQuoteLiveCfg)
 	realbotHandleEntryBlockNotice(args.marketID, blockNewEntries, blockNewEntriesReason, args.tui, state.lastEntryBlockReason)
 
 	if realbotHandleTakerCloseWindow(realbotTakerCloseStrategyArgs{
@@ -118,7 +119,7 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 	}) {
 		return true
 	}
-	if realbotHandleLadderedOneHourCloseWindow(args.ctx, args.marketID, args.market, args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFeeRates, args.preQuoteLiveCfg, args.timeToExpiry, args.trader, args.engine, args.tui) {
+	if realbotHandleLadderedOneHourCloseWindow(args.ctx, args.ladderCloseState, args.marketID, args.market, args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFeeRates, args.preQuoteLiveCfg, args.timeToExpiry, args.trader, args.engine, args.tui) {
 		return true
 	}
 

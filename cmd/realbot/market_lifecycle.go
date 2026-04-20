@@ -11,6 +11,7 @@ import (
 )
 
 type realbotMarketClosureArgs struct {
+	ladderCloseState   *realbotLadderCloseState
 	marketID           string
 	market             *api.Market
 	endTime            time.Time
@@ -74,12 +75,12 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 			}
 			args.refreshWalletTruth(5 * time.Second)
 			if realbotShouldUseLadderedOneHourClose(args.marketID, liveCfg) {
-				if _, ok := realbotPendingLadderClose(args.marketID); !ok {
+				if _, ok := args.ladderCloseState.get(args.marketID); !ok {
 					submitCtx, submitCancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
-					realbotSubmitLadderedOneHourCloseOrder(submitCtx, args.marketID, args.market, args.outcomes, nil, nil, args.tokenFeeRates, args.trader, args.engine, args.tui)
+					realbotSubmitLadderedOneHourCloseOrder(submitCtx, context.Background(), args.ladderCloseState, args.marketID, args.market, args.outcomes, nil, nil, args.tokenFeeRates, args.trader, args.engine, args.tui)
 					submitCancel()
 				}
-				if reason, ok := realbotPendingLadderCloseReason(args.marketID); ok {
+				if reason, ok := args.ladderCloseState.reason(args.marketID); ok {
 					args.tui.SetMarketInventoryStatus(args.marketID, "WAITING TO SELL")
 					args.tui.LogEvent("[%s] ⏳ Laddered 1h inventory preserved at close; %s before redemption fallback", args.marketID, reason)
 				} else {

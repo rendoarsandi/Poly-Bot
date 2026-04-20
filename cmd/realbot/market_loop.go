@@ -161,6 +161,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		}
 
 		if realbotHandleClosedMarket(realbotMarketClosureArgs{
+			ladderCloseState:   runtimeState.ladderCloseState,
 			marketID:           id,
 			market:             market,
 			endTime:            endTime,
@@ -267,6 +268,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 
 		if realbotHandlePostQuoteIteration(realbotPostQuoteIterationArgs{
 			ctx:                 ctx,
+			ladderCloseState:    runtimeState.ladderCloseState,
 			marketID:            id,
 			market:              market,
 			endTime:             endTime,

@@ -64,14 +64,15 @@ func TestRealbotNewEntryBlockReasonUsesWaitingToSellForPendingLadderClose(t *tes
 	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
 	}
-	realbotSetPendingLadderClose(marketID, realbotPendingLadderCloseOrder{
+	ladderState := newRealbotLadderCloseState()
+	ladderState.set(marketID, realbotPendingLadderCloseOrder{
 		Outcome: "Up",
 		OrderID: "order-1",
 		Price:   realbotLadderedOneHourClosePrice,
 	})
-	defer realbotClearPendingLadderClose(marketID)
+	defer ladderState.clear(marketID)
 
-	reason, blocked := realbotNewEntryBlockReason("eth-updown-1h-1700003600", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(ladderState, "eth-updown-1h-1700003600", engine, nil, paper.TUISettings{
 		PaperArbMode:                       paperArbModeLaddered,
 		BlockNewEntriesOnPendingRedemption: true,
 	})
