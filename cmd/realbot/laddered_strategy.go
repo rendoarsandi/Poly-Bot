@@ -155,7 +155,7 @@ func realbotInitialPairSnapshot(ctx context.Context, trader *trading.RealTrader,
 	live0 := trader.GetLivePositionSize(token0)
 	live1 := trader.GetLivePositionSize(token1)
 
-	snapshotCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	snapshotCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 
 	return realbotResolveInitialPairSnapshot(snapshotCtx, ladderedMode, live0, live1, func(loadCtx context.Context) (float64, float64, string, error) {

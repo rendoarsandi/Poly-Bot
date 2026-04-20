@@ -17,7 +17,7 @@ const (
 	realbotLadderedOneHourClosePrice        = 0.999
 	realbotLadderedOneHourCloseTriggerPrice = 0.985
 	realbotLadderedOneHourCloseMonitorTTL   = 5 * time.Hour
-	realbotLadderedOneHourClosePollInterval = 500 * time.Millisecond
+	realbotLadderedOneHourClosePollInterval = 100 * time.Millisecond
 )
 
 type realbotPendingLadderCloseOrder struct {
@@ -300,7 +300,7 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, marketID strin
 		}
 		return true
 	}
-	submitCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	submitCtx, cancel := context.WithTimeout(ctx, 1000*time.Millisecond)
 	defer cancel()
 	return realbotSubmitLadderedOneHourCloseOrder(submitCtx, marketID, market, outcomes, bids, asks, tokenFeeRates, trader, engine, tui)
 }
