@@ -240,6 +240,7 @@ func run() error {
 	var splitMu sync.Mutex
 	var splitTxMu sync.Mutex
 	entryGate := newRealbotEntryGate()
+	ladderCloseState := newRealbotLadderCloseState()
 	currentBalance := balance
 	var copytradeWatchers *realbotCopytradeWatcherSet
 	defer func() {
@@ -293,7 +294,7 @@ func run() error {
 			copytradePoller = realbotPrepareCopytradeRound(ctx, cfg, polygonClient, restClient, tui, discovery, &copytradeWatchers)
 		}
 
-		wg := realbotLaunchRoundMarkets(ctx, roundCtx, markets, realTrader, engine, orderBook, tui, restClient, cfg, currentBalance, copytradePoller, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, resolutionCache)
+		wg := realbotLaunchRoundMarkets(ctx, roundCtx, markets, realTrader, engine, orderBook, tui, restClient, cfg, currentBalance, copytradePoller, globalSplitStatus, globalSplitInventories, globalInitialSplits, &splitMu, &splitTxMu, entryGate, ladderCloseState, resolutionCache)
 		realbotStartRoundRestartMonitor(roundCtx, roundCancel, tui)
 
 		if !realbotWaitForRound(ctx, roundCtx, roundCancel, wg, tui) {

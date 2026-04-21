@@ -48,7 +48,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	trader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook,
 	riskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, startingBalance float64,
 	copytradePoller *realbotCopytradePoller,
-	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, resolutionCache *api.ResolutionCache) {
+	globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, ladderCloseState *realbotLadderCloseState, resolutionCache *api.ResolutionCache) {
 
 	session, err := realbotInitMarketSession(ctx, id, market, trader, restClient, cfg, tui)
 	if err != nil {
@@ -63,7 +63,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	wsMgr := session.wsMgr
 	wsMsgChan := session.wsMsgChan
 	tokenFeeRates := session.tokenFeeRates
-	runtimeState := realbotInitMarketRuntime(ctx, id, market.ConditionID, tokenToOutcome, trader, engine, tui, cfg, globalSplitInventories, splitMu)
+	runtimeState := realbotInitMarketRuntime(ctx, id, market.ConditionID, tokenToOutcome, trader, engine, tui, cfg, globalSplitInventories, splitMu, ladderCloseState)
 
 	tokenBids := make(map[string]float64)
 	tokenAsks := make(map[string]float64)

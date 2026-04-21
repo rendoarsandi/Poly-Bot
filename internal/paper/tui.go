@@ -784,6 +784,15 @@ func isStructuralSetting(idx int) bool {
 	}
 }
 
+func settingsRequireRestart(prev, next TUISettings) bool {
+	return !strings.EqualFold(strings.TrimSpace(prev.MarketSlug), strings.TrimSpace(next.MarketSlug)) ||
+		prev.MaxMarkets != next.MaxMarkets ||
+		!strings.EqualFold(normalizeMarketTimeframe(prev.Timeframe), normalizeMarketTimeframe(next.Timeframe)) ||
+		!strings.EqualFold(strings.TrimSpace(prev.PaperArbMode), strings.TrimSpace(next.PaperArbMode)) ||
+		!strings.EqualFold(strings.TrimSpace(prev.Exchange), strings.TrimSpace(next.Exchange)) ||
+		!strings.EqualFold(strings.TrimSpace(prev.ExecutionBackend), strings.TrimSpace(next.ExecutionBackend))
+}
+
 func settingsRowEditable(cfg TUISettings, mode string, idx int) bool {
 	return isRowVisible(cfg, mode, idx)
 }
@@ -2300,9 +2309,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = applySettingsEditValue(&m.tui.settings, m.settingsCursor, m.settingsInput)
 					if changed {
 						m.tui.settings = normalizeTUISettingsForContext(m.tui.settings, m.tui.mode)
-						if isStructuralSetting(m.settingsCursor) {
-							m.tui.restartReq = true
-						}
 						if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
 							if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
 								m.tui.settings.PaperBalance = prevPaperBalance
@@ -2349,6 +2355,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "s", "S", "r", "R":
 				m.showSettings = false
 				m.refreshScrollMetrics()
+				m.tui.mu.Lock()
+				if settingsRequireRestart(m.settingsBackup, m.tui.settings) {
+					m.tui.restartReq = true
+				}
+				m.tui.mu.Unlock()
 				return m, nil
 			case "enter":
 				if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) {
@@ -2666,9 +2677,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if changed {
 					m.tui.settings = normalizeTUISettingsForContext(m.tui.settings, m.tui.mode)
-					if isStructuralSetting(m.settingsCursor) {
-						m.tui.restartReq = true
-					}
 					if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
 						if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
 							m.tui.settings.PaperBalance = prevPaperBalance
@@ -2931,9 +2939,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if changed {
 					m.tui.settings = normalizeTUISettingsForContext(m.tui.settings, m.tui.mode)
-					if isStructuralSetting(m.settingsCursor) {
-						m.tui.restartReq = true
-					}
 					if math.Abs(m.tui.settings.PaperBalance-prevPaperBalance) >= 0.005 {
 						if err := m.tui.applyPaperBalanceLocked(m.tui.settings.PaperBalance); err != nil {
 							m.tui.settings.PaperBalance = prevPaperBalance
@@ -2960,7 +2965,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preset := SettingsConservative
 				preset.PaperBalance = m.tui.settings.PaperBalance
 				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
-				m.tui.restartReq = true
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				notifySettingsChange := m.tui.settingsChangeHookLocked()
 				m.tui.mu.Unlock()
@@ -2973,7 +2977,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preset := SettingsModerate
 				preset.PaperBalance = m.tui.settings.PaperBalance
 				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
-				m.tui.restartReq = true
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				notifySettingsChange := m.tui.settingsChangeHookLocked()
 				m.tui.mu.Unlock()
@@ -2986,7 +2989,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preset := SettingsAggressive
 				preset.PaperBalance = m.tui.settings.PaperBalance
 				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
-				m.tui.restartReq = true
 				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
 				notifySettingsChange := m.tui.settingsChangeHookLocked()
 				m.tui.mu.Unlock()

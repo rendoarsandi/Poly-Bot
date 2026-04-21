@@ -80,6 +80,7 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 					realbotSubmitLadderedOneHourCloseOrder(submitCtx, context.Background(), args.ladderCloseState, args.marketID, args.market, args.outcomes, nil, nil, args.tokenFeeRates, args.trader, args.engine, args.tui)
 					submitCancel()
 				}
+				realbotStartLadderedOneHourCloseMonitor(context.Background(), args.ladderCloseState, args.marketID, args.trader, args.engine, args.tui)
 				if reason, ok := args.ladderCloseState.reason(args.marketID); ok {
 					args.tui.SetMarketInventoryStatus(args.marketID, "WAITING TO SELL")
 					args.tui.LogEvent("[%s] ⏳ Laddered 1h inventory preserved at close; %s before redemption fallback", args.marketID, reason)

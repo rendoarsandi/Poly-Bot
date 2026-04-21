@@ -21,10 +21,14 @@ const (
 )
 
 type realbotPendingLadderCloseOrder struct {
-	Outcome     string
-	OrderID     string
-	Price       float64
-	SubmittedAt time.Time
+	Outcome       string
+	OrderID       string
+	Price         float64
+	SubmittedAt   time.Time
+	RequestedQty  float64
+	MirroredQty   float64
+	FeeRate       int
+	MonitorActive bool
 }
 
 type realbotLadderedOneHourCloseSelection struct {
@@ -70,6 +74,53 @@ func (s *realbotLadderCloseState) clear(marketID string) {
 	s.mu.Lock()
 	delete(s.orders, marketID)
 	s.mu.Unlock()
+}
+
+func (s *realbotLadderCloseState) setMirroredQty(marketID string, mirroredQty float64) bool {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.orders[marketID]
+	if !ok {
+		return false
+	}
+	order.MirroredQty = mirroredQty
+	s.orders[marketID] = order
+	return true
+}
+
+func (s *realbotLadderCloseState) startMonitor(marketID string) (realbotPendingLadderCloseOrder, bool) {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return realbotPendingLadderCloseOrder{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.orders[marketID]
+	if !ok || order.MonitorActive || strings.TrimSpace(order.OrderID) == "" || order.RequestedQty <= 0 {
+		return realbotPendingLadderCloseOrder{}, false
+	}
+	order.MonitorActive = true
+	s.orders[marketID] = order
+	return order, true
+}
+
+func (s *realbotLadderCloseState) stopMonitor(marketID string) {
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.orders[marketID]
+	if !ok {
+		return
+	}
+	order.MonitorActive = false
+	s.orders[marketID] = order
 }
 
 func (s *realbotLadderCloseState) reason(marketID string) (string, bool) {
@@ -197,13 +248,21 @@ func realbotApplyLadderedOneHourCloseFill(engine *paper.Engine, tui *paper.TUI, 
 	return qty
 }
 
-func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *realbotLadderCloseState, marketID, outcome, orderID string, requestedQty, mirroredQty float64, feeRate int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
-	if trader == nil || engine == nil || strings.TrimSpace(orderID) == "" || requestedQty <= 0 {
+func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *realbotLadderCloseState, marketID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
+	if trader == nil || engine == nil || ladderState == nil {
+		return
+	}
+	pending, ok := ladderState.startMonitor(marketID)
+	if !ok {
 		return
 	}
 
-	go func() {
-		deadline := time.Now().Add(realbotLadderedOneHourCloseMonitorTTL)
+	go func(initial realbotPendingLadderCloseOrder) {
+		defer ladderState.stopMonitor(marketID)
+		deadline := initial.SubmittedAt.Add(realbotLadderedOneHourCloseMonitorTTL)
+		if initial.SubmittedAt.IsZero() {
+			deadline = time.Now().Add(realbotLadderedOneHourCloseMonitorTTL)
+		}
 		ticker := time.NewTicker(realbotLadderedOneHourClosePollInterval)
 		defer ticker.Stop()
 
@@ -212,7 +271,11 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if mirroredQty >= requestedQty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+				current, ok := ladderState.get(marketID)
+				if !ok {
+					return
+				}
+				if current.MirroredQty >= current.RequestedQty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 					ladderState.clear(marketID)
 					if tui != nil {
 						tui.ClearMarketInventoryStatus(marketID)
@@ -223,14 +286,17 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 					return
 				}
 
-				confirmedQty := trader.GetConfirmedFillSize(orderID)
-				if confirmedQty > mirroredQty+0.0001 {
-					delta := confirmedQty - mirroredQty
-					mirroredQty += realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, outcome, delta, realbotLadderedOneHourClosePrice, feeRate)
+				confirmedQty := trader.GetConfirmedFillSize(current.OrderID)
+				if confirmedQty > current.MirroredQty+0.0001 {
+					delta := confirmedQty - current.MirroredQty
+					applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, current.Outcome, delta, realbotLadderedOneHourClosePrice, current.FeeRate)
+					if applied > 0 {
+						ladderState.setMirroredQty(marketID, current.MirroredQty+applied)
+					}
 				}
 			}
 		}
-	}()
+	}(pending)
 }
 
 func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Context, ladderState *realbotLadderCloseState, marketID string, market *api.Market, outcomes []string, bids, asks map[string]float64, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) bool {
@@ -279,10 +345,12 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 	}
 
 	ladderState.set(marketID, realbotPendingLadderCloseOrder{
-		Outcome:     candidate.Outcome,
-		OrderID:     orderID,
-		Price:       realbotLadderedOneHourClosePrice,
-		SubmittedAt: time.Now(),
+		Outcome:      candidate.Outcome,
+		OrderID:      orderID,
+		Price:        realbotLadderedOneHourClosePrice,
+		SubmittedAt:  time.Now(),
+		RequestedQty: candidate.Qty,
+		FeeRate:      feeRate,
 	})
 	tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
 	tui.LogEvent("[%s] 🪜 1h ladder close working: GTC sell %s %s at $%.3f (signal $%.3f)", marketID, formatShareQty(candidate.Qty), candidate.Outcome, realbotLadderedOneHourClosePrice, candidate.ObservedPrice)
@@ -295,13 +363,14 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 		}
 		mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate)
 	}
+	ladderState.setMirroredQty(marketID, mirroredQty)
 	if mirroredQty >= candidate.Qty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 		ladderState.clear(marketID)
 		tui.ClearMarketInventoryStatus(marketID)
 		return true
 	}
 	if orderID != "" {
-		realbotStartLadderedOneHourCloseMonitor(monitorCtx, ladderState, marketID, candidate.Outcome, orderID, candidate.Qty, mirroredQty, feeRate, trader, engine, tui)
+		realbotStartLadderedOneHourCloseMonitor(monitorCtx, ladderState, marketID, trader, engine, tui)
 	}
 	return true
 }
@@ -315,14 +384,20 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		return false
 	}
 	if _, ok := ladderState.get(marketID); ok {
+		if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+			ladderState.clear(marketID)
+			if tui != nil {
+				tui.ClearMarketInventoryStatus(marketID)
+			}
+			return true
+		}
 		if tui != nil {
 			tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
 		}
+		realbotStartLadderedOneHourCloseMonitor(ctx, ladderState, marketID, trader, engine, tui)
 		return true
 	}
 	submitCtx, cancel := context.WithTimeout(ctx, 1000*time.Millisecond)
 	defer cancel()
 	return realbotSubmitLadderedOneHourCloseOrder(submitCtx, ctx, ladderState, marketID, market, outcomes, bids, asks, tokenFeeRates, trader, engine, tui)
 }
-
-

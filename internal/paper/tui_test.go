@@ -1819,8 +1819,9 @@ func TestSettingsCloseKeyDoesNotRequestRestart(t *testing.T) {
 	tui.InitSettings(TUISettings{PaperArbMode: "taker"}, nil)
 
 	model := tuiModel{
-		tui:          tui,
-		showSettings: true,
+		tui:            tui,
+		showSettings:   true,
+		settingsBackup: tui.GetSettings(),
 	}
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
@@ -1831,6 +1832,67 @@ func TestSettingsCloseKeyDoesNotRequestRestart(t *testing.T) {
 	}
 	if tui.GetAndClearRestart() {
 		t.Fatalf("expected s to close settings without requesting a restart")
+	}
+}
+
+func TestStructuralSettingsRestartIsDeferredUntilOverlayClose(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{PaperArbMode: "taker", MaxMarkets: 2}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowMaxMarkets,
+		settingsBackup: tui.GetSettings(),
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	updated := next.(tuiModel)
+
+	if got := tui.GetSettings().MaxMarkets; got != 3 {
+		t.Fatalf("expected max markets to increase to 3, got %d", got)
+	}
+	if tui.GetAndClearRestart() {
+		t.Fatal("expected structural edit to defer restart until settings close")
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated = next.(tuiModel)
+	if updated.showSettings {
+		t.Fatal("expected s to close the settings overlay")
+	}
+	if !tui.GetAndClearRestart() {
+		t.Fatal("expected committed structural change to request restart on close")
+	}
+}
+
+func TestStructuralSettingsEscCancelsPendingRestart(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{PaperArbMode: "taker", MaxMarkets: 2}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowMaxMarkets,
+		settingsBackup: tui.GetSettings(),
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	updated := next.(tuiModel)
+	if tui.GetAndClearRestart() {
+		t.Fatal("expected structural edit to stay pending while settings remain open")
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated = next.(tuiModel)
+	if updated.showSettings {
+		t.Fatal("expected esc to close the settings overlay")
+	}
+	if got := tui.GetSettings().MaxMarkets; got != 2 {
+		t.Fatalf("expected esc to restore max markets to backup value 2, got %d", got)
+	}
+	if tui.GetAndClearRestart() {
+		t.Fatal("expected esc to avoid requesting restart after reverting structural edits")
 	}
 }
 

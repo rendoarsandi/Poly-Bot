@@ -143,7 +143,7 @@ func realbotResolveMarketEndTime(ctx context.Context, trader *trading.RealTrader
 	return endTime
 }
 
-func realbotStartMarketWorker(globalCtx, roundCtx context.Context, marketID string, market *api.Market, endTime time.Time, realTrader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, marketRiskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, copytradePoller *realbotCopytradePoller, globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, resolutionCache *api.ResolutionCache, wg *sync.WaitGroup) {
+func realbotStartMarketWorker(globalCtx, roundCtx context.Context, marketID string, market *api.Market, endTime time.Time, realTrader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, marketRiskMgr *paper.RiskManager, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, copytradePoller *realbotCopytradePoller, globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, ladderCloseState *realbotLadderCloseState, resolutionCache *api.ResolutionCache, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func(id string, m *api.Market, end time.Time, r *paper.RiskManager, bal float64, poller *realbotCopytradePoller) {
 		defer wg.Done()
@@ -159,11 +159,11 @@ func realbotStartMarketWorker(globalCtx, roundCtx context.Context, marketID stri
 				realbotEmergencyCleanup(realTrader)
 			}
 		}()
-		tradeMarket(globalCtx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, poller, globalSplitStatus, globalSplitInventories, globalInitialSplits, splitMu, splitTxMu, entryGate, resolutionCache)
+		tradeMarket(globalCtx, tCtx, id, m, end, realTrader, engine, orderBook, r, tui, restClient, cfg, bal, poller, globalSplitStatus, globalSplitInventories, globalInitialSplits, splitMu, splitTxMu, entryGate, ladderCloseState, resolutionCache)
 	}(marketID, market, endTime, marketRiskMgr, currentBalance, copytradePoller)
 }
 
-func realbotLaunchRoundMarkets(globalCtx, roundCtx context.Context, markets map[string]*api.Market, realTrader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, copytradePoller *realbotCopytradePoller, globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, resolutionCache *api.ResolutionCache) *sync.WaitGroup {
+func realbotLaunchRoundMarkets(globalCtx, roundCtx context.Context, markets map[string]*api.Market, realTrader *trading.RealTrader, engine *paper.Engine, orderBook *paper.OrderBook, tui *paper.TUI, restClient *api.RestClient, cfg *core.Config, currentBalance float64, copytradePoller *realbotCopytradePoller, globalSplitStatus map[string]bool, globalSplitInventories map[string]*paper.SplitInventory, globalInitialSplits map[string]float64, splitMu *sync.Mutex, splitTxMu *sync.Mutex, entryGate *realbotEntryGate, ladderCloseState *realbotLadderCloseState, resolutionCache *api.ResolutionCache) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for assetID, market := range markets {
 		marketID := mkt.ScopedMarketID(assetID, market)
@@ -173,7 +173,7 @@ func realbotLaunchRoundMarkets(globalCtx, roundCtx context.Context, markets map[
 		tui.LogEvent("🚀 %s → %s", marketID, endTime.Format("15:04"))
 
 		marketRiskMgr := paper.NewRiskManager(realbotMarketRiskConfig(), engine, orderBook, outcomes)
-		realbotStartMarketWorker(globalCtx, roundCtx, marketID, market, endTime, realTrader, engine, orderBook, marketRiskMgr, tui, restClient, cfg, currentBalance, copytradePoller, globalSplitStatus, globalSplitInventories, globalInitialSplits, splitMu, splitTxMu, entryGate, resolutionCache, &wg)
+		realbotStartMarketWorker(globalCtx, roundCtx, marketID, market, endTime, realTrader, engine, orderBook, marketRiskMgr, tui, restClient, cfg, currentBalance, copytradePoller, globalSplitStatus, globalSplitInventories, globalInitialSplits, splitMu, splitTxMu, entryGate, ladderCloseState, resolutionCache, &wg)
 	}
 	return &wg
 }

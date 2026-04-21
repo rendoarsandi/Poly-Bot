@@ -81,16 +81,19 @@ func realbotNewWalletTruthRefresher(ctx context.Context, marketID string, tokenT
 	}
 }
 
-func realbotInitMarketRuntime(ctx context.Context, marketID, conditionID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, cfg *core.Config, globalSplitInventories map[string]*paper.SplitInventory, splitMu *sync.Mutex) *realbotMarketRuntime {
+func realbotInitMarketRuntime(ctx context.Context, marketID, conditionID string, tokenToOutcome map[string]string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, cfg *core.Config, globalSplitInventories map[string]*paper.SplitInventory, splitMu *sync.Mutex, ladderCloseState *realbotLadderCloseState) *realbotMarketRuntime {
 	splitInventory := realbotGetOrCreateSplitInventory(conditionID, globalSplitInventories, splitMu)
 	engine.RegisterSplitInventory(splitInventory)
 	tui.RegisterSplitInventory(splitInventory)
+	if ladderCloseState == nil {
+		ladderCloseState = newRealbotLadderCloseState()
+	}
 
 	refreshWalletTruth := realbotNewWalletTruthRefresher(ctx, marketID, tokenToOutcome, trader, engine, splitInventory, tui)
 	refreshWalletTruth(5 * time.Second)
 
 	return &realbotMarketRuntime{
-		ladderCloseState:       newRealbotLadderCloseState(),
+		ladderCloseState:       ladderCloseState,
 		embeddedPaperMode:      trader != nil && trader.IsEmbeddedPaperMode(),
 		binanceFeed:            realbotInitMarketBinanceFeed(ctx, marketID, cfg, tui.GetSettings().PaperArbMode),
 		splitInventory:         splitInventory,
