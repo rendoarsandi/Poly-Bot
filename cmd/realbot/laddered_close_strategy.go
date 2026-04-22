@@ -317,10 +317,7 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 		return false
 	}
 
-	feeRate := tokenFeeRates[candidate.Outcome]
-	if feeRate <= 0 {
-		feeRate = 1000
-	}
+	feeRate := realbotResolveFeeRateBps(tokenFeeRates, candidate.Outcome, nil)
 	result, err := trader.Sell(submitCtx, tokenID, candidate.Outcome, realbotLadderedOneHourClosePrice, candidate.Qty, api.OrderTypeLimit, api.TIFGoodTilCancelled, feeRate)
 	if err != nil {
 		tui.LogEvent("[%s] ⚠️ 1h ladder close submit failed for %s: %v", marketID, candidate.Outcome, err)

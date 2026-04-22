@@ -86,8 +86,9 @@ func realbotSubscribeMarketBooks(ctx context.Context, marketID string, market *a
 	return wsMgr, wsMgr.StartStreaming(ctx), nil
 }
 
-func realbotLoadMarketFeeRates(ctx context.Context, marketID string, restClient *api.RestClient, tokenMap map[string]string, tui *paper.TUI) map[string]int {
+func realbotLoadMarketFeeRates(ctx context.Context, marketID string, restClient *api.RestClient, tokenMap map[string]string, cfg *core.Config, tui *paper.TUI) map[string]int {
 	tokenFeeRates := make(map[string]int, len(tokenMap))
+	fallbackFeeRate := realbotConfigFeeRateBps(cfg)
 	for tid, outcome := range tokenMap {
 		var rate int
 		var err error
@@ -100,15 +101,12 @@ func realbotLoadMarketFeeRates(ctx context.Context, marketID string, restClient 
 		}
 
 		if err == nil {
+			rate = realbotNormalizeFeeRateBps(rate)
 			tokenFeeRates[outcome] = rate
-			if rate == 0 {
-				tokenFeeRates[outcome] = 1000
-			} else {
-				tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", marketID, outcome, float64(rate)/100.0, rate)
-			}
+			tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", marketID, outcome, float64(rate)/100.0, rate)
 		} else {
-			tokenFeeRates[outcome] = 1000
-			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using default 1000 bps", marketID)
+			tokenFeeRates[outcome] = fallbackFeeRate
+			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using configured fallback %d bps", marketID, fallbackFeeRate)
 		}
 	}
 	return tokenFeeRates
@@ -138,7 +136,7 @@ func realbotInitMarketSession(ctx context.Context, marketID string, market *api.
 		tokenToOutcome: tokenToOutcome,
 		outcomeToToken: outcomeToToken,
 		outcomes:       mkt.GetOutcomes(market),
-		tokenFeeRates:  realbotLoadMarketFeeRates(ctx, marketID, restClient, tokenMap, tui),
+		tokenFeeRates:  realbotLoadMarketFeeRates(ctx, marketID, restClient, tokenMap, cfg, tui),
 		wsMgr:          wsMgr,
 		wsMsgChan:      wsMsgChan,
 	}, nil

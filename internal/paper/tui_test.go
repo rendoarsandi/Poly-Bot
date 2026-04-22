@@ -2458,6 +2458,60 @@ func TestApplyPaperBalanceLockedAllowsOpenInventory(t *testing.T) {
 	}
 }
 
+func TestResetSessionDisplayClearsLiveSessionState(t *testing.T) {
+	tui := NewTUI(NewEngine(100.0), NewOrderBook())
+	tui.LogEvent("keep audit log")
+	tui.RecordOrder("BTC", "Up", "BUY", 1, 0.5, 0.5, 0, 0, "FILLED")
+	tui.RecordRound(100, 101, 1, 1, map[string]Position{
+		"BTC:Up": {MarketID: "BTC", Outcome: "Up", Quantity: 1, TotalCost: 0.5},
+	}, nil)
+	tui.SetWalletCash(42.5)
+	tui.SetWalletTruthPositions("BTC", []WalletTruthPosition{{
+		MarketID:      "BTC",
+		Outcome:       "Up",
+		OnChainShares: 1,
+	}})
+	tui.SetPendingOrders("BTC", map[string][]PendingOrder{
+		"Up": {{Price: 0.51, Qty: 1, Side: "BUY"}},
+	})
+	tui.RegisterSplitInventory(NewSplitInventory())
+	tui.SetKillSwitch("live issue")
+	tui.amendedPnLForNextRound = 1.23
+
+	tui.ResetSessionDisplay()
+
+	if got := len(tui.GetOrderHistory()); got != 0 {
+		t.Fatalf("expected order history cleared, got %d entries", got)
+	}
+	if got := len(tui.GetRoundHistory()); got != 0 {
+		t.Fatalf("expected round history cleared, got %d entries", got)
+	}
+	if got := len(tui.getWalletTruthPositions()); got != 0 {
+		t.Fatalf("expected wallet truth cleared, got %d entries", got)
+	}
+	if got := len(tui.getSplitPositions()); got != 0 {
+		t.Fatalf("expected split positions cleared, got %d entries", got)
+	}
+
+	tui.mu.Lock()
+	defer tui.mu.Unlock()
+	if len(tui.pendingOrders) != 0 {
+		t.Fatalf("expected pending orders cleared, got %+v", tui.pendingOrders)
+	}
+	if tui.hasWalletCash || tui.walletCash != 0 {
+		t.Fatalf("expected wallet cash cleared, has=%v cash=%.2f", tui.hasWalletCash, tui.walletCash)
+	}
+	if tui.isKilled || tui.killReason != "" {
+		t.Fatalf("expected kill state cleared, killed=%v reason=%q", tui.isKilled, tui.killReason)
+	}
+	if tui.amendedPnLForNextRound != 0 {
+		t.Fatalf("expected amended pnl reset, got %.2f", tui.amendedPnLForNextRound)
+	}
+	if len(tui.eventLog) == 0 {
+		t.Fatal("expected audit event log to be preserved")
+	}
+}
+
 func TestRecordRoundCapturesOutcomeShares(t *testing.T) {
 	tui := NewTUI(NewEngine(100.0), NewOrderBook())
 	tui.RecordRound(100.0, 92.5, -7.5, 2, map[string]Position{

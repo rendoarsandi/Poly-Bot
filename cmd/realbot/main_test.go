@@ -54,6 +54,24 @@ func TestRealbotShouldMirrorExecutionIntoEngine(t *testing.T) {
 	}
 }
 
+func TestRealbotResolveFeeRateBpsPreservesZeroRate(t *testing.T) {
+	cfg := &core.Config{FeeRateBps: 312}
+	rates := map[string]int{"Up": 0}
+
+	if got := realbotResolveFeeRateBps(rates, "Up", cfg); got != 0 {
+		t.Fatalf("expected explicit zero fee rate to be preserved, got %d", got)
+	}
+}
+
+func TestRealbotResolveFeeRateBpsFallsBackToConfigWhenMissing(t *testing.T) {
+	cfg := &core.Config{FeeRateBps: 312}
+	rates := map[string]int{"Down": 0}
+
+	if got := realbotResolveFeeRateBps(rates, "Up", cfg); got != 312 {
+		t.Fatalf("expected missing fee rate to fall back to config, got %d", got)
+	}
+}
+
 func TestLadderedTakerAskBoundsPreservesConfiguredRange(t *testing.T) {
 	minAsk, maxAsk := ladderedTakerAskBounds(0.10, 0.90)
 	if minAsk != 0.10 || maxAsk != 0.90 {

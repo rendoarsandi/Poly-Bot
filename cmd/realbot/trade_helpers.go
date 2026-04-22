@@ -60,6 +60,29 @@ func realbotMarketSeriesKey(marketID string) string {
 	return core.PolymarketSeriesKeyFromSlug(marketID)
 }
 
+func realbotNormalizeFeeRateBps(rate int) int {
+	if rate < 0 {
+		return 0
+	}
+	return rate
+}
+
+func realbotConfigFeeRateBps(cfg *core.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	return realbotNormalizeFeeRateBps(cfg.FeeRateBps)
+}
+
+func realbotResolveFeeRateBps(tokenFeeRates map[string]int, outcome string, cfg *core.Config) int {
+	if tokenFeeRates != nil {
+		if rate, ok := tokenFeeRates[outcome]; ok {
+			return realbotNormalizeFeeRateBps(rate)
+		}
+	}
+	return realbotConfigFeeRateBps(cfg)
+}
+
 func realbotNewEntryBlockReason(ladderCloseState *realbotLadderCloseState, currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {
 	if !liveCfg.BlockNewEntriesOnPendingRedemption || engine == nil {
 		return "", false

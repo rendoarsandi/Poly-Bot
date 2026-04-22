@@ -232,10 +232,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 		return
 	}
 	initialPosition := trader.GetLivePositionSize(tokenID)
-	rate := tokenFeeRates[targetOutcome]
-	if rate == 0 {
-		rate = 1000
-	}
+	rate := realbotResolveFeeRateBps(tokenFeeRates, targetOutcome, cfg)
 	exec := executeMarketOrderWithSignals(ctx, trader, api.SideBuy, tokenID, targetOutcome, limitPrice, shares, rate, initialPosition, 2500*time.Millisecond)
 	if !exec.Success {
 		status.Ready = false

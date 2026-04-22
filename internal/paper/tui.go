@@ -3709,6 +3709,29 @@ func (t *TUI) appendEventLocked(msg string) {
 	t.markDirtyLocked()
 }
 
+func (t *TUI) resetSessionDisplayLocked() {
+	t.orderHistory = nil
+	t.roundHistory = nil
+	t.pendingOrders = make(map[string][]PendingOrder)
+	t.splitInventories = nil
+	t.walletTruth = make(map[string][]WalletTruthPosition)
+	t.walletCash = 0
+	t.hasWalletCash = false
+	t.isKilled = false
+	t.killReason = ""
+	t.amendedPnLForNextRound = 0
+	t.lastDedupLogAt = make(map[string]time.Time)
+	t.lastDedupLogMsg = make(map[string]string)
+	t.startTime = time.Now()
+}
+
+func (t *TUI) ResetSessionDisplay() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.resetSessionDisplayLocked()
+	t.markDirtyLocked()
+}
+
 func (t *TUI) applyPaperBalanceLocked(balance float64) error {
 	if t.engine == nil {
 		return nil
@@ -3717,11 +3740,7 @@ func (t *TUI) applyPaperBalanceLocked(balance float64) error {
 		if err := t.engine.ResetPaperSession(balance); err != nil {
 			return err
 		}
-		t.orderHistory = nil
-		t.roundHistory = nil
-		t.splitInventories = nil
-		t.walletTruth = make(map[string][]WalletTruthPosition)
-		t.startTime = time.Now()
+		t.resetSessionDisplayLocked()
 	} else {
 		t.engine.RebaseBalance(balance)
 	}

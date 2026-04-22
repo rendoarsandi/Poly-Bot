@@ -287,6 +287,7 @@ func run() error {
 				polygonClient = backendState.polygonClient
 				currentBalance = backendState.startingBalance
 				resolutionCache = realbotNewResolutionCache(polygonClient, realTrader, restClient)
+				tui.ResetSessionDisplay()
 				backendRuntimeStop = realbotStartSessionBackendRuntime(ctx, cfg, realTrader, engine, tui, restClient, resolutionCache)
 				tui.LogEvent("✅ Execution backend active: %s", desiredBackend)
 				go realbotRefreshWalletCashDisplay(ctx, realTrader, tui, 8*time.Second)

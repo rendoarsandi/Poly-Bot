@@ -312,6 +312,29 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPaperRealTraderZeroFeeKeepsRequestedBuyQuantity(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.43, 0.44)
+
+	const requestedQty = 1.02
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.44, requestedQty, api.OrderTypeLimit, api.TIFGoodTilCancelled, 0)
+	if err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	if math.Abs(buy.AcknowledgedQty-requestedQty) > 1e-9 {
+		t.Fatalf("expected zero-fee acknowledged qty %.4f, got %.4f", requestedQty, buy.AcknowledgedQty)
+	}
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-requestedQty) > 1e-9 {
+		t.Fatalf("expected live paper position %.4f, got %.4f", requestedQty, got)
+	}
+}
+
 func TestEmbeddedPaperRealTraderRejectsNonMarketableLimitAgainstLiveQuote(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	cfg := &core.Config{MaxTradeSize: 10}

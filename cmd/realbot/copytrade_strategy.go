@@ -130,10 +130,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		}
 
 		if tradeSide == "BUY" {
-			feeRate := tokenFeeRates[outcome]
-			if feeRate == 0 {
-				feeRate = 1000
-			}
+			feeRate := realbotResolveFeeRateBps(tokenFeeRates, outcome, nil)
 			ask := 0.0
 			if localAsk, _, ok := realbotCanUseLocalTakerCloseQuote(time.Now(), outcome, tokenBids, tokenAsks, tokenFullAsks, quoteState, realbotTakerCloseLocalMaxAge); ok {
 				ask = localAsk
@@ -231,10 +228,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: no managed local position to sell")
 				continue
 			}
-			feeRate := tokenFeeRates[outcome]
-			if feeRate == 0 {
-				feeRate = 1000
-			}
+			feeRate := realbotResolveFeeRateBps(tokenFeeRates, outcome, nil)
 			bid := 0.0
 			if localBid, _, ok := realbotCanUseLocalCopytradeSellQuote(time.Now(), outcome, tokenBids, tokenAsks, tokenFullBids, quoteState, realbotTakerCloseLocalMaxAge); ok {
 				bid = localBid

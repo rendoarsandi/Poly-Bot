@@ -65,14 +65,8 @@ func realbotExecuteAggressiveEntry(
 		return
 	}
 
-	rate1 := tokenFeeRates[outcomes[0]]
-	if rate1 == 0 {
-		rate1 = 1000
-	}
-	rate2 := tokenFeeRates[outcomes[1]]
-	if rate2 == 0 {
-		rate2 = 1000
-	}
+	rate1 := realbotResolveFeeRateBps(tokenFeeRates, outcomes[0], cfg)
+	rate2 := realbotResolveFeeRateBps(tokenFeeRates, outcomes[1], cfg)
 
 	var requests []directMarketOrderSignalRequest
 	if side1Requested {

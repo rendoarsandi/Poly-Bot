@@ -83,10 +83,7 @@ func settleMarketInventory(
 		if !hasActionableCleanupRemainder(side.qty) {
 			continue
 		}
-		rate := tokenFeeRates[side.outcome]
-		if rate == 0 {
-			rate = 1000
-		}
+		rate := realbotResolveFeeRateBps(tokenFeeRates, side.outcome, nil)
 
 		aggressiveDumpPrice := core.CleanupSellLimitPrice(sellCap)
 		quoteCtx, cancelQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)

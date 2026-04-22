@@ -371,14 +371,8 @@ func realbotHandleSplitStrategy(args realbotSplitStrategyArgs, state *realbotSpl
 	initialBal1 := initialSnapshot1
 	haveInitialSnapshot := true
 
-	rate1 := args.tokenFeeRates[args.outcomes[0]]
-	if rate1 == 0 {
-		rate1 = 1000
-	}
-	rate2 := args.tokenFeeRates[args.outcomes[1]]
-	if rate2 == 0 {
-		rate2 = 1000
-	}
+	rate1 := realbotResolveFeeRateBps(args.tokenFeeRates, args.outcomes[0], nil)
+	rate2 := realbotResolveFeeRateBps(args.tokenFeeRates, args.outcomes[1], nil)
 
 	batchExecs := executeMarketOrderBatchWithSignals(args.ctx, args.trader, []directMarketOrderSignalRequest{
 		{
