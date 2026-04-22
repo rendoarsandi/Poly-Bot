@@ -839,6 +839,8 @@ func TestRealbotHandleClosedMarketDropsDustInsteadOfWaitingForResolution(t *test
 		outcomes:         []string{"Down", "Up"},
 		engine:           engine,
 		tui:              tui,
+		refreshWalletTruth: func(time.Duration) {
+		},
 	}, &realbotMarketClosureState{
 		preserveWalletTruth: &preserveWalletTruth,
 	})
@@ -850,6 +852,51 @@ func TestRealbotHandleClosedMarketDropsDustInsteadOfWaitingForResolution(t *test
 	}
 	if realbotHasEnginePositionsForMarket(engine, "BTC") {
 		t.Fatal("expected dust-only closed-market inventory to be cleared")
+	}
+}
+
+func TestRealbotHandleClosedMarketClearsPendingOneHourLadderClose(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{PaperArbMode: paperArbModeLaddered}, nil)
+	marketID := "bitcoin-up-or-down-april-22-2026-4pm-et"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.57, 2.9); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	ladderState := newRealbotLadderCloseState()
+	ladderState.set(marketID, realbotPendingLadderCloseOrder{
+		Outcome:      "Up",
+		OrderID:      "order-1",
+		Price:        realbotLadderedOneHourClosePrice,
+		SubmittedAt:  time.Now().Add(-time.Minute),
+		RequestedQty: 2.9,
+	})
+	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(-time.Minute))
+	tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
+
+	preserveWalletTruth := false
+	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
+		ladderCloseState: ladderState,
+		marketID:         marketID,
+		market:           &api.Market{ConditionID: "cond-1"},
+		endTime:          time.Now().Add(-time.Minute),
+		outcomes:         []string{"Down", "Up"},
+		engine:           engine,
+		tui:              tui,
+		refreshWalletTruth: func(time.Duration) {
+		},
+	}, &realbotMarketClosureState{
+		preserveWalletTruth: &preserveWalletTruth,
+	})
+	if !handled {
+		t.Fatal("expected closed market handler to take over")
+	}
+	if !preserveWalletTruth {
+		t.Fatal("expected actionable laddered inventory to be preserved for redemption")
+	}
+	if reason, ok := ladderState.reason(marketID); ok {
+		t.Fatalf("expected closed market to clear pending ladder close, got %q", reason)
 	}
 }
 
