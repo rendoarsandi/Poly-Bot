@@ -201,23 +201,12 @@ func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, mo
 			return -1, 0, false
 		}
 	}
-
+	lastAsk0 := entries[len(entries)-1].ask0
+	lastAsk1 := entries[len(entries)-1].ask1
 	threshold := realbotLadderedMoveThreshold(moveCents)
 
-	// Find the high-water mark for each side from all previous entries
-	highestAsk0 := 0.0
-	highestAsk1 := 0.0
-	for _, e := range entries {
-		if e.ask0 > highestAsk0 {
-			highestAsk0 = e.ask0
-		}
-		if e.ask1 > highestAsk1 {
-			highestAsk1 = e.ask1
-		}
-	}
-
-	move0 := ask0 - highestAsk0
-	move1 := ask1 - highestAsk1
+	move0 := ask0 - lastAsk0
+	move1 := ask1 - lastAsk1
 
 	switch {
 	case move0 >= threshold-1e-9 && move0 > move1+1e-9:
