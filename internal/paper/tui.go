@@ -5450,8 +5450,15 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	uptime := time.Since(s.startTime).Round(time.Second)
 	roundWins, roundLosses, roundFlats := roundOutcomeCounts(s.roundHistory)
 	winCount, lossCount, flatCount := 0, 0, 0
+	displayRounds := rounds
 	useRoundSummary := false
 	switch {
+	case len(s.roundHistory) > 0 && (rounds == 0 || len(s.roundHistory) >= rounds):
+		useRoundSummary = true
+		displayRounds = len(s.roundHistory)
+		winCount = roundWins
+		lossCount = roundLosses
+		flatCount = roundFlats
 	case rounds > 0:
 		useRoundSummary = true
 		if len(s.roundHistory) > 0 && len(s.roundHistory) == rounds {
@@ -5507,7 +5514,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	if useRoundSummary {
 		row4 = fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L/F %d/%d/%d  ·  ⏱ %s",
 			multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
-			rounds,
+			displayRounds,
 			winRate,
 			winCount, lossCount, flatCount,
 			styleDimmed.Render(uptime.String()),

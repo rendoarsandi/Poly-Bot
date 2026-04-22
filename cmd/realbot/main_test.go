@@ -1861,6 +1861,48 @@ func TestRealbotResolutionSyncRecognizesUncostedWinningSharesNeutrally(t *testin
 	}
 }
 
+func TestRealbotRedeemCashCorrectionReconcilesRecoveredLiveBalance(t *testing.T) {
+	engine := paper.NewEngine(20.86)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.85, 5.03834); err != nil {
+		t.Fatalf("seed up buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("BTC", "Down", 0.48, 1.95923); err != nil {
+		t.Fatalf("seed down buy failed: %v", err)
+	}
+
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.RecordRound(20.86, 20.86, 0, 7, engine.GetPositions(), nil)
+
+	result := engine.RedeemWithDetails("BTC", "Down")
+	tui.AmendMostRecentRoundForMarket("BTC", result.TotalPnL, []*paper.RedemptionResult{result})
+	if result.TotalPnL >= -3.20 {
+		t.Fatalf("expected local redemption to initially overstate the loss, got %.4f", result.TotalPnL)
+	}
+
+	redeemStartBalance := engine.GetBalance()
+	expectedPayout := engine.GetPendingRedemptions()["BTC"]
+	applied := 0.0
+	correction := realbotApplyRedeemCashCorrection(engine, tui, "BTC", redeemStartBalance, expectedPayout, 20.73, &applied)
+	if correction <= 3.0 {
+		t.Fatalf("expected live cash correction above 3.00, got %.4f", correction)
+	}
+	if duplicate := realbotApplyRedeemCashCorrection(engine, tui, "BTC", redeemStartBalance, expectedPayout, 20.73, &applied); duplicate != 0 {
+		t.Fatalf("expected repeated same-balance correction to be ignored, got %.4f", duplicate)
+	}
+
+	expectedPnL := 20.73 - 20.86
+	if got := engine.GetStats().RealizedPnL; math.Abs(got-expectedPnL) > 0.01 {
+		t.Fatalf("expected realized pnl to reconcile near wallet net %.4f, got %.4f", expectedPnL, got)
+	}
+	history := tui.GetRoundHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected one round history entry, got %d", len(history))
+	}
+	if got := history[0].PnL; math.Abs(got-expectedPnL) > 0.01 {
+		t.Fatalf("expected round pnl to reconcile near wallet net %.4f, got %.4f", expectedPnL, got)
+	}
+}
+
 func TestEmbeddedPaperResolutionSweepSettlesHeldExpiredMarketBySlug(t *testing.T) {
 	marketID := "btc-updown-5m-1700000000"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

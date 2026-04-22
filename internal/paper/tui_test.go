@@ -3184,6 +3184,37 @@ func TestRenderAccountStatusUsesRoundHistorySummaryWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestRenderAccountStatusUsesRoundHistoryWhenEngineRoundCountLags(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+			roundHistory: []RoundHistoryEntry{
+				{Number: 1, Timestamp: time.Unix(1, 0), PnL: 0},
+				{Number: 2, Timestamp: time.Unix(2, 0), PnL: -3.20},
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  20.73,
+		StartingBalance: 20.86,
+		WinningTrades:   9,
+		LosingTrades:    1,
+		RealizedPnL:     -3.20,
+	}, 0, 0, 20.73, 20.73, 1.0, 20.86, 1, 1, 0, nil)
+
+	if !strings.Contains(rendered, "2 rounds") {
+		t.Fatalf("expected account status to show round-history count, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "W/L/F 0/1/1") {
+		t.Fatalf("expected account status to match amended round history outcomes, got %q", rendered)
+	}
+	if strings.Contains(rendered, "W/L/F 1/0/0") {
+		t.Fatalf("expected stale engine round counters to be ignored, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusShowsResolutionEstimateForUnresolvedInventory(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

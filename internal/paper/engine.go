@@ -1312,6 +1312,17 @@ func (e *Engine) AddRealizedPnL(pnl float64) {
 	}
 }
 
+// AdjustRealizedPnL reconciles realized PnL without recording another trade.
+func (e *Engine) AdjustRealizedPnL(pnl float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if math.Abs(pnl) < 0.000001 {
+		return
+	}
+	e.realizedPnL += pnl
+	e.recalculateDrawdown()
+}
+
 // RegisterSplitInventory registers a split inventory for equity calculation
 // Split tokens are worth $1.00 per YES+NO pair (can merge anytime)
 func (e *Engine) RegisterSplitInventory(inv *SplitInventory) {

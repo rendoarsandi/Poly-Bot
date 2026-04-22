@@ -214,12 +214,43 @@ func realbotFinalizePendingRedemption(engine *paper.Engine, marketID string, pay
 	return engine.SettlePendingRedemption(marketID)
 }
 
+func realbotApplyRedeemCashCorrection(engine *paper.Engine, tui *paper.TUI, marketID string, redeemStartBalance, expectedPayout, observedBalance float64, applied *float64) float64 {
+	if engine == nil || strings.TrimSpace(marketID) == "" {
+		return 0
+	}
+	if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		return 0
+	}
+	if expectedPayout < 0 {
+		expectedPayout = 0
+	}
+	correction := observedBalance - (redeemStartBalance + expectedPayout)
+	if applied != nil {
+		correction -= *applied
+	}
+	if correction <= 0.005 {
+		return 0
+	}
+
+	engine.AdjustRealizedPnL(correction)
+	if tui != nil {
+		tui.AmendMostRecentRoundForMarket(marketID, correction, nil)
+		tui.LogEvent("[%s] 🧾 Live cash reconciliation: adjusted realized PnL by +$%.2f after wallet balance settled above expected redeem payout", marketID, correction)
+	}
+	if applied != nil {
+		*applied += correction
+	}
+	return correction
+}
+
 func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	go func() {
 		attempt := 0
 		pendingTxHash := ""
 		lastConfirmedAt := time.Time{}
 		redeemStartBalance := engine.GetBalance()
+		expectedRedeemPayout := engine.GetPendingRedemptions()[marketID]
+		appliedCashCorrection := 0.0
 		highestObservedBalance := redeemStartBalance
 		winnerDepletedAt := time.Time{}
 		for {
@@ -291,6 +322,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 					highestObservedBalance = newBal
 				}
 				engine.SyncBalanceNeutral(newBal)
+				realbotApplyRedeemCashCorrection(engine, tui, marketID, redeemStartBalance, expectedRedeemPayout, highestObservedBalance, &appliedCashCorrection)
 				engine.RecalculateDrawdown()
 				if walletCash, cashErr := trader.ForceRefreshOnChainUSDCBalance(balanceCtx); cashErr == nil {
 					tui.SetWalletCash(walletCash)
