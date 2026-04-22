@@ -181,7 +181,6 @@ func realbotLocalOutcomePosition(engine *paper.Engine, marketID, outcome string)
 
 func realbotLadderedOneHourCloseCandidate(marketID string, outcomes []string, engine *paper.Engine, bids, asks map[string]float64) (realbotLadderedOneHourCloseSelection, bool) {
 	best := realbotLadderedOneHourCloseSelection{}
-	isClosedFallback := bids == nil && asks == nil
 
 	for _, outcome := range outcomes {
 		qty, avgPrice, ok := realbotLocalOutcomePosition(engine, marketID, outcome)
@@ -190,11 +189,7 @@ func realbotLadderedOneHourCloseCandidate(marketID string, outcomes []string, en
 		}
 		price := realbotLadderedObservedOutcomePrice(engine, marketID, outcome, bids, asks)
 		if price <= 0 || price >= 1.0 {
-			if isClosedFallback {
-				price = avgPrice
-			} else {
-				continue
-			}
+			continue
 		}
 		if price > best.ObservedPrice {
 			best = realbotLadderedOneHourCloseSelection{
@@ -208,7 +203,7 @@ func realbotLadderedOneHourCloseCandidate(marketID string, outcomes []string, en
 	if best.Outcome == "" {
 		return realbotLadderedOneHourCloseSelection{}, false
 	}
-	if !isClosedFallback && best.ObservedPrice+1e-9 < realbotLadderedOneHourCloseTriggerPrice {
+	if best.ObservedPrice+1e-9 < realbotLadderedOneHourCloseTriggerPrice {
 		return realbotLadderedOneHourCloseSelection{}, false
 	}
 	return best, true

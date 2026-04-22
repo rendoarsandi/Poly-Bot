@@ -84,7 +84,7 @@ func TestRealbotNewEntryBlockReasonUsesWaitingToSellForPendingLadderClose(t *tes
 	}
 }
 
-func TestRealbotLadderedOneHourCloseCandidateFallsBackToAvgPriceWhenClosed(t *testing.T) {
+func TestRealbotLadderedOneHourCloseCandidateRequiresLiveNearWinningQuote(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("btc-updown-1h-1700000000", "Up", 0.60, 5); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
@@ -97,16 +97,10 @@ func TestRealbotLadderedOneHourCloseCandidateFallsBackToAvgPriceWhenClosed(t *te
 	engine.UpdateMarketBidAsk("btc-updown-1h-1700000000", "Up", 0, 0)
 	engine.UpdateMarketBidAsk("btc-updown-1h-1700000000", "Down", 0, 0)
 
-	// bids and asks being nil indicates the closed market call
-	candidate, ok := realbotLadderedOneHourCloseCandidate("btc-updown-1h-1700000000", []string{"Down", "Up"}, engine, nil, nil)
-	if !ok {
-		t.Fatal("expected one-hour ladder close candidate for closed market")
-	}
-	if candidate.Outcome != "Up" {
-		t.Fatalf("expected Up candidate (higher avg price), got %+v", candidate)
-	}
-	if math.Abs(candidate.ObservedPrice-0.60) > 0.000001 {
-		t.Fatalf("expected observed price to fallback to avg price 0.60, got %.6f", candidate.ObservedPrice)
+	// Missing quotes means we no longer know which side is near-winning. Do not
+	// create a fresh .999 sell from cost basis, because that can target a loser.
+	if candidate, ok := realbotLadderedOneHourCloseCandidate("btc-updown-1h-1700000000", []string{"Down", "Up"}, engine, nil, nil); ok {
+		t.Fatalf("expected no close candidate without a live near-winning quote, got %+v", candidate)
 	}
 }
 
