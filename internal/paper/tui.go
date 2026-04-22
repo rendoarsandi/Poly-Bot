@@ -3191,6 +3191,16 @@ func (t *TUI) Stop() {
 	}
 }
 
+// StopAndWait sends a quit signal and waits for the program to fully terminate
+// before returning, ensuring terminal state is cleanly restored.
+func (t *TUI) StopAndWait() {
+	if t.program != nil {
+		t.program.Quit()
+		t.program.Wait()
+		t.program = nil
+	}
+}
+
 func (t *TUI) SetIssueLogger(logger *core.CSVLogger) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

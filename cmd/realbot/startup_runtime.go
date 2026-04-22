@@ -268,9 +268,20 @@ func run() error {
 			desiredBackend := realbotDesiredExecutionBackend(cfg)
 			tui.LogEvent("🔁 Switching execution backend to %s...", desiredBackend)
 
+			if UseLiveUI {
+				tui.StopAndWait()
+				fmt.Print("\033[H\033[2J")         // Clear screen for backend prints
+				fmt.Printf("🔁 Switching execution backend to %s...\n", desiredBackend)
+			}
+
 			switchCtx, cancelSwitch := context.WithTimeout(ctx, 2*time.Minute)
 			nextBackendState, nextTrader, switchErr := realbotSwitchExecutionBackend(switchCtx, cfg, engine, realTrader, realbotInitBackend)
 			cancelSwitch()
+
+			if UseLiveUI {
+				tui.StartRenderLoop(realbotUIInterval(tui.GetSettings()), stop)
+			}
+
 			if switchErr != nil {
 				tui.SetExecutionBackend(oldBackend)
 				applyRealbotTUISettings(cfg, tui.GetSettings())
