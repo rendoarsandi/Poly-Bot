@@ -2,6 +2,7 @@ package paper
 
 import (
 	"encoding/csv"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -820,6 +821,26 @@ func TestRenderPositionsShowsWaitingToSellForPendingInventoryExit(t *testing.T) 
 	}
 	if strings.Contains(rendered, "WAITING RESOLUTION") {
 		t.Fatalf("expected waiting-to-sell status to replace waiting resolution, got %q", rendered)
+	}
+}
+
+func TestRenderPositionsInfersSlugEndTimeForCurrentCarry(t *testing.T) {
+	start := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
+	marketID := fmt.Sprintf("btc-updown-15m-%d", start.Unix())
+	engine := NewEngine(1000.0)
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	model := tuiModel{
+		snap: tuiSnapshot{
+			positions: engine.GetPositionsWithPnL(),
+		},
+	}
+
+	rendered := model.renderPositions(120, engine.GetPositionsWithPnL())
+	if strings.Contains(rendered, "WAITING RESOLUTION") {
+		t.Fatalf("expected current carry not to be marked waiting resolution, got %q", rendered)
 	}
 }
 

@@ -86,18 +86,21 @@ func realbotStartupCarryMarketSlug(pos trading.PositionInfo) string {
 }
 
 func realbotStartupCarryEndTime(pos trading.PositionInfo, info *api.MarketInfo) time.Time {
+	slugEndTime := time.Time{}
+	if endTime, err := paper.ParseEndTimeFromSlug(strings.TrimSpace(pos.Slug)); err == nil && !endTime.IsZero() {
+		slugEndTime = endTime
+	}
 	if info != nil {
 		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(info.EndDateISO)); err == nil && !parsed.IsZero() {
-			return parsed
+			if parsed.After(time.Now()) || info.Closed || slugEndTime.IsZero() {
+				return parsed
+			}
 		}
 		if info.Closed {
 			return time.Now().Add(-time.Second)
 		}
 	}
-	if endTime, err := paper.ParseEndTimeFromSlug(strings.TrimSpace(pos.Slug)); err == nil && !endTime.IsZero() {
-		return endTime
-	}
-	return time.Time{}
+	return slugEndTime
 }
 
 func realbotStartupCarryOutcomes(pos trading.PositionInfo, info *api.MarketInfo) []string {

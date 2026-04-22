@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
+	"Market-bot/internal/paper"
+	"Market-bot/internal/trading"
 )
 
 func TestLooksLikeConditionID(t *testing.T) {
@@ -94,6 +97,25 @@ func TestCollectMarketsByTimeframesConcurrentlyMergesResults(t *testing.T) {
 	}
 	if atomic.LoadInt32(&maxInflight) < 2 {
 		t.Fatalf("expected concurrent timeframe fetches, max inflight=%d", atomic.LoadInt32(&maxInflight))
+	}
+}
+
+func TestMarketHasWalletBalanceTreatsSubOneShareAsRelevant(t *testing.T) {
+	engine := paper.NewEngine(10)
+	if !engine.SyncExternalPosition("m1", "Up", 0.98, 0.50) {
+		t.Fatal("expected external position sync to seed sub-one-share balance")
+	}
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{}, engine)
+	trader.RegisterPaperToken("token-up", "m1", "Up")
+
+	ok, err := marketHasWalletBalance(context.Background(), trader, api.Market{
+		Tokens: []api.Token{{TokenID: "token-up", Outcome: "Up"}},
+	})
+	if err != nil {
+		t.Fatalf("expected sub-one-share balance lookup to succeed, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected 0.98 shares to count as relevant wallet balance")
 	}
 }
 

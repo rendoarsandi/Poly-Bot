@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -252,6 +253,22 @@ func TestRealbotStartupCarryMarketsBuildsCanonicalMetadata(t *testing.T) {
 	wantEnd := time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC)
 	if !carry.EndTime.Equal(wantEnd) {
 		t.Fatalf("expected startup carry end time %s, got %s", wantEnd, carry.EndTime)
+	}
+}
+
+func TestRealbotStartupCarryEndTimePrefersSlugWhenOpenMarketInfoEndIsStale(t *testing.T) {
+	start := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
+	slug := fmt.Sprintf("btc-updown-15m-%d", start.Unix())
+	pos := trading.PositionInfo{Slug: slug}
+	info := &api.MarketInfo{
+		Closed:     false,
+		EndDateISO: start.Add(-time.Hour).Format(time.RFC3339),
+	}
+
+	got := realbotStartupCarryEndTime(pos, info)
+	want := start.Add(15 * time.Minute)
+	if !got.Equal(want) {
+		t.Fatalf("expected open startup carry to use slug-derived end %s, got %s", want, got)
 	}
 }
 

@@ -130,12 +130,12 @@ func realbotSwitchExecutionBackend(ctx context.Context, cfg *core.Config, engine
 	if realbotTraderMatchesExecutionBackend(cfg, currentTrader) {
 		return nil, currentTrader, nil
 	}
-	if engine != nil && !engine.CanResetPaperSession() {
-		return nil, currentTrader, fmt.Errorf("execution backend switch requires a flat engine")
-	}
 
 	switch realbotDesiredExecutionBackend(cfg) {
 	case core.ExecutionBackendLive:
+		if engine != nil && !engine.CanResetPaperSession() {
+			return nil, currentTrader, fmt.Errorf("execution backend switch to live requires a flat engine")
+		}
 		if setupLive == nil {
 			setupLive = realbotInitBackend
 		}
@@ -155,8 +155,12 @@ func realbotSwitchExecutionBackend(ctx context.Context, cfg *core.Config, engine
 	default:
 		state, trader := realbotBuildEmbeddedPaperBackend(cfg, engine)
 		if engine != nil {
-			if err := engine.ResetPaperSession(state.startingBalance); err != nil {
-				return nil, currentTrader, err
+			if engine.CanResetPaperSession() {
+				if err := engine.ResetPaperSession(state.startingBalance); err != nil {
+					return nil, currentTrader, err
+				}
+			} else {
+				engine.RebaseBalance(state.startingBalance)
 			}
 		}
 		return state, trader, nil

@@ -79,12 +79,11 @@ func ResolveMarkets(ctx context.Context, trader *trading.RealTrader, polygon *ap
 		}
 	}
 
-	// Only perform the expensive on-chain balance scan fallback if we couldn't
-	// find any positions via the API or if the API request completely failed.
-	if len(byCondition) == 0 {
-		if added, _ := collectMarketsFromRecentWalletScan(ctx, trader, rest, byCondition); added > 0 {
-			sources = append(sources, "recent wallet scan")
-		}
+	// The CLOB positions endpoint can omit small open balances. Always overlay
+	// a direct on-chain scan of recent short-duration markets so sub-1-share
+	// leftovers are still visible to manual cleanup tools.
+	if added, _ := collectMarketsFromRecentWalletScan(ctx, trader, rest, byCondition); added > 0 {
+		sources = append(sources, "recent wallet scan")
 	}
 
 	markets := marketsFromConditionMap(byCondition)

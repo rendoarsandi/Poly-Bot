@@ -354,6 +354,23 @@ func walletTruthInventoryStatus(wt WalletTruthPosition) string {
 	}
 }
 
+func marketLooksPastEndFromID(marketID string, now time.Time) bool {
+	if endTime, err := ParseEndTimeFromSlug(strings.TrimSpace(marketID)); err == nil && !endTime.IsZero() {
+		return now.After(endTime)
+	}
+
+	parts := strings.Split(marketID, "-")
+	if len(parts) <= 1 {
+		return false
+	}
+	lastPart := parts[len(parts)-1]
+	ts, err := strconv.ParseInt(lastPart, 10, 64)
+	if err != nil || ts <= 1000000000 {
+		return false
+	}
+	return now.After(time.Unix(ts, 0))
+}
+
 func looksTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
 	if len(outcomes) == 0 {
 		return false
@@ -5879,15 +5896,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 				isResolving = true
 			}
 		} else {
-			parts := strings.Split(marketID, "-")
-			if len(parts) > 1 {
-				lastPart := parts[len(parts)-1]
-				if ts, err := strconv.ParseInt(lastPart, 10, 64); err == nil && ts > 1000000000 {
-					if time.Now().After(time.Unix(ts, 0)) {
-						isResolving = true
-					}
-				}
-			}
+			isResolving = marketLooksPastEndFromID(marketID, time.Now())
 		}
 
 		for _, wt := range walletTruthPositions {
