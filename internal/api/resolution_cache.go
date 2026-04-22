@@ -127,24 +127,9 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 		CheckedAt:   time.Now(),
 	}
 
-	// Step 1: Try on-chain first when available. This is the authoritative
-	// redeemability signal and can lead Polymarket API winner flags near expiry.
-	if rc.polygon != nil {
-		resolved, err := rc.polygon.IsMarketResolved(ctx, conditionID)
-		if err != nil {
-			status.Error = err
-		} else if resolved {
-			status.Resolved = true
-			if winner, winErr := rc.polygon.GetWinningOutcome(ctx, conditionID, outcomes); winErr != nil {
-				status.Error = winErr
-			} else if winner != "" {
-				status.Winner = winner
-				return status
-			}
-		}
-	}
+	var orderedOutcomes []string
 
-	// Step 2: Try CLOB API.
+	// Step 1: Try CLOB API to get ordered outcomes and quick resolution.
 	if rc.clobClient != nil {
 		info, err := rc.clobClient.GetMarketInfo(ctx, conditionID)
 		if err == nil {
@@ -161,12 +146,16 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 				// Closed but no winner tagged yet (might be settling)
 				// Do NOT set Resolved = true here, otherwise it permanently caches without a winner.
 			}
+			orderedOutcomes = make([]string, len(info.Tokens))
+			for i, token := range info.Tokens {
+				orderedOutcomes[i] = token.Outcome
+			}
 			// If market is not closed per API, still check on-chain if past end time
 		}
 	}
 
-	// Step 3: Try REST API fallback for market info
-	if !status.Resolved && rc.restClient != nil {
+	// Step 2: Try REST API fallback for market info
+	if !status.Resolved && len(orderedOutcomes) == 0 && rc.restClient != nil {
 		// Use a REST market info query via the Gamma API
 		info, err := rc.resolveViaREST(ctx, conditionID, outcomes)
 		if err == nil && info != nil {
@@ -181,6 +170,32 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 				}
 				// Closed but no winner tagged yet
 				// Do NOT set Resolved = true here, otherwise it permanently caches without a winner.
+			}
+			orderedOutcomes = make([]string, len(info.Tokens))
+			for i, token := range info.Tokens {
+				orderedOutcomes[i] = token.Outcome
+			}
+		}
+	}
+
+	if len(orderedOutcomes) == 0 {
+		orderedOutcomes = outcomes // fallback
+	}
+
+	// Step 3: Try on-chain when available. This is the authoritative
+	// redeemability signal and can lead Polymarket API winner flags near expiry.
+	// We MUST use the orderedOutcomes array so the indices match the contract.
+	if rc.polygon != nil {
+		resolved, err := rc.polygon.IsMarketResolved(ctx, conditionID)
+		if err != nil {
+			status.Error = err
+		} else if resolved {
+			status.Resolved = true
+			if winner, winErr := rc.polygon.GetWinningOutcome(ctx, conditionID, orderedOutcomes); winErr != nil {
+				status.Error = winErr
+			} else if winner != "" {
+				status.Winner = winner
+				return status
 			}
 		}
 	}
