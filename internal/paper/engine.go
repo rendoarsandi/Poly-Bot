@@ -913,6 +913,9 @@ func (e *Engine) recalculateDrawdown() {
 	if totalEquity > e.peakBalance {
 		e.peakBalance = totalEquity
 	}
+	if e.getPendingRedemptionValue() > 0.000001 {
+		return
+	}
 	if e.peakBalance > 0 {
 		drawdownCash := e.peakBalance - totalEquity
 		drawdown := drawdownCash / e.peakBalance

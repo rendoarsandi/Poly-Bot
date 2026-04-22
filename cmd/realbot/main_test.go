@@ -1878,6 +1878,9 @@ func TestRealbotRedeemCashCorrectionReconcilesRecoveredLiveBalance(t *testing.T)
 	if result.TotalPnL >= -3.20 {
 		t.Fatalf("expected local redemption to initially overstate the loss, got %.4f", result.TotalPnL)
 	}
+	if got := engine.GetStats().MaxDrawdownCash; math.Abs(got) > 0.0001 {
+		t.Fatalf("expected pending redemption not to stamp max drawdown, got %.4f", got)
+	}
 
 	redeemStartBalance := engine.GetBalance()
 	expectedPayout := engine.GetPendingRedemptions()["BTC"]
@@ -1893,6 +1896,9 @@ func TestRealbotRedeemCashCorrectionReconcilesRecoveredLiveBalance(t *testing.T)
 	expectedPnL := 20.73 - 20.86
 	if got := engine.GetStats().RealizedPnL; math.Abs(got-expectedPnL) > 0.01 {
 		t.Fatalf("expected realized pnl to reconcile near wallet net %.4f, got %.4f", expectedPnL, got)
+	}
+	if got := engine.GetStats().MaxDrawdownCash; math.Abs(got) > 0.0001 {
+		t.Fatalf("expected corrected live redemption not to leave stale max drawdown, got %.4f", got)
 	}
 	history := tui.GetRoundHistory()
 	if len(history) != 1 {

@@ -495,6 +495,58 @@ func TestEngine_MaxDrawdownCashPreservesActualLossAcrossNewPeaks(t *testing.T) {
 	}
 }
 
+func TestEngine_RedeemWithDetailsDefersDrawdownWhilePayoutPending(t *testing.T) {
+	engine := NewEngine(20.73)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.38, 5.83802); err != nil {
+		t.Fatalf("winning buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m1", "Down", 0.76, 14.01275); err != nil {
+		t.Fatalf("losing buy failed: %v", err)
+	}
+
+	res := engine.RedeemWithDetails("m1", "Up")
+	if res.TotalPnL >= 0 {
+		t.Fatalf("expected local redemption to be an economic loss before live cash correction, got %.4f", res.TotalPnL)
+	}
+	if got := engine.GetPendingRedemptions()["m1"]; got <= 0 {
+		t.Fatalf("expected pending redemption payout, got %.4f", got)
+	}
+
+	stats := engine.GetStats()
+	if absFloat(stats.MaxDrawdownCash) > 0.0001 {
+		t.Fatalf("expected pending redemption not to stamp max drawdown, got %.4f", stats.MaxDrawdownCash)
+	}
+}
+
+func TestEngine_SettlePendingRedemptionRecordsDrawdownAfterPayoutFinalizes(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if _, err := engine.BuyForMarket("m1", "Up", 0.90, 10.0); err != nil {
+		t.Fatalf("winning buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m1", "Down", 0.90, 80.0); err != nil {
+		t.Fatalf("losing buy failed: %v", err)
+	}
+
+	res := engine.RedeemWithDetails("m1", "Up")
+	if absFloat(res.TotalPnL+71.0) > 0.0001 {
+		t.Fatalf("expected local redemption loss -71.00, got %.4f", res.TotalPnL)
+	}
+	if got := engine.GetStats().MaxDrawdownCash; absFloat(got) > 0.0001 {
+		t.Fatalf("expected no max drawdown before pending payout settles, got %.4f", got)
+	}
+
+	settled := engine.SettlePendingRedemption("m1")
+	if absFloat(settled-10.0) > 0.0001 {
+		t.Fatalf("expected settled payout 10.00, got %.4f", settled)
+	}
+	stats := engine.GetStats()
+	if absFloat(stats.MaxDrawdownCash-71.0) > 0.0001 {
+		t.Fatalf("expected settled loss to record max drawdown 71.00, got %.4f", stats.MaxDrawdownCash)
+	}
+}
+
 func TestEngine_PeakExposurePreservesSessionHigh(t *testing.T) {
 	engine := NewEngine(100.0)
 
