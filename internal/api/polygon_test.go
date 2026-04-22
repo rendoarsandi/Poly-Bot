@@ -120,6 +120,10 @@ func TestRedeemPositions_CallDataEncoding(t *testing.T) {
 	if !strings.EqualFold(CTFContract, expectedCTF) {
 		t.Errorf("Wrong CTF contract address")
 	}
+
+	if polygonRedeemGasLimit != 500000 {
+		t.Fatalf("expected redeem gas limit 500000, got %d", polygonRedeemGasLimit)
+	}
 }
 
 // TestFunctionSelectors verifies all function selectors match Gnosis CTF contract

@@ -45,6 +45,7 @@ const (
 	polygonUrgentGasPriceBumpNumerator   = 20
 	polygonUrgentGasPriceBumpDenominator = 10
 	polygonUrgentBaseFeeMultiplier       = 3
+	polygonRedeemGasLimit                = 500000
 	payoutDenominatorSelector            = "0xdd34de67"
 	payoutNumeratorsSelector             = "0x0504c814"
 )
@@ -199,7 +200,7 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
 	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
+	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), polygonRedeemGasLimit, data)
 }
 
 // RedeemPositionsFast submits redeemPositions with a moderate gas profile.
@@ -211,7 +212,7 @@ func (c *PolygonClient) RedeemPositionsFast(ctx context.Context, signer *Signer,
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
 	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-	return c.signAndSendFastWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
+	return c.signAndSendFastWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), polygonRedeemGasLimit, data)
 }
 
 // RedeemPositionsUrgent submits the same redeem call with a more aggressive
@@ -224,7 +225,7 @@ func (c *PolygonClient) RedeemPositionsUrgent(ctx context.Context, signer *Signe
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
 	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-	return c.signAndSendUrgentWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
+	return c.signAndSendUrgentWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), polygonRedeemGasLimit, data)
 }
 
 // RedeemPositionsWithGasMode submits redeemPositions using normal, fast, or
