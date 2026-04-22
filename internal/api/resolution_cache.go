@@ -127,7 +127,24 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 		CheckedAt:   time.Now(),
 	}
 
-	// Step 1: Try CLOB API first (fast, free)
+	// Step 1: Try on-chain first when available. This is the authoritative
+	// redeemability signal and can lead Polymarket API winner flags near expiry.
+	if rc.polygon != nil {
+		resolved, err := rc.polygon.IsMarketResolved(ctx, conditionID)
+		if err != nil {
+			status.Error = err
+		} else if resolved {
+			status.Resolved = true
+			if winner, winErr := rc.polygon.GetWinningOutcome(ctx, conditionID, outcomes); winErr != nil {
+				status.Error = winErr
+			} else if winner != "" {
+				status.Winner = winner
+				return status
+			}
+		}
+	}
+
+	// Step 2: Try CLOB API.
 	if rc.clobClient != nil {
 		info, err := rc.clobClient.GetMarketInfo(ctx, conditionID)
 		if err == nil {
@@ -137,6 +154,7 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 					if token.Winner {
 						status.Resolved = true
 						status.Winner = token.Outcome
+						status.Error = nil
 						return status
 					}
 				}
@@ -147,7 +165,7 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 		}
 	}
 
-	// Step 2: Try REST API fallback for market info
+	// Step 3: Try REST API fallback for market info
 	if !status.Resolved && rc.restClient != nil {
 		// Use a REST market info query via the Gamma API
 		info, err := rc.resolveViaREST(ctx, conditionID, outcomes)
@@ -157,42 +175,12 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 					if token.Winner {
 						status.Resolved = true
 						status.Winner = token.Outcome
+						status.Error = nil
 						return status
 					}
 				}
 				// Closed but no winner tagged yet
 				// Do NOT set Resolved = true here, otherwise it permanently caches without a winner.
-			}
-		}
-	}
-
-	// Step 3: Check on-chain (only if we have a polygon client)
-	if rc.polygon != nil {
-		resolved, err := rc.polygon.IsMarketResolved(ctx, conditionID)
-		if err != nil {
-			status.Error = err
-			return status
-		}
-		if resolved {
-			status.Resolved = true
-			if status.Winner == "" {
-				if winner, winErr := rc.polygon.GetWinningOutcome(ctx, conditionID, outcomes); winErr != nil {
-					status.Error = winErr
-				} else if winner != "" {
-					status.Winner = winner
-				}
-			}
-			// On-chain says resolved but we still don't know the winner.
-			// Try CLOB once more before returning an empty winner.
-			if status.Winner == "" && rc.clobClient != nil {
-				if info, err := rc.clobClient.GetMarketInfo(ctx, conditionID); err == nil {
-					for _, token := range info.Tokens {
-						if token.Winner {
-							status.Winner = token.Outcome
-							break
-						}
-					}
-				}
 			}
 		}
 	}

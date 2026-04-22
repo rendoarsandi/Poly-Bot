@@ -46,6 +46,7 @@ const (
 	realbotRedeemSubmitTimeout       = 20 * time.Second
 	realbotRedeemProbeTimeout        = 10 * time.Second
 	realbotRedeemRetryInterval       = 3 * time.Second
+	realbotRedemptionPollInterval    = 3 * time.Second
 	realbotWalletTruthLogMinDelta    = 0.25
 	realbotMaxSaneOutcomeSpread      = 0.10
 	realbotMaxSaneAskPairSum         = 1.10

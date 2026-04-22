@@ -19,6 +19,8 @@ type ResolutionWatcher struct {
 	started   bool
 }
 
+const conditionResolutionTopic = "0xb44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894"
+
 func NewResolutionWatcher(wsURL string) *ResolutionWatcher {
 	wsURL = ResolvePolygonWSURL("", wsURL)
 	if wsURL == "" {
@@ -85,7 +87,7 @@ func (w *ResolutionWatcher) dialAndListen(ctx context.Context, logf func(string,
 	}
 	defer c.Close(websocket.StatusInternalError, "watcher error")
 
-	// Subscription message for ConditionResolved events
+	// Subscription message for CTF ConditionResolution events.
 	subMsg := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -95,7 +97,7 @@ func (w *ResolutionWatcher) dialAndListen(ctx context.Context, logf func(string,
 			map[string]interface{}{
 				"address": CTFContract,
 				"topics": []string{
-					"0x8b39414ea5475e7a828e833f4439c29a50bb913ab028eb0dcfcc9265fdbddfba",
+					conditionResolutionTopic,
 				},
 			},
 		},
@@ -116,7 +118,7 @@ func (w *ResolutionWatcher) dialAndListen(ctx context.Context, logf func(string,
 		return fmt.Errorf("subscribe read: %w", err)
 	}
 
-	logf("📡 [ResolutionWatcher] Subscribed to ConditionResolved events")
+	logf("📡 [ResolutionWatcher] Subscribed to ConditionResolution events")
 
 	for {
 		if ctx.Err() != nil {
@@ -138,8 +140,8 @@ func (w *ResolutionWatcher) dialAndListen(ctx context.Context, logf func(string,
 		}
 
 		if event.Method == "eth_subscription" && len(event.Params.Result.Topics) >= 2 {
-			// Typically, conditionId is the second topic (index 1) for ConditionResolved
-			// ConditionResolved(bytes32 indexed conditionId, address indexed oracle, bytes32 indexed questionId, uint256 outcomeSlotCount, uint256[] payoutNumerators)
+			// conditionId is the second topic (index 1) for ConditionResolution:
+			// ConditionResolution(bytes32 indexed conditionId, address indexed oracle, bytes32 indexed questionId, uint256 outcomeSlotCount, uint256[] payoutNumerators)
 			conditionID := strings.TrimPrefix(event.Params.Result.Topics[1], "0x")
 			if len(conditionID) > 64 {
 				conditionID = conditionID[len(conditionID)-64:]

@@ -388,6 +388,27 @@ func TestRenderMarketPanelUsesRecentLastGoodQuotesDuringBriefGap(t *testing.T) {
 	}
 }
 
+func TestRenderMarketPanelOmitsDuplicateSlugLine(t *testing.T) {
+	model := tuiModel{}
+	marketID := "btc-updown-15m-1776820500"
+	mkt := &MarketData{
+		Slug:       marketID,
+		Outcomes:   []string{"Up", "Down"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now(),
+		Bids:       map[string]float64{"Up": 0.27, "Down": 0.71},
+		Asks:       map[string]float64{"Up": 0.29, "Down": 0.73},
+		RealBids:   map[string]float64{"Up": 0.27, "Down": 0.71},
+		RealAsks:   map[string]float64{"Up": 0.29, "Down": 0.73},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel(marketID, mkt, 80, nil)
+	if count := strings.Count(rendered, marketID); count != 1 {
+		t.Fatalf("expected market slug to render once, got %d in %q", count, rendered)
+	}
+}
+
 func TestRenderMarketPanelKeepsQuotesVisibleAcrossShortQuietWindow(t *testing.T) {
 	model := tuiModel{}
 	mkt := &MarketData{

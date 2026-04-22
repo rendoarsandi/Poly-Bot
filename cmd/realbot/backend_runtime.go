@@ -23,6 +23,8 @@ type realbotBackendState struct {
 	embeddedPaper   bool
 }
 
+type realbotBackendSetupFunc func(context.Context, *core.Config) (*realbotBackendState, error)
+
 func realbotInitBackend(ctx context.Context, cfg *core.Config) (*realbotBackendState, error) {
 	state := &realbotBackendState{
 		startingBalance: cfg.PaperBalance,
@@ -95,14 +97,94 @@ func realbotBindBackendTrader(cfg *core.Config, engine *paper.Engine, state *rea
 	return trading.NewEmbeddedPaperRealTrader(cfg, engine)
 }
 
+func realbotDesiredExecutionBackend(cfg *core.Config) string {
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.ExecutionBackend), core.ExecutionBackendLive) {
+		return core.ExecutionBackendLive
+	}
+	return core.ExecutionBackendPaper
+}
+
+func realbotExecutionBackendForTrader(trader *trading.RealTrader) string {
+	if trader != nil && !trader.IsEmbeddedPaperMode() {
+		return core.ExecutionBackendLive
+	}
+	return core.ExecutionBackendPaper
+}
+
+func realbotTraderMatchesExecutionBackend(cfg *core.Config, trader *trading.RealTrader) bool {
+	return realbotDesiredExecutionBackend(cfg) == realbotExecutionBackendForTrader(trader)
+}
+
+func realbotBuildEmbeddedPaperBackend(cfg *core.Config, engine *paper.Engine) (*realbotBackendState, *trading.RealTrader) {
+	state := &realbotBackendState{
+		startingBalance: cfg.PaperBalance,
+		embeddedPaper:   true,
+	}
+	if strings.TrimSpace(cfg.PolygonRPCURL) != "" {
+		state.polygonClient = api.NewPolygonClient(cfg.PolygonRPCURL)
+	}
+	return state, trading.NewEmbeddedPaperRealTrader(cfg, engine)
+}
+
+func realbotSwitchExecutionBackend(ctx context.Context, cfg *core.Config, engine *paper.Engine, currentTrader *trading.RealTrader, setupLive realbotBackendSetupFunc) (*realbotBackendState, *trading.RealTrader, error) {
+	if realbotTraderMatchesExecutionBackend(cfg, currentTrader) {
+		return nil, currentTrader, nil
+	}
+	if engine != nil && !engine.CanResetPaperSession() {
+		return nil, currentTrader, fmt.Errorf("execution backend switch requires a flat engine")
+	}
+
+	switch realbotDesiredExecutionBackend(cfg) {
+	case core.ExecutionBackendLive:
+		if setupLive == nil {
+			setupLive = realbotInitBackend
+		}
+		state, err := setupLive(ctx, cfg)
+		if err != nil {
+			return nil, currentTrader, err
+		}
+		if state == nil || state.trader == nil {
+			return nil, currentTrader, fmt.Errorf("live backend setup returned no trader")
+		}
+		if engine != nil {
+			if err := engine.ResetPaperSession(state.startingBalance); err != nil {
+				return nil, currentTrader, err
+			}
+		}
+		return state, state.trader, nil
+	default:
+		state, trader := realbotBuildEmbeddedPaperBackend(cfg, engine)
+		if engine != nil {
+			if err := engine.ResetPaperSession(state.startingBalance); err != nil {
+				return nil, currentTrader, err
+			}
+		}
+		return state, trader, nil
+	}
+}
+
 func realbotStartBackendRuntime(ctx context.Context, cfg *core.Config, trader *trading.RealTrader, logf func(string, ...interface{})) func() {
 	realbotStartLiveRuntimeWatchers(ctx, cfg, trader, logf)
 	return realbotStartRawAPILog(cfg, trader)
 }
 
+func realbotStartSessionBackendRuntime(ctx context.Context, cfg *core.Config, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, resolutionCache *api.ResolutionCache) func() {
+	runtimeCtx, cancel := context.WithCancel(ctx)
+	closeRawLog := realbotStartBackendRuntime(runtimeCtx, cfg, trader, tui.LogEvent)
+	realbotStartBalanceSyncLoop(runtimeCtx, trader, engine, tui)
+	realbotStartEmbeddedPaperResolutionSweep(runtimeCtx, trader, engine, tui, restClient, resolutionCache)
+	return func() {
+		cancel()
+		if closeRawLog != nil {
+			closeRawLog()
+		}
+		_ = trader.CloseUserWS()
+	}
+}
+
 func realbotInitSettingsRuntime(tui *paper.TUI, cfg *core.Config, restClient *api.RestClient) {
-	sessionExecutionBackend := cfg.ExecutionBackend
 	tui.InitSettings(realbotTUISettingsFromConfig(cfg), func(s paper.TUISettings) {
+		previousExecutionBackend := cfg.ExecutionBackend
 		applyRealbotTUISettings(cfg, s)
 		if restClient != nil && restClient.Exchange != s.Exchange {
 			restClient.Exchange = s.Exchange
@@ -111,8 +193,8 @@ func realbotInitSettingsRuntime(tui *paper.TUI, cfg *core.Config, restClient *ap
 		if err := cfg.SaveSettings(); err != nil {
 			tui.LogEvent("⚠️ Failed to save settings: %v", err)
 		}
-		if cfg.ExecutionBackend != sessionExecutionBackend {
-			tui.LogEvent("⚠️ Execution backend changed to %s. Restart the bot process to apply it.", cfg.ExecutionBackend)
+		if cfg.ExecutionBackend != previousExecutionBackend {
+			tui.LogEvent("🔁 Execution backend set to %s. Apply or R restarts the trading loop to switch runtime.", cfg.ExecutionBackend)
 		}
 
 		if s.PolygonRPC != cfg.PolygonRPCURL || s.PolygonPrivateKey != cfg.PK {

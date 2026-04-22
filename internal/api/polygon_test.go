@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // TestMergePositions_CallDataEncoding verifies the merge calldata is correctly encoded
@@ -129,15 +132,30 @@ func TestFunctionSelectors(t *testing.T) {
 		{"mergePositions", "0x9e7212ad", "mergePositions(address,bytes32,bytes32,uint256[],uint256)"},
 		{"splitPosition", "0x72ce4275", "splitPosition(address,bytes32,bytes32,uint256[],uint256)"},
 		{"redeemPositions", "0x01b7037c", "redeemPositions(address,bytes32,bytes32,uint256[])"},
+		{"payoutDenominator", payoutDenominatorSelector, "payoutDenominator(bytes32)"},
+		{"payoutNumerators", payoutNumeratorsSelector, "payoutNumerators(bytes32,uint256)"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// These are the known-correct selectors from successful on-chain transactions
-			// If these fail, the bot's on-chain operations will also fail
-			t.Logf("Verified selector %s for %s", tc.selector, tc.function)
+			got := selectorForSignature(tc.function)
+			if got != tc.selector {
+				t.Fatalf("selector for %s = %s, want %s", tc.function, got, tc.selector)
+			}
 		})
 	}
+}
+
+func TestConditionResolutionTopic(t *testing.T) {
+	got := crypto.Keccak256Hash([]byte("ConditionResolution(bytes32,address,bytes32,uint256,uint256[])")).Hex()
+	if got != conditionResolutionTopic {
+		t.Fatalf("ConditionResolution topic = %s, want %s", got, conditionResolutionTopic)
+	}
+}
+
+func selectorForSignature(signature string) string {
+	hash := crypto.Keccak256([]byte(signature))
+	return "0x" + hex.EncodeToString(hash[:4])
 }
 
 func padToHex64(n *big.Int) string {

@@ -731,6 +731,13 @@ func (t *RealTrader) SubscribeUserWSMarkets(ctx context.Context, conditionIDs ..
 	return t.userWS.SubscribeMarkets(ctx, conditionIDs)
 }
 
+func (t *RealTrader) CloseUserWS() error {
+	if t == nil || t.userWS == nil {
+		return nil
+	}
+	return t.userWS.Close()
+}
+
 // SetTestMode enables/disables test mode
 func (t *RealTrader) SetTestMode(enabled bool) {
 	if t.client == nil {
@@ -1395,6 +1402,17 @@ func (t *RealTrader) SubmitRedeemOnChainForce(ctx context.Context, conditionID s
 	}
 	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
 		return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+	})
+}
+
+// SubmitRedeemOnChainUrgentForce sends the redeem transaction immediately with
+// the urgent gas profile and leaves confirmation tracking to the caller.
+func (t *RealTrader) SubmitRedeemOnChainUrgentForce(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("redeem not supported/needed on kalshi")
+	}
+	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
+		return t.polygon.RedeemPositionsUrgent(ctx, t.client.GetSigner(), conditionID, numOutcomes)
 	})
 }
 

@@ -40,7 +40,7 @@ const (
 	polygonUrgentGasPriceBumpNumerator   = 20
 	polygonUrgentGasPriceBumpDenominator = 10
 	polygonUrgentBaseFeeMultiplier       = 3
-	payoutDenominatorSelector            = "0x1479831c"
+	payoutDenominatorSelector            = "0xdd34de67"
 	payoutNumeratorsSelector             = "0x0504c814"
 )
 
@@ -62,7 +62,7 @@ func NewPolygonClient(rpcURL string) *PolygonClient {
 
 // IsMarketResolved checks if a market is resolved on-chain (FREE READ)
 func (c *PolygonClient) IsMarketResolved(ctx context.Context, conditionID string) (bool, error) {
-	// Function selector for payoutDenominator(bytes32): 0x1479831c
+	// Function selector for payoutDenominator(bytes32): 0xdd34de67
 	id := strings.TrimPrefix(conditionID, "0x")
 	if len(id) != 64 {
 		return false, fmt.Errorf("invalid condition ID length: %d", len(id))

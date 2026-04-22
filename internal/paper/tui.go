@@ -3211,6 +3211,14 @@ func (t *TUI) SetMode(mode string) {
 	t.markDirtyLocked()
 }
 
+func (t *TUI) SetExecutionBackend(backend string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.settings.ExecutionBackend = backend
+	t.settings = normalizeTUISettingsForContext(t.settings, t.mode)
+	t.markDirtyLocked()
+}
+
 func (t *TUI) ToggleTradingPause() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -4730,12 +4738,13 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 	header := lipgloss.NewStyle().Bold(true).Foreground(borderColor).
 		Render(fmt.Sprintf("%s  %s", emoji, marketDisplayLabel(id)))
 
-	// ── Slug (truncate to fit)
+	// ── Slug (truncate to fit) when it adds information beyond the header.
 	slug := core.SanitizeString(mkt.Slug)
-	if len(slug) > innerW {
-		slug = slug[:innerW-1] + "…"
+	headerLabel := core.SanitizeString(marketDisplayLabel(id))
+	slugLine := ""
+	if slug != "" && !strings.EqualFold(slug, headerLabel) {
+		slugLine = styleDimmed.Render(truncateText(slug, innerW))
 	}
-	slugLine := styleDimmed.Render(slug)
 
 	// ── Time remaining
 	remaining := time.Until(mkt.EndTime)
@@ -5049,9 +5058,11 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		}
 	}
 
-	content := header + "\n" +
-		slugLine + "\n" +
-		timeLine + "\n" +
+	content := header + "\n"
+	if slugLine != "" {
+		content += slugLine + "\n"
+	}
+	content += timeLine + "\n" +
 		"\n" +
 		priceLinesB.String()
 

@@ -25,6 +25,14 @@ func realbotWinningOnChainShares(positions []paper.WalletTruthPosition, winner s
 }
 
 func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine) ([]paper.WalletTruthPosition, error) {
+	return realbotWalletTruthPositionsForRedemptionWithRefresh(ctx, marketID, conditionID, trader, engine, false)
+}
+
+func realbotWalletTruthPositionsForRedemptionFresh(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine) ([]paper.WalletTruthPosition, error) {
+	return realbotWalletTruthPositionsForRedemptionWithRefresh(ctx, marketID, conditionID, trader, engine, true)
+}
+
+func realbotWalletTruthPositionsForRedemptionWithRefresh(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine, forceRefresh bool) ([]paper.WalletTruthPosition, error) {
 	if trader == nil || engine == nil || marketID == "" || conditionID == "" {
 		return nil, nil
 	}
@@ -39,7 +47,7 @@ func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, con
 		if pos.MarketID != marketID || pos.Quantity <= 0 {
 			continue
 		}
-		localByOutcome[pos.Outcome] += pos.Quantity
+		localByOutcome[realbotRedemptionOutcomeKey(pos.Outcome)] += pos.Quantity
 	}
 
 	positions := make([]paper.WalletTruthPosition, 0, len(info.Tokens))
@@ -47,12 +55,18 @@ func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, con
 		if token.TokenID == "" || token.Outcome == "" {
 			continue
 		}
-		onChainShares, err := trader.GetCTFBalanceFloat(ctx, token.TokenID)
+		var onChainShares float64
+		var err error
+		if forceRefresh {
+			onChainShares, err = trader.ForceRefreshCTFBalanceFloat(ctx, token.TokenID)
+		} else {
+			onChainShares, err = trader.GetCTFBalanceFloat(ctx, token.TokenID)
+		}
 		if err != nil {
 			return nil, err
 		}
 		onChainShares = realbotNormalizeTrackedShares(onChainShares)
-		localShares := realbotNormalizeTrackedShares(localByOutcome[token.Outcome])
+		localShares := realbotNormalizeTrackedShares(localByOutcome[realbotRedemptionOutcomeKey(token.Outcome)])
 		if localShares <= 0 && onChainShares <= 0 {
 			continue
 		}
@@ -73,27 +87,50 @@ func realbotWalletTruthPositionsForRedemption(ctx context.Context, marketID, con
 	return positions, nil
 }
 
-func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID string, positions []paper.WalletTruthPosition) (adjusted int, missingCostBasis []string) {
+func realbotRedemptionOutcomeKey(outcome string) string {
+	return strings.ToLower(strings.TrimSpace(outcome))
+}
+
+func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID, winner string, positions []paper.WalletTruthPosition) (adjusted int, missingCostBasis []string) {
 	if engine == nil || marketID == "" {
 		return 0, nil
 	}
 	enginePositions := engine.GetPositions()
 	for _, wt := range positions {
-		if wt.MarketID != marketID || !hasActionableCleanupRemainder(wt.OnChainShares) {
+		if wt.MarketID != marketID {
 			continue
 		}
 		key := marketID + ":" + wt.Outcome
 		pos, exists := enginePositions[key]
-		if !exists || pos.Quantity <= 0 {
-			missingCostBasis = append(missingCostBasis, wt.Outcome)
-			continue
-		}
-		markPrice := pos.AvgPrice
-		if markPrice <= 0 && pos.Quantity > 0 {
-			markPrice = pos.TotalCost / pos.Quantity
+		markPrice := 0.0
+		if exists {
+			markPrice = pos.AvgPrice
+			if markPrice <= 0 && pos.Quantity > 0 {
+				markPrice = pos.TotalCost / pos.Quantity
+			}
 		}
 		if markPrice <= 0 {
 			markPrice = 0.5
+		}
+		if !hasActionableCleanupRemainder(wt.OnChainShares) {
+			if exists || hasActionableCleanupRemainder(wt.LocalShares) {
+				if engine.SyncExternalPosition(marketID, wt.Outcome, 0, markPrice) {
+					adjusted++
+				}
+			}
+			continue
+		}
+		if !exists || pos.Quantity <= 0 {
+			missingCostBasis = append(missingCostBasis, wt.Outcome)
+			if winner != "" && realbotRedemptionOutcomeKey(wt.Outcome) == realbotRedemptionOutcomeKey(winner) {
+				// If the wallet holds winning shares that the local engine did not
+				// cost, book them at payout value so redemption accounting recognizes
+				// the receivable without inventing PnL.
+				if engine.SyncExternalPosition(marketID, wt.Outcome, wt.OnChainShares, 1.0) {
+					adjusted++
+				}
+			}
+			continue
 		}
 		if engine.SyncExternalPosition(marketID, wt.Outcome, wt.OnChainShares, markPrice) {
 			adjusted++
@@ -110,6 +147,15 @@ func refreshWalletTruthForRedemption(ctx context.Context, marketID, conditionID 
 	}
 	tui.SetWalletTruthPositions(marketID, positions)
 	return nil
+}
+
+func refreshWalletTruthForRedemptionFresh(ctx context.Context, marketID, conditionID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) ([]paper.WalletTruthPosition, error) {
+	positions, err := realbotWalletTruthPositionsForRedemptionFresh(ctx, marketID, conditionID, trader, engine)
+	if err != nil {
+		return nil, err
+	}
+	tui.SetWalletTruthPositions(marketID, positions)
+	return positions, nil
 }
 
 func realbotShortTxHash(txHash string) string {
@@ -194,7 +240,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 
 			if !skipSubmit && pendingTxHash == "" {
 				redeemCtx, cancel := context.WithTimeout(context.Background(), realbotRedeemSubmitTimeout)
-				txHash, err := trader.SubmitRedeemOnChainForce(redeemCtx, conditionID, numOutcomes)
+				txHash, err := trader.SubmitRedeemOnChainUrgentForce(redeemCtx, conditionID, numOutcomes)
 				cancel()
 
 				if err == nil {
@@ -209,8 +255,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			}
 
 			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
-			refreshErr := refreshWalletTruthForRedemption(refreshCtx, marketID, conditionID, trader, engine, tui)
-			positions, positionsErr := realbotWalletTruthPositionsForRedemption(refreshCtx, marketID, conditionID, trader, engine)
+			positions, refreshErr := refreshWalletTruthForRedemptionFresh(refreshCtx, marketID, conditionID, trader, engine, tui)
 			refreshCancel()
 
 			if refreshErr != nil {
@@ -234,12 +279,13 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			}
 			balanceCancel()
 
-			if positionsErr == nil && realbotWinningOnChainShares(positions, winner) <= 0.000001 {
+			if refreshErr == nil && realbotWinningOnChainShares(positions, winner) <= 0.000001 {
 				if winnerDepletedAt.IsZero() {
 					winnerDepletedAt = time.Now()
 				}
 				pendingPayout := engine.GetPendingRedemptions()[marketID]
 				if pendingPayout <= 0.000001 {
+					tui.LogEvent("[%s] ✅ Redeem settled; winning shares cleared on-chain", marketID)
 					return
 				}
 				cashReflectsPayout := highestObservedBalance+0.01 >= redeemStartBalance+pendingPayout
@@ -343,7 +389,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		})
 	}
 
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(realbotRedemptionPollInterval)
 	defer ticker.Stop()
 	checkRound := 0
 	lastResolutionState := ""
@@ -354,7 +400,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			case <-ctx.Done():
 				return
 			case <-wsResCh:
-				tui.LogEvent("[%s] ⚡ WebSocket: ConditionResolved event detected on-chain!", id)
+				tui.LogEvent("[%s] ⚡ WebSocket: ConditionResolution event detected on-chain!", id)
 			case <-ticker.C:
 			}
 		}
@@ -395,12 +441,12 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		if winner != "" {
 			walletTruthWinningShares := 0.0
 			missingCostBasis := []string(nil)
-			if positions, positionsErr := realbotWalletTruthPositionsForRedemption(ctx, id, conditionID, trader, engine); positionsErr != nil {
+			if positions, positionsErr := realbotWalletTruthPositionsForRedemptionFresh(ctx, id, conditionID, trader, engine); positionsErr != nil {
 				tui.LogEvent("[%s] ⚠️ Wallet-truth refresh before resolution settlement failed: %v", id, positionsErr)
 			} else {
 				walletTruthWinningShares = realbotWinningOnChainShares(positions, winner)
 				tui.SetWalletTruthPositions(id, positions)
-				if adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, id, positions); adjusted > 0 {
+				if adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, id, winner, positions); adjusted > 0 {
 					tui.LogEvent("[%s] 🔄 Synced local resolution inventory to on-chain balances (%d outcomes adjusted)", id, adjusted)
 				} else if len(missing) > 0 {
 					missingCostBasis = append(missingCostBasis, missing...)

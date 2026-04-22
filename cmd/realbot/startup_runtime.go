@@ -182,6 +182,7 @@ func run() error {
 	engine := paper.NewEngine(balance)
 	orderBook := paper.NewOrderBook()
 	realTrader = realbotBindBackendTrader(cfg, engine, backendState)
+	resolutionCache = realbotNewResolutionCache(polygonClient, realTrader, restClient)
 	tui := paper.NewTUI(engine, orderBook)
 	tui.SetMode("Real")
 
@@ -198,7 +199,12 @@ func run() error {
 			fmt.Printf("📝 Critical issue log: %s\n", issueLogPath)
 		}
 	}
-	defer realbotStartBackendRuntime(ctx, cfg, realTrader, tui.LogEvent)()
+	backendRuntimeStop := realbotStartSessionBackendRuntime(ctx, cfg, realTrader, engine, tui, restClient, resolutionCache)
+	defer func() {
+		if backendRuntimeStop != nil {
+			backendRuntimeStop()
+		}
+	}()
 
 	realbotInitSettingsRuntime(tui, cfg, restClient)
 
@@ -230,10 +236,7 @@ func run() error {
 		}
 	}()
 
-	realbotStartBalanceSyncLoop(ctx, realTrader, engine, tui)
 	// realbotStartPositionSyncLoop(ctx, realTrader, tui) // Disabled: REST polling overwrites real-time WS fills
-	realbotStartEmbeddedPaperResolutionSweep(ctx, realTrader, engine, tui, restClient, resolutionCache)
-
 	globalSplitStatus := make(map[string]bool)
 	globalSplitInventories := make(map[string]*paper.SplitInventory)
 	globalInitialSplits := make(map[string]float64)
@@ -254,6 +257,42 @@ func run() error {
 		case <-ctx.Done():
 			goto shutdown
 		default:
+		}
+
+		if tui.GetAndClearRestart() {
+			tui.LogEvent("🔄 Settings saved. Applying before next round...")
+		}
+
+		if !realbotTraderMatchesExecutionBackend(cfg, realTrader) {
+			oldBackend := realbotExecutionBackendForTrader(realTrader)
+			desiredBackend := realbotDesiredExecutionBackend(cfg)
+			tui.LogEvent("🔁 Switching execution backend to %s...", desiredBackend)
+
+			switchCtx, cancelSwitch := context.WithTimeout(ctx, 2*time.Minute)
+			nextBackendState, nextTrader, switchErr := realbotSwitchExecutionBackend(switchCtx, cfg, engine, realTrader, realbotInitBackend)
+			cancelSwitch()
+			if switchErr != nil {
+				tui.SetExecutionBackend(oldBackend)
+				applyRealbotTUISettings(cfg, tui.GetSettings())
+				if saveErr := cfg.SaveSettings(); saveErr != nil {
+					tui.LogEvent("⚠️ Failed to restore execution backend setting: %v", saveErr)
+				}
+				tui.LogEvent("⚠️ Execution backend switch failed: %v. Staying on %s.", switchErr, oldBackend)
+			} else if nextBackendState != nil {
+				if backendRuntimeStop != nil {
+					backendRuntimeStop()
+				}
+				backendState = nextBackendState
+				realTrader = nextTrader
+				polygonClient = backendState.polygonClient
+				currentBalance = backendState.startingBalance
+				resolutionCache = realbotNewResolutionCache(polygonClient, realTrader, restClient)
+				backendRuntimeStop = realbotStartSessionBackendRuntime(ctx, cfg, realTrader, engine, tui, restClient, resolutionCache)
+				tui.LogEvent("✅ Execution backend active: %s", desiredBackend)
+				go realbotRefreshWalletCashDisplay(ctx, realTrader, tui, 8*time.Second)
+				realbotLogGasBalance(ctx, polygonClient, realTrader, tui, 8*time.Second)
+				realbotLoadStartupPositionsAsync(ctx, realTrader, restClient, engine, tui, resolutionCache)
+			}
 		}
 
 		roundSnapshot, updatedBalance := realbotBeginRound(ctx, realTrader, engine, tui, currentBalance)

@@ -536,6 +536,93 @@ func TestRealbotBindBackendTraderCreatesEmbeddedPaperFallback(t *testing.T) {
 	}
 }
 
+func TestRealbotSwitchExecutionBackendBuildsLiveTraderAndResetsFlatEngine(t *testing.T) {
+	engine := paper.NewEngine(25)
+	paperTrader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	liveTrader := &trading.RealTrader{}
+	cfg := &core.Config{
+		ExecutionBackend: core.ExecutionBackendLive,
+		PaperBalance:     25,
+	}
+
+	setupCalled := false
+	state, got, err := realbotSwitchExecutionBackend(context.Background(), cfg, engine, paperTrader, func(context.Context, *core.Config) (*realbotBackendState, error) {
+		setupCalled = true
+		return &realbotBackendState{
+			trader:          liveTrader,
+			startingBalance: 88.75,
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("expected live backend switch to succeed, got %v", err)
+	}
+	if !setupCalled {
+		t.Fatal("expected live setup to run")
+	}
+	if state == nil || state.trader != liveTrader {
+		t.Fatalf("expected live backend state with test trader, got %+v", state)
+	}
+	if got != liveTrader {
+		t.Fatal("expected switched trader to be the live trader")
+	}
+	if got.IsEmbeddedPaperMode() {
+		t.Fatal("expected switched trader to use live backend")
+	}
+	if math.Abs(engine.GetBalance()-88.75) > 0.000001 {
+		t.Fatalf("expected flat engine to reset to live balance 88.75, got %.2f", engine.GetBalance())
+	}
+}
+
+func TestRealbotSwitchExecutionBackendRequiresFlatEngine(t *testing.T) {
+	engine := paper.NewEngine(25)
+	if _, err := engine.BuyForMarket("btc-updown-15m-1", "Up", 0.50, 1); err != nil {
+		t.Fatalf("failed to seed open paper inventory: %v", err)
+	}
+	paperTrader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	cfg := &core.Config{
+		ExecutionBackend: core.ExecutionBackendLive,
+		PaperBalance:     25,
+	}
+
+	setupCalled := false
+	_, got, err := realbotSwitchExecutionBackend(context.Background(), cfg, engine, paperTrader, func(context.Context, *core.Config) (*realbotBackendState, error) {
+		setupCalled = true
+		return &realbotBackendState{trader: &trading.RealTrader{}, startingBalance: 100}, nil
+	})
+	if err == nil {
+		t.Fatal("expected backend switch to fail while engine has open inventory")
+	}
+	if setupCalled {
+		t.Fatal("expected live setup to be skipped when engine is not flat")
+	}
+	if got != paperTrader {
+		t.Fatal("expected failed backend switch to keep the current paper trader")
+	}
+}
+
+func TestRealbotSwitchExecutionBackendCreatesEmbeddedPaperTrader(t *testing.T) {
+	engine := paper.NewEngine(100)
+	liveTrader := &trading.RealTrader{}
+	cfg := &core.Config{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperBalance:     55.50,
+	}
+
+	state, got, err := realbotSwitchExecutionBackend(context.Background(), cfg, engine, liveTrader, nil)
+	if err != nil {
+		t.Fatalf("expected paper backend switch to succeed, got %v", err)
+	}
+	if state == nil || !state.embeddedPaper {
+		t.Fatalf("expected embedded paper backend state, got %+v", state)
+	}
+	if got == nil || !got.IsEmbeddedPaperMode() {
+		t.Fatal("expected switched trader to be embedded paper")
+	}
+	if math.Abs(engine.GetBalance()-55.50) > 0.000001 {
+		t.Fatalf("expected flat engine to reset to configured paper balance 55.50, got %.2f", engine.GetBalance())
+	}
+}
+
 func TestNormalizePaperArbModeSupportsBinanceGap(t *testing.T) {
 	if got := normalizePaperArbMode("binance-gap"); got != paperArbModeBinanceGap {
 		t.Fatalf("normalizePaperArbMode(binance-gap) = %q, want %q", got, paperArbModeBinanceGap)
@@ -667,11 +754,11 @@ func TestRealbotHandleClosedMarketIgnoresActiveMarket(t *testing.T) {
 
 	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
 		ladderCloseState: newRealbotLadderCloseState(),
-		marketID: "BTC",
-		market:   &api.Market{ConditionID: "cond-1"},
-		endTime:  time.Now().Add(30 * time.Second),
-		tui:      tui,
-		engine:   engine,
+		marketID:         "BTC",
+		market:           &api.Market{ConditionID: "cond-1"},
+		endTime:          time.Now().Add(30 * time.Second),
+		tui:              tui,
+		engine:           engine,
 	}, &realbotMarketClosureState{
 		preserveWalletTruth: &preserveWalletTruth,
 	})
@@ -720,12 +807,12 @@ func TestRealbotHandleClosedMarketDropsDustInsteadOfWaitingForResolution(t *test
 	preserveWalletTruth := false
 	handled := realbotHandleClosedMarket(realbotMarketClosureArgs{
 		ladderCloseState: newRealbotLadderCloseState(),
-		marketID: "BTC",
-		market:   &api.Market{ConditionID: "cond-1"},
-		endTime:  time.Now().Add(-time.Minute),
-		outcomes: []string{"Down", "Up"},
-		engine:   engine,
-		tui:      tui,
+		marketID:         "BTC",
+		market:           &api.Market{ConditionID: "cond-1"},
+		endTime:          time.Now().Add(-time.Minute),
+		outcomes:         []string{"Down", "Up"},
+		engine:           engine,
+		tui:              tui,
 	}, &realbotMarketClosureState{
 		preserveWalletTruth: &preserveWalletTruth,
 	})
@@ -1018,13 +1105,13 @@ func TestRealbotNewEntryBlockReasonBlocksForPriorRoundInventory(t *testing.T) {
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil, "BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
 	if !blocked || !strings.Contains(reason, "BTC-older") {
 		t.Fatalf("expected prior-round inventory block, got blocked=%v reason=%q", blocked, reason)
 	}
-	if reason, blocked = realbotNewEntryBlockReason(nil,"BTC-older", engine, nil, paper.TUISettings{
+	if reason, blocked = realbotNewEntryBlockReason(nil, "BTC-older", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	}); blocked || reason != "" {
 		t.Fatalf("expected no block on current market, got blocked=%v reason=%q", blocked, reason)
@@ -1035,7 +1122,7 @@ func TestRealbotNewEntryBlockReasonBlocksForPendingRedemptionPayout(t *testing.T
 	engine := paper.NewEngine(100.0)
 	engine.SetPendingRedemption("BTC-older", 12.0)
 
-	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil, "BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
 	if !blocked || !strings.Contains(reason, "BTC-older") {
@@ -1052,7 +1139,7 @@ func TestRealbotNewEntryBlockReasonBlocksForGroupedInventory(t *testing.T) {
 		t.Fatalf("seed up buy failed: %v", err)
 	}
 
-	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil, "BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: true,
 	})
 	if !blocked || !strings.Contains(reason, "BTC-older") {
@@ -1067,7 +1154,7 @@ func TestRealbotNewEntryBlockReasonDisabledSettingAllowsEntries(t *testing.T) {
 	}
 	engine.SetPendingRedemption("BTC-older", 12.0)
 
-	reason, blocked := realbotNewEntryBlockReason(nil,"BTC-new", engine, nil, paper.TUISettings{
+	reason, blocked := realbotNewEntryBlockReason(nil, "BTC-new", engine, nil, paper.TUISettings{
 		BlockNewEntriesOnPendingRedemption: false,
 	})
 	if blocked || reason != "" {
@@ -1102,7 +1189,7 @@ func TestRealbotLateRedeemBlocksLadderEntryUntilNextWindow(t *testing.T) {
 		t.Fatal("expected settlement timestamp to occur after current market start in this test")
 	}
 
-	reason, blocked := realbotEntryBlockReason(nil,currentMarketID, engine, nil, paper.TUISettings{
+	reason, blocked := realbotEntryBlockReason(nil, currentMarketID, engine, nil, paper.TUISettings{
 		PaperArbMode:                       "laddered-taker",
 		BlockNewEntriesOnPendingRedemption: true,
 	})
@@ -1138,7 +1225,7 @@ func TestRealbotLateRedeemAllowsImmediateLadderReentryWhenConfigured(t *testing.
 	engine.SetPendingRedemption(previousMarketID, 5.0)
 	_ = engine.SettlePendingRedemption(previousMarketID)
 
-	reason, blocked := realbotEntryBlockReason(nil,currentMarketID, engine, nil, paper.TUISettings{
+	reason, blocked := realbotEntryBlockReason(nil, currentMarketID, engine, nil, paper.TUISettings{
 		PaperArbMode:                       "laddered-taker",
 		BlockNewEntriesOnPendingRedemption: true,
 		RedeemEntryTiming:                  core.RedeemEntryTimingImmediate,
@@ -1156,7 +1243,7 @@ func TestRealbotLateRedeemDoesNotBlockNonLadderModes(t *testing.T) {
 	engine.SetPendingRedemption(previousMarketID, 5.0)
 	_ = engine.SettlePendingRedemption(previousMarketID)
 
-	reason, blocked := realbotEntryBlockReason(nil,currentMarketID, engine, nil, paper.TUISettings{
+	reason, blocked := realbotEntryBlockReason(nil, currentMarketID, engine, nil, paper.TUISettings{
 		PaperArbMode:                       "taker",
 		BlockNewEntriesOnPendingRedemption: true,
 	})
@@ -1478,7 +1565,7 @@ func TestRealbotSyncEngineToWalletTruthForResolutionScalesLocalCostBasisToOnChai
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", []paper.WalletTruthPosition{
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", "Up", []paper.WalletTruthPosition{
 		{MarketID: "BTC", Outcome: "Up", LocalShares: 3.0, OnChainShares: 3.1},
 	})
 	if adjusted != 1 {
@@ -1678,6 +1765,60 @@ func TestRealbotFinalizePendingRedemptionSettlesWhenBalanceNotYetReflected(t *te
 	}
 	if got := engine.GetPendingRedemptions()["BTC"]; got != 0 {
 		t.Fatalf("expected no pending redemption after settle path, got %.2f", got)
+	}
+}
+
+func TestRealbotResolutionSyncZerosStaleLosingLocalShares(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.30, 10); err != nil {
+		t.Fatalf("seed up buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("BTC", "Down", 0.80, 10); err != nil {
+		t.Fatalf("seed down buy failed: %v", err)
+	}
+
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", "Up", []paper.WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 10, OnChainShares: 10},
+		{MarketID: "BTC", Outcome: "Down", LocalShares: 10, OnChainShares: 0},
+	})
+	if adjusted == 0 {
+		t.Fatal("expected stale losing side to be adjusted away")
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing cost basis, got %v", missing)
+	}
+
+	result := engine.RedeemWithDetails("BTC", "Up")
+	if math.Abs(result.LosingCost) > 0.000001 {
+		t.Fatalf("expected stale losing local inventory not to count as resolution loss, got %.2f", result.LosingCost)
+	}
+	if math.Abs(result.TotalPnL-7.0) > 0.000001 {
+		t.Fatalf("expected winning PnL 7.00, got %.2f", result.TotalPnL)
+	}
+}
+
+func TestRealbotResolutionSyncRecognizesUncostedWinningSharesNeutrally(t *testing.T) {
+	engine := paper.NewEngine(100)
+
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", "Up", []paper.WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 0, OnChainShares: 5},
+	})
+	if adjusted == 0 {
+		t.Fatal("expected uncosted winning shares to be synced as redeemable")
+	}
+	if len(missing) != 1 || missing[0] != "Up" {
+		t.Fatalf("expected missing Up cost basis marker, got %v", missing)
+	}
+
+	result := engine.RedeemWithDetails("BTC", "Up")
+	if math.Abs(result.WinningPayout-5.0) > 0.000001 {
+		t.Fatalf("expected winning payout 5.00, got %.2f", result.WinningPayout)
+	}
+	if math.Abs(result.TotalPnL) > 0.000001 {
+		t.Fatalf("expected uncosted winning shares to be PnL neutral, got %.2f", result.TotalPnL)
+	}
+	if got := engine.GetPendingRedemptions()["BTC"]; math.Abs(got-5.0) > 0.000001 {
+		t.Fatalf("expected pending redemption 5.00, got %.2f", got)
 	}
 }
 
