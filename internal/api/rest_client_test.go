@@ -43,6 +43,69 @@ func TestNewRestClientDefault(t *testing.T) {
 	}
 }
 
+func TestGetFeeRateParsesBaseFee(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fee-rate" {
+			t.Fatalf("expected /fee-rate path, got %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("token_id"); got != "token-down" {
+			t.Fatalf("expected token_id query, got %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"base_fee":1000}`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.BaseURL = server.URL
+
+	got, err := client.GetFeeRate(context.Background(), "token-down")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if got != 1000 {
+		t.Fatalf("expected 1000 bps, got %d", got)
+	}
+}
+
+func TestGetFeeRateParsesLegacyFeeRateBps(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"fee_rate_bps":30}`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.BaseURL = server.URL
+
+	got, err := client.GetFeeRate(context.Background(), "token-up")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if got != 30 {
+		t.Fatalf("expected 30 bps, got %d", got)
+	}
+}
+
+func TestGetFeeRateRejectsUnknownObject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"unexpected_fee":1000}`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.BaseURL = server.URL
+
+	_, err := client.GetFeeRate(context.Background(), "token-up")
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "missing base_fee or fee_rate_bps") {
+		t.Fatalf("expected missing fee field error, got %v", err)
+	}
+}
+
 func TestListMarkets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

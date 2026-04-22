@@ -818,7 +818,22 @@ func (c *RestClient) GetBestBidAsk(ctx context.Context, tokenID string) (bestBid
 
 // FeeRateResponse represents the response from the fee-rate endpoint
 type FeeRateResponse struct {
-	FeeRateBps int `json:"fee_rate_bps"`
+	BaseFee       *int `json:"base_fee"`
+	FeeRateBps    *int `json:"fee_rate_bps"`
+	FeeRateBpsAlt *int `json:"feeRateBps"`
+}
+
+func (r FeeRateResponse) rateBps() (int, bool) {
+	switch {
+	case r.BaseFee != nil:
+		return *r.BaseFee, true
+	case r.FeeRateBps != nil:
+		return *r.FeeRateBps, true
+	case r.FeeRateBpsAlt != nil:
+		return *r.FeeRateBpsAlt, true
+	default:
+		return 0, false
+	}
 }
 
 // GetFeeRate fetches the current fee rate for a token
@@ -864,7 +879,11 @@ func (c *RestClient) GetFeeRate(ctx context.Context, tokenID string) (int, error
 		return 0, fmt.Errorf("failed to decode fee rate (body=%q): %w", trimmed, err)
 	}
 
-	return result.FeeRateBps, nil
+	rate, ok := result.rateBps()
+	if !ok {
+		return 0, fmt.Errorf("failed to decode fee rate: response missing base_fee or fee_rate_bps (body=%q)", trimmed)
+	}
+	return rate, nil
 }
 
 // GammaPriceResult contains bid/ask prices for an outcome
