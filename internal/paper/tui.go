@@ -6481,24 +6481,7 @@ func (m tuiModel) renderRoundHistory(w int, maxItems int) string {
 	wins, losses, flats := roundOutcomeCounts(s.roundHistory)
 
 	sb.WriteString(sectionHeader("🧮", fmt.Sprintf("ROUND SNAPSHOTS  (W/L/F %d/%d/%d)", wins, losses, flats), clrSlate) + "\n")
-	sb.WriteString(styleDimmed.Render("  historical round-close snapshots; current live round is not included until it closes") + "\n")
-	carryMarkets, carryLegs := 0, 0
-	for i := len(s.roundHistory) - 1; i >= 0; i-- {
-		markets, legs := roundHistoryOpenInventoryCounts(s.roundHistory[i])
-		if legs <= 0 {
-			continue
-		}
-		carryMarkets, carryLegs = markets, legs
-		break
-	}
-	liveMarkets, liveLegs := positionsWithPnLOpenInventoryCounts(s.positions)
-	if carryLegs > 0 || liveLegs > 0 {
-		sb.WriteString(styleDimmed.Render(
-			fmt.Sprintf("  open carry (latest close): %d markets / %d legs  ·  live in-flight now: %d markets / %d legs",
-				carryMarkets, carryLegs, liveMarkets, liveLegs),
-		) + "\n")
-		sb.WriteString(styleDimmed.Render("  OPEN rows show conservative book equity: spendable cash plus unresolved carry at cost basis") + "\n")
-	}
+
 	sb.WriteString(styleDimmed.Render(fmt.Sprintf("  %-4s  %-8s  %-10s  %-10s  %-11s  %-5s  %s",
 		"#", "END", "START", "CLOSE EQ", "EQ DELTA", "TRDS", "RESULT")) + "\n")
 	sb.WriteString(styleMuted.Render("  "+strings.Repeat("─", min(inner-2, 86))) + "\n")

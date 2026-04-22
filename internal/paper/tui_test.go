@@ -2399,45 +2399,6 @@ func TestRenderRoundHistoryMarksOpenInventoryAsCarry(t *testing.T) {
 	}
 }
 
-func TestRenderRoundHistoryShowsCarryAndLiveInventoryCounts(t *testing.T) {
-	model := tuiModel{
-		snap: tuiSnapshot{
-			roundHistory: []RoundHistoryEntry{
-				{
-					Number:         4,
-					Timestamp:      time.Unix(4, 0),
-					StartingEquity: 145.32,
-					EndingEquity:   142.89,
-					PnL:            -2.43,
-					Trades:         106,
-					positions: map[string]Position{
-						"m1:up":   {MarketID: "m1", Outcome: "Up", Quantity: 14.16, AvgPrice: 0.25},
-						"m1:down": {MarketID: "m1", Outcome: "Down", Quantity: 30.41, AvgPrice: 0.81},
-						"m2:up":   {MarketID: "m2", Outcome: "Up", Quantity: 61.73, AvgPrice: 0.77},
-						"m2:down": {MarketID: "m2", Outcome: "Down", Quantity: 45.46, AvgPrice: 0.28},
-					},
-				},
-			},
-			positions: map[string]PositionPnL{
-				"m1:up":   {Position: Position{MarketID: "m1", Outcome: "Up", Quantity: 14.16}},
-				"m1:down": {Position: Position{MarketID: "m1", Outcome: "Down", Quantity: 30.41}},
-				"m2:up":   {Position: Position{MarketID: "m2", Outcome: "Up", Quantity: 61.73}},
-				"m2:down": {Position: Position{MarketID: "m2", Outcome: "Down", Quantity: 45.46}},
-				"m3:up":   {Position: Position{MarketID: "m3", Outcome: "Up", Quantity: 7.03}},
-				"m3:down": {Position: Position{MarketID: "m3", Outcome: "Down", Quantity: 16.09}},
-			},
-		},
-	}
-
-	rendered := model.renderRoundHistory(140, 5)
-	if !strings.Contains(rendered, "open carry (latest close): 2 markets / 4 legs") {
-		t.Fatalf("expected carry market/leg count in round-history header, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "live in-flight now: 3 markets / 6 legs") {
-		t.Fatalf("expected live market/leg count in round-history header, got %q", rendered)
-	}
-}
-
 func TestApplyPaperBalanceLockedAllowsOpenInventory(t *testing.T) {
 	engine := NewEngine(1000.0)
 	if _, err := engine.BuyForMarket("BTC#m1", "Up", 0.5, 10); err != nil {
