@@ -113,6 +113,25 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 			markPrice = 0.5
 		}
 		if !hasActionableCleanupRemainder(wt.OnChainShares) {
+			if winner != "" && realbotRedemptionOutcomeKey(wt.Outcome) == realbotRedemptionOutcomeKey(winner) {
+				localShares := wt.LocalShares
+				if exists && pos.Quantity > localShares {
+					localShares = pos.Quantity
+				}
+				if hasActionableCleanupRemainder(localShares) {
+					// A zero winning CTF balance at resolution can mean the redeem
+					// transaction already cleared before this poll. Keep the local
+					// winning lot so RedeemWithDetails books the payout instead of
+					// turning the buy cost into a loss.
+					if !exists || pos.Quantity <= 0 {
+						missingCostBasis = append(missingCostBasis, wt.Outcome)
+						if engine.SyncExternalPosition(marketID, wt.Outcome, localShares, 1.0) {
+							adjusted++
+						}
+					}
+					continue
+				}
+			}
 			if exists || hasActionableCleanupRemainder(wt.LocalShares) {
 				if engine.SyncExternalPosition(marketID, wt.Outcome, 0, markPrice) {
 					adjusted++

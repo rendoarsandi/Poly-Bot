@@ -1797,6 +1797,45 @@ func TestRealbotResolutionSyncZerosStaleLosingLocalShares(t *testing.T) {
 	}
 }
 
+func TestRealbotResolutionSyncKeepsZeroOnChainWinningLocalShares(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.81, 1.00458); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", "Up", []paper.WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 1.00458, OnChainShares: 0},
+	})
+	if adjusted != 0 {
+		t.Fatalf("expected winning local shares to be preserved without wallet adjustment, got %d adjustments", adjusted)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing cost basis, got %v", missing)
+	}
+	if got := engine.GetPositions()["BTC:Up"].Quantity; math.Abs(got-1.00458) > 0.000001 {
+		t.Fatalf("expected local winning shares preserved before redemption, got %.5f", got)
+	}
+
+	result := engine.RedeemWithDetails("BTC", "Up")
+	expectedCost := 0.81 * 1.00458
+	expectedPnL := 1.00458 - expectedCost
+	if math.Abs(result.WinningShares-1.00458) > 0.000001 {
+		t.Fatalf("expected winning shares 1.00458, got %.5f", result.WinningShares)
+	}
+	if math.Abs(result.WinningCost-expectedCost) > 0.000001 {
+		t.Fatalf("expected winning cost %.5f, got %.5f", expectedCost, result.WinningCost)
+	}
+	if math.Abs(result.TotalPnL-expectedPnL) > 0.000001 {
+		t.Fatalf("expected winning PnL %.5f, got %.5f", expectedPnL, result.TotalPnL)
+	}
+	if got := engine.GetStats().RealizedPnL; math.Abs(got-expectedPnL) > 0.000001 {
+		t.Fatalf("expected realized PnL %.5f, got %.5f", expectedPnL, got)
+	}
+	if got := engine.GetPendingRedemptions()["BTC"]; math.Abs(got-1.00458) > 0.000001 {
+		t.Fatalf("expected pending payout 1.00458, got %.5f", got)
+	}
+}
+
 func TestRealbotResolutionSyncRecognizesUncostedWinningSharesNeutrally(t *testing.T) {
 	engine := paper.NewEngine(100)
 
