@@ -233,6 +233,17 @@ func realbotNormalizeRedeemEntryTiming(mode string) string {
 	}
 }
 
+func realbotNormalizeRedeemGasMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case core.RedeemGasModeNormal:
+		return core.RedeemGasModeNormal
+	case core.RedeemGasModeUrgent:
+		return core.RedeemGasModeUrgent
+	default:
+		return core.RedeemGasModeFast
+	}
+}
+
 func realbotTraderLoopInterval(settings paper.TUISettings) time.Duration {
 	if normalizePaperArbMode(settings.PaperArbMode) == paperArbModeCopytrade {
 		interval := realbotCopytradePollEvery(settings) / 2
@@ -507,6 +518,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		PolygonPrivateKey:                  cfg.PK,
 		BlockNewEntriesOnPendingRedemption: cfg.BlockNewEntriesOnPendingRedemption,
 		RedeemEntryTiming:                  cfg.RedeemEntryTiming,
+		RedeemGasMode:                      cfg.RedeemGasMode,
 	}
 }
 
@@ -559,6 +571,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TradingHoursMode = s.TradingHoursMode
 	cfg.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	cfg.RedeemEntryTiming = realbotNormalizeRedeemEntryTiming(s.RedeemEntryTiming)
+	cfg.RedeemGasMode = realbotNormalizeRedeemGasMode(s.RedeemGasMode)
 	if cfg.ExecutionBackend == core.ExecutionBackendPaper {
 		cfg.SplitStrategyEnabled = false
 		if normalizePaperArbMode(cfg.PaperArbMode) == paperArbModeMaker {

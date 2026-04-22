@@ -1415,6 +1415,29 @@ func TestIsRowVisibleShowsPaperBinanceDelayOnlyInPaperMode(t *testing.T) {
 	}
 }
 
+func TestIsRowVisibleShowsRedeemGasOnlyForLivePolygonMode(t *testing.T) {
+	cfg := TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendLive}
+	if !isRowVisible(cfg, "Real", settingsRowRedeemGasMode) {
+		t.Fatal("expected redeem gas row to be visible for real live Polymarket mode")
+	}
+
+	cfg.ExecutionBackend = core.ExecutionBackendPaper
+	if isRowVisible(cfg, "Real", settingsRowRedeemGasMode) {
+		t.Fatal("expected redeem gas row to be hidden for paper backend")
+	}
+
+	cfg.ExecutionBackend = core.ExecutionBackendLive
+	cfg.Exchange = "kalshi"
+	if isRowVisible(cfg, "Real", settingsRowRedeemGasMode) {
+		t.Fatal("expected redeem gas row to be hidden for Kalshi")
+	}
+
+	cfg.Exchange = "polymarket"
+	if isRowVisible(cfg, "Paper", settingsRowRedeemGasMode) {
+		t.Fatal("expected redeem gas row to be hidden in paper mode")
+	}
+}
+
 func TestIsRowVisibleHidesUnrelatedRowsInLadderedMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "laddered-taker"}
 	for _, idx := range []int{
@@ -1501,6 +1524,26 @@ func TestRenderSettingsHidesUnrelatedLabelsInTakerCloseMode(t *testing.T) {
 		if !strings.Contains(view, visible) {
 			t.Fatalf("renderSettings() missing %q\n%s", visible, view)
 		}
+	}
+}
+
+func TestRenderSettingsShowsRedeemGasSpeedInLiveMode(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+	tui.SetMode("Real")
+	tui.InitSettings(TUISettings{
+		Exchange:         "polymarket",
+		ExecutionBackend: core.ExecutionBackendLive,
+		RedeemGasMode:    core.RedeemGasModeFast,
+	}, nil)
+
+	view := (tuiModel{tui: tui}).renderSettings(120)
+	if !strings.Contains(view, "Redeem Gas Speed") {
+		t.Fatalf("renderSettings() missing Redeem Gas Speed\n%s", view)
+	}
+	if !strings.Contains(view, "fast") {
+		t.Fatalf("renderSettings() missing fast gas value\n%s", view)
 	}
 }
 
@@ -3546,6 +3589,18 @@ func TestNormalizeTUISettingsDefaultsRedeemEntryTimingToNextMarket(t *testing.T)
 	got = normalizeTUISettings(TUISettings{RedeemEntryTiming: "immediate"})
 	if got.RedeemEntryTiming != core.RedeemEntryTimingImmediate {
 		t.Fatalf("expected redeem entry timing %q, got %q", core.RedeemEntryTimingImmediate, got.RedeemEntryTiming)
+	}
+}
+
+func TestNormalizeTUISettingsDefaultsRedeemGasModeToFast(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{})
+	if got.RedeemGasMode != core.RedeemGasModeFast {
+		t.Fatalf("expected default redeem gas mode %q, got %q", core.RedeemGasModeFast, got.RedeemGasMode)
+	}
+
+	got = normalizeTUISettings(TUISettings{RedeemGasMode: "urgent"})
+	if got.RedeemGasMode != core.RedeemGasModeUrgent {
+		t.Fatalf("expected redeem gas mode %q, got %q", core.RedeemGasModeUrgent, got.RedeemGasMode)
 	}
 }
 

@@ -32,6 +32,9 @@ const (
 	LadderedTakerSizingModeShares = "shares"
 	RedeemEntryTimingImmediate    = "immediate"
 	RedeemEntryTimingNextMarket   = "next-market"
+	RedeemGasModeNormal           = "normal"
+	RedeemGasModeFast             = "fast"
+	RedeemGasModeUrgent           = "urgent"
 
 	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
@@ -131,6 +134,7 @@ type Config struct {
 	TakerCloseMarket                   bool    // Force GTC buy right before market closes
 	BlockNewEntriesOnPendingRedemption bool    // Block fresh entries while prior-round inventory/payout is still unresolved
 	RedeemEntryTiming                  string  // Re-entry timing after redemption wait: "immediate" or "next-market"
+	RedeemGasMode                      string  // "normal", "fast", or "urgent" gas profile for live redeems
 	TakerCloseMarketTime               int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage           float64 // Limit price for taker close (default: 0.99)
 	TakerCloseMarketMinPrice           float64 // Min price to trigger close buy (default: 0.60)
@@ -205,6 +209,7 @@ type RuntimeSettings struct {
 	TakerCloseMarket                   bool    `json:"takerCloseMarket"`
 	BlockNewEntriesOnPendingRedemption bool    `json:"blockNewEntriesOnPendingRedemption"`
 	RedeemEntryTiming                  string  `json:"redeemEntryTiming"`
+	RedeemGasMode                      string  `json:"redeemGasMode"`
 	TakerCloseMarketTime               int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage           float64 `json:"takerCloseMarketSlippage"`
 	TakerCloseMarketMinPrice           float64 `json:"takerCloseMarketMinPrice"`
@@ -300,6 +305,7 @@ func LoadConfig() (*Config, error) {
 		CopytradeTarget:                    strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		BlockNewEntriesOnPendingRedemption: os.Getenv("BLOCK_NEW_ENTRIES_ON_PENDING_REDEMPTION") == "true",
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(parseEnvString("REDEEM_ENTRY_TIMING", RedeemEntryTimingNextMarket)),
+		RedeemGasMode:                      normalizeRedeemGasMode(parseEnvString("REDEEM_GAS_MODE", RedeemGasModeFast)),
 		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
 		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
 		CopytradeSizingMode:                normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
@@ -371,6 +377,17 @@ func normalizeRedeemEntryTiming(mode string) string {
 		return RedeemEntryTimingImmediate
 	default:
 		return RedeemEntryTimingNextMarket
+	}
+}
+
+func normalizeRedeemGasMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case RedeemGasModeNormal:
+		return RedeemGasModeNormal
+	case RedeemGasModeUrgent:
+		return RedeemGasModeUrgent
+	default:
+		return RedeemGasModeFast
 	}
 }
 
@@ -764,6 +781,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TakerCloseMarket:                   c.TakerCloseMarket,
 		BlockNewEntriesOnPendingRedemption: c.BlockNewEntriesOnPendingRedemption,
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(c.RedeemEntryTiming),
+		RedeemGasMode:                      normalizeRedeemGasMode(c.RedeemGasMode),
 		TakerCloseMarketTime:               c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:           c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:           c.TakerCloseMarketMinPrice,
@@ -840,6 +858,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseMarket = s.TakerCloseMarket
 	c.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	c.RedeemEntryTiming = normalizeRedeemEntryTiming(s.RedeemEntryTiming)
+	c.RedeemGasMode = normalizeRedeemGasMode(s.RedeemGasMode)
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
@@ -908,6 +927,7 @@ func (c *Config) SaveSettings() error {
 	envMap["SPLIT_REPLENISH_CAP_PCT"] = strconv.FormatFloat(c.SplitReplenishCapPct, 'f', -1, 64)
 	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
 	envMap["REDEEM_ENTRY_TIMING"] = normalizeRedeemEntryTiming(c.RedeemEntryTiming)
+	envMap["REDEEM_GAS_MODE"] = normalizeRedeemGasMode(c.RedeemGasMode)
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 	envMap["COPYTRADE_MAX_SLIPPAGE_PCT"] = strconv.FormatFloat(normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct), 'f', -1, 64)

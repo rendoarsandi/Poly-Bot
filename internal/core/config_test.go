@@ -75,6 +75,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"binanceSignalPolyMaxMoveCents": 1.2,
 		"binanceSignalPolyAdverseMoveCents": 0.4,
 		"binanceSignalSpreadMaxCents": 3.5,
+		"redeemGasMode": "urgent",
 		"paperArbMode": "maker",
 		"makerQuoteGap": 0.004
 	}`)
@@ -170,6 +171,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.BinanceSignalSpreadMaxCents != 3.5 {
 		t.Fatalf("expected JSON BinanceSignalSpreadMaxCents 3.5, got %.2f", cfg.BinanceSignalSpreadMaxCents)
 	}
+	if cfg.RedeemGasMode != RedeemGasModeUrgent {
+		t.Fatalf("expected JSON RedeemGasMode urgent, got %q", cfg.RedeemGasMode)
+	}
 	if cfg.PaperArbMode != "maker" {
 		t.Fatalf("expected JSON PaperArbMode maker, got %q", cfg.PaperArbMode)
 	}
@@ -237,6 +241,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.PaperArbMode = "maker"
 	cfg.MakerQuoteGap = 0.005
 	cfg.TradingHoursMode = "off"
+	cfg.RedeemGasMode = RedeemGasModeNormal
 
 	if err := cfg.SaveSettings(); err != nil {
 		t.Fatalf("SaveSettings failed: %v", err)
@@ -339,6 +344,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.TradingHoursMode != "off" {
 		t.Fatal("expected saved TradingHoursMode off")
+	}
+	if settings.RedeemGasMode != RedeemGasModeNormal {
+		t.Fatalf("expected saved RedeemGasMode normal, got %q", settings.RedeemGasMode)
 	}
 }
 

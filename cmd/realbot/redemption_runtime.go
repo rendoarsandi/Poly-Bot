@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 )
@@ -290,15 +291,19 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 
 			if !skipSubmit && pendingTxHash == "" {
 				redeemCtx, cancel := context.WithTimeout(context.Background(), realbotRedeemSubmitTimeout)
-				txHash, err := trader.SubmitRedeemOnChainUrgentForce(redeemCtx, conditionID, numOutcomes)
+				gasMode := core.RedeemGasModeFast
+				if tui != nil {
+					gasMode = realbotNormalizeRedeemGasMode(tui.GetSettings().RedeemGasMode)
+				}
+				txHash, err := trader.SubmitRedeemOnChainForceWithGasMode(redeemCtx, conditionID, numOutcomes, gasMode)
 				cancel()
 
 				if err == nil {
 					pendingTxHash = txHash
-					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted: %s", marketID, attempt, realbotShortTxHash(txHash))
+					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted (%s gas): %s", marketID, attempt, gasMode, realbotShortTxHash(txHash))
 				} else if realbotShouldKeepPendingRedeemTx(txHash, err) {
 					pendingTxHash = txHash
-					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted, waiting on-chain: %s", marketID, attempt, realbotShortTxHash(txHash))
+					tui.LogEvent("[%s] ⏳ Redeem attempt %d submitted (%s gas), waiting on-chain: %s", marketID, attempt, gasMode, realbotShortTxHash(txHash))
 				} else {
 					tui.LogEvent("[%s] ⚠️ Redeem attempt %d failed: %v", marketID, attempt, err)
 				}

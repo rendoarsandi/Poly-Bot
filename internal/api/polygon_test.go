@@ -298,6 +298,46 @@ func TestUrgentGasFeesForWriteTxUsesPriorityFloor(t *testing.T) {
 	}
 }
 
+func TestFastGasFeesForWriteTxUsesModeratePriorityFloor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "eth_gasPrice":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x64"}`))
+		case "eth_maxPriorityFeePerGas":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x20"}`))
+		case "eth_getBlockByNumber":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"baseFeePerGas":"0x65"}}`))
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewPolygonClient(server.URL)
+	fees, err := client.fastGasFeesForWriteTx(context.Background())
+	if err != nil {
+		t.Fatalf("fastGasFeesForWriteTx() error = %v", err)
+	}
+	if !fees.UseDynamic() {
+		t.Fatal("expected dynamic fee tx configuration")
+	}
+	if fees.LegacyGasPrice == nil || fees.LegacyGasPrice.String() != "170" {
+		t.Fatalf("expected fast bumped legacy gas price 170, got %v", fees.LegacyGasPrice)
+	}
+	if fees.MaxPriorityFeePerGas == nil || fees.MaxPriorityFeePerGas.Cmp(polygonFastMinPriorityFeePerGas) != 0 {
+		t.Fatalf("expected fast priority fee floor %v, got %v", polygonFastMinPriorityFeePerGas, fees.MaxPriorityFeePerGas)
+	}
+	wantMaxFee := new(big.Int).Mul(big.NewInt(101), big.NewInt(polygonFastBaseFeeMultiplier))
+	wantMaxFee.Add(wantMaxFee, polygonFastMinPriorityFeePerGas)
+	if fees.MaxFeePerGas == nil || fees.MaxFeePerGas.Cmp(wantMaxFee) != 0 {
+		t.Fatalf("expected fast max fee %v, got %v", wantMaxFee, fees.MaxFeePerGas)
+	}
+}
+
 func TestGasFeesForWriteTxFallsBackToLegacyWhenPriorityUnsupported(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req RPCRequest

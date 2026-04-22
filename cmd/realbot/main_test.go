@@ -440,6 +440,7 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 		PaperBalance:                42.5,
 		PaperArbMode:                paperArbModeLaddered,
 		LadderedTakerMaxSlippagePct: 7,
+		RedeemGasMode:               core.RedeemGasModeUrgent,
 	}
 
 	settings := realbotTUISettingsFromConfig(cfg)
@@ -452,10 +453,14 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	if settings.LadderedTakerMaxSlippagePct != 7 {
 		t.Fatalf("expected TUI settings to include laddered slippage, got %.0f", settings.LadderedTakerMaxSlippagePct)
 	}
+	if settings.RedeemGasMode != core.RedeemGasModeUrgent {
+		t.Fatalf("expected TUI settings to include redeem gas mode, got %q", settings.RedeemGasMode)
+	}
 
 	settings.ExecutionBackend = core.ExecutionBackendLive
 	settings.PaperBalance = 77
 	settings.LadderedTakerMaxSlippagePct = 13
+	settings.RedeemGasMode = core.RedeemGasModeNormal
 	applyRealbotTUISettings(cfg, settings)
 	if cfg.ExecutionBackend != core.ExecutionBackendLive {
 		t.Fatalf("expected config to receive updated execution backend, got %q", cfg.ExecutionBackend)
@@ -465,6 +470,9 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	}
 	if cfg.LadderedTakerMaxSlippagePct != 13 {
 		t.Fatalf("expected config to receive updated laddered slippage, got %.0f", cfg.LadderedTakerMaxSlippagePct)
+	}
+	if cfg.RedeemGasMode != core.RedeemGasModeNormal {
+		t.Fatalf("expected config to receive updated redeem gas mode, got %q", cfg.RedeemGasMode)
 	}
 }
 

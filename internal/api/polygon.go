@@ -13,6 +13,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"Market-bot/internal/core"
 )
 
 // Polygon USDC contract address
@@ -37,6 +39,9 @@ const (
 	polygonGasPriceBumpNumerator         = 15
 	polygonGasPriceBumpDenominator       = 10
 	polygonBaseFeeMultiplier             = 2
+	polygonFastGasPriceBumpNumerator     = 17
+	polygonFastGasPriceBumpDenominator   = 10
+	polygonFastBaseFeeMultiplier         = 2
 	polygonUrgentGasPriceBumpNumerator   = 20
 	polygonUrgentGasPriceBumpDenominator = 10
 	polygonUrgentBaseFeeMultiplier       = 3
@@ -44,7 +49,10 @@ const (
 	payoutNumeratorsSelector             = "0x0504c814"
 )
 
-var polygonUrgentMinPriorityFeePerGas = big.NewInt(40_000_000_000) // 40 gwei
+var (
+	polygonFastMinPriorityFeePerGas   = big.NewInt(20_000_000_000) // 20 gwei
+	polygonUrgentMinPriorityFeePerGas = big.NewInt(40_000_000_000) // 40 gwei
+)
 
 // PolygonClient handles Polygon RPC calls
 type PolygonClient struct {
@@ -194,6 +202,18 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
 }
 
+// RedeemPositionsFast submits redeemPositions with a moderate gas profile.
+func (c *PolygonClient) RedeemPositionsFast(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	parent := "0000000000000000000000000000000000000000000000000000000000000000"
+	cond := strings.TrimPrefix(conditionID, "0x")
+	offset := "0000000000000000000000000000000000000000000000000000000000000080"
+	indexSetsData := generateIndexSetsHex(numOutcomes)
+
+	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
+	return c.signAndSendFastWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
+}
+
 // RedeemPositionsUrgent submits the same redeem call with a more aggressive
 // gas policy so resolved-market payouts clear faster.
 func (c *PolygonClient) RedeemPositionsUrgent(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
@@ -205,6 +225,19 @@ func (c *PolygonClient) RedeemPositionsUrgent(ctx context.Context, signer *Signe
 
 	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
 	return c.signAndSendUrgentWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 350000, data)
+}
+
+// RedeemPositionsWithGasMode submits redeemPositions using normal, fast, or
+// urgent gas settings.
+func (c *PolygonClient) RedeemPositionsWithGasMode(ctx context.Context, signer *Signer, conditionID string, numOutcomes int, gasMode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(gasMode)) {
+	case core.RedeemGasModeNormal:
+		return c.RedeemPositions(ctx, signer, conditionID, numOutcomes)
+	case core.RedeemGasModeUrgent:
+		return c.RedeemPositionsUrgent(ctx, signer, conditionID, numOutcomes)
+	default:
+		return c.RedeemPositionsFast(ctx, signer, conditionID, numOutcomes)
+	}
 }
 
 // SplitPositions converts USDC into YES+NO tokens via CTF contract (PAID WRITE)
@@ -306,14 +339,18 @@ func (f writeTxFees) UseDynamic() bool {
 }
 
 func (c *PolygonClient) gasFeesForWriteTx(ctx context.Context) (writeTxFees, error) {
-	return c.gasFeesForWriteTxMode(ctx, false)
+	return c.gasFeesForWriteTxMode(ctx, core.RedeemGasModeNormal)
+}
+
+func (c *PolygonClient) fastGasFeesForWriteTx(ctx context.Context) (writeTxFees, error) {
+	return c.gasFeesForWriteTxMode(ctx, core.RedeemGasModeFast)
 }
 
 func (c *PolygonClient) urgentGasFeesForWriteTx(ctx context.Context) (writeTxFees, error) {
-	return c.gasFeesForWriteTxMode(ctx, true)
+	return c.gasFeesForWriteTxMode(ctx, core.RedeemGasModeUrgent)
 }
 
-func (c *PolygonClient) gasFeesForWriteTxMode(ctx context.Context, urgent bool) (writeTxFees, error) {
+func (c *PolygonClient) gasFeesForWriteTxMode(ctx context.Context, gasMode string) (writeTxFees, error) {
 	gasPrice, err := c.GetGasPrice(ctx)
 	if err != nil {
 		return writeTxFees{}, err
@@ -322,7 +359,13 @@ func (c *PolygonClient) gasFeesForWriteTxMode(ctx context.Context, urgent bool) 
 	legacyBumpDen := int64(polygonGasPriceBumpDenominator)
 	baseFeeMultiplier := int64(polygonBaseFeeMultiplier)
 	minPriorityFee := (*big.Int)(nil)
-	if urgent {
+	switch strings.ToLower(strings.TrimSpace(gasMode)) {
+	case core.RedeemGasModeFast:
+		legacyBumpNum = polygonFastGasPriceBumpNumerator
+		legacyBumpDen = polygonFastGasPriceBumpDenominator
+		baseFeeMultiplier = polygonFastBaseFeeMultiplier
+		minPriorityFee = polygonFastMinPriorityFeePerGas
+	case core.RedeemGasModeUrgent:
 		legacyBumpNum = polygonUrgentGasPriceBumpNumerator
 		legacyBumpDen = polygonUrgentGasPriceBumpDenominator
 		baseFeeMultiplier = polygonUrgentBaseFeeMultiplier
@@ -365,6 +408,19 @@ func (c *PolygonClient) signAndSendWriteTransaction(ctx context.Context, signer 
 	}
 
 	fees, err := c.gasFeesForWriteTx(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.signAndSendWriteTransactionWithFees(ctx, signer, nonce, to, value, gasLimit, data, fees)
+}
+
+func (c *PolygonClient) signAndSendFastWriteTransaction(ctx context.Context, signer *Signer, to string, value *big.Int, gasLimit uint64, data string) (string, error) {
+	nonce, err := c.GetNonce(ctx, signer.Address())
+	if err != nil {
+		return "", err
+	}
+
+	fees, err := c.fastGasFeesForWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}

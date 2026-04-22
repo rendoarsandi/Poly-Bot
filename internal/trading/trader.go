@@ -1405,6 +1405,17 @@ func (t *RealTrader) SubmitRedeemOnChainForce(ctx context.Context, conditionID s
 	})
 }
 
+// SubmitRedeemOnChainForceWithGasMode sends the redeem transaction immediately
+// using the configured normal, fast, or urgent gas profile.
+func (t *RealTrader) SubmitRedeemOnChainForceWithGasMode(ctx context.Context, conditionID string, numOutcomes int, gasMode string) (string, error) {
+	if t.config.Exchange == "kalshi" {
+		return "", fmt.Errorf("redeem not supported/needed on kalshi")
+	}
+	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
+		return t.polygon.RedeemPositionsWithGasMode(ctx, t.client.GetSigner(), conditionID, numOutcomes, gasMode)
+	})
+}
+
 // SubmitRedeemOnChainUrgentForce sends the redeem transaction immediately with
 // the urgent gas profile and leaves confirmation tracking to the caller.
 func (t *RealTrader) SubmitRedeemOnChainUrgentForce(ctx context.Context, conditionID string, numOutcomes int) (string, error) {

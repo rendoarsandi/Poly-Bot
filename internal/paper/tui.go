@@ -563,6 +563,7 @@ type TUISettings struct {
 	TakerCloseMarket                   bool    // e.g. force buy higher side close to end
 	BlockNewEntriesOnPendingRedemption bool    // block fresh entries while prior-round inventory is still awaiting redemption
 	RedeemEntryTiming                  string  // when wait-redeem is ON: "immediate" or "next-market" re-entry behavior
+	RedeemGasMode                      string  // "normal", "fast", or "urgent" gas profile for live redeems
 	TakerCloseMarketTime               int     // e.g. 5 seconds
 	TakerCloseMarketSlippage           float64 // e.g. 0.99 limit price
 	TakerCloseMarketMinPrice           float64 // e.g. 0.60 min spike price
@@ -599,6 +600,7 @@ const (
 	settingsRowTakerCloseMarket
 	settingsRowBlockPendingRedemption
 	settingsRowRedeemEntryTiming
+	settingsRowRedeemGasMode
 	settingsRowMinAskPrice
 	settingsRowMaxAskPrice
 	settingsRowMakerMergeBuffer
@@ -707,6 +709,11 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	}
 	if idx == settingsRowRedeemEntryTiming {
 		return laddered && cfg.BlockNewEntriesOnPendingRedemption
+	}
+	if idx == settingsRowRedeemGasMode {
+		return strings.EqualFold(mode, "Real") &&
+			!strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper) &&
+			!kalshi
 	}
 
 	if kalshi {
@@ -898,6 +905,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Wait Redeem Before Entry"
 	case settingsRowRedeemEntryTiming:
 		return "Redeem Re-entry Timing"
+	case settingsRowRedeemGasMode:
+		return "Redeem Gas Speed"
 	case settingsRowMinAskPrice:
 		if maker {
 			return "Maker Min Buy Price"
@@ -1103,6 +1112,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	}
 	s.LadderedTakerReentryMoveCents = normalizeLadderedTakerReentryMoveCents(s.LadderedTakerReentryMoveCents)
 	s.RedeemEntryTiming = normalizeRedeemEntryTiming(s.RedeemEntryTiming)
+	s.RedeemGasMode = normalizeRedeemGasMode(s.RedeemGasMode)
 	if s.LadderedTakerMaxSlippagePct < 0 {
 		s.LadderedTakerMaxSlippagePct = 0
 	} else if s.LadderedTakerMaxSlippagePct > 99.0 {
@@ -1176,12 +1186,41 @@ func normalizeRedeemEntryTiming(mode string) string {
 	}
 }
 
+func normalizeRedeemGasMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case core.RedeemGasModeNormal:
+		return core.RedeemGasModeNormal
+	case core.RedeemGasModeUrgent:
+		return core.RedeemGasModeUrgent
+	default:
+		return core.RedeemGasModeFast
+	}
+}
+
 func cycleRedeemEntryTiming(mode string, delta int) string {
 	modes := []string{
 		core.RedeemEntryTimingNextMarket,
 		core.RedeemEntryTimingImmediate,
 	}
 	current := normalizeRedeemEntryTiming(mode)
+	idx := 0
+	for i, candidate := range modes {
+		if current == candidate {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(modes)) % len(modes)
+	return modes[idx]
+}
+
+func cycleRedeemGasMode(mode string, delta int) string {
+	modes := []string{
+		core.RedeemGasModeNormal,
+		core.RedeemGasModeFast,
+		core.RedeemGasModeUrgent,
+	}
+	current := normalizeRedeemGasMode(mode)
 	idx := 0
 	for i, candidate := range modes {
 		if current == candidate {
@@ -2583,6 +2622,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowRedeemEntryTiming:
 					m.tui.settings.RedeemEntryTiming = cycleRedeemEntryTiming(m.tui.settings.RedeemEntryTiming, -1)
 					changed = true
+				case settingsRowRedeemGasMode:
+					m.tui.settings.RedeemGasMode = cycleRedeemGasMode(m.tui.settings.RedeemGasMode, -1)
+					changed = true
 				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice -= 0.01
 					if m.tui.settings.MinAskPrice < 0.01 {
@@ -2850,6 +2892,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowRedeemEntryTiming:
 					m.tui.settings.RedeemEntryTiming = cycleRedeemEntryTiming(m.tui.settings.RedeemEntryTiming, 1)
+					changed = true
+				case settingsRowRedeemGasMode:
+					m.tui.settings.RedeemGasMode = cycleRedeemGasMode(m.tui.settings.RedeemGasMode, 1)
 					changed = true
 				case settingsRowMinAskPrice:
 					m.tui.settings.MinAskPrice += 0.01
@@ -7013,6 +7058,20 @@ func (m tuiModel) renderSettings(w int) string {
 					return styleGreen.Render(" IMMEDIATE ")
 				}
 				return styleYellow.Render(" NEXT FULL ")
+			}(),
+			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowRedeemGasMode),
+			value: func() string {
+				switch normalizeRedeemGasMode(cfg.RedeemGasMode) {
+				case core.RedeemGasModeNormal:
+					return styleGreen.Render(" normal ")
+				case core.RedeemGasModeUrgent:
+					return styleRed.Render(" urgent ")
+				default:
+					return styleYellow.Render(" fast ")
+				}
 			}(),
 			bar: "",
 		},
