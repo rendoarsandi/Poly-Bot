@@ -319,7 +319,7 @@ func realbotShouldAdvanceLadderedEntry(requestedQty, filledQty float64) bool {
 	return filledQty >= minOnChainActionShares-1e-9
 }
 
-func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64) (bool, string) {
+func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price, minWinningPnL float64) (bool, string) {
 	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 || price <= 0 {
 		return false, ""
 	}
@@ -350,6 +350,7 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 	costByOutcome[activeOutcome] += projectedCost
 
 	totalCost := costByOutcome[outcomes[0]] + costByOutcome[outcomes[1]]
+	activeResolvePnL := qtyByOutcome[activeOutcome] - totalCost
 	resolvePnL0 := qtyByOutcome[outcomes[0]] - totalCost
 	resolvePnL1 := qtyByOutcome[outcomes[1]] - totalCost
 	worstOutcome := outcomes[0]
@@ -361,6 +362,14 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 		worstResolvePnL = resolvePnL1
 		bestOutcome = outcomes[0]
 		bestResolvePnL = resolvePnL0
+	}
+
+	if minWinningPnL > 0 && activeResolvePnL+1e-9 < minWinningPnL {
+		return true, fmt.Sprintf("projected %s resolve PnL would be $%.2f, below minimum $%.2f",
+			activeOutcome,
+			activeResolvePnL,
+			minWinningPnL,
+		)
 	}
 
 	maxAllowedWorstLoss := -math.Max(projectedCost*2.0, minOnChainActionShares)

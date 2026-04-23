@@ -518,6 +518,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		LadderedTakerSizeShares:            cfg.LadderedTakerSizeShares,
 		LadderedTakerReentryMoveCents:      cfg.LadderedTakerReentryMoveCents,
 		LadderedTakerMaxSlippagePct:        cfg.LadderedTakerMaxSlippagePct,
+		LadderedTakerMinWinningPnL:         cfg.LadderedTakerMinWinningPnL,
 		BuyExecutionMarginFloorPercent:     cfg.BuyExecutionMarginFloorPercent,
 		SplitMinMarginSell:                 cfg.SplitMinMarginSell,
 		SplitStrategyEnabled:               cfg.SplitStrategyEnabled,
@@ -573,6 +574,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.LadderedTakerSizeShares = s.LadderedTakerSizeShares
 	cfg.LadderedTakerReentryMoveCents = s.LadderedTakerReentryMoveCents
 	cfg.LadderedTakerMaxSlippagePct = s.LadderedTakerMaxSlippagePct
+	cfg.LadderedTakerMinWinningPnL = s.LadderedTakerMinWinningPnL
 	cfg.BuyExecutionMarginFloorPercent = s.BuyExecutionMarginFloorPercent
 	cfg.SplitMinMarginSell = s.SplitMinMarginSell
 	cfg.SplitStrategyEnabled = s.SplitStrategyEnabled

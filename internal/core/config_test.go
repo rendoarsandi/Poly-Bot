@@ -67,6 +67,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"ladderedTakerSizeUsdc": 2.2,
 		"ladderedTakerSizeShares": 4.5,
 		"ladderedTakerReentryMoveCents": 1.6,
+		"ladderedTakerMinWinningPnl": 0.75,
 		"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
@@ -146,6 +147,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	}
 	if cfg.LadderedTakerReentryMoveCents != 1.6 {
 		t.Fatalf("expected JSON LadderedTakerReentryMoveCents 1.6, got %.1f", cfg.LadderedTakerReentryMoveCents)
+	}
+	if cfg.LadderedTakerMinWinningPnL != 0.75 {
+		t.Fatalf("expected JSON LadderedTakerMinWinningPnL 0.75, got %.2f", cfg.LadderedTakerMinWinningPnL)
 	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
@@ -230,6 +234,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.LadderedTakerSizeShares = 3.5
 	cfg.LadderedTakerReentryMoveCents = 1.9
 	cfg.LadderedTakerMaxSlippagePct = 2.0
+	cfg.LadderedTakerMinWinningPnL = 0.8
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -311,6 +316,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.LadderedTakerMaxSlippagePct != 2.0 {
 		t.Fatalf("expected saved LadderedTakerMaxSlippagePct 2.0, got %.1f", settings.LadderedTakerMaxSlippagePct)
+	}
+	if settings.LadderedTakerMinWinningPnL != 0.8 {
+		t.Fatalf("expected saved LadderedTakerMinWinningPnL 0.8, got %.2f", settings.LadderedTakerMinWinningPnL)
 	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)
