@@ -5673,7 +5673,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	if isRealMode {
 		cashLabel = "Spendable"
 	}
-	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s  ·  Max Loss %s",
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s  ·  Loss Streak %s",
 		cashLabel,
 		styleBold.Render(cashText),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),

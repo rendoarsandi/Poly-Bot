@@ -3809,4 +3809,7 @@ func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testi
 	if !strings.Contains(rendered, "Max DD -$5.00") {
 		t.Fatalf("expected account status to show max dollar drawdown explicitly, got %q", rendered)
 	}
+	if !strings.Contains(rendered, "Loss") || !strings.Contains(rendered, "Streak $0.00") {
+		t.Fatalf("expected account status to label realized loss streak explicitly, got %q", rendered)
+	}
 }
