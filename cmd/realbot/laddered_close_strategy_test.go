@@ -104,6 +104,20 @@ func TestRealbotLadderedOneHourCloseCandidateRequiresLiveNearWinningQuote(t *tes
 	}
 }
 
+func TestRealbotLadderedOneHourCloseCandidateIgnoresHighAskLowBidLoser(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "btc-updown-1h-1700000000"
+	if _, err := engine.BuyForMarket(marketID, "Down", 0.24, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	bids := map[string]float64{"Down": 0.24}
+	asks := map[string]float64{"Down": 0.99}
+	if candidate, ok := realbotLadderedOneHourCloseCandidate(marketID, []string{"Down", "Up"}, engine, bids, asks); ok {
+		t.Fatalf("expected low-bid loser to be skipped despite high ask, got %+v", candidate)
+	}
+}
+
 func TestRealbotLadderCloseStateMonitorLifecycle(t *testing.T) {
 	ladderState := newRealbotLadderCloseState()
 	marketID := "btc-updown-1h-1700000000"
