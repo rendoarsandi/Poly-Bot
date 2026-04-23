@@ -319,31 +319,60 @@ func realbotShouldAdvanceLadderedEntry(requestedQty, filledQty float64) bool {
 	return filledQty >= minOnChainActionShares-1e-9
 }
 
-func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty float64) (bool, string) {
-	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 {
+func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64) (bool, string) {
+	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 || price <= 0 {
 		return false, ""
 	}
 
-	qty0, _, _ := realbotLocalOutcomePosition(engine, marketID, outcomes[0])
-	qty1, _, _ := realbotLocalOutcomePosition(engine, marketID, outcomes[1])
-	activeQty, otherQty := qty0, qty1
-	activeOutcome, otherOutcome := outcomes[0], outcomes[1]
-	if side == 1 {
-		activeQty, otherQty = qty1, qty0
-		activeOutcome, otherOutcome = outcomes[1], outcomes[0]
+	positions := engine.GetPositions()
+	qtyByOutcome := map[string]float64{
+		outcomes[0]: 0,
+		outcomes[1]: 0,
+	}
+	costByOutcome := map[string]float64{
+		outcomes[0]: 0,
+		outcomes[1]: 0,
+	}
+	for _, pos := range positions {
+		if pos.MarketID != marketID || pos.Quantity <= 0 {
+			continue
+		}
+		if _, ok := qtyByOutcome[pos.Outcome]; !ok {
+			continue
+		}
+		qtyByOutcome[pos.Outcome] += pos.Quantity
+		costByOutcome[pos.Outcome] += pos.TotalCost
 	}
 
-	tolerance := math.Max(requestedQty*2.0, minOnChainActionShares)
-	projectedActive := activeQty + requestedQty
-	if projectedActive <= otherQty+tolerance+1e-9 {
+	activeOutcome := outcomes[side]
+	projectedCost := requestedQty * price
+	qtyByOutcome[activeOutcome] += requestedQty
+	costByOutcome[activeOutcome] += projectedCost
+
+	totalCost := costByOutcome[outcomes[0]] + costByOutcome[outcomes[1]]
+	resolvePnL0 := qtyByOutcome[outcomes[0]] - totalCost
+	resolvePnL1 := qtyByOutcome[outcomes[1]] - totalCost
+	worstOutcome := outcomes[0]
+	worstResolvePnL := resolvePnL0
+	bestOutcome := outcomes[1]
+	bestResolvePnL := resolvePnL1
+	if resolvePnL1 < resolvePnL0 {
+		worstOutcome = outcomes[1]
+		worstResolvePnL = resolvePnL1
+		bestOutcome = outcomes[0]
+		bestResolvePnL = resolvePnL0
+	}
+
+	maxAllowedWorstLoss := -math.Max(projectedCost*2.0, minOnChainActionShares)
+	if worstResolvePnL >= maxAllowedWorstLoss-1e-9 {
 		return false, ""
 	}
-	return true, fmt.Sprintf("%s inventory would be too heavy: %s→%s vs %s %s (cap +%s)",
-		activeOutcome,
-		formatShareQty(activeQty),
-		formatShareQty(projectedActive),
-		otherOutcome,
-		formatShareQty(otherQty),
-		formatShareQty(tolerance),
+
+	return true, fmt.Sprintf("projected worst-case resolve PnL would fall to $%.2f if %s wins (best %s=$%.2f, floor $%.2f)",
+		worstResolvePnL,
+		worstOutcome,
+		bestOutcome,
+		bestResolvePnL,
+		maxAllowedWorstLoss,
 	)
 }
