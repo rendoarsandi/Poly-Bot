@@ -99,7 +99,7 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 			splitShares = splitInventory.GetSplitShares(marketID, outcome)
 		}
 		var adjusted bool
-		localBoughtShares, adjusted = syncWalletTruthOutcomePosition(engine, tui, marketID, outcome, localBoughtShares, onChainShares, splitShares)
+		localBoughtShares, adjusted = syncWalletTruthOutcomePosition(engine, tui, marketID, outcome, localBoughtShares, onChainShares, splitShares+engine.GetSettledLoserShares(marketID, outcome))
 		if adjusted {
 			changed = true
 		}

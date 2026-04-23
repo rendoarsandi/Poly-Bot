@@ -244,12 +244,14 @@ func realbotSettleLadderedOneHourOppositeLosers(engine *paper.Engine, tui *paper
 
 	result.TotalPnL = -result.LosingCost
 	engine.AdjustRealizedPnL(result.TotalPnL)
+	engine.RecordSettledLoser(marketID, result.LosingOutcome, result.LosingShares)
 	if tui != nil {
 		tui.AmendMostRecentRoundForMarket(marketID, result.TotalPnL, []*paper.RedemptionResult{result})
 		tui.LogEvent("[%s] 🧹 1h ladder close settled opposite loser: %s %s removed (-$%.2f)", marketID, formatShareQty(result.LosingShares), result.LosingOutcome, result.LosingCost)
 		if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			tui.ClearMarketInventoryStatus(marketID)
 		}
+		tui.UpdateWalletTruthResolution(marketID, true, result.WinningOutcome)
 	}
 	return result
 }
@@ -334,7 +336,7 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 				confirmedQty := trader.GetConfirmedFillSize(current.OrderID)
 				if confirmedQty > current.MirroredQty+0.0001 {
 					delta := confirmedQty - current.MirroredQty
-					applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, current.Outcome, delta, realbotLadderedOneHourClosePrice, current.FeeRate, trader.IsPaperMode())
+					applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, current.Outcome, delta, realbotLadderedOneHourClosePrice, current.FeeRate, true)
 					if applied > 0 {
 						ladderState.setMirroredQty(marketID, current.MirroredQty+applied)
 					}
@@ -403,7 +405,7 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 		if result.AcknowledgedQty > 0 && result.AcknowledgedNotional > 0 {
 			fillPrice = result.AcknowledgedNotional / result.AcknowledgedQty
 		}
-		mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate, trader.IsPaperMode())
+		mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate, true)
 	}
 	ladderState.setMirroredQty(marketID, mirroredQty)
 	if mirroredQty >= candidate.Qty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {

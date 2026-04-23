@@ -39,6 +39,7 @@
 - Relevant runtime settings live in `config/*.settings.json`: `binanceQuoteAsset`, `binanceSignalThresholdPct`, `binanceSignalLookbackMs`, `binanceSignalCooldownMs`, `binanceSignalMaxAgeMs`, `binanceSignalPolyMaxMoveCents`, `binanceSignalPolyAdverseMoveCents`, and `binanceSignalSpreadMaxCents`.
 - When adjusting this mode, test both signal math and live quote freshness guards. The critical failure mode is firing after Polymarket has already caught up.
 - `realbot` can run with `executionBackend = paper`. In that mode, the embedded paper trader already mutates the paper engine on confirmed buys/sells. Do not mirror the same fill into `engine.BuyForMarket` / `engine.SellForMarket` a second time from strategy code, or inventory will double while order history stays single-counted.
+- When forcibly hiding or resolving a live position prior to actual on-chain resolution (like in the 1h ladder close), you MUST use `engine.RecordSettledLoser(marketID, outcome, shares)` so that `walletTruth` polling does not resurrect the balance. You should also call `tui.UpdateWalletTruthResolution(marketID, true, winningOutcome)` to hide the market from the display instead of leaving it stuck in `WAITING RESOLUTION`.
 
 ## Security & Configuration Tips
 - Keep secrets in `.env`, not in `config/*.json` or committed files.

@@ -68,6 +68,7 @@ type Engine struct {
 	// Split inventory reference (for equity calculation)
 	// Split tokens are worth $1.00 per YES+NO pair
 	splitInventories []*SplitInventory
+	settledLosers    map[string]float64
 
 	// Pending on-chain redemption payouts that are already economically locked in
 	// but have not yet returned to wallet cash.
@@ -114,6 +115,7 @@ func NewEngine(startingBalance float64) *Engine {
 		sizingBalance:      startingBalance,
 		maxTrades:          1000, // Cap trade history to prevent memory growth
 		positions:          make(map[string]*Position),
+		settledLosers:      make(map[string]float64),
 		pendingRedemptions: make(map[string]float64),
 		settledRedemptions: make(map[string]time.Time),
 		trades:             make([]Trade, 0),
@@ -1724,4 +1726,24 @@ func (e *Engine) GetCompoundStats() (multiplier float64, rounds int, profitable 
 	}
 
 	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds, e.losingRounds, sizing
+}
+
+// RecordSettledLoser records a settled losing outcome so wallet truth avoids resurrecting it
+func (e *Engine) RecordSettledLoser(marketID, outcome string, shares float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.settledLosers == nil {
+		e.settledLosers = make(map[string]float64)
+	}
+	e.settledLosers[marketID+":"+outcome] += shares
+}
+
+// GetSettledLoserShares gets tracked settled losers
+func (e *Engine) GetSettledLoserShares(marketID, outcome string) float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.settledLosers == nil {
+		return 0
+	}
+	return e.settledLosers[marketID+":"+outcome]
 }
