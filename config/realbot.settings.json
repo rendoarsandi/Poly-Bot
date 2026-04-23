@@ -38,7 +38,7 @@
   "makerMinQuoteValue": 5,
   "splitInitialCapPct": 0.25,
   "splitReplenishCapPct": 0.5,
-  "tradingHoursMode": "off",
+  "tradingHoursMode": "weekdays trade only",
   "takerCloseMarket": true,
   "blockNewEntriesOnPendingRedemption": false,
   "redeemEntryTiming": "immediate",

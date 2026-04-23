@@ -52,14 +52,29 @@ func realbotConsumeAsyncEntryResult(entryExecutionDone <-chan realbotAsyncEntryR
 }
 
 func realbotTradingHoursAllowed(liveCfg paper.TUISettings) bool {
-	switch liveCfg.TradingHoursMode {
-	case "weekdays trade only":
-		return core.IsUSWeekday(core.USTime(time.Now()))
-	case "us open only":
-		return core.IsUSMarketOpen(time.Now())
-	default:
-		return true
+	mode, ok := core.NormalizeTradingHoursMode(liveCfg.TradingHoursMode)
+	if !ok {
+		return false
 	}
+	now := time.Now()
+	switch mode {
+	case core.TradingHoursModeWeekdays:
+		return core.IsLocalWeekday(now)
+	case core.TradingHoursModeUSOpen:
+		return core.IsUSMarketOpen(now)
+	case core.TradingHoursModeOff:
+		return true
+	default:
+		return core.IsTradingHourOpen(now, mode)
+	}
+}
+
+func realbotTradingHoursClock(liveCfg paper.TUISettings, now time.Time) string {
+	mode, ok := core.NormalizeTradingHoursMode(liveCfg.TradingHoursMode)
+	if ok && mode == core.TradingHoursModeUSOpen {
+		return core.USTime(now).Format("Mon 2006-01-02 15:04:05 MST")
+	}
+	return core.LocalTime(now).Format("Mon 2006-01-02 15:04:05 MST")
 }
 
 func realbotHandleEntryBlockNotice(marketID string, blocked bool, reason string, tui *paper.TUI, lastReason *string) {

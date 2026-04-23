@@ -104,7 +104,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	var lastTakerCloseLog time.Time
 	var lastTakerCloseLogKey string
 	var lastTakerCloseQuoteRefresh time.Time
-	usWeekdayGateClosedLogged := false
+	tradingGateClosedLogged := false
 	manualTradingPauseLogged := false
 	preserveWalletTruth := false
 	defer func() {
@@ -198,10 +198,10 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			mergeCoordinator:     mergeCoordinator,
 			takerCloseExecutedAt: takerCloseExecutedAt,
 		}, &realbotMarketGuardState{
-			usWeekdayGateClosedLogged: &usWeekdayGateClosedLogged,
-			manualTradingPauseLogged:  &manualTradingPauseLogged,
-			nextNearCloseCleanup:      &nextNearCloseCleanup,
-			nearExpiryNoticeSent:      &nearExpiryNoticeSent,
+			tradingGateClosedLogged:  &tradingGateClosedLogged,
+			manualTradingPauseLogged: &manualTradingPauseLogged,
+			nextNearCloseCleanup:     &nextNearCloseCleanup,
+			nearExpiryNoticeSent:     &nearExpiryNoticeSent,
 		})
 		liveCfg := guardResult.liveCfg
 		entryTradingAllowed := guardResult.entryTradingAllowed

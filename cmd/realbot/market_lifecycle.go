@@ -201,10 +201,10 @@ type realbotMarketGuardArgs struct {
 }
 
 type realbotMarketGuardState struct {
-	usWeekdayGateClosedLogged *bool
-	manualTradingPauseLogged  *bool
-	nextNearCloseCleanup      *time.Time
-	nearExpiryNoticeSent      *bool
+	tradingGateClosedLogged  *bool
+	manualTradingPauseLogged *bool
+	nextNearCloseCleanup     *time.Time
+	nearExpiryNoticeSent     *bool
 }
 
 type realbotMarketGuardResult struct {
@@ -217,18 +217,19 @@ type realbotMarketGuardResult struct {
 
 func realbotHandleMarketGuards(args realbotMarketGuardArgs, state *realbotMarketGuardState) realbotMarketGuardResult {
 	liveCfg := args.tui.GetSettings()
-	usNow := core.USTime(time.Now())
+	now := time.Now()
+	tradingGateClock := realbotTradingHoursClock(liveCfg, now)
 
 	weekdayTradingAllowed := realbotTradingHoursAllowed(liveCfg)
 
 	if !weekdayTradingAllowed {
-		if state != nil && state.usWeekdayGateClosedLogged != nil && !*state.usWeekdayGateClosedLogged {
-			args.tui.LogEvent("[%s] 🗓️ Trading gate closed at %s - new trades paused", args.marketID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
-			*state.usWeekdayGateClosedLogged = true
+		if state != nil && state.tradingGateClosedLogged != nil && !*state.tradingGateClosedLogged {
+			args.tui.LogEvent("[%s] 🗓️ Trading gate closed at %s - new trades paused", args.marketID, tradingGateClock)
+			*state.tradingGateClosedLogged = true
 		}
-	} else if state != nil && state.usWeekdayGateClosedLogged != nil && *state.usWeekdayGateClosedLogged {
-		args.tui.LogEvent("[%s] ✅ Trading gate open at %s - trading resumed", args.marketID, usNow.Format("Mon 2006-01-02 15:04:05 MST"))
-		*state.usWeekdayGateClosedLogged = false
+	} else if state != nil && state.tradingGateClosedLogged != nil && *state.tradingGateClosedLogged {
+		args.tui.LogEvent("[%s] ✅ Trading gate open at %s - trading resumed", args.marketID, tradingGateClock)
+		*state.tradingGateClosedLogged = false
 	}
 
 	manualTradingPaused := args.tui.IsTradingPaused()

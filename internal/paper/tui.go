@@ -297,28 +297,38 @@ func formatBinanceSignalPrice(symbol string, price float64) string {
 }
 
 func renderTradingHoursStatus(mode string, now time.Time) string {
+	mode, valid := core.NormalizeTradingHoursMode(mode)
+	localNow := core.LocalTime(now)
+	localClock := localNow.Format("Mon 2006-01-02 15:04:05 MST")
 	usNow := core.USTime(now)
 	usClock := usNow.Format("Mon 2006-01-02 15:04:05 MST")
 
-	if mode == "off" {
-		return styleDimmed.Render("US time " + usClock + "  ·  Trading Gate OFF (24/7)")
+	if !valid {
+		return styleRed.Render("Jakarta time " + localClock + "  ·  Invalid Jakarta Gate (use HH:MM-HH:MM)")
 	}
 
-	if mode == "weekdays trade only" {
-		if core.IsUSWeekday(usNow) {
-			return styleGreen.Render("US time " + usClock + "  ·  Weekday Gate OPEN (trading enabled)")
+	if mode == core.TradingHoursModeOff {
+		return styleDimmed.Render("Jakarta time " + localClock + "  ·  Trading Gate OFF (24/7)")
+	}
+
+	if mode == core.TradingHoursModeWeekdays {
+		if core.IsLocalWeekday(now) {
+			return styleGreen.Render("Jakarta time " + localClock + "  ·  Weekday Gate OPEN (trading enabled)")
 		}
-		return styleRed.Render("US time " + usClock + "  ·  Weekday Gate CLOSED (weekend, trading blocked)")
+		return styleRed.Render("Jakarta time " + localClock + "  ·  Weekday Gate CLOSED (weekend, trading blocked)")
 	}
 
-	if mode == "us open only" {
+	if mode == core.TradingHoursModeUSOpen {
 		if core.IsUSMarketOpen(now) {
 			return styleGreen.Render("US time " + usClock + "  ·  US Market Gate OPEN (trading enabled)")
 		}
 		return styleRed.Render("US time " + usClock + "  ·  US Market Gate CLOSED (outside hours, trading blocked)")
 	}
 
-	return styleDimmed.Render("US time " + usClock + "  ·  Trading Gate OFF")
+	if core.IsTradingHourOpen(now, mode) {
+		return styleGreen.Render(fmt.Sprintf("Jakarta time %s  ·  Jakarta Gate [%s] OPEN", localClock, mode))
+	}
+	return styleRed.Render(fmt.Sprintf("Jakarta time %s  ·  Jakarta Gate [%s] CLOSED", localClock, mode))
 }
 
 func walletTruthInventoryDisplayShares(wt WalletTruthPosition) (float64, bool) {
@@ -567,7 +577,7 @@ type TUISettings struct {
 	SplitStrategyEnabled               bool    // toggle split strategy on/off
 	SplitInitialCapPct                 float64 // Initial Split Cap percentage
 	SplitReplenishCapPct               float64 // Replenishment Cap percentage
-	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only"
+	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only", or Jakarta "HH:MM-HH:MM"
 	MakerMergeBufferSeconds            int     // seconds before expiry to merge paired maker inventory
 	MakerQuoteGap                      float64 // distance from mid for maker quotes
 	MakerInventoryTargetMult           float64
@@ -957,7 +967,7 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case settingsRowTakerCloseMinPrice:
 		return "Taker Close Min Price"
 	case settingsRowTradingHoursMode:
-		return "Trading Hours Mode"
+		return "Trading Hours (WIB)"
 	case settingsRowRPCEdit:
 		return "RPC URL (Press Enter to edit)"
 	case settingsRowPrivateKeyEdit:
@@ -1007,6 +1017,11 @@ func cycleMarketTimeframe(current string, delta int) string {
 func normalizeTUISettings(s TUISettings) TUISettings {
 	s.MarketSlug = normalizeMarketSelection(s.MarketSlug)
 	s.Timeframe = normalizeMarketTimeframe(s.Timeframe)
+	if mode, ok := core.NormalizeTradingHoursMode(s.TradingHoursMode); ok {
+		s.TradingHoursMode = mode
+	} else {
+		s.TradingHoursMode = core.TradingHoursModeOff
+	}
 	if strings.EqualFold(strings.TrimSpace(s.ExecutionBackend), core.ExecutionBackendLive) {
 		s.ExecutionBackend = core.ExecutionBackendLive
 	} else {
@@ -1611,6 +1626,8 @@ func settingsEditValue(cfg TUISettings, row int) string {
 	switch row {
 	case settingsRowCopytradeTarget:
 		return cfg.CopytradeTarget
+	case settingsRowTradingHoursMode:
+		return cfg.TradingHoursMode
 	case settingsRowPaperBalance:
 		return fmt.Sprintf("%.2f", cfg.PaperBalance)
 	case settingsRowTradeSizingValue:
@@ -1663,6 +1680,7 @@ func settingsRowSupportsTypedEdit(cfg TUISettings, mode string, row int) bool {
 	}
 	switch row {
 	case settingsRowCopytradeTarget,
+		settingsRowTradingHoursMode,
 		settingsRowPaperBalance,
 		settingsRowTradeSizingValue,
 		settingsRowExecutionSlip,
@@ -1713,6 +1731,13 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 			return false
 		}
 		cfg.CopytradeTarget = value
+		return true
+	case settingsRowTradingHoursMode:
+		value, ok := core.NormalizeTradingHoursMode(input)
+		if !ok || cfg.TradingHoursMode == value {
+			return false
+		}
+		cfg.TradingHoursMode = value
 		return true
 	case settingsRowRPCEdit:
 		if cfg.PolygonRPC == input {
@@ -2725,12 +2750,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowTradingHoursMode:
-					if m.tui.settings.TradingHoursMode == "off" {
-						m.tui.settings.TradingHoursMode = "weekdays trade only"
-					} else if m.tui.settings.TradingHoursMode == "weekdays trade only" {
-						m.tui.settings.TradingHoursMode = "us open only"
+					if m.tui.settings.TradingHoursMode == core.TradingHoursModeOff {
+						m.tui.settings.TradingHoursMode = core.TradingHoursModeWeekdays
+					} else if m.tui.settings.TradingHoursMode == core.TradingHoursModeWeekdays {
+						m.tui.settings.TradingHoursMode = core.TradingHoursModeUSOpen
 					} else {
-						m.tui.settings.TradingHoursMode = "off"
+						m.tui.settings.TradingHoursMode = core.TradingHoursModeOff
 					}
 					changed = true
 				}
@@ -2990,12 +3015,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowTradingHoursMode:
-					if m.tui.settings.TradingHoursMode == "off" {
-						m.tui.settings.TradingHoursMode = "weekdays trade only"
-					} else if m.tui.settings.TradingHoursMode == "weekdays trade only" {
-						m.tui.settings.TradingHoursMode = "us open only"
+					if m.tui.settings.TradingHoursMode == core.TradingHoursModeOff {
+						m.tui.settings.TradingHoursMode = core.TradingHoursModeWeekdays
+					} else if m.tui.settings.TradingHoursMode == core.TradingHoursModeWeekdays {
+						m.tui.settings.TradingHoursMode = core.TradingHoursModeUSOpen
 					} else {
-						m.tui.settings.TradingHoursMode = "off"
+						m.tui.settings.TradingHoursMode = core.TradingHoursModeOff
 					}
 					changed = true
 				}
@@ -7230,12 +7255,17 @@ func (m tuiModel) renderSettings(w int) string {
 		{
 			label: settingsRowLabel(cfg, settingsRowTradingHoursMode),
 			value: func() string {
-				if cfg.TradingHoursMode == "weekdays trade only" {
-					return styleGreen.Render(" WEEKDAYS ")
-				} else if cfg.TradingHoursMode == "us open only" {
-					return styleYellow.Render(" US OPEN ")
+				if m.settingsEdit && m.settingsCursor == settingsRowTradingHoursMode {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
 				}
-				return styleMuted.Render(" OFF ")
+				if cfg.TradingHoursMode == core.TradingHoursModeWeekdays {
+					return styleGreen.Render(" WEEKDAYS ")
+				} else if cfg.TradingHoursMode == core.TradingHoursModeUSOpen {
+					return styleYellow.Render(" US OPEN ")
+				} else if cfg.TradingHoursMode == core.TradingHoursModeOff {
+					return styleMuted.Render(" OFF ")
+				}
+				return styleGreen.Render(fmt.Sprintf(" WIB %s ", cfg.TradingHoursMode))
 			}(),
 			bar: "",
 		},

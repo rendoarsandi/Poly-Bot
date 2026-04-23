@@ -441,7 +441,50 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		realbotStartLadderedOneHourCloseMonitor(ctx, ladderState, marketID, trader, engine, tui)
 		return true
 	}
+
+	// Try to find a winning candidate we hold to sell
 	submitCtx, cancel := context.WithTimeout(ctx, 1000*time.Millisecond)
 	defer cancel()
-	return realbotSubmitLadderedOneHourCloseOrder(submitCtx, ctx, ladderState, marketID, market, outcomes, bids, asks, tokenFeeRates, trader, engine, tui)
+	if realbotSubmitLadderedOneHourCloseOrder(submitCtx, ctx, ladderState, marketID, market, outcomes, bids, asks, tokenFeeRates, trader, engine, tui) {
+		return true
+	}
+
+	// If we couldn't find a winning side to sell, check if we hold clear losers.
+	// If any opposite outcome is > 0.985, the current holdings are clear losers.
+	for _, outcome := range outcomes {
+		qty, _, ok := realbotLocalOutcomePosition(engine, marketID, outcome)
+		if !ok || !hasActionableCleanupRemainder(qty) {
+			continue
+		}
+
+		winningOutcome := ""
+		for _, other := range outcomes {
+			if other == outcome {
+				continue
+			}
+			price := bids[other]
+			if price <= 0 && engine != nil {
+				price, _ = engine.GetMarketBidAsk(marketID, other)
+			}
+			if price >= realbotLadderedOneHourCloseTriggerPrice {
+				winningOutcome = other
+				break
+			}
+		}
+
+		if winningOutcome != "" {
+			realbotSettleLadderedOneHourOppositeLosers(engine, tui, marketID, winningOutcome)
+		}
+	}
+
+	// If after settling losers we have no actionable positions, clear state.
+	if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		ladderState.clear(marketID)
+		if tui != nil {
+			tui.ClearMarketInventoryStatus(marketID)
+		}
+		return true
+	}
+
+	return false
 }

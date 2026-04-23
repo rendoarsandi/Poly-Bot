@@ -947,10 +947,10 @@ func TestRealbotHandleMarketGuardsRespectsManualPause(t *testing.T) {
 		engine:   engine,
 		tui:      tui,
 	}, &realbotMarketGuardState{
-		usWeekdayGateClosedLogged: &weekdayLogged,
-		manualTradingPauseLogged:  &manualLogged,
-		nextNearCloseCleanup:      &nextNearCloseCleanup,
-		nearExpiryNoticeSent:      &nearExpiryNoticeSent,
+		tradingGateClosedLogged:  &weekdayLogged,
+		manualTradingPauseLogged: &manualLogged,
+		nextNearCloseCleanup:     &nextNearCloseCleanup,
+		nearExpiryNoticeSent:     &nearExpiryNoticeSent,
 	})
 	if result.weekdayTradingAllowed != true {
 		t.Fatal("expected default trading-hours gate to stay open")

@@ -1078,6 +1078,43 @@ func TestSettingsArbModesHideMakerForRealbotPaperBackend(t *testing.T) {
 	}
 }
 
+func TestApplySettingsEditValueNormalizesTradingHoursMode(t *testing.T) {
+	cfg := TUISettings{TradingHoursMode: core.TradingHoursModeOff}
+	if !applySettingsEditValue(&cfg, settingsRowTradingHoursMode, "wib 8.00-17.30") {
+		t.Fatal("expected Jakarta trading-hours edit to apply")
+	}
+	if cfg.TradingHoursMode != "08:00-17:30" {
+		t.Fatalf("expected normalized Jakarta window, got %q", cfg.TradingHoursMode)
+	}
+
+	if applySettingsEditValue(&cfg, settingsRowTradingHoursMode, "bad-window") {
+		t.Fatal("expected invalid Jakarta trading-hours edit to be rejected")
+	}
+	if cfg.TradingHoursMode != "08:00-17:30" {
+		t.Fatalf("expected invalid edit to preserve prior value, got %q", cfg.TradingHoursMode)
+	}
+}
+
+func TestRenderSettingsShowsTradingHoursEditInput(t *testing.T) {
+	tui := NewTUI(NewEngine(100), nil)
+	tui.InitSettings(TUISettings{TradingHoursMode: "08:00-17:00"}, nil)
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowTradingHoursMode,
+		settingsEdit:   true,
+		settingsInput:  "09:00-15:00",
+	}
+
+	rendered := model.renderSettings(120)
+	if !strings.Contains(rendered, "Trading Hours (WIB)") {
+		t.Fatalf("expected settings view to include Jakarta trading-hours row, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "09:00-15:00") {
+		t.Fatalf("expected settings view to show active trading-hours input, got %q", rendered)
+	}
+}
+
 func TestSetModeCoercesMakerForRealbotPaperBackend(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
@@ -3640,7 +3677,7 @@ func TestNormalizeTUISettingsDefaultsRedeemGasModeToFast(t *testing.T) {
 	}
 }
 
-func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
+func TestRenderAccountStatusShowsJakartaWeekdayGateStatus(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Paper",
@@ -3656,11 +3693,35 @@ func TestRenderAccountStatusShowsUSWeekdayGateStatus(t *testing.T) {
 		StartingBalance: 100,
 	}, 0, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
 
-	if !strings.Contains(rendered, "US time") {
-		t.Fatalf("expected account status to include US clock, got %q", rendered)
+	if !strings.Contains(rendered, "Jakarta time") {
+		t.Fatalf("expected account status to include Jakarta clock, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "Weekday Gate") {
 		t.Fatalf("expected account status to include weekday gate status, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusShowsJakartaCustomGateStatus(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				TradingHoursMode: "08:00-17:00",
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100,
+		StartingBalance: 100,
+	}, 0, 0, 100, 100, 1.0, 100, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Jakarta time") {
+		t.Fatalf("expected account status to include Jakarta clock for custom gate, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Jakarta Gate") {
+		t.Fatalf("expected account status to include Jakarta gate status, got %q", rendered)
 	}
 }
 

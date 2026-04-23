@@ -130,7 +130,7 @@ type Config struct {
 	MakerMinQuoteValue                 float64 // Minimum shares to quote (default: 10.0)
 	SplitInitialCapPct                 float64 // Initial Split Cap (default: 0.25)
 	SplitReplenishCapPct               float64 // Replenishment Cap (default: 0.50)
-	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only"
+	TradingHoursMode                   string  // "off", "weekdays trade only", "us open only", or Jakarta "HH:MM-HH:MM"
 	TakerCloseMarket                   bool    // Force GTC buy right before market closes
 	BlockNewEntriesOnPendingRedemption bool    // Block fresh entries while prior-round inventory/payout is still unresolved
 	RedeemEntryTiming                  string  // Re-entry timing after redemption wait: "immediate" or "next-market"
@@ -301,7 +301,7 @@ func LoadConfig() (*Config, error) {
 		MakerMinQuoteValue:                 parseEnvFloat("MAKER_MIN_QUOTE_SHARES", 10.0),
 		SplitInitialCapPct:                 parseEnvFloat("SPLIT_INITIAL_CAP_PCT", 0.25),
 		SplitReplenishCapPct:               parseEnvFloat("SPLIT_REPLENISH_CAP_PCT", 0.50),
-		TradingHoursMode:                   parseEnvString("TRADING_HOURS_MODE", "weekdays trade only"),
+		TradingHoursMode:                   parseEnvString("TRADING_HOURS_MODE", TradingHoursModeWeekdays),
 		CopytradeTarget:                    strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		BlockNewEntriesOnPendingRedemption: os.Getenv("BLOCK_NEW_ENTRIES_ON_PENDING_REDEMPTION") == "true",
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(parseEnvString("REDEEM_ENTRY_TIMING", RedeemEntryTimingNextMarket)),

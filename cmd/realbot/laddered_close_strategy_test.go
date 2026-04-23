@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"Market-bot/internal/paper"
 )
@@ -139,6 +141,41 @@ func TestRealbotLadderedOneHourCloseCandidateIgnoresHighAskLowBidLoser(t *testin
 	asks := map[string]float64{"Down": 0.99}
 	if candidate, ok := realbotLadderedOneHourCloseCandidate(marketID, []string{"Down", "Up"}, engine, bids, asks); ok {
 		t.Fatalf("expected low-bid loser to be skipped despite high ask, got %+v", candidate)
+	}
+}
+
+func TestRealbotHandleLadderedOneHourCloseWindowSettlesHeldLoserWhenOppositeNearWin(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
+	if _, err := engine.BuyForMarket(marketID, "Down", 0.40, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	ladderState := newRealbotLadderCloseState()
+
+	handled := realbotHandleLadderedOneHourCloseWindow(
+		context.Background(),
+		ladderState,
+		marketID,
+		nil,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": 0.99},
+		map[string]float64{"Up": 0.995},
+		nil,
+		paper.TUISettings{PaperArbMode: paperArbModeLaddered},
+		5*time.Second,
+		nil,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected near-winning opposite quote to settle held loser")
+	}
+	if realbotHasEnginePositionsForMarket(engine, marketID) {
+		t.Fatalf("expected held loser to be cleared, got %+v", engine.GetPositions())
+	}
+	if got := engine.GetSettledLoserShares(marketID, "Down"); math.Abs(got-5) > 0.000001 {
+		t.Fatalf("expected settled loser shares 5, got %.6f", got)
 	}
 }
 
