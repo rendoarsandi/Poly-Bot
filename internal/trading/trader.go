@@ -286,6 +286,23 @@ type paperTokenMeta struct {
 	Outcome  string
 }
 
+func normalizeFeeRateBps(rate int) int {
+	if rate < 0 {
+		return 0
+	}
+	return rate
+}
+
+func (t *RealTrader) effectivePaperFeeRateBps(_ int) int {
+	if t == nil || t.paperEngine == nil {
+		return 0
+	}
+	if t.config == nil {
+		return 0
+	}
+	return normalizeFeeRateBps(t.config.FeeRateBps)
+}
+
 // NewRealTrader creates a new real trader
 func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	if err := cfg.ValidateForRealTrading(); err != nil {
@@ -427,6 +444,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	if t.paperEngine == nil {
 		return nil, fmt.Errorf("paper engine not initialized")
 	}
+	paperFeeRateBps := t.effectivePaperFeeRateBps(feeRateBps)
 	if price <= 0 || price >= 1.0 || size <= 0 {
 		return &TradeResult{
 			Success: false,
@@ -439,8 +457,8 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		}, nil
 	}
 	safetyAmount := price * size
-	if side == api.SideBuy && feeRateBps > 0 {
-		safetyAmount += core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
+	if side == api.SideBuy && paperFeeRateBps > 0 {
+		safetyAmount += core.PolymarketTakerFeeUSDC(size, price, paperFeeRateBps)
 	}
 	if err := t.checkSafetyLimits(safetyAmount); err != nil {
 		return &TradeResult{
@@ -476,7 +494,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	orderID := fmt.Sprintf("paper-%d", time.Now().UnixNano())
 	t.posMu.Lock()
 	if side == api.SideBuy {
-		trade, err := t.paperEngine.BuyForMarketWithFeeRate(meta.MarketID, outcome, execPrice, size, feeRateBps)
+		trade, err := t.paperEngine.BuyForMarketWithFeeRate(meta.MarketID, outcome, execPrice, size, paperFeeRateBps)
 		if err != nil {
 			t.posMu.Unlock()
 			return &TradeResult{
@@ -500,7 +518,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			Price:                execPrice,
 			Size:                 size,
 			Fee:                  fee,
-			FeeRateBps:           feeRateBps,
+			FeeRateBps:           paperFeeRateBps,
 			Side:                 string(side),
 			TokenID:              tokenID,
 			Outcome:              outcome,
@@ -522,7 +540,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 				Outcome: outcome,
 			}, nil
 		}
-		trade, err := t.paperEngine.SellForMarketWithFeeRate(meta.MarketID, outcome, execPrice, size, feeRateBps)
+		trade, err := t.paperEngine.SellForMarketWithFeeRate(meta.MarketID, outcome, execPrice, size, paperFeeRateBps)
 		if err != nil {
 			t.posMu.Unlock()
 			return &TradeResult{
@@ -549,7 +567,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			Price:                execPrice,
 			Size:                 size,
 			Fee:                  fee,
-			FeeRateBps:           feeRateBps,
+			FeeRateBps:           paperFeeRateBps,
 			Side:                 string(side),
 			TokenID:              tokenID,
 			Outcome:              outcome,
@@ -763,8 +781,9 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 				continue
 			}
 			cost := req.Price * req.Size
-			if req.FeeRateBps > 0 {
-				cost += core.PolymarketTakerFeeUSDC(req.Size, req.Price, req.FeeRateBps)
+			paperFeeRateBps := t.effectivePaperFeeRateBps(req.FeeRateBps)
+			if paperFeeRateBps > 0 {
+				cost += core.PolymarketTakerFeeUSDC(req.Size, req.Price, paperFeeRateBps)
 			}
 			totalCost += cost
 		}

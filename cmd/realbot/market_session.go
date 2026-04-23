@@ -86,9 +86,16 @@ func realbotSubscribeMarketBooks(ctx context.Context, marketID string, market *a
 	return wsMgr, wsMgr.StartStreaming(ctx), nil
 }
 
-func realbotLoadMarketFeeRates(ctx context.Context, marketID string, restClient *api.RestClient, tokenMap map[string]string, cfg *core.Config, tui *paper.TUI) map[string]int {
+func realbotLoadMarketFeeRates(ctx context.Context, marketID string, restClient *api.RestClient, tokenMap map[string]string, cfg *core.Config, trader *trading.RealTrader, tui *paper.TUI) map[string]int {
 	tokenFeeRates := make(map[string]int, len(tokenMap))
 	fallbackFeeRate := realbotConfigFeeRateBps(cfg)
+	if trader != nil && trader.IsEmbeddedPaperMode() {
+		for _, outcome := range tokenMap {
+			tokenFeeRates[outcome] = fallbackFeeRate
+		}
+		tui.LogEvent("[%s] ℹ️ Paper backend using configured simulated fee: %.2f%% (%d bps)", marketID, float64(fallbackFeeRate)/100.0, fallbackFeeRate)
+		return tokenFeeRates
+	}
 	for tid, outcome := range tokenMap {
 		var rate int
 		var err error
@@ -136,7 +143,7 @@ func realbotInitMarketSession(ctx context.Context, marketID string, market *api.
 		tokenToOutcome: tokenToOutcome,
 		outcomeToToken: outcomeToToken,
 		outcomes:       mkt.GetOutcomes(market),
-		tokenFeeRates:  realbotLoadMarketFeeRates(ctx, marketID, restClient, tokenMap, cfg, tui),
+		tokenFeeRates:  realbotLoadMarketFeeRates(ctx, marketID, restClient, tokenMap, cfg, trader, tui),
 		wsMgr:          wsMgr,
 		wsMsgChan:      wsMsgChan,
 	}, nil

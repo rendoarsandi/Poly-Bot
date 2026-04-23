@@ -6681,7 +6681,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 		}
 
 		displayValue := o.Cost
-		if o.Shares > 0 && o.Price > 0 && (o.Side == "BUY" || o.Side == "SELL") {
+		if displayValue <= 0 && o.Shares > 0 && o.Price > 0 && (o.Side == "BUY" || o.Side == "SELL") {
 			displayValue = o.Shares * o.Price
 		}
 

@@ -2324,18 +2324,15 @@ func TestRenderOrderHistoryShowsExplicitCloseModeInsteadOfMaker(t *testing.T) {
 	}
 }
 
-func TestRenderOrderHistoryValueMatchesDisplayedPriceTimesShares(t *testing.T) {
+func TestRenderOrderHistoryValueUsesRecordedNotional(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.RecordOrderWithMode("BTC", "Up", "BUY", 1.02, 0.60, 0.97, 0.0, 0.0, "laddered-taker", "FILLED")
 
 	model := tuiModel{snap: tuiSnapshot{orderHistory: tui.GetOrderHistory()}}
 	rendered := model.renderOrderHistory(120, 5)
 
-	if !strings.Contains(rendered, "$0.61") {
-		t.Fatalf("expected order history to display value from shown shares*price, got %q", rendered)
-	}
-	if strings.Contains(rendered, "$0.97") {
-		t.Fatalf("expected stale stored cost not to override displayed value, got %q", rendered)
+	if !strings.Contains(rendered, "$0.97") {
+		t.Fatalf("expected order history to display recorded notional, got %q", rendered)
 	}
 }
 

@@ -336,9 +336,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
 			return true
 		}
-		if blocked, reason := realbotLadderedInventoryCapReached(args.engine, args.marketID, args.outcomes, ladderedDirection, activeSize); blocked {
-			args.tui.LogEventDedup("ladder-inventory-cap:"+args.marketID+":"+args.outcomes[ladderedDirection], 15*time.Second,
-				"[%s] ⛔ Ladder BUY blocked: %s", args.marketID, reason)
+		if blocked, _ := realbotLadderedInventoryCapReached(args.engine, args.marketID, args.outcomes, ladderedDirection, activeSize); blocked {
 			setEntryCooldown(500 * time.Millisecond)
 			return true
 		}

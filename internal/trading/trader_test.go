@@ -259,7 +259,7 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 
 func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	engine := paper.NewEngine(100.0)
-	cfg := &core.Config{MaxTradeSize: 10}
+	cfg := &core.Config{MaxTradeSize: 10, FeeRateBps: 1000}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
 	engine.UpdateMarketBidAsk("BTC", "Up", 0.54, 0.55)
@@ -335,6 +335,29 @@ func TestEmbeddedPaperRealTraderZeroFeeKeepsRequestedBuyQuantity(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPaperRealTraderUsesConfiguredFeeInsteadOfSubmittedFeeCap(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10, FeeRateBps: 0}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.43, 0.44)
+
+	const requestedQty = 2.0
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.44, requestedQty, api.OrderTypeLimit, api.TIFGoodTilCancelled, 1000)
+	if err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	if buy.FeeRateBps != 0 {
+		t.Fatalf("expected embedded paper to apply configured fee rate 0, got %d", buy.FeeRateBps)
+	}
+	if math.Abs(buy.AcknowledgedQty-requestedQty) > 1e-9 {
+		t.Fatalf("expected embedded paper qty %.4f with zero configured fee, got %.4f", requestedQty, buy.AcknowledgedQty)
+	}
+}
+
 func TestEmbeddedPaperRealTraderRejectsNonMarketableLimitAgainstLiveQuote(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	cfg := &core.Config{MaxTradeSize: 10}
@@ -356,7 +379,7 @@ func TestEmbeddedPaperRealTraderRejectsNonMarketableLimitAgainstLiveQuote(t *tes
 
 func TestEmbeddedPaperRealTraderRejectsOversell(t *testing.T) {
 	engine := paper.NewEngine(100.0)
-	cfg := &core.Config{MaxTradeSize: 10}
+	cfg := &core.Config{MaxTradeSize: 10, FeeRateBps: 1000}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
 
@@ -407,7 +430,7 @@ func TestEmbeddedPaperRealTraderRejectsBuyAboveBalance(t *testing.T) {
 
 func TestEmbeddedPaperRealTraderBuySafetyIncludesFees(t *testing.T) {
 	engine := paper.NewEngine(10.0)
-	cfg := &core.Config{MaxTradeSize: 1.00}
+	cfg := &core.Config{MaxTradeSize: 1.00, FeeRateBps: 1000}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
 
@@ -439,6 +462,27 @@ func TestEmbeddedPaperExecuteBatchChecksAggregateBuySafety(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds max trade size") {
 		t.Fatalf("expected aggregate max trade size rejection, got %v", err)
+	}
+}
+
+func TestEmbeddedPaperExecuteBatchUsesConfiguredFeeForSafety(t *testing.T) {
+	engine := paper.NewEngine(10.0)
+	cfg := &core.Config{MaxTradeSize: 1.00, FeeRateBps: 0}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.49, 0.499)
+
+	results, err := trader.ExecuteBatch(context.Background(), []*api.OrderRequest{
+		{TokenID: "token-up", Outcome: "Up", Price: 0.499, Size: 2.0, Side: api.SideBuy, FeeRateBps: 1000},
+	})
+	if err != nil {
+		t.Fatalf("expected embedded paper batch to use configured zero fee, got %v", err)
+	}
+	if len(results) != 1 || results[0] == nil || !results[0].Success {
+		t.Fatalf("expected embedded paper batch buy to succeed, got %+v", results)
+	}
+	if math.Abs(results[0].AcknowledgedQty-2.0) > 1e-9 {
+		t.Fatalf("expected batch acknowledged qty 2.0, got %.4f", results[0].AcknowledgedQty)
 	}
 }
 
