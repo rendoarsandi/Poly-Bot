@@ -1627,6 +1627,10 @@ func settingsEditValue(cfg TUISettings, row int) string {
 	case settingsRowCopytradeTarget:
 		return cfg.CopytradeTarget
 	case settingsRowTradingHoursMode:
+		mode := strings.ToLower(strings.TrimSpace(cfg.TradingHoursMode))
+		if mode == "off" || mode == "weekdays trade only" || mode == "us open only" {
+			return "08:00-17:00"
+		}
 		return cfg.TradingHoursMode
 	case settingsRowPaperBalance:
 		return fmt.Sprintf("%.2f", cfg.PaperBalance)

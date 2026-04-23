@@ -193,6 +193,7 @@ func realbotExecuteAggressiveEntry(
 			filled1 = verifiedQty
 			side1Success = verifiedConfirmed
 		}
+		_ = activeRes
 		switch {
 		case authoritativeRecovery && verifiedConfirmed && !confirmed:
 			recoveredLateLadderFill = true
@@ -200,9 +201,10 @@ func realbotExecuteAggressiveEntry(
 		case authoritativeRecovery && verifiedConfirmed && math.Abs(verifiedQty-optimisticFilled) > 0.000001:
 			tui.LogEvent("[%s] 🧾 Ladder fill adjusted via %s: %s %s→%s", id, recoverSource, activeOutcome, formatShareQty(optimisticFilled), formatShareQty(verifiedQty))
 		case authoritativeRecovery && !verifiedConfirmed:
-			if activeRes != nil && strings.TrimSpace(activeRes.Message) == "" {
-				activeRes.Message = "No fresh ladder buy delta attributable after verification"
-			}
+			// Disabled per user request:
+			// if activeRes != nil && strings.TrimSpace(activeRes.Message) == "" {
+			// 	activeRes.Message = "No fresh ladder buy delta attributable after verification"
+			// }
 		case recoverErr != nil && !confirmed:
 			tui.LogEvent("[%s] ⚠️ Ladder late-fill check failed: %v", id, recoverErr)
 		}
@@ -230,14 +232,17 @@ func realbotExecuteAggressiveEntry(
 		}
 		tui.RecordOrderWithMode(id, outcomes[0], "BUY", filled1, ask1, cost1, observedMargin, 0.0, executionMode, "FILLED")
 	} else if side1Requested {
-		if err1 != nil {
-			tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
-		} else if res1 != nil && res1.Message != "" {
-			tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, res1.Message)
-		} else if res1 == nil {
-			tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: nil response", id)
-		} else {
-			tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
+		isRoutineLadderFail := ladderedMode && err1 == nil && (res1 == nil || strings.TrimSpace(res1.Message) == "")
+		if !isRoutineLadderFail {
+			if err1 != nil {
+				tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %v", id, err1)
+			} else if res1 != nil && res1.Message != "" {
+				tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: %s", id, res1.Message)
+			} else if res1 == nil {
+				tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: nil response", id)
+			} else {
+				tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
+			}
 		}
 		tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
 	}
@@ -248,14 +253,17 @@ func realbotExecuteAggressiveEntry(
 		}
 		tui.RecordOrderWithMode(id, outcomes[1], "BUY", filled2, ask2, cost2, observedMargin, 0.0, executionMode, "FILLED")
 	} else if side2Requested {
-		if err2 != nil {
-			tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
-		} else if res2 != nil && res2.Message != "" {
-			tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, res2.Message)
-		} else if res2 == nil {
-			tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: nil response", id)
-		} else {
-			tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
+		isRoutineLadderFail := ladderedMode && err2 == nil && (res2 == nil || strings.TrimSpace(res2.Message) == "")
+		if !isRoutineLadderFail {
+			if err2 != nil {
+				tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %v", id, err2)
+			} else if res2 != nil && res2.Message != "" {
+				tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: %s", id, res2.Message)
+			} else if res2 == nil {
+				tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: nil response", id)
+			} else {
+				tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
+			}
 		}
 		tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
 	}
