@@ -243,6 +243,27 @@ func TestRealbotArmInitialLadderedEntriesWaitsForNextFixedRung(t *testing.T) {
 	}
 }
 
+func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing.T) {
+	entries := []realbotLadderedEntry{
+		{seq: 0, ask0: 0.50, ask1: 0.20, side: 0, rung: 0, armed: true},
+		{seq: 1, ask0: 0.55, ask1: 0.20, side: 0, rung: 1},
+		{seq: 2, ask0: 0.60, ask1: 0.20, side: 0, rung: 2},
+		{seq: 3, ask0: 0.65, ask1: 0.20, side: 0, rung: 3},
+		{seq: 4, ask0: 0.70, ask1: 0.20, side: 0, rung: 4},
+		{seq: 5, ask0: 0.75, ask1: 0.20, side: 0, rung: 5},
+		{seq: 6, ask0: 0.80, ask1: 0.20, side: 0, rung: 6},
+	}
+
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.80, 0.20, 5.0); ok {
+		t.Fatalf("expected side 0 to stay blocked until it rearms, got side=%d ok=%v", side, ok)
+	}
+
+	entries = realbotRefreshLadderedEntries(entries, 0.50, 0.45, 5.0)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.45, 5.0); !ok || side != 0 {
+		t.Fatalf("expected side 0 to re-arm after returning to the base rung, got side=%d ok=%v", side, ok)
+	}
+}
+
 func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
 	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.36}}
 
@@ -362,23 +383,20 @@ func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *
 	}
 }
 
-func TestRealbotLadderedInventoryCapHonorsMinWinningPnL(t *testing.T) {
+func TestRealbotLadderedInventoryCapHonorsConfiguredWorstPnLFloor(t *testing.T) {
 	engine := paper.NewEngine(100)
-	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 1.0); err != nil {
-		t.Fatalf("seed buy failed: %v", err)
-	}
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, 0.85)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, -0.50)
 	if !blocked {
-		t.Fatal("expected projected active-side winning pnl floor to block the next rung")
+		t.Fatal("expected tighter configured worst-PnL floor to block the first chunk")
 	}
-	if !strings.Contains(reason, "below minimum") {
-		t.Fatalf("expected min winning pnl reason, got %q", reason)
+	if !strings.Contains(reason, "floor -$0.50") {
+		t.Fatalf("expected block reason to show the configured floor, got %q", reason)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, 0.75)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, -1.00)
 	if blocked {
-		t.Fatalf("expected lower winning pnl floor to allow the rung, got %q", reason)
+		t.Fatalf("expected looser configured worst-PnL floor to allow the first chunk, got %q", reason)
 	}
 }
 
@@ -590,7 +608,7 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 		PaperBalance:                42.5,
 		PaperArbMode:                paperArbModeLaddered,
 		LadderedTakerMaxSlippagePct: 7,
-		LadderedTakerMinWinningPnL:  0.8,
+		LadderedTakerWorstPnLFloor:  -2.25,
 		RedeemGasMode:               core.RedeemGasModeUrgent,
 	}
 
@@ -604,8 +622,8 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	if settings.LadderedTakerMaxSlippagePct != 7 {
 		t.Fatalf("expected TUI settings to include laddered slippage, got %.0f", settings.LadderedTakerMaxSlippagePct)
 	}
-	if settings.LadderedTakerMinWinningPnL != 0.8 {
-		t.Fatalf("expected TUI settings to include laddered min winning pnl, got %.2f", settings.LadderedTakerMinWinningPnL)
+	if settings.LadderedTakerWorstPnLFloor != -2.25 {
+		t.Fatalf("expected TUI settings to include laddered worst PnL floor, got %.2f", settings.LadderedTakerWorstPnLFloor)
 	}
 	if settings.RedeemGasMode != core.RedeemGasModeUrgent {
 		t.Fatalf("expected TUI settings to include redeem gas mode, got %q", settings.RedeemGasMode)
@@ -614,7 +632,7 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	settings.ExecutionBackend = core.ExecutionBackendLive
 	settings.PaperBalance = 77
 	settings.LadderedTakerMaxSlippagePct = 13
-	settings.LadderedTakerMinWinningPnL = 1.25
+	settings.LadderedTakerWorstPnLFloor = -1.5
 	settings.RedeemGasMode = core.RedeemGasModeNormal
 	applyRealbotTUISettings(cfg, settings)
 	if cfg.ExecutionBackend != core.ExecutionBackendLive {
@@ -626,8 +644,8 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	if cfg.LadderedTakerMaxSlippagePct != 13 {
 		t.Fatalf("expected config to receive updated laddered slippage, got %.0f", cfg.LadderedTakerMaxSlippagePct)
 	}
-	if cfg.LadderedTakerMinWinningPnL != 1.25 {
-		t.Fatalf("expected config to receive updated laddered min winning pnl, got %.2f", cfg.LadderedTakerMinWinningPnL)
+	if cfg.LadderedTakerWorstPnLFloor != -1.5 {
+		t.Fatalf("expected config to receive updated laddered worst PnL floor, got %.2f", cfg.LadderedTakerWorstPnLFloor)
 	}
 	if cfg.RedeemGasMode != core.RedeemGasModeNormal {
 		t.Fatalf("expected config to receive updated redeem gas mode, got %q", cfg.RedeemGasMode)

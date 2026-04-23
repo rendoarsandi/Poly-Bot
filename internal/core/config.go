@@ -150,7 +150,7 @@ type Config struct {
 	LadderedTakerSizeShares            float64 // Fixed paired-share size per entry when laddered taker uses share sizing
 	LadderedTakerReentryMoveCents      float64 // Minimum quote movement (in cents) required before the next laddered entry
 	LadderedTakerMaxSlippagePct        float64 // Maximum slippage allowed for laddered taker orders (in cents)
-	LadderedTakerMinWinningPnL         float64 // Minimum projected PnL if the newly bought ladder side ultimately wins
+	LadderedTakerWorstPnLFloor         float64 // 0 = auto floor, otherwise block entries below this projected worst-case resolve PnL
 	BinanceQuoteAsset                  string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct          float64 // Percent move over the lookback window required to trigger entry
 	PaperBinanceExecutionDelayMs       int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
@@ -226,7 +226,7 @@ type RuntimeSettings struct {
 	LadderedTakerSizeShares            float64 `json:"ladderedTakerSizeShares"`
 	LadderedTakerReentryMoveCents      float64 `json:"ladderedTakerReentryMoveCents"`
 	LadderedTakerMaxSlippagePct        float64 `json:"ladderedTakerMaxSlippagePct"`
-	LadderedTakerMinWinningPnL         float64 `json:"ladderedTakerMinWinningPnl"`
+	LadderedTakerWorstPnLFloor         float64 `json:"ladderedTakerWorstPnlFloor"`
 	BinanceQuoteAsset                  string  `json:"binanceQuoteAsset"`
 	BinanceSignalThresholdPct          float64 `json:"binanceSignalThresholdPct"`
 	PaperBinanceExecutionDelayMs       int     `json:"paperBinanceExecutionDelayMs"`
@@ -319,7 +319,7 @@ func LoadConfig() (*Config, error) {
 		LadderedTakerSizeShares:            normalizeLadderedTakerSizeShares(parseEnvFloat("LADDERED_TAKER_SIZE_SHARES", 1.0)),
 		LadderedTakerReentryMoveCents:      normalizeLadderedTakerReentryMoveCents(parseEnvFloat("LADDERED_TAKER_REENTRY_MOVE_CENTS", 1.0)),
 		LadderedTakerMaxSlippagePct:        normalizeLadderedTakerMaxSlippagePct(parseEnvFloat("LADDERED_TAKER_MAX_SLIPPAGE_PCT", 1.0)),
-		LadderedTakerMinWinningPnL:         normalizeLadderedTakerMinWinningPnL(parseEnvFloat("LADDERED_TAKER_MIN_WINNING_PNL", 0)),
+		LadderedTakerWorstPnLFloor:         normalizeLadderedTakerWorstPnLFloor(parseEnvFloat("LADDERED_TAKER_WORST_PNL_FLOOR", 0)),
 		BinanceQuoteAsset:                  normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
 		BinanceSignalThresholdPct:          normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
 		PaperBinanceExecutionDelayMs:       normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
@@ -496,11 +496,22 @@ func normalizeLadderedTakerMaxSlippagePct(v float64) float64 {
 	return math.Round(v)
 }
 
-func normalizeLadderedTakerMinWinningPnL(v float64) float64 {
-	if v < 0 {
-		v = 0
+func normalizeLadderedTakerWorstPnLFloor(v float64) float64 {
+	switch {
+	case math.IsNaN(v), math.IsInf(v, 0):
+		return 0
 	}
-	return math.Round(v*100.0) / 100.0
+	v = math.Round(v*100.0) / 100.0
+	if math.Abs(v) < 0.005 {
+		return 0
+	}
+	if v < -1000.0 {
+		return -1000.0
+	}
+	if v > 1000.0 {
+		return 1000.0
+	}
+	return v
 }
 
 func CopytradeBuyLimitPrice(observedAsk, maxSlippagePct float64) float64 {
@@ -807,7 +818,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		LadderedTakerSizeShares:            normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares),
 		LadderedTakerReentryMoveCents:      normalizeLadderedTakerReentryMoveCents(c.LadderedTakerReentryMoveCents),
 		LadderedTakerMaxSlippagePct:        normalizeLadderedTakerMaxSlippagePct(c.LadderedTakerMaxSlippagePct),
-		LadderedTakerMinWinningPnL:         normalizeLadderedTakerMinWinningPnL(c.LadderedTakerMinWinningPnL),
+		LadderedTakerWorstPnLFloor:         normalizeLadderedTakerWorstPnLFloor(c.LadderedTakerWorstPnLFloor),
 		BinanceQuoteAsset:                  normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
 		BinanceSignalThresholdPct:          normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
 		PaperBinanceExecutionDelayMs:       normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
@@ -885,7 +896,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.LadderedTakerSizeShares = normalizeLadderedTakerSizeShares(s.LadderedTakerSizeShares)
 	c.LadderedTakerReentryMoveCents = normalizeLadderedTakerReentryMoveCents(s.LadderedTakerReentryMoveCents)
 	c.LadderedTakerMaxSlippagePct = normalizeLadderedTakerMaxSlippagePct(s.LadderedTakerMaxSlippagePct)
-	c.LadderedTakerMinWinningPnL = normalizeLadderedTakerMinWinningPnL(s.LadderedTakerMinWinningPnL)
+	c.LadderedTakerWorstPnLFloor = normalizeLadderedTakerWorstPnLFloor(s.LadderedTakerWorstPnLFloor)
 	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
 	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
 	c.PaperBinanceExecutionDelayMs = normalizePaperBinanceExecutionDelayMs(s.PaperBinanceExecutionDelayMs)
@@ -952,7 +963,7 @@ func (c *Config) SaveSettings() error {
 	envMap["LADDERED_TAKER_SIZE_SHARES"] = strconv.FormatFloat(normalizeLadderedTakerSizeShares(c.LadderedTakerSizeShares), 'f', -1, 64)
 	envMap["LADDERED_TAKER_REENTRY_MOVE_CENTS"] = strconv.FormatFloat(normalizeLadderedTakerReentryMoveCents(c.LadderedTakerReentryMoveCents), 'f', -1, 64)
 	envMap["LADDERED_TAKER_MAX_SLIPPAGE_PCT"] = strconv.FormatFloat(normalizeLadderedTakerMaxSlippagePct(c.LadderedTakerMaxSlippagePct), 'f', -1, 64)
-	envMap["LADDERED_TAKER_MIN_WINNING_PNL"] = strconv.FormatFloat(normalizeLadderedTakerMinWinningPnL(c.LadderedTakerMinWinningPnL), 'f', -1, 64)
+	envMap["LADDERED_TAKER_WORST_PNL_FLOOR"] = strconv.FormatFloat(normalizeLadderedTakerWorstPnLFloor(c.LadderedTakerWorstPnLFloor), 'f', -1, 64)
 	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
 	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
 	envMap["PAPER_BINANCE_EXECUTION_DELAY_MS"] = strconv.Itoa(normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs))

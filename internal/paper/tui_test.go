@@ -1641,14 +1641,14 @@ func TestRenderSettingsShowsLadderCooldownAndHidesUnrelatedRows(t *testing.T) {
 		LadderedTakerSizingMode:        core.LadderedTakerSizingModeShares,
 		LadderedTakerSizeShares:        3.5,
 		LadderedTakerReentryMoveCents:  1.8,
-		LadderedTakerMinWinningPnL:     0.75,
+		LadderedTakerWorstPnLFloor:     -2.5,
 		MinMarginPercent:               2.0,
 		TakerCloseMarket:               true,
 		BuyExecutionMarginFloorPercent: -0.02,
 	}, nil)
 
 	view := (tuiModel{tui: tui}).renderSettings(120)
-	for _, want := range []string{"Ladder Re-entry Move", "1.8c", "Ladder Min Win PnL", "$0.75"} {
+	for _, want := range []string{"Ladder Re-entry Move", "1.8c", "Ladder Worst PnL Floor", "-$2.50"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("renderSettings() missing %q\n%s", want, view)
 		}
@@ -1880,49 +1880,49 @@ func TestSettingsLadderSlippageSupportsArrowAndTypedEdit(t *testing.T) {
 	}
 }
 
-func TestSettingsLadderMinWinningPnLSupportsArrowAndTypedEdit(t *testing.T) {
+func TestSettingsLadderWorstPnLFloorSupportsArrowAndTypedEdit(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
 		PaperArbMode:               "laddered-taker",
-		LadderedTakerMinWinningPnL: 0.5,
+		LadderedTakerWorstPnLFloor: 0,
 	}, nil)
 
 	model := tuiModel{
 		tui:            tui,
 		showSettings:   true,
-		settingsCursor: settingsRowLadderMinWinningPnL,
+		settingsCursor: settingsRowLadderWorstPnLFloor,
 	}
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	updated := next.(tuiModel)
-	if got := tui.GetSettings().LadderedTakerMinWinningPnL; got != 0.4 {
-		t.Fatalf("expected left arrow to reduce ladder min winning pnl to 0.4, got %.2f", got)
+	if got := tui.GetSettings().LadderedTakerWorstPnLFloor; got != -0.25 {
+		t.Fatalf("expected left arrow to reduce ladder worst PnL floor to -0.25, got %.2f", got)
 	}
 
 	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRight})
 	updated = next.(tuiModel)
-	if got := tui.GetSettings().LadderedTakerMinWinningPnL; got != 0.5 {
-		t.Fatalf("expected right arrow to restore ladder min winning pnl to 0.5, got %.2f", got)
+	if got := tui.GetSettings().LadderedTakerWorstPnLFloor; got != 0 {
+		t.Fatalf("expected right arrow to restore ladder worst PnL floor to auto 0.00, got %.2f", got)
 	}
 
 	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	updated = next.(tuiModel)
 	if !updated.settingsEdit {
-		t.Fatal("expected enter on ladder min winning pnl row to start edit mode")
+		t.Fatal("expected enter on ladder worst PnL floor row to start edit mode")
 	}
 
 	updated.settingsInput = ""
-	for _, r := range []rune{'1', '.', '2', '5'} {
+	for _, r := range []rune{'-', '1', '.', '5'} {
 		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		updated = next.(tuiModel)
 	}
 	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	updated = next.(tuiModel)
 	if updated.settingsEdit {
-		t.Fatal("expected enter to commit the typed ladder min winning pnl edit")
+		t.Fatal("expected enter to commit the typed ladder worst PnL floor edit")
 	}
-	if got := tui.GetSettings().LadderedTakerMinWinningPnL; got != 1.25 {
-		t.Fatalf("expected typed ladder min winning pnl 1.25, got %.2f", got)
+	if got := tui.GetSettings().LadderedTakerWorstPnLFloor; got != -1.5 {
+		t.Fatalf("expected typed ladder worst PnL floor -1.50, got %.2f", got)
 	}
 }
 
@@ -3697,14 +3697,18 @@ func TestNormalizeTUISettingsClampsLadderedTakerMaxSlippagePct(t *testing.T) {
 	}
 }
 
-func TestNormalizeTUISettingsClampsLadderedTakerMinWinningPnL(t *testing.T) {
-	got := normalizeTUISettings(TUISettings{LadderedTakerMinWinningPnL: -5})
-	if got.LadderedTakerMinWinningPnL != 0 {
-		t.Fatalf("expected negative ladder min winning pnl to clamp to 0, got %.2f", got.LadderedTakerMinWinningPnL)
+func TestNormalizeTUISettingsClampsLadderedTakerWorstPnLFloor(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{LadderedTakerWorstPnLFloor: math.NaN()})
+	if got.LadderedTakerWorstPnLFloor != 0 {
+		t.Fatalf("expected NaN ladder worst PnL floor to normalize to 0, got %.2f", got.LadderedTakerWorstPnLFloor)
 	}
-	got = normalizeTUISettings(TUISettings{LadderedTakerMinWinningPnL: 1.234})
-	if got.LadderedTakerMinWinningPnL != 1.23 {
-		t.Fatalf("expected ladder min winning pnl to round to cents, got %.2f", got.LadderedTakerMinWinningPnL)
+	got = normalizeTUISettings(TUISettings{LadderedTakerWorstPnLFloor: -1005})
+	if got.LadderedTakerWorstPnLFloor != -1000.0 {
+		t.Fatalf("expected ladder worst PnL floor to clamp to -1000.0, got %.2f", got.LadderedTakerWorstPnLFloor)
+	}
+	got = normalizeTUISettings(TUISettings{LadderedTakerWorstPnLFloor: 1005})
+	if got.LadderedTakerWorstPnLFloor != 1000.0 {
+		t.Fatalf("expected ladder worst PnL floor to clamp to 1000.0, got %.2f", got.LadderedTakerWorstPnLFloor)
 	}
 }
 

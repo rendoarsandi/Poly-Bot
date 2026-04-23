@@ -123,6 +123,9 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2)
 		return true
 	}
+	if ladderedMode && state != nil && state.ladderedEntries != nil {
+		*state.ladderedEntries = realbotRefreshLadderedEntries(*state.ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+	}
 
 	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
 		return true
@@ -340,7 +343,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		if ladderedDirection == 1 {
 			activePrice = limitPrice2
 		}
-		if blocked, _ := realbotLadderedInventoryCapReached(args.engine, args.marketID, args.outcomes, ladderedDirection, activeSize, activePrice, realbotCfg.LadderedTakerMinWinningPnL); blocked {
+		if blocked, _ := realbotLadderedInventoryCapReached(args.engine, args.marketID, args.outcomes, ladderedDirection, activeSize, activePrice, realbotCfg.LadderedTakerWorstPnLFloor); blocked {
 			setEntryCooldown(500 * time.Millisecond)
 			return true
 		}
