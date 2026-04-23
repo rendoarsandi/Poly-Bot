@@ -214,7 +214,10 @@ type realbotAsyncEntryResult struct {
 }
 
 type realbotLadderedEntry struct {
-	seq  uint64
-	ask0 float64
-	ask1 float64
+	seq   uint64
+	ask0  float64
+	ask1  float64
+	side  int
+	rung  int
+	armed bool
 }

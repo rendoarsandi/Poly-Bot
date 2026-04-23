@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -190,36 +191,99 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 	return true
 }
 
-func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, moveCents float64) (int, int, bool) {
-	leader := -1
+func realbotLadderedLeaderSide(ask0, ask1 float64) int {
 	switch {
 	case ask0 > ask1+1e-9:
-		leader = 0
+		return 0
 	case ask1 > ask0+1e-9:
-		leader = 1
+		return 1
 	default:
+		return -1
+	}
+}
+
+func realbotLadderedRungIndex(ask, moveCents float64) int {
+	if ask <= 0.5 {
+		return 0
+	}
+	threshold := realbotLadderedMoveThreshold(moveCents)
+	if threshold <= 0 {
+		return 0
+	}
+	rung := int(math.Floor(((ask - 0.5) / threshold) + 1e-9))
+	if rung < 0 {
+		return 0
+	}
+	return rung
+}
+
+func realbotLadderedEntrySideRung(entry realbotLadderedEntry, moveCents float64) (int, int, bool) {
+	if (entry.side == 0 || entry.side == 1) && (entry.rung > 0 || entry.armed) {
+		return entry.side, entry.rung, true
+	}
+	side := realbotLadderedLeaderSide(entry.ask0, entry.ask1)
+	if side < 0 {
+		return -1, 0, false
+	}
+	ask := entry.ask0
+	if side == 1 {
+		ask = entry.ask1
+	}
+	return side, realbotLadderedRungIndex(ask, moveCents), true
+}
+
+func realbotLadderedMaxRungs(entries []realbotLadderedEntry, moveCents float64) [2]int {
+	maxRungs := [2]int{-1, -1}
+	for _, entry := range entries {
+		side, rung, ok := realbotLadderedEntrySideRung(entry, moveCents)
+		if !ok || side < 0 || side > 1 {
+			continue
+		}
+		if rung > maxRungs[side] {
+			maxRungs[side] = rung
+		}
+	}
+	return maxRungs
+}
+
+func realbotArmInitialLadderedEntries(entries []realbotLadderedEntry, ask0, ask1, moveCents float64) []realbotLadderedEntry {
+	if len(entries) > 0 {
+		return entries
+	}
+	return append(entries,
+		realbotLadderedEntry{seq: 0, ask0: ask0, ask1: ask1, side: 0, rung: realbotLadderedRungIndex(ask0, moveCents), armed: true},
+		realbotLadderedEntry{seq: 0, ask0: ask0, ask1: ask1, side: 1, rung: realbotLadderedRungIndex(ask1, moveCents), armed: true},
+	)
+}
+
+func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, moveCents float64) (int, int, bool) {
+	leader := realbotLadderedLeaderSide(ask0, ask1)
+	if leader < 0 {
 		return -1, 0, false
 	}
 
+	leaderAsk := ask0
+	if leader == 1 {
+		leaderAsk = ask1
+	}
+	leaderRung := realbotLadderedRungIndex(leaderAsk, moveCents)
 	if len(entries) == 0 {
 		return leader, 1, true
 	}
-	lastAsk0 := entries[len(entries)-1].ask0
-	lastAsk1 := entries[len(entries)-1].ask1
-	threshold := realbotLadderedMoveThreshold(moveCents)
-
-	leaderMove := ask0 - lastAsk0
-	if leader == 1 {
-		leaderMove = ask1 - lastAsk1
-	}
-	if leaderMove < threshold-1e-9 {
+	maxRungs := realbotLadderedMaxRungs(entries, moveCents)
+	if leaderRung <= maxRungs[leader] {
 		return -1, 0, false
 	}
 	return leader, 1, true
 }
 
-func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, _ float64) realbotLadderedEntry {
-	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1}
+func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, moveCents float64) realbotLadderedEntry {
+	side := realbotLadderedLeaderSide(ask0, ask1)
+	ask := ask0
+	if side == 1 {
+		ask = ask1
+	}
+	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1, side: side, rung: realbotLadderedRungIndex(ask, moveCents)}
 }
 
 func realbotResolveLadderedEntry(entries []realbotLadderedEntry, seq uint64, confirmed bool) []realbotLadderedEntry {
@@ -252,7 +316,34 @@ func realbotShouldAdvanceLadderedEntry(requestedQty, filledQty float64) bool {
 	if requestedQty <= 0 {
 		return false
 	}
-	// Keep ladder anchor behavior aligned with paperbot: any actionable fill should
-	// update the last-entry anchor so re-entry direction uses the most recent market state.
 	return filledQty >= minOnChainActionShares-1e-9
+}
+
+func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty float64) (bool, string) {
+	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 {
+		return false, ""
+	}
+
+	qty0, _, _ := realbotLocalOutcomePosition(engine, marketID, outcomes[0])
+	qty1, _, _ := realbotLocalOutcomePosition(engine, marketID, outcomes[1])
+	activeQty, otherQty := qty0, qty1
+	activeOutcome, otherOutcome := outcomes[0], outcomes[1]
+	if side == 1 {
+		activeQty, otherQty = qty1, qty0
+		activeOutcome, otherOutcome = outcomes[1], outcomes[0]
+	}
+
+	tolerance := math.Max(requestedQty*2.0, minOnChainActionShares)
+	projectedActive := activeQty + requestedQty
+	if projectedActive <= otherQty+tolerance+1e-9 {
+		return false, ""
+	}
+	return true, fmt.Sprintf("%s inventory would be too heavy: %s→%s vs %s %s (cap +%s)",
+		activeOutcome,
+		formatShareQty(activeQty),
+		formatShareQty(projectedActive),
+		otherOutcome,
+		formatShareQty(otherQty),
+		formatShareQty(tolerance),
+	)
 }

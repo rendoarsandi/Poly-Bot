@@ -116,6 +116,13 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	if !entryReady {
 		return false
 	}
+	if ladderedMode && state != nil && state.ladderedEntries != nil && len(*state.ladderedEntries) == 0 {
+		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
+			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; waiting for next fixed rung",
+			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2)
+		return true
+	}
 
 	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
 		return true
@@ -327,6 +334,12 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		}
 		if activeSize < minEntryShares {
 			args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
+			return true
+		}
+		if blocked, reason := realbotLadderedInventoryCapReached(args.engine, args.marketID, args.outcomes, ladderedDirection, activeSize); blocked {
+			args.tui.LogEventDedup("ladder-inventory-cap:"+args.marketID+":"+args.outcomes[ladderedDirection], 15*time.Second,
+				"[%s] ⛔ Ladder BUY blocked: %s", args.marketID, reason)
+			setEntryCooldown(500 * time.Millisecond)
 			return true
 		}
 		shares = activeSize
