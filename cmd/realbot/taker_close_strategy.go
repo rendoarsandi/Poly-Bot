@@ -43,9 +43,9 @@ func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]
 	bestOutcome := ""
 	highestPrice := 0.0
 	for _, outcome := range outcomes {
-		price := asks[outcome]
+		price := bids[outcome]
 		if price <= 0 || price >= 1.0 {
-			price = bids[outcome]
+			price = asks[outcome]
 		}
 		if price > 0 && price <= 1.0 && price > highestPrice {
 			highestPrice = price

@@ -191,6 +191,16 @@ func realbotLadderedOneHourCloseCandidate(marketID string, outcomes []string, en
 		if price <= 0 || price >= 1.0 {
 			continue
 		}
+
+		// Skip clearly losing positions (bid < 0.50) to avoid spurious high asks
+		bid := bids[outcome]
+		if bid <= 0 && engine != nil {
+			bid, _ = engine.GetMarketBidAsk(marketID, outcome)
+		}
+		if bid < 0.50 {
+			continue
+		}
+
 		if price > best.ObservedPrice {
 			best = realbotLadderedOneHourCloseSelection{
 				Outcome:       outcome,

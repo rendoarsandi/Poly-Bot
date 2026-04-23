@@ -56,7 +56,7 @@
   "ladderedTakerSizingMode": "shares",
   "ladderedTakerSizeUsdc": 1,
   "ladderedTakerSizeShares": 1.02,
-  "ladderedTakerReentryMoveCents": 1,
+  "ladderedTakerReentryMoveCents": 5,
   "ladderedTakerMaxSlippagePct": 99,
   "binanceQuoteAsset": "USDT",
   "binanceSignalThresholdPct": 0.02,
