@@ -191,37 +191,31 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 }
 
 func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, moveCents float64) (int, int, bool) {
+	leader := -1
+	switch {
+	case ask0 > ask1+1e-9:
+		leader = 0
+	case ask1 > ask0+1e-9:
+		leader = 1
+	default:
+		return -1, 0, false
+	}
+
 	if len(entries) == 0 {
-		switch {
-		case ask0 > ask1+1e-9:
-			return 0, 1, true
-		case ask1 > ask0+1e-9:
-			return 1, 1, true
-		default:
-			return -1, 0, false
-		}
+		return leader, 1, true
 	}
 	lastAsk0 := entries[len(entries)-1].ask0
 	lastAsk1 := entries[len(entries)-1].ask1
 	threshold := realbotLadderedMoveThreshold(moveCents)
 
-	move0 := ask0 - lastAsk0
-	move1 := ask1 - lastAsk1
-
-	switch {
-	case move0 >= threshold-1e-9 && move0 > move1+1e-9:
-		return 0, 1, true
-	case move1 >= threshold-1e-9 && move1 > move0+1e-9:
-		return 1, 1, true
-	case move0 >= threshold-1e-9 && move1 >= threshold-1e-9:
-		if ask0 > ask1+1e-9 {
-			return 0, 1, true
-		}
-		if ask1 > ask0+1e-9 {
-			return 1, 1, true
-		}
+	leaderMove := ask0 - lastAsk0
+	if leader == 1 {
+		leaderMove = ask1 - lastAsk1
 	}
-	return -1, 0, false
+	if leaderMove < threshold-1e-9 {
+		return -1, 0, false
+	}
+	return leader, 1, true
 }
 
 func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, _ float64) realbotLadderedEntry {

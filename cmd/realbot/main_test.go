@@ -184,8 +184,24 @@ func TestRealbotLadderedDirectionalSideMatchesPaperbotCases(t *testing.T) {
 	if side, _, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}, 0.512, 0.401, 1.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 re-entry, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}, 0.501, 0.412, 1.0); !ok || side != 1 {
-		t.Fatalf("expected side 1 re-entry, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide([]realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}, 0.501, 0.412, 1.0); ok {
+		t.Fatalf("expected lower side 1 move to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
+	}
+}
+
+func TestRealbotLadderedDirectionalSideOnlyBuysCurrentHigherSide(t *testing.T) {
+	entries := []realbotLadderedEntry{{ask0: 0.50, ask1: 0.40}}
+
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.49, 5.0); !ok || side != 0 {
+		t.Fatalf("expected higher side 0 to re-enter after 5c move, got side=%d ok=%v", side, ok)
+	}
+
+	entries = append(entries, realbotLadderedEntry{ask0: 0.55, ask1: 0.49})
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.50, 5.0); ok {
+		t.Fatalf("expected lower side 1 at 0.50 to stay blocked while side 0 is 0.55, got side=%d ok=%v", side, ok)
+	}
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.50, 0.56, 5.0); !ok || side != 1 {
+		t.Fatalf("expected side 1 to re-enter only after becoming the higher side, got side=%d ok=%v", side, ok)
 	}
 }
 
