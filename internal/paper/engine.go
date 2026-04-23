@@ -41,6 +41,7 @@ type Stats struct {
 	PeakExposure    float64
 	MaxDrawdown     float64
 	MaxDrawdownCash float64
+	MaxLossStreakCash float64
 	PeakBalance     float64
 	CurrentBalance  float64
 	StartingBalance float64
@@ -86,6 +87,8 @@ type Engine struct {
 	peakBalance     float64
 	maxDrawdown     float64
 	maxDrawdownCash float64
+	currentLossStreakCash float64
+	maxLossStreakCash     float64
 	winningTrades   int
 	losingTrades    int
 
@@ -555,7 +558,7 @@ func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, is
 	pnl := proceeds - costBasis
 
 	// Update realized PnL
-	e.realizedPnL += pnl
+	e.trackRealizedPnL(pnl)
 	if pnl > 0 {
 		e.winningTrades++
 	} else if pnl < 0 {
@@ -620,7 +623,7 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
-			e.realizedPnL += pnl
+			e.trackRealizedPnL(pnl)
 			e.currentBalance += proceeds
 			payout += proceeds
 
@@ -631,7 +634,7 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 			}
 		} else {
 			// Losing shares are worthless
-			e.realizedPnL -= pos.TotalCost
+			e.trackRealizedPnL(-pos.TotalCost)
 			e.losingTrades++
 		}
 	}
@@ -670,7 +673,7 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 			// may not arrive until the redeem transaction confirms.
 			proceeds := pos.Quantity * 1.0
 			pnl := proceeds - pos.TotalCost
-			e.realizedPnL += pnl
+			e.trackRealizedPnL(pnl)
 
 			result.WinningShares += pos.Quantity
 			result.WinningPayout += proceeds
@@ -685,7 +688,7 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 			}
 		} else {
 			// Losing shares are worthless
-			e.realizedPnL -= pos.TotalCost
+			e.trackRealizedPnL(-pos.TotalCost)
 			e.losingTrades++
 
 			result.LosingOutcome = pos.Outcome
@@ -701,7 +704,7 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 	for _, inv := range e.splitInventories {
 		payout, pnl := inv.Redeem(marketID, winningOutcome)
 		if payout > 0 || pnl != 0 {
-			e.realizedPnL += pnl
+			e.trackRealizedPnL(pnl)
 			result.TotalPayout += payout
 			result.WinningPayout += payout
 			result.WinningPnL += pnl
@@ -788,7 +791,7 @@ func (e *Engine) MergeForMarket(marketID, outcome1, outcome2 string, shares floa
 
 	// Update balance
 	e.currentBalance += payout
-	e.realizedPnL += pnl
+	e.trackRealizedPnL(pnl)
 
 	// Update positions
 	pos1.Quantity -= mergeQty
@@ -851,7 +854,7 @@ func (e *Engine) LiquidateAll() float64 {
 
 		proceeds := (pos.Quantity * price) - feeUsdc
 		pnl := proceeds - pos.TotalCost
-		e.realizedPnL += pnl
+		e.trackRealizedPnL(pnl)
 		e.currentBalance += proceeds
 		totalProceeds += proceeds
 
@@ -893,6 +896,19 @@ func (e *Engine) LiquidateAll() float64 {
 
 func (e *Engine) updateDrawdown() {
 	e.recalculateDrawdown()
+}
+
+// trackRealizedPnL adds realized PnL and tracks consecutive loss streaks
+func (e *Engine) trackRealizedPnL(pnl float64) {
+	e.realizedPnL += pnl
+	if pnl < -1e-6 {
+		e.currentLossStreakCash += math.Abs(pnl)
+		if e.currentLossStreakCash > e.maxLossStreakCash {
+			e.maxLossStreakCash = e.currentLossStreakCash
+		}
+	} else if pnl > 1e-6 {
+		e.currentLossStreakCash = 0
+	}
 }
 
 // addTrade records a trade and trims history if needed (must be called with lock held)
@@ -1110,6 +1126,7 @@ func (e *Engine) GetStats() Stats {
 		PeakExposure:    e.peakExposure,
 		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
 		MaxDrawdownCash: e.maxDrawdownCash,
+		MaxLossStreakCash: e.maxLossStreakCash,
 		PeakBalance:     e.peakBalance,
 		CurrentBalance:  e.currentBalance,
 		StartingBalance: e.pnlBaseline,
@@ -1309,7 +1326,7 @@ func (e *Engine) AddBalance(amount float64) {
 func (e *Engine) AddRealizedPnL(pnl float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.realizedPnL += pnl
+	e.trackRealizedPnL(pnl)
 	if pnl > 0 {
 		e.winningTrades++
 	} else if pnl < 0 {
@@ -1324,7 +1341,7 @@ func (e *Engine) AdjustRealizedPnL(pnl float64) {
 	if math.Abs(pnl) < 0.000001 {
 		return
 	}
-	e.realizedPnL += pnl
+	e.trackRealizedPnL(pnl)
 	e.recalculateDrawdown()
 }
 
@@ -1421,6 +1438,8 @@ func (e *Engine) ResetPaperSession(balance float64) error {
 	e.peakBalance = balance
 	e.maxDrawdown = 0
 	e.maxDrawdownCash = 0
+	e.currentLossStreakCash = 0
+	e.maxLossStreakCash = 0
 	e.winningTrades = 0
 	e.losingTrades = 0
 	e.pendingRedemptions = make(map[string]float64)

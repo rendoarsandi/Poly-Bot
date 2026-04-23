@@ -5614,13 +5614,20 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		drawdownSt = styleRed
 	}
 
+	lossStreakSt := styleWhite
+	if stats.MaxLossStreakCash > 10.0 {
+		lossStreakSt = styleRed
+	} else if stats.MaxLossStreakCash > 5.0 {
+		lossStreakSt = styleYellow
+	}
+
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
 	cashLabel := "Cash"
 	cashText := fmt.Sprintf("$%.2f", displayCash)
 	if isRealMode {
 		cashLabel = "Spendable"
 	}
-	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s",
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s  ·  Max Loss %s",
 		cashLabel,
 		styleBold.Render(cashText),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
@@ -5628,6 +5635,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(signedDollar(displayNetChange)),
 		drawdownSt.Render(formatDrawdownCash(stats.MaxDrawdownCash)),
+		lossStreakSt.Render(formatDrawdownCash(stats.MaxLossStreakCash)),
 	)
 	row3 := tradeLine
 	row4 := ""
