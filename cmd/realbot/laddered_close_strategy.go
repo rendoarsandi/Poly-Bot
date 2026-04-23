@@ -213,7 +213,48 @@ func realbotLadderedOneHourCloseCandidate(marketID string, outcomes []string, en
 	return best, true
 }
 
-func realbotApplyLadderedOneHourCloseFill(engine *paper.Engine, tui *paper.TUI, marketID, outcome string, qty, price float64, feeRate int) float64 {
+func realbotSettleLadderedOneHourOppositeLosers(engine *paper.Engine, tui *paper.TUI, marketID, winningOutcome string) *paper.RedemptionResult {
+	if engine == nil || strings.TrimSpace(marketID) == "" || strings.TrimSpace(winningOutcome) == "" {
+		return nil
+	}
+	if qty, _, ok := realbotLocalOutcomePosition(engine, marketID, winningOutcome); ok && hasActionableCleanupRemainder(qty) {
+		return nil
+	}
+
+	result := &paper.RedemptionResult{
+		MarketID:       marketID,
+		WinningOutcome: winningOutcome,
+	}
+	for _, pos := range engine.GetPositions() {
+		if pos.MarketID != marketID || strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(winningOutcome)) || pos.Quantity <= 0 {
+			continue
+		}
+		if !engine.SyncExternalPosition(marketID, pos.Outcome, 0, 0) {
+			continue
+		}
+		if result.LosingOutcome == "" {
+			result.LosingOutcome = pos.Outcome
+		}
+		result.LosingShares += pos.Quantity
+		result.LosingCost += pos.TotalCost
+	}
+	if result.LosingCost <= 0 {
+		return nil
+	}
+
+	result.TotalPnL = -result.LosingCost
+	engine.AdjustRealizedPnL(result.TotalPnL)
+	if tui != nil {
+		tui.AmendMostRecentRoundForMarket(marketID, result.TotalPnL, []*paper.RedemptionResult{result})
+		tui.LogEvent("[%s] 🧹 1h ladder close settled opposite loser: %s %s removed (-$%.2f)", marketID, formatShareQty(result.LosingShares), result.LosingOutcome, result.LosingCost)
+		if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+			tui.ClearMarketInventoryStatus(marketID)
+		}
+	}
+	return result
+}
+
+func realbotApplyLadderedOneHourCloseFill(engine *paper.Engine, tui *paper.TUI, marketID, outcome string, qty, price float64, feeRate int, settleOppositeLosers bool) float64 {
 	if engine == nil || qty <= 0 {
 		return 0
 	}
@@ -240,6 +281,11 @@ func realbotApplyLadderedOneHourCloseFill(engine *paper.Engine, tui *paper.TUI, 
 	if tui != nil {
 		tui.RecordOrderWithMode(marketID, outcome, "SELL", qty, price, trade.Value, 0.0, profit, paperArbModeLaddered, "FILLED")
 		tui.LogEvent("[%s] ✅ 1h ladder close filled: sold %s %s at $%.3f", marketID, formatShareQty(qty), outcome, price)
+	}
+	if settleOppositeLosers {
+		realbotSettleLadderedOneHourOppositeLosers(engine, tui, marketID, outcome)
+	}
+	if tui != nil {
 		if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			tui.ClearMarketInventoryStatus(marketID)
 		}
@@ -288,7 +334,7 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 				confirmedQty := trader.GetConfirmedFillSize(current.OrderID)
 				if confirmedQty > current.MirroredQty+0.0001 {
 					delta := confirmedQty - current.MirroredQty
-					applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, current.Outcome, delta, realbotLadderedOneHourClosePrice, current.FeeRate)
+					applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, current.Outcome, delta, realbotLadderedOneHourClosePrice, current.FeeRate, trader.IsPaperMode())
 					if applied > 0 {
 						ladderState.setMirroredQty(marketID, current.MirroredQty+applied)
 					}
@@ -357,7 +403,7 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 		if result.AcknowledgedQty > 0 && result.AcknowledgedNotional > 0 {
 			fillPrice = result.AcknowledgedNotional / result.AcknowledgedQty
 		}
-		mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate)
+		mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate, trader.IsPaperMode())
 	}
 	ladderState.setMirroredQty(marketID, mirroredQty)
 	if mirroredQty >= candidate.Qty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {

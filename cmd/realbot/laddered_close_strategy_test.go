@@ -35,7 +35,7 @@ func TestRealbotApplyLadderedOneHourCloseFillUpdatesProfit(t *testing.T) {
 	}
 	tui := paper.NewTUI(engine, paper.NewOrderBook())
 
-	mirrored := realbotApplyLadderedOneHourCloseFill(engine, tui, "btc-updown-1h-1700000000", "Up", 5, realbotLadderedOneHourClosePrice, 0)
+	mirrored := realbotApplyLadderedOneHourCloseFill(engine, tui, "btc-updown-1h-1700000000", "Up", 5, realbotLadderedOneHourClosePrice, 0, false)
 	if math.Abs(mirrored-5) > 0.000001 {
 		t.Fatalf("expected mirrored sell qty 5, got %.6f", mirrored)
 	}
@@ -55,6 +55,30 @@ func TestRealbotApplyLadderedOneHourCloseFillUpdatesProfit(t *testing.T) {
 	}
 	if math.Abs(engine.GetStats().RealizedPnL-1.995) > 0.000001 {
 		t.Fatalf("expected engine realized pnl 1.995, got %.6f", engine.GetStats().RealizedPnL)
+	}
+}
+
+func TestRealbotApplyLadderedOneHourCloseFillSettlesOppositeLoserInPaper(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "btc-updown-1h-1700000000"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket(marketID, "Down", 0.40, 2); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+
+	mirrored := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, "Up", 5, realbotLadderedOneHourClosePrice, 0, true)
+	if math.Abs(mirrored-5) > 0.000001 {
+		t.Fatalf("expected mirrored sell qty 5, got %.6f", mirrored)
+	}
+	if realbotHasEnginePositionsForMarket(engine, marketID) {
+		t.Fatalf("expected opposite loser to be cleared after confirmed paper close fill, got %+v", engine.GetPositions())
+	}
+	expectedPnL := (realbotLadderedOneHourClosePrice-0.60)*5 - (0.40 * 2)
+	if math.Abs(engine.GetStats().RealizedPnL-expectedPnL) > 0.000001 {
+		t.Fatalf("expected realized pnl %.6f after settling opposite loser, got %.6f", expectedPnL, engine.GetStats().RealizedPnL)
 	}
 }
 
