@@ -79,6 +79,9 @@ type realbotPostQuoteIterationState struct {
 	ladderedEntries            *[]realbotLadderedEntry
 	nextLadderedEntrySeq       *uint64
 	entryExecutionInFlight     *bool
+	ladderedStartupStableAt    *time.Time
+	ladderedStartupSide        *int
+	ladderedStartupRung        *int
 }
 
 func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *realbotPostQuoteIterationState) bool {
@@ -267,13 +270,16 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 		entryGate:            args.entryGate,
 		entryExecutionDone:   args.entryExecutionDone,
 	}, &realbotPanicBuyStrategyState{
-		lastPairUpdate:         state.lastPairUpdate,
-		ladderedEntries:        state.ladderedEntries,
-		nextLadderedEntrySeq:   state.nextLadderedEntrySeq,
-		panicBuyCooldown:       state.panicBuyCooldown,
-		lastTrade:              state.lastTrade,
-		lastDustRecoveryNotice: state.lastDustRecoveryNotice,
-		entryExecutionInFlight: state.entryExecutionInFlight,
+		lastPairUpdate:          state.lastPairUpdate,
+		ladderedEntries:         state.ladderedEntries,
+		nextLadderedEntrySeq:    state.nextLadderedEntrySeq,
+		panicBuyCooldown:        state.panicBuyCooldown,
+		lastTrade:               state.lastTrade,
+		lastDustRecoveryNotice:  state.lastDustRecoveryNotice,
+		entryExecutionInFlight:  state.entryExecutionInFlight,
+		ladderedStartupStableAt: state.ladderedStartupStableAt,
+		ladderedStartupSide:     state.ladderedStartupSide,
+		ladderedStartupRung:     state.ladderedStartupRung,
 	}) {
 		return true
 	}

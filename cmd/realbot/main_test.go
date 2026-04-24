@@ -243,6 +243,66 @@ func TestRealbotArmInitialLadderedEntriesWaitsForNextFixedRung(t *testing.T) {
 	}
 }
 
+func TestRealbotLadderedStartupStabilityReadyRequiresStableFirstRung(t *testing.T) {
+	stableAt := time.Time{}
+	side := -1
+	rung := -1
+	state := &realbotPanicBuyStrategyState{
+		ladderedStartupStableAt: &stableAt,
+		ladderedStartupSide:     &side,
+		ladderedStartupRung:     &rung,
+	}
+	now := time.Now()
+
+	if realbotLadderedStartupStabilityReady(state, 0, 1, now) {
+		t.Fatal("expected first observed startup rung to begin stability timing")
+	}
+	if got := side; got != 0 {
+		t.Fatalf("expected startup side 0, got %d", got)
+	}
+	if got := rung; got != 1 {
+		t.Fatalf("expected startup rung 1, got %d", got)
+	}
+	if stableAt.IsZero() {
+		t.Fatal("expected startup stability timer to be recorded")
+	}
+	if realbotLadderedStartupStabilityReady(state, 0, 1, now.Add(realbotLadderedStartupStability-time.Millisecond)) {
+		t.Fatal("expected unchanged startup rung to remain blocked before the stability window elapses")
+	}
+	if !realbotLadderedStartupStabilityReady(state, 0, 1, now.Add(realbotLadderedStartupStability)) {
+		t.Fatal("expected unchanged startup rung to unlock once the stability window elapses")
+	}
+	if realbotLadderedStartupStabilityReady(state, 0, 2, now.Add(realbotLadderedStartupStability+time.Second)) {
+		t.Fatal("expected rung change to restart the startup stability timer")
+	}
+	if got := rung; got != 2 {
+		t.Fatalf("expected startup rung to update to 2, got %d", got)
+	}
+}
+
+func TestRealbotResetLadderedStartupStabilityClearsState(t *testing.T) {
+	stableAt := time.Now()
+	side := 1
+	rung := 3
+	state := &realbotPanicBuyStrategyState{
+		ladderedStartupStableAt: &stableAt,
+		ladderedStartupSide:     &side,
+		ladderedStartupRung:     &rung,
+	}
+
+	realbotResetLadderedStartupStability(state)
+
+	if !stableAt.IsZero() {
+		t.Fatal("expected startup stability time to clear")
+	}
+	if side != -1 {
+		t.Fatalf("expected startup side reset to -1, got %d", side)
+	}
+	if rung != -1 {
+		t.Fatalf("expected startup rung reset to -1, got %d", rung)
+	}
+}
+
 func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing.T) {
 	entries := []realbotLadderedEntry{
 		{seq: 0, ask0: 0.50, ask1: 0.20, side: 0, rung: 0, armed: true},
@@ -2359,6 +2419,9 @@ func TestRealbotHandlePanicBuyStrategyArmsInitialLadderedRungWithoutBuying(t *te
 	}
 	if nextLadderedEntrySeq != 4 {
 		t.Fatalf("expected arming to leave the execution sequence unchanged, got %d", nextLadderedEntrySeq)
+	}
+	if !panicBuyCooldown.IsZero() {
+		t.Fatalf("expected arming not to apply a blind startup cooldown, got %v", panicBuyCooldown)
 	}
 	if len(ladderedEntries) != 2 {
 		t.Fatalf("expected initial arming markers for both sides, got %d", len(ladderedEntries))

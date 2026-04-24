@@ -42,16 +42,56 @@ type realbotPanicBuyStrategyArgs struct {
 }
 
 type realbotPanicBuyStrategyState struct {
-	lastPairUpdate         *time.Time
-	ladderedEntries        *[]realbotLadderedEntry
-	nextLadderedEntrySeq   *uint64
-	panicBuyCooldown       *time.Time
-	lastTrade              *time.Time
-	lastDustRecoveryNotice *time.Time
-	entryExecutionInFlight *bool
+	lastPairUpdate          *time.Time
+	ladderedEntries         *[]realbotLadderedEntry
+	nextLadderedEntrySeq    *uint64
+	panicBuyCooldown        *time.Time
+	lastTrade               *time.Time
+	lastDustRecoveryNotice  *time.Time
+	entryExecutionInFlight  *bool
+	ladderedStartupStableAt *time.Time
+	ladderedStartupSide     *int
+	ladderedStartupRung     *int
 }
 
-const realbotLadderedStartupWarmup = 30 * time.Second
+const realbotLadderedStartupStability = 3 * time.Second
+
+func realbotResetLadderedStartupStability(state *realbotPanicBuyStrategyState) {
+	if state == nil {
+		return
+	}
+	if state.ladderedStartupStableAt != nil {
+		*state.ladderedStartupStableAt = time.Time{}
+	}
+	if state.ladderedStartupSide != nil {
+		*state.ladderedStartupSide = -1
+	}
+	if state.ladderedStartupRung != nil {
+		*state.ladderedStartupRung = -1
+	}
+}
+
+func realbotLadderedHasConfirmedEntries(entries []realbotLadderedEntry) bool {
+	for _, entry := range entries {
+		if !entry.armed {
+			return true
+		}
+	}
+	return false
+}
+
+func realbotLadderedStartupStabilityReady(state *realbotPanicBuyStrategyState, side, rung int, now time.Time) bool {
+	if state == nil || state.ladderedStartupStableAt == nil || state.ladderedStartupSide == nil || state.ladderedStartupRung == nil {
+		return true
+	}
+	if state.ladderedStartupStableAt.IsZero() || *state.ladderedStartupSide != side || *state.ladderedStartupRung != rung {
+		*state.ladderedStartupStableAt = now
+		*state.ladderedStartupSide = side
+		*state.ladderedStartupRung = rung
+		return false
+	}
+	return now.Sub(*state.ladderedStartupStableAt) >= realbotLadderedStartupStability
+}
 
 func realbotPairTokenIDs(tokenToOutcome map[string]string, outcomes []string) (string, string) {
 	token0, token1 := "", ""
@@ -116,15 +156,17 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		entryReady = ladderedTakerEntryEligible(ask1, ask2)
 	}
 	if !entryReady {
+		if ladderedMode {
+			realbotResetLadderedStartupStability(state)
+		}
 		return false
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil && len(*state.ladderedEntries) == 0 {
-		warmup := realbotLadderedStartupWarmup
 		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
-		setEntryCooldown(warmup)
+		realbotResetLadderedStartupStability(state)
 		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
-			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; waiting %s before first live rung",
-			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2, warmup)
+			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; first live rung needs %s stability",
+			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2, realbotLadderedStartupStability)
 		return true
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil {
@@ -204,6 +246,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 	if ladderedMode && !ladderedTakerEntryEligible(ask1, ask2) {
+		realbotResetLadderedStartupStability(state)
 		setEntryCooldown(500 * time.Millisecond)
 		return true
 	}
@@ -313,9 +356,19 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	var pendingLadderedEntry realbotLadderedEntry
 	if ladderedMode {
 		var directionalReady bool
-		ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(derefLadderedEntries(stateEntries(state)), ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		currentEntries := derefLadderedEntries(stateEntries(state))
+		ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(currentEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
 		if !directionalReady {
+			if !realbotLadderedHasConfirmedEntries(currentEntries) {
+				realbotResetLadderedStartupStability(state)
+			}
 			return true
+		}
+		if !realbotLadderedHasConfirmedEntries(currentEntries) {
+			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+			if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {
+				return true
+			}
 		}
 
 		if state != nil && state.nextLadderedEntrySeq != nil {

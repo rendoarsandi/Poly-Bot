@@ -80,6 +80,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	lastPairUpdate := time.Time{}
 	var ladderedEntries []realbotLadderedEntry
 	var nextLadderedEntrySeq uint64
+	ladderedStartupStableAt := time.Time{}
+	ladderedStartupSide := -1
+	ladderedStartupRung := -1
 	lastBinanceLog := time.Time{}
 	lastSplitSell := time.Time{}
 	nextSplitAttempt := time.Time{}
@@ -332,6 +335,9 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			ladderedEntries:            &ladderedEntries,
 			nextLadderedEntrySeq:       &nextLadderedEntrySeq,
 			entryExecutionInFlight:     &entryExecutionInFlight,
+			ladderedStartupStableAt:    &ladderedStartupStableAt,
+			ladderedStartupSide:        &ladderedStartupSide,
+			ladderedStartupRung:        &ladderedStartupRung,
 		}) {
 			continue
 		}
