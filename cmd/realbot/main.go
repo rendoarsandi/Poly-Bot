@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"os/exec"
 	"time"
 
 	"Market-bot/internal/api"
@@ -92,7 +94,14 @@ var realbotMakerStrategyParams = strategy.MakerParams{
 
 func main() {
 	if runEntrypoint == nil {
-		log.Fatal("Error: realbot entrypoint not initialized")
+		cmd := exec.Command("go", append([]string{"run", "./cmd/realbot"}, os.Args[1:]...)...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			log.Fatalf("Error: %v", err)
+		}
+		return
 	}
 
 	if err := runEntrypoint(); err != nil {
