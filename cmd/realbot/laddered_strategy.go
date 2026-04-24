@@ -265,9 +265,10 @@ func realbotArmInitialLadderedEntries(entries []realbotLadderedEntry, ask0, ask1
 	if len(entries) > 0 {
 		return entries
 	}
+	baseRung0 := realbotLadderedRungIndex(basePrice, basePrice, moveCents)
 	return append(entries,
-		realbotLadderedEntry{seq: 0, ask0: ask0, ask1: ask1, side: 0, rung: realbotLadderedRungIndex(ask0, basePrice, moveCents), armed: true},
-		realbotLadderedEntry{seq: 0, ask0: ask0, ask1: ask1, side: 1, rung: realbotLadderedRungIndex(ask1, basePrice, moveCents), armed: true},
+		realbotLadderedEntry{seq: 0, ask0: ask0, ask1: ask1, side: 0, rung: baseRung0, armed: true},
+		realbotLadderedEntry{seq: 0, ask0: ask0, ask1: ask1, side: 1, rung: baseRung0, armed: true},
 	)
 }
 

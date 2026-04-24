@@ -167,7 +167,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 		realbotResetLadderedStartupStability(state)
 		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
-			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; first live rung needs %s stability",
+			"[%s] 🪜 Ladder fresh market reset to base rung: %s=$%.3f, %s=$%.3f; first live rung needs %s stability",
 			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2, realbotLadderedStartupStability)
 		return true
 	}

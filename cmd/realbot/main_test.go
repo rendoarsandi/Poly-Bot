@@ -224,22 +224,19 @@ func TestRealbotLadderedDirectionalSideOnlyBuysCurrentHigherSide(t *testing.T) {
 	}
 }
 
-func TestRealbotArmInitialLadderedEntriesWaitsForNextFixedRung(t *testing.T) {
+func TestRealbotArmInitialLadderedEntriesStartsFromBaseRung(t *testing.T) {
 	entries := realbotArmInitialLadderedEntries(nil, 0.80, 0.20, 0.01, 5.0)
 	if len(entries) != 2 {
 		t.Fatalf("expected armed markers for both sides, got %d", len(entries))
 	}
-	if !entries[0].armed || entries[0].side != 0 || entries[0].rung != 15 {
-		t.Fatalf("expected side 0 to arm at rung 15 from a 1c base, got %+v", entries[0])
+	if !entries[0].armed || entries[0].side != 0 || entries[0].rung != 0 {
+		t.Fatalf("expected side 0 to arm at the base rung, got %+v", entries[0])
 	}
-	if !entries[1].armed || entries[1].side != 1 || entries[1].rung != 3 {
-		t.Fatalf("expected side 1 to arm at rung 3 from a 1c base, got %+v", entries[1])
+	if !entries[1].armed || entries[1].side != 1 || entries[1].rung != 0 {
+		t.Fatalf("expected side 1 to arm at the base rung, got %+v", entries[1])
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.80, 0.20, 0.01, 5.0); ok {
-		t.Fatalf("expected startup arm to wait for the next fixed rung, got side=%d ok=%v", side, ok)
-	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.81, 0.20, 0.01, 5.0); !ok || side != 0 {
-		t.Fatalf("expected side 0 to buy only after reaching the next fixed rung, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.80, 0.20, 0.01, 5.0); !ok || side != 0 {
+		t.Fatalf("expected startup arm to allow the current live rung after base reset, got side=%d ok=%v", side, ok)
 	}
 }
 
@@ -2456,11 +2453,11 @@ func TestRealbotHandlePanicBuyStrategyArmsInitialLadderedRungWithoutBuying(t *te
 	if len(ladderedEntries) != 2 {
 		t.Fatalf("expected initial arming markers for both sides, got %d", len(ladderedEntries))
 	}
-	if !ladderedEntries[0].armed || ladderedEntries[0].side != 0 || ladderedEntries[0].rung != 15 {
-		t.Fatalf("expected side 0 to arm at the current fixed rung, got %+v", ladderedEntries[0])
+	if !ladderedEntries[0].armed || ladderedEntries[0].side != 0 || ladderedEntries[0].rung != 0 {
+		t.Fatalf("expected side 0 to arm at the base rung, got %+v", ladderedEntries[0])
 	}
-	if !ladderedEntries[1].armed || ladderedEntries[1].side != 1 || ladderedEntries[1].rung != 3 {
-		t.Fatalf("expected side 1 to arm at the current fixed rung, got %+v", ladderedEntries[1])
+	if !ladderedEntries[1].armed || ladderedEntries[1].side != 1 || ladderedEntries[1].rung != 0 {
+		t.Fatalf("expected side 1 to arm at the base rung, got %+v", ladderedEntries[1])
 	}
 }
 
