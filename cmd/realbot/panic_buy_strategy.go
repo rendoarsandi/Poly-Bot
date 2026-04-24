@@ -402,7 +402,17 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		if ladderedDirection == 1 {
 			activePrice = limitPrice2
 		}
-		if blocked, _ := realbotLadderedInventoryCapReached(args.engine, args.marketID, args.outcomes, ladderedDirection, activeSize, activePrice, realbotCfg.LadderedTakerWorstPnLFloor); blocked {
+		if blocked, _ := realbotLadderedInventoryCapReached(
+			args.engine,
+			args.marketID,
+			args.outcomes,
+			ladderedDirection,
+			activeSize,
+			activePrice,
+			realbotCfg.LadderedTakerPnLGuardMode,
+			realbotCfg.LadderedTakerWorstPnLFloor,
+			realbotCfg.LadderedTakerMinProfitPnL,
+		); blocked {
 			setEntryCooldown(500 * time.Millisecond)
 			return true
 		}
