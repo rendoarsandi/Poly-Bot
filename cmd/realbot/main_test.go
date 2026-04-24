@@ -174,71 +174,71 @@ func TestRealbotLadderedMoveThresholdMatchesPaperbotClamp(t *testing.T) {
 	}
 }
 
-func TestRealbotLadderedRungIndexUsesFixedMidpoint(t *testing.T) {
-	if got := realbotLadderedRungIndex(0.54, 5.0); got != 0 {
-		t.Fatalf("expected 54c to stay on the base rung, got %d", got)
+func TestRealbotLadderedRungIndexUsesConfiguredBasePrice(t *testing.T) {
+	if got := realbotLadderedRungIndex(0.05, 0.01, 5.0); got != 0 {
+		t.Fatalf("expected 5c to stay on the 1c base rung, got %d", got)
 	}
-	if got := realbotLadderedRungIndex(0.55, 5.0); got != 1 {
-		t.Fatalf("expected 55c to enter rung 1, got %d", got)
+	if got := realbotLadderedRungIndex(0.06, 0.01, 5.0); got != 1 {
+		t.Fatalf("expected 6c to enter rung 1 above the 1c base, got %d", got)
 	}
-	if got := realbotLadderedRungIndex(0.60, 5.0); got != 2 {
-		t.Fatalf("expected 60c to enter rung 2, got %d", got)
+	if got := realbotLadderedRungIndex(0.11, 0.01, 5.0); got != 2 {
+		t.Fatalf("expected 11c to enter rung 2 above the 1c base, got %d", got)
 	}
-	if got := realbotLadderedRungIndex(0.49, 5.0); got != 0 {
-		t.Fatalf("expected prices below 50c to clamp to rung 0, got %d", got)
+	if got := realbotLadderedRungIndex(0.009, 0.01, 5.0); got != 0 {
+		t.Fatalf("expected prices below the configured base to clamp to rung 0, got %d", got)
 	}
 }
 
-func TestRealbotLadderedDirectionalSideUsesFixedMidpointRungs(t *testing.T) {
-	if side, _, ok := ladderedTakerDirectionalSide(nil, 0.62, 0.38, 1.0); !ok || side != 0 {
+func TestRealbotLadderedDirectionalSideUsesConfiguredBasePriceRungs(t *testing.T) {
+	if side, _, ok := ladderedTakerDirectionalSide(nil, 0.08, 0.04, 0.01, 1.0); !ok || side != 0 {
 		t.Fatalf("expected initial higher-ask side 0, got side=%d ok=%v", side, ok)
 	}
 
 	entries := []realbotLadderedEntry{
-		{seq: 1, ask0: 0.55, ask1: 0.40, side: 0, rung: 1},
+		{seq: 1, ask0: 0.06, ask1: 0.04, side: 0, rung: 1},
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.599, 0.401, 5.0); ok {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.109, 0.041, 0.01, 5.0); ok {
 		t.Fatalf("expected same fixed 5c rung to block re-entry, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.401, 5.0); !ok || side != 0 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.041, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 re-entry after crossing the next fixed rung, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.58, 0.55, 5.0); ok {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.09, 0.08, 0.01, 5.0); ok {
 		t.Fatalf("expected lower side 1 move to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
 	}
 }
 
 func TestRealbotLadderedDirectionalSideOnlyBuysCurrentHigherSide(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.55, ask1: 0.40, side: 0, rung: 1}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.06, ask1: 0.04, side: 0, rung: 1}}
 
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.49, 5.0); !ok || side != 0 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.09, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected higher side 0 to re-enter after crossing the next fixed 5c rung, got side=%d ok=%v", side, ok)
 	}
 
-	entries = append(entries, realbotLadderedEntry{seq: 2, ask0: 0.60, ask1: 0.49, side: 0, rung: 2})
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.55, 5.0); ok {
-		t.Fatalf("expected lower side 1 at 55c to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
+	entries = append(entries, realbotLadderedEntry{seq: 2, ask0: 0.11, ask1: 0.09, side: 0, rung: 2})
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.06, 0.01, 5.0); ok {
+		t.Fatalf("expected lower side 1 at the first rung to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.50, 0.55, 5.0); !ok || side != 1 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.06, 0.01, 5.0); !ok || side != 1 {
 		t.Fatalf("expected side 1 to re-enter only after becoming the higher side, got side=%d ok=%v", side, ok)
 	}
 }
 
 func TestRealbotArmInitialLadderedEntriesWaitsForNextFixedRung(t *testing.T) {
-	entries := realbotArmInitialLadderedEntries(nil, 0.80, 0.20, 5.0)
+	entries := realbotArmInitialLadderedEntries(nil, 0.80, 0.20, 0.01, 5.0)
 	if len(entries) != 2 {
 		t.Fatalf("expected armed markers for both sides, got %d", len(entries))
 	}
-	if !entries[0].armed || entries[0].side != 0 || entries[0].rung != 6 {
-		t.Fatalf("expected side 0 to arm at rung 6, got %+v", entries[0])
+	if !entries[0].armed || entries[0].side != 0 || entries[0].rung != 15 {
+		t.Fatalf("expected side 0 to arm at rung 15 from a 1c base, got %+v", entries[0])
 	}
-	if !entries[1].armed || entries[1].side != 1 || entries[1].rung != 0 {
-		t.Fatalf("expected side 1 to arm at rung 0, got %+v", entries[1])
+	if !entries[1].armed || entries[1].side != 1 || entries[1].rung != 3 {
+		t.Fatalf("expected side 1 to arm at rung 3 from a 1c base, got %+v", entries[1])
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.82, 0.18, 5.0); ok {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.80, 0.20, 0.01, 5.0); ok {
 		t.Fatalf("expected startup arm to wait for the next fixed rung, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.85, 0.15, 5.0); !ok || side != 0 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.81, 0.20, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 to buy only after reaching the next fixed rung, got side=%d ok=%v", side, ok)
 	}
 }
@@ -305,50 +305,47 @@ func TestRealbotResetLadderedStartupStabilityClearsState(t *testing.T) {
 
 func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing.T) {
 	entries := []realbotLadderedEntry{
-		{seq: 0, ask0: 0.50, ask1: 0.20, side: 0, rung: 0, armed: true},
-		{seq: 1, ask0: 0.55, ask1: 0.20, side: 0, rung: 1},
-		{seq: 2, ask0: 0.60, ask1: 0.20, side: 0, rung: 2},
-		{seq: 3, ask0: 0.65, ask1: 0.20, side: 0, rung: 3},
-		{seq: 4, ask0: 0.70, ask1: 0.20, side: 0, rung: 4},
-		{seq: 5, ask0: 0.75, ask1: 0.20, side: 0, rung: 5},
-		{seq: 6, ask0: 0.80, ask1: 0.20, side: 0, rung: 6},
+		{seq: 0, ask0: 0.01, ask1: 0.20, side: 0, rung: 0, armed: true},
+		{seq: 1, ask0: 0.06, ask1: 0.20, side: 0, rung: 1},
+		{seq: 2, ask0: 0.11, ask1: 0.20, side: 0, rung: 2},
+		{seq: 3, ask0: 0.16, ask1: 0.20, side: 0, rung: 3},
 	}
 
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.80, 0.20, 5.0); ok {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.16, 0.10, 0.01, 5.0); ok {
 		t.Fatalf("expected side 0 to stay blocked until it rearms, got side=%d ok=%v", side, ok)
 	}
 
-	entries = realbotRefreshLadderedEntries(entries, 0.50, 0.45, 5.0)
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.45, 5.0); !ok || side != 0 {
+	entries = realbotRefreshLadderedEntries(entries, 0.01, 0.16, 0.01, 5.0)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.06, 0.04, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 to re-arm after returning to the base rung, got side=%d ok=%v", side, ok)
 	}
 }
 
 func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.36}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
 
-	pending := realbotPendingLadderedEntry(entries, 2, 0.62, 0.36, 5.0)
-	if math.Abs(pending.ask0-0.62) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
+	pending := realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 5.0)
+	if math.Abs(pending.ask0-0.12) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
 		t.Fatalf("expected pending anchor to jump to the current quote, got %+v", pending)
 	}
-	if pending.side != 0 || pending.rung != 2 {
-		t.Fatalf("expected pending entry to remember side 0 rung 2, got %+v", pending)
+	if pending.side != 1 || pending.rung != 7 {
+		t.Fatalf("expected pending entry to remember side 1 rung 7 from a 1c base, got %+v", pending)
 	}
 
 	entries = append(entries, pending)
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.62, 0.36, 5.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.36, 0.01, 5.0); ok {
 		t.Fatalf("expected unchanged quote to stop replaying missed rungs, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
 
 func TestRealbotLargeGapRequiresFreshStepAfterAnchorReset(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.36}}
-	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.62, 0.36, 2.0))
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
+	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 2.0))
 
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.639, 0.36, 2.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.369, 0.01, 2.0); ok {
 		t.Fatalf("expected move below the next full 2c step to stay blocked, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.64, 0.36, 2.0); !ok || side != 0 || mult != 1 {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.37, 0.01, 2.0); !ok || side != 1 || mult != 1 {
 		t.Fatalf("expected the next fresh 2c move to allow exactly one new re-entry, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
@@ -471,7 +468,7 @@ func TestRealbotResolveLadderedEntryDropsRejectedPendingAnchor(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected failed pending rung to be removed, got %d entries", len(entries))
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.512, 0.401, 1.0); !ok || side != 0 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.512, 0.401, 0.01, 1.0); !ok || side != 0 {
 		t.Fatalf("expected re-entry to fall back to the last confirmed ladder anchor, got side=%d ok=%v", side, ok)
 	}
 }
@@ -2426,10 +2423,10 @@ func TestRealbotHandlePanicBuyStrategyArmsInitialLadderedRungWithoutBuying(t *te
 	if len(ladderedEntries) != 2 {
 		t.Fatalf("expected initial arming markers for both sides, got %d", len(ladderedEntries))
 	}
-	if !ladderedEntries[0].armed || ladderedEntries[0].side != 0 || ladderedEntries[0].rung != 6 {
+	if !ladderedEntries[0].armed || ladderedEntries[0].side != 0 || ladderedEntries[0].rung != 15 {
 		t.Fatalf("expected side 0 to arm at the current fixed rung, got %+v", ladderedEntries[0])
 	}
-	if !ladderedEntries[1].armed || ladderedEntries[1].side != 1 || ladderedEntries[1].rung != 0 {
+	if !ladderedEntries[1].armed || ladderedEntries[1].side != 1 || ladderedEntries[1].rung != 3 {
 		t.Fatalf("expected side 1 to arm at the current fixed rung, got %+v", ladderedEntries[1])
 	}
 }

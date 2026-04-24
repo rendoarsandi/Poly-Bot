@@ -118,9 +118,11 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	realbotCfg := args.tui.GetSettings()
 	rMinAsk := realbotCfg.MinAskPrice
 	rMaxAsk := realbotCfg.MaxAskPrice
+	ladderBasePrice := rMinAsk
 	ladderedMode := args.arbMode == paperArbModeLaddered
 	if ladderedMode {
 		rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
+		ladderBasePrice = rMinAsk
 	}
 
 	if ask1 <= bid1 || ask2 <= bid2 || (!ladderedMode && (bid1 <= 0 || bid2 <= 0)) {
@@ -162,7 +164,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return false
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil && len(*state.ladderedEntries) == 0 {
-		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 		realbotResetLadderedStartupStability(state)
 		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
 			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; first live rung needs %s stability",
@@ -170,7 +172,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil {
-		*state.ladderedEntries = realbotRefreshLadderedEntries(*state.ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		*state.ladderedEntries = realbotRefreshLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
 	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
@@ -357,7 +359,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	if ladderedMode {
 		var directionalReady bool
 		currentEntries := derefLadderedEntries(stateEntries(state))
-		ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(currentEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(currentEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 		if !directionalReady {
 			if !realbotLadderedHasConfirmedEntries(currentEntries) {
 				realbotResetLadderedStartupStability(state)
@@ -365,7 +367,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			return true
 		}
 		if !realbotLadderedHasConfirmedEntries(currentEntries) {
-			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 			if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {
 				return true
 			}
@@ -377,7 +379,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		}
 		// Reset the ladder anchor to the current live quote after each actionable re-entry
 		// so large gaps do not trigger a backlog of catch-up buys at worse prices.
-		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
 	requestSize1, requestSize2 := shares, shares
