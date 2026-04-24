@@ -457,17 +457,33 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredWorstPnLFloor(t *testing.T) 
 func TestRealbotLadderedInventoryCapHonorsConfiguredMinProfitPnL(t *testing.T) {
 	engine := paper.NewEngine(100)
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardMinProfit, 0, 0.50)
+	// First directional trade should be allowed regardless of min-profit floor,
+	// because it establishes the best PnL rather than decreasing it.
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardMinProfit, 0, 5.00)
+	if blocked {
+		t.Fatalf("expected initial directional trade to be allowed, got %q", reason)
+	}
+
+	// Establish a profitable position on "Up": 10 shares @ 0.50 (Cost: 5.00)
+	// PnL if "Up" wins: 10.00 - 5.00 = +$5.00
+	engine.BuyForMarket("BTC", "Up", 0.50, 10.0)
+
+	// Hedge with "Down": 4 shares @ 0.50 (Cost: 2.00)
+	// Total Cost = 7.00.
+	// New PnL if "Up" wins: 10.00 - 7.00 = +$3.00 (decreases by 2.00)
+	// If min-profit floor is 4.00, this hedge should be blocked.
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMinProfit, 0, 4.00)
 	if !blocked {
-		t.Fatal("expected configured min-profit floor to block the first chunk")
+		t.Fatal("expected configured min-profit floor to block hedging that reduces profit below floor")
 	}
 	if !strings.Contains(reason, "winning-side resolve PnL") {
 		t.Fatalf("expected block reason to mention winning-side resolve PnL, got %q", reason)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardMinProfit, 0, 0.25)
+	// If min-profit floor is 2.00, the +$3.00 remaining profit is acceptable, so allow the hedge.
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMinProfit, 0, 2.00)
 	if blocked {
-		t.Fatalf("expected looser min-profit floor to allow the first chunk, got %q", reason)
+		t.Fatalf("expected looser min-profit floor to allow the hedge, got %q", reason)
 	}
 }
 

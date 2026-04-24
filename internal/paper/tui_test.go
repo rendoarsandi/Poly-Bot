@@ -3756,8 +3756,8 @@ func TestNormalizeTUISettingsClampsLadderedTakerWorstPnLFloor(t *testing.T) {
 		t.Fatalf("expected ladder worst PnL floor to clamp to -1000.0, got %.2f", got.LadderedTakerWorstPnLFloor)
 	}
 	got = normalizeTUISettings(TUISettings{LadderedTakerWorstPnLFloor: 1005})
-	if got.LadderedTakerWorstPnLFloor != 0 {
-		t.Fatalf("expected positive ladder worst PnL floor to clamp to auto 0.00, got %.2f", got.LadderedTakerWorstPnLFloor)
+	if got.LadderedTakerWorstPnLFloor != -1000.0 {
+		t.Fatalf("expected positive ladder worst PnL floor to be inverted and clamped to -1000.0, got %.2f", got.LadderedTakerWorstPnLFloor)
 	}
 }
 

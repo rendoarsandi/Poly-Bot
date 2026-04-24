@@ -1341,14 +1341,14 @@ func normalizeLadderedTakerWorstPnLFloor(v float64) float64 {
 		return 0
 	}
 	v = math.Round(v*100.0) / 100.0
+	if v > 0 {
+		v = -v
+	}
 	if math.Abs(v) < 0.005 {
 		return 0
 	}
 	if v < -1000.0 {
 		return -1000.0
-	}
-	if v > 0 {
-		return 0
 	}
 	return v
 }

@@ -426,10 +426,6 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 	worstResolvePnL := resolvePnL0
 	bestOutcome := outcomes[1]
 	bestResolvePnL := resolvePnL1
-	activeResolvePnL := resolvePnL0
-	if side == 1 {
-		activeResolvePnL = resolvePnL1
-	}
 	if resolvePnL1 < resolvePnL0 {
 		worstOutcome = outcomes[1]
 		worstResolvePnL = resolvePnL1
@@ -439,12 +435,37 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 
 	if strings.EqualFold(strings.TrimSpace(guardMode), core.LadderedTakerPnLGuardMinProfit) {
 		minProfitFloor := realbotLadderedMinProfitPnLFloor(configuredMinProfitPnL)
-		if activeResolvePnL >= minProfitFloor-1e-9 {
+		
+		// Calculate the *previous* best PnL before this trade
+		oldTotalCost := totalCost - projectedCost
+		oldQty0 := qtyByOutcome[outcomes[0]]
+		oldQty1 := qtyByOutcome[outcomes[1]]
+		if side == 0 {
+			oldQty0 -= requestedQty
+		} else {
+			oldQty1 -= requestedQty
+		}
+		oldResolvePnL0 := oldQty0 - oldTotalCost
+		oldResolvePnL1 := oldQty1 - oldTotalCost
+		oldBestResolvePnL := oldResolvePnL0
+		if oldResolvePnL1 > oldResolvePnL0 {
+			oldBestResolvePnL = oldResolvePnL1
+		}
+
+		if bestResolvePnL >= oldBestResolvePnL {
+			// The trade increases (or maintains) our best-case PnL, always allow it!
+			// This permits building the initial directional position.
 			return false, ""
 		}
+
+		if bestResolvePnL >= minProfitFloor-1e-9 {
+			// The trade decreases our best PnL (hedging), but it stays above the floor.
+			return false, ""
+		}
+
 		return true, fmt.Sprintf("projected winning-side resolve PnL would fall to %s for %s below floor %s (worst %s=%s)",
-			realbotFormatSignedUSD(activeResolvePnL),
-			activeOutcome,
+			realbotFormatSignedUSD(bestResolvePnL),
+			bestOutcome,
 			realbotFormatSignedUSD(minProfitFloor),
 			worstOutcome,
 			realbotFormatSignedUSD(worstResolvePnL),
