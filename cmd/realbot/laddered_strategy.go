@@ -371,15 +371,15 @@ func realbotLadderedWorstPnLFloor(projectedCost, configuredFloor float64) float6
 	return -math.Max(projectedCost*2.0, minOnChainActionShares)
 }
 
-func realbotLadderedMinProfitPnLFloor(configuredFloor float64) float64 {
-	configuredFloor = math.Round(configuredFloor*100.0) / 100.0
-	if math.Abs(configuredFloor) < 0.005 {
+func realbotLadderedMaxProfitPnLCap(configuredCap float64) float64 {
+	configuredCap = math.Round(configuredCap*100.0) / 100.0
+	if math.Abs(configuredCap) < 0.005 {
 		return 0
 	}
-	if configuredFloor < 0 {
+	if configuredCap < 0 {
 		return 0
 	}
-	return configuredFloor
+	return configuredCap
 }
 
 func realbotFormatSignedUSD(v float64) string {
@@ -389,7 +389,7 @@ func realbotFormatSignedUSD(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
-func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64, guardMode string, configuredWorstPnLFloor, configuredMinProfitPnL float64) (bool, string) {
+func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64, guardMode string, configuredWorstPnLFloor, configuredMaxProfitPnL float64) (bool, string) {
 	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 || price <= 0 {
 		return false, ""
 	}
@@ -426,6 +426,10 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 	worstResolvePnL := resolvePnL0
 	bestOutcome := outcomes[1]
 	bestResolvePnL := resolvePnL1
+	activeResolvePnL := resolvePnL0
+	if side == 1 {
+		activeResolvePnL = resolvePnL1
+	}
 	if resolvePnL1 < resolvePnL0 {
 		worstOutcome = outcomes[1]
 		worstResolvePnL = resolvePnL1
@@ -433,43 +437,17 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 		bestResolvePnL = resolvePnL0
 	}
 
-	if strings.EqualFold(strings.TrimSpace(guardMode), core.LadderedTakerPnLGuardMinProfit) {
-		minProfitFloor := realbotLadderedMinProfitPnLFloor(configuredMinProfitPnL)
+	if strings.EqualFold(strings.TrimSpace(guardMode), core.LadderedTakerPnLGuardMaxProfit) {
+		maxProfitCap := realbotLadderedMaxProfitPnLCap(configuredMaxProfitPnL)
 		
-		// Calculate the *previous* best PnL before this trade
-		oldTotalCost := totalCost - projectedCost
-		oldQty0 := qtyByOutcome[outcomes[0]]
-		oldQty1 := qtyByOutcome[outcomes[1]]
-		if side == 0 {
-			oldQty0 -= requestedQty
-		} else {
-			oldQty1 -= requestedQty
+		if maxProfitCap > 0 && activeResolvePnL > maxProfitCap+1e-9 {
+			return true, fmt.Sprintf("projected active-side resolve PnL would rise to %s for %s above cap %s",
+				realbotFormatSignedUSD(activeResolvePnL),
+				activeOutcome,
+				realbotFormatSignedUSD(maxProfitCap),
+			)
 		}
-		oldResolvePnL0 := oldQty0 - oldTotalCost
-		oldResolvePnL1 := oldQty1 - oldTotalCost
-		oldBestResolvePnL := oldResolvePnL0
-		if oldResolvePnL1 > oldResolvePnL0 {
-			oldBestResolvePnL = oldResolvePnL1
-		}
-
-		if bestResolvePnL >= oldBestResolvePnL {
-			// The trade increases (or maintains) our best-case PnL, always allow it!
-			// This permits building the initial directional position.
-			return false, ""
-		}
-
-		if bestResolvePnL >= minProfitFloor-1e-9 {
-			// The trade decreases our best PnL (hedging), but it stays above the floor.
-			return false, ""
-		}
-
-		return true, fmt.Sprintf("projected winning-side resolve PnL would fall to %s for %s below floor %s (worst %s=%s)",
-			realbotFormatSignedUSD(bestResolvePnL),
-			bestOutcome,
-			realbotFormatSignedUSD(minProfitFloor),
-			worstOutcome,
-			realbotFormatSignedUSD(worstResolvePnL),
-		)
+		return false, ""
 	}
 
 	worstPnLFloor := realbotLadderedWorstPnLFloor(projectedCost, configuredWorstPnLFloor)

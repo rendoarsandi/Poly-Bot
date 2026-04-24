@@ -454,36 +454,35 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredWorstPnLFloor(t *testing.T) 
 	}
 }
 
-func TestRealbotLadderedInventoryCapHonorsConfiguredMinProfitPnL(t *testing.T) {
+func TestRealbotLadderedInventoryCapHonorsConfiguredMaxProfitPnL(t *testing.T) {
 	engine := paper.NewEngine(100)
 
-	// First directional trade should be allowed regardless of min-profit floor,
-	// because it establishes the best PnL rather than decreasing it.
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardMinProfit, 0, 5.00)
+	// Buy 10 shares @ 0.60. Cost: 6.00. PnL if "Up" wins: 10.00 - 6.00 = +$4.00.
+	// If cap is 5.00, this should be allowed.
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.60, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00)
 	if blocked {
-		t.Fatalf("expected initial directional trade to be allowed, got %q", reason)
+		t.Fatalf("expected trade under cap to be allowed, got %q", reason)
 	}
 
-	// Establish a profitable position on "Up": 10 shares @ 0.50 (Cost: 5.00)
-	// PnL if "Up" wins: 10.00 - 5.00 = +$5.00
-	engine.BuyForMarket("BTC", "Up", 0.50, 10.0)
+	engine.BuyForMarket("BTC", "Up", 0.60, 10.0)
 
-	// Hedge with "Down": 4 shares @ 0.50 (Cost: 2.00)
-	// Total Cost = 7.00.
-	// New PnL if "Up" wins: 10.00 - 7.00 = +$3.00 (decreases by 2.00)
-	// If min-profit floor is 4.00, this hedge should be blocked.
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMinProfit, 0, 4.00)
+	// Attempt to buy 4 more shares @ 0.50. Additional Cost: 2.00. Total Cost: 8.00.
+	// New PnL if "Up" wins: 14.00 - 8.00 = +$6.00.
+	// If cap is 5.00, this should be blocked.
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 4.0, 0.50, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00)
 	if !blocked {
-		t.Fatal("expected configured min-profit floor to block hedging that reduces profit below floor")
+		t.Fatal("expected trade exceeding cap to be blocked")
 	}
-	if !strings.Contains(reason, "winning-side resolve PnL") {
-		t.Fatalf("expected block reason to mention winning-side resolve PnL, got %q", reason)
+	if !strings.Contains(reason, "active-side resolve PnL") {
+		t.Fatalf("expected block reason to mention active-side resolve PnL, got %q", reason)
 	}
 
-	// If min-profit floor is 2.00, the +$3.00 remaining profit is acceptable, so allow the hedge.
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMinProfit, 0, 2.00)
+	// Attempt to buy 4 more shares on "Down" @ 0.50. Cost: 2.00. Total Cost: 8.00.
+	// New PnL if "Down" wins: 4.00 - 8.00 = -$4.00.
+	// This is well below the cap of 5.00, so it should be allowed (hedging).
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00)
 	if blocked {
-		t.Fatalf("expected looser min-profit floor to allow the hedge, got %q", reason)
+		t.Fatalf("expected hedging trade under cap to be allowed, got %q", reason)
 	}
 }
 
@@ -695,9 +694,9 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 		PaperBalance:                42.5,
 		PaperArbMode:                paperArbModeLaddered,
 		LadderedTakerMaxSlippagePct: 7,
-		LadderedTakerPnLGuardMode:   core.LadderedTakerPnLGuardMinProfit,
+		LadderedTakerPnLGuardMode:   core.LadderedTakerPnLGuardMaxProfit,
 		LadderedTakerWorstPnLFloor:  -2.25,
-		LadderedTakerMinProfitPnL:   0.8,
+		LadderedTakerMaxProfitPnL:   0.8,
 		RedeemGasMode:               core.RedeemGasModeUrgent,
 	}
 
@@ -714,11 +713,11 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	if settings.LadderedTakerWorstPnLFloor != -2.25 {
 		t.Fatalf("expected TUI settings to include laddered worst PnL floor, got %.2f", settings.LadderedTakerWorstPnLFloor)
 	}
-	if settings.LadderedTakerPnLGuardMode != core.LadderedTakerPnLGuardMinProfit {
+	if settings.LadderedTakerPnLGuardMode != core.LadderedTakerPnLGuardMaxProfit {
 		t.Fatalf("expected TUI settings to include laddered pnl guard mode, got %q", settings.LadderedTakerPnLGuardMode)
 	}
-	if settings.LadderedTakerMinProfitPnL != 0.8 {
-		t.Fatalf("expected TUI settings to include laddered min profit pnl, got %.2f", settings.LadderedTakerMinProfitPnL)
+	if settings.LadderedTakerMaxProfitPnL != 0.8 {
+		t.Fatalf("expected TUI settings to include laddered min profit pnl, got %.2f", settings.LadderedTakerMaxProfitPnL)
 	}
 	if settings.RedeemGasMode != core.RedeemGasModeUrgent {
 		t.Fatalf("expected TUI settings to include redeem gas mode, got %q", settings.RedeemGasMode)
@@ -729,7 +728,7 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	settings.LadderedTakerMaxSlippagePct = 13
 	settings.LadderedTakerPnLGuardMode = core.LadderedTakerPnLGuardWorst
 	settings.LadderedTakerWorstPnLFloor = -1.5
-	settings.LadderedTakerMinProfitPnL = 1.1
+	settings.LadderedTakerMaxProfitPnL = 1.1
 	settings.RedeemGasMode = core.RedeemGasModeNormal
 	applyRealbotTUISettings(cfg, settings)
 	if cfg.ExecutionBackend != core.ExecutionBackendLive {
@@ -747,8 +746,8 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	if cfg.LadderedTakerPnLGuardMode != core.LadderedTakerPnLGuardWorst {
 		t.Fatalf("expected config to receive updated laddered pnl guard mode, got %q", cfg.LadderedTakerPnLGuardMode)
 	}
-	if cfg.LadderedTakerMinProfitPnL != 1.1 {
-		t.Fatalf("expected config to receive updated laddered min profit pnl, got %.2f", cfg.LadderedTakerMinProfitPnL)
+	if cfg.LadderedTakerMaxProfitPnL != 1.1 {
+		t.Fatalf("expected config to receive updated laddered min profit pnl, got %.2f", cfg.LadderedTakerMaxProfitPnL)
 	}
 	if cfg.RedeemGasMode != core.RedeemGasModeNormal {
 		t.Fatalf("expected config to receive updated redeem gas mode, got %q", cfg.RedeemGasMode)

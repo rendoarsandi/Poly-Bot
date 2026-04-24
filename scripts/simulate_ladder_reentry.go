@@ -1,17 +1,18 @@
 //go:build ignore
 
-// simulate_ladder_reentry generates randomized binary-market price paths and
+// simulate_ladder_reentry fetches recent resolved Polymarket crypto markets and
 // compares laddered directional re-entry performance for:
 //   - fixed 1 share per entry
 //   - fixed 1 USDC per entry
 //
-// Presets sweep re-entry move thresholds from 1c to 5c. PnL is marked to the
-// final simulated market price; there is no separate settlement model.
+// Presets sweep re-entry move thresholds from 1c to 5c. PnL is settled against
+// the actual resolved winner for each market. Exposure and drawdown are still
+// tracked mark-to-market across the historical price path.
 //
 // Usage:
 //
 //	go run scripts/simulate_ladder_reentry.go
-//	go run scripts/simulate_ladder_reentry.go -markets 50 -ticks 80 -seed 42
+//	go run scripts/simulate_ladder_reentry.go -markets 50 -timeframe 5m -assets btc,eth,sol,xrp
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -48,10 +50,12 @@ const (
 )
 
 type marketCase struct {
-	ID     int
-	Regime regime
-	Slug   string
-	Prices []float64
+	ID             int
+	Asset          string
+	Regime         regime
+	Slug           string
+	Prices         []float64
+	WinningOutcome string
 }
 
 type result struct {
@@ -97,12 +101,14 @@ type presetChoice struct {
 }
 
 type csvRecord struct {
-	MarketID int
-	Regime   regime
-	Slug     string
-	Step     int
-	Mode     string
-	Result   result
+	MarketID       int
+	Asset          string
+	Regime         regime
+	Slug           string
+	WinningOutcome string
+	Step           int
+	Mode           string
+	Result         result
 }
 
 type priceHistoryResponse struct {
@@ -194,7 +200,7 @@ func classifyRegime(prices []float64) regime {
 	return regimeAmbiguous
 }
 
-func runLadder(prices []float64, stepCents int, mode string, shareSize, usdcSize float64) result {
+func runLadder(prices []float64, winningOutcome string, stepCents int, mode string, shareSize, usdcSize float64) result {
 	if len(prices) == 0 {
 		return result{}
 	}
@@ -254,7 +260,15 @@ func runLadder(prices []float64, stepCents int, mode string, shareSize, usdcSize
 	}
 
 	finalPrice := prices[len(prices)-1]
-	finalValue := upShares*finalPrice + downShares*(1.0-finalPrice)
+	finalValue := 0.0
+	switch strings.ToLower(strings.TrimSpace(winningOutcome)) {
+	case "up":
+		finalValue = upShares
+	case "down":
+		finalValue = downShares
+	default:
+		finalValue = upShares*finalPrice + downShares*(1.0-finalPrice)
+	}
 	out.Cost = totalCost
 	out.Value = finalValue
 	out.PnL = finalValue - totalCost
@@ -364,7 +378,7 @@ func writeDetailCSV(path string, records []csvRecord) error {
 	defer w.Flush()
 
 	header := []string{
-		"market_id", "slug", "regime", "step_cents", "mode",
+		"market_id", "asset", "slug", "regime", "winning_outcome", "step_cents", "mode",
 		"start_price", "final_price",
 		"entries", "up_entries", "down_entries",
 		"up_shares", "down_shares",
@@ -378,8 +392,10 @@ func writeDetailCSV(path string, records []csvRecord) error {
 	for _, rec := range records {
 		row := []string{
 			strconv.Itoa(rec.MarketID),
+			rec.Asset,
 			rec.Slug,
 			string(rec.Regime),
+			rec.WinningOutcome,
 			strconv.Itoa(rec.Step),
 			rec.Mode,
 			fmt.Sprintf("%.6f", rec.Result.StartPrice),
@@ -473,51 +489,126 @@ func writeSummaryCSV(path string, overall map[int]map[string]summary) error {
 	return w.Error()
 }
 
-func fetchRecentBTC15mMarkets(ctx context.Context, count int) ([]marketCase, error) {
+func timeframeIntervalSeconds(timeframe string) (int64, error) {
+	switch strings.ToLower(strings.TrimSpace(timeframe)) {
+	case "5m":
+		return 300, nil
+	case "15m", "":
+		return 900, nil
+	case "1h":
+		return 3600, nil
+	case "1d":
+		return 86400, nil
+	default:
+		return 0, fmt.Errorf("unsupported timeframe %q", timeframe)
+	}
+}
+
+func parseAssets(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		asset := strings.ToLower(strings.TrimSpace(part))
+		if asset == "" {
+			continue
+		}
+		if _, ok := seen[asset]; ok {
+			continue
+		}
+		seen[asset] = struct{}{}
+		out = append(out, asset)
+	}
+	return out
+}
+
+func resolvedWinningOutcome(tokens []api.Token) string {
+	for _, token := range tokens {
+		if token.Winner {
+			switch strings.ToLower(strings.TrimSpace(token.Outcome)) {
+			case "up", "yes":
+				return "up"
+			case "down", "no":
+				return "down"
+			}
+			return strings.ToLower(strings.TrimSpace(token.Outcome))
+		}
+	}
+	return ""
+}
+
+func fetchRecentResolvedTimeframeMarkets(ctx context.Context, assets []string, timeframe string, count int) ([]marketCase, error) {
 	if count <= 0 {
 		return nil, errors.New("count must be > 0")
+	}
+	interval, err := timeframeIntervalSeconds(timeframe)
+	if err != nil {
+		return nil, err
+	}
+	if len(assets) == 0 {
+		assets = []string{"btc", "eth", "sol", "xrp"}
 	}
 
 	rest := api.NewRestClient("")
 	now := time.Now().UTC().Unix()
-	currentWindowStart := (now / 900) * 900
+	currentWindowStart := (now / interval) * interval
 	cases := make([]marketCase, 0, count)
+	seen := map[string]struct{}{}
+	maxOffset := int64(count*8 + len(assets)*4)
 
-	for offset := int64(1); len(cases) < count && offset <= int64(count+10); offset++ {
-		windowStart := currentWindowStart - offset*900
-		slug := fmt.Sprintf("btc-updown-15m-%d", windowStart)
-		markets, err := rest.GetMarketsByEventSlug(ctx, slug)
-		if err != nil || len(markets) == 0 {
-			continue
-		}
+	for offset := int64(1); len(cases) < count && offset <= maxOffset; offset++ {
+		windowStart := currentWindowStart - offset*interval
+		windowEnd := windowStart + interval
+		for _, asset := range assets {
+			slug := fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart)
+			if _, ok := seen[slug]; ok {
+				continue
+			}
+			seen[slug] = struct{}{}
 
-		market := markets[0]
-		tokenID := ""
-		for _, token := range market.Tokens {
-			if token.Outcome == "Up" {
-				tokenID = token.TokenID
+			markets, err := rest.GetMarketsByEventSlug(ctx, slug)
+			if err != nil || len(markets) == 0 {
+				continue
+			}
+
+			market := markets[0]
+			winningOutcome := resolvedWinningOutcome(market.Tokens)
+			if winningOutcome == "" {
+				continue
+			}
+
+			tokenID := ""
+			for _, token := range market.Tokens {
+				if strings.EqualFold(token.Outcome, "Up") || strings.EqualFold(token.Outcome, "Yes") {
+					tokenID = token.TokenID
+					break
+				}
+			}
+			if tokenID == "" {
+				tokenID = market.Tokens[0].TokenID
+			}
+
+			prices, err := fetchTokenPricePath(ctx, tokenID, windowStart, windowEnd)
+			if err != nil || len(prices) < 2 {
+				continue
+			}
+
+			cases = append(cases, marketCase{
+				ID:             len(cases) + 1,
+				Asset:          asset,
+				Slug:           market.Slug,
+				Regime:         classifyRegime(prices),
+				Prices:         prices,
+				WinningOutcome: winningOutcome,
+			})
+			if len(cases) >= count {
 				break
 			}
 		}
-		if tokenID == "" {
-			tokenID = market.Tokens[0].TokenID
-		}
-
-		prices, err := fetchTokenPricePath(ctx, tokenID, windowStart, windowStart+900)
-		if err != nil || len(prices) < 2 {
-			continue
-		}
-
-		cases = append(cases, marketCase{
-			ID:     len(cases) + 1,
-			Slug:   market.Slug,
-			Regime: classifyRegime(prices),
-			Prices: prices,
-		})
 	}
 
 	if len(cases) == 0 {
-		return nil, fmt.Errorf("no BTC 15m markets with usable history found")
+		return nil, fmt.Errorf("no resolved %s crypto markets with usable history found", timeframe)
 	}
 	return cases, nil
 }
@@ -582,27 +673,30 @@ func fetchTokenPricePath(ctx context.Context, tokenID string, startTS, endTS int
 
 func main() {
 	var (
-		marketCount = flag.Int("markets", 50, "number of random markets to simulate")
+		marketCount = flag.Int("markets", 50, "number of resolved markets to fetch")
+		timeframe   = flag.String("timeframe", "5m", "market timeframe to fetch (5m, 15m, 1h, 1d)")
+		assetsFlag  = flag.String("assets", "btc,eth,sol,xrp", "comma-separated asset list")
 		csvPrefix   = flag.String("csv-prefix", "", "output prefix for detail/summary CSV files")
 		shareSize   = flag.Float64("share-size", 1.0, "fixed shares per entry when mode=shares")
 		usdcSize    = flag.Float64("usdc-size", 1.0, "fixed USDC budget per entry when mode=usdc")
 	)
 	flag.Parse()
 
-	if *marketCount <= 0 || *shareSize <= 0 || *usdcSize <= 0 {
-		fmt.Fprintln(os.Stderr, "markets must be > 0, and share/usdc sizes must be > 0")
+	assets := parseAssets(*assetsFlag)
+	if *marketCount <= 0 || *shareSize <= 0 || *usdcSize <= 0 || len(assets) == 0 {
+		fmt.Fprintln(os.Stderr, "markets, share-size, and usdc-size must be > 0, and assets must be non-empty")
 		os.Exit(1)
 	}
 
 	var markets []marketCase
 	regimeCounts := map[regime]int{}
-	
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var err error
-	markets, err = fetchRecentBTC15mMarkets(ctx, *marketCount)
+	markets, err = fetchRecentResolvedTimeframeMarkets(ctx, assets, *timeframe, *marketCount)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to fetch BTC 15m history: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to fetch resolved %s history: %v\n", *timeframe, err)
 		os.Exit(1)
 	}
 	for _, m := range markets {
@@ -632,14 +726,16 @@ func main() {
 	for _, m := range markets {
 		for step := 1; step <= 5; step++ {
 			for _, mode := range []string{modeShares, modeUSDC} {
-				res := runLadder(m.Prices, step, mode, *shareSize, *usdcSize)
+				res := runLadder(m.Prices, m.WinningOutcome, step, mode, *shareSize, *usdcSize)
 				records = append(records, csvRecord{
-					MarketID: m.ID,
-					Regime:   m.Regime,
-					Slug:     m.Slug,
-					Step:     step,
-					Mode:     mode,
-					Result:   res,
+					MarketID:       m.ID,
+					Asset:          m.Asset,
+					Regime:         m.Regime,
+					Slug:           m.Slug,
+					WinningOutcome: m.WinningOutcome,
+					Step:           step,
+					Mode:           mode,
+					Result:         res,
 				})
 				s := overall[step][mode]
 				s.add(m.ID, m.Regime, res)
@@ -654,7 +750,7 @@ func main() {
 
 	prefix := *csvPrefix
 	if prefix == "" {
-		prefix = filepath.Join("logs", fmt.Sprintf("ladder_reentry_btc15m_%dmarkets", len(markets)))
+		prefix = filepath.Join("logs", fmt.Sprintf("ladder_reentry_poly_%s_%dmarkets", strings.ToLower(*timeframe), len(markets)))
 	}
 	if err := os.MkdirAll(filepath.Dir(prefix), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create csv output dir: %v\n", err)
@@ -672,9 +768,9 @@ func main() {
 	}
 
 	fmt.Printf("Ladder re-entry simulation\n")
-	fmt.Printf("source=btc15m markets=%d\n", len(markets))
+	fmt.Printf("source=polymarket timeframe=%s assets=%s markets=%d\n", strings.ToLower(*timeframe), strings.Join(assets, ","), len(markets))
 	fmt.Printf("re-entry presets=1c..5c | entry sizing compares fixed %.2f share vs fixed %.2f USDC\n", *shareSize, *usdcSize)
-	fmt.Printf("PnL is mark-to-final-price, not settlement payout\n\n")
+	fmt.Printf("PnL is settled against the actual resolved winner; exposure/drawdown are mark-to-market\n\n")
 	fmt.Printf("CSV detail: %s\n", detailCSV)
 	fmt.Printf("CSV summary: %s\n\n", summaryCSV)
 
@@ -695,7 +791,7 @@ func main() {
 	fmt.Println()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "OVERALL\tTOTAL_PNL\tAVG_PNL\tROI\tWIN_RATE\tAVG_ENTRIES\tAVG_COST\tAVG_MAX_EXPOSURE\tMAX_EXPOSURE\tAVG_MAX_DRAWDOWN\tMAX_DRAWDOWN\tBEST_PNL\tWORST_PNL\tPROFITABLE")
+	fmt.Fprintln(w, "OVERALL\tTOTAL_RESOLVE_PNL\tAVG_RESOLVE_PNL\tROI\tWIN_RATE\tAVG_ENTRIES\tAVG_COST\tAVG_MAX_EXPOSURE\tMAX_EXPOSURE\tAVG_MAX_DRAWDOWN\tMAX_DRAWDOWN\tBEST_PNL\tWORST_PNL\tPROFITABLE")
 	for step := 1; step <= 5; step++ {
 		formatSummaryRow(w, fmt.Sprintf("%dc %s", step, modeShares), overall[step][modeShares])
 		formatSummaryRow(w, fmt.Sprintf("%dc %s", step, modeUSDC), overall[step][modeUSDC])

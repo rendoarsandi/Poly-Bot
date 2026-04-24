@@ -67,9 +67,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"ladderedTakerSizeUsdc": 2.2,
 		"ladderedTakerSizeShares": 4.5,
 		"ladderedTakerReentryMoveCents": 1.6,
-		"ladderedTakerPnlGuardMode": "min-profit-pnl",
+		"ladderedTakerPnlGuardMode": "max-profit-pnl",
 		"ladderedTakerWorstPnlFloor": -2.25,
-		"ladderedTakerMinProfitPnl": 1.75,
+		"ladderedTakerMaxProfitPnl": 1.75,
 		"binanceQuoteAsset": "USDT",
 		"binanceSignalThresholdPct": 0.35,
 		"binanceSignalLookbackMs": 1800,
@@ -150,14 +150,14 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.LadderedTakerReentryMoveCents != 1.6 {
 		t.Fatalf("expected JSON LadderedTakerReentryMoveCents 1.6, got %.1f", cfg.LadderedTakerReentryMoveCents)
 	}
-	if cfg.LadderedTakerPnLGuardMode != LadderedTakerPnLGuardMinProfit {
-		t.Fatalf("expected JSON LadderedTakerPnLGuardMode min-profit-pnl, got %q", cfg.LadderedTakerPnLGuardMode)
+	if cfg.LadderedTakerPnLGuardMode != LadderedTakerPnLGuardMaxProfit {
+		t.Fatalf("expected JSON LadderedTakerPnLGuardMode max-profit-pnl, got %q", cfg.LadderedTakerPnLGuardMode)
 	}
 	if cfg.LadderedTakerWorstPnLFloor != -2.25 {
 		t.Fatalf("expected JSON LadderedTakerWorstPnLFloor -2.25, got %.2f", cfg.LadderedTakerWorstPnLFloor)
 	}
-	if cfg.LadderedTakerMinProfitPnL != 1.75 {
-		t.Fatalf("expected JSON LadderedTakerMinProfitPnL 1.75, got %.2f", cfg.LadderedTakerMinProfitPnL)
+	if cfg.LadderedTakerMaxProfitPnL != 1.75 {
+		t.Fatalf("expected JSON LadderedTakerMaxProfitPnL 1.75, got %.2f", cfg.LadderedTakerMaxProfitPnL)
 	}
 	if cfg.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected JSON BinanceQuoteAsset USDT, got %q", cfg.BinanceQuoteAsset)
@@ -242,9 +242,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.LadderedTakerSizeShares = 3.5
 	cfg.LadderedTakerReentryMoveCents = 1.9
 	cfg.LadderedTakerMaxSlippagePct = 2.0
-	cfg.LadderedTakerPnLGuardMode = LadderedTakerPnLGuardMinProfit
+	cfg.LadderedTakerPnLGuardMode = LadderedTakerPnLGuardMaxProfit
 	cfg.LadderedTakerWorstPnLFloor = -1.75
-	cfg.LadderedTakerMinProfitPnL = 0.85
+	cfg.LadderedTakerMaxProfitPnL = 0.85
 	cfg.BinanceQuoteAsset = "USDT"
 	cfg.BinanceSignalThresholdPct = 0.45
 	cfg.BinanceSignalLookbackMs = 2100
@@ -327,14 +327,14 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	if settings.LadderedTakerMaxSlippagePct != 2.0 {
 		t.Fatalf("expected saved LadderedTakerMaxSlippagePct 2.0, got %.1f", settings.LadderedTakerMaxSlippagePct)
 	}
-	if settings.LadderedTakerPnLGuardMode != LadderedTakerPnLGuardMinProfit {
-		t.Fatalf("expected saved LadderedTakerPnLGuardMode min-profit-pnl, got %q", settings.LadderedTakerPnLGuardMode)
+	if settings.LadderedTakerPnLGuardMode != LadderedTakerPnLGuardMaxProfit {
+		t.Fatalf("expected saved LadderedTakerPnLGuardMode max-profit-pnl, got %q", settings.LadderedTakerPnLGuardMode)
 	}
 	if settings.LadderedTakerWorstPnLFloor != -1.75 {
 		t.Fatalf("expected saved LadderedTakerWorstPnLFloor -1.75, got %.2f", settings.LadderedTakerWorstPnLFloor)
 	}
-	if settings.LadderedTakerMinProfitPnL != 0.85 {
-		t.Fatalf("expected saved LadderedTakerMinProfitPnL 0.85, got %.2f", settings.LadderedTakerMinProfitPnL)
+	if settings.LadderedTakerMaxProfitPnL != 0.85 {
+		t.Fatalf("expected saved LadderedTakerMaxProfitPnL 0.85, got %.2f", settings.LadderedTakerMaxProfitPnL)
 	}
 	if settings.BinanceQuoteAsset != "USDT" {
 		t.Fatalf("expected saved BinanceQuoteAsset USDT, got %q", settings.BinanceQuoteAsset)

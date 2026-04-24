@@ -1928,12 +1928,12 @@ func TestSettingsLadderWorstPnLFloorSupportsArrowAndTypedEdit(t *testing.T) {
 	}
 }
 
-func TestSettingsLadderMinProfitPnLSupportsArrowAndTypedEdit(t *testing.T) {
+func TestSettingsLadderMaxProfitPnLSupportsArrowAndTypedEdit(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
 		PaperArbMode:              "laddered-taker",
-		LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardMinProfit,
-		LadderedTakerMinProfitPnL: 0,
+		LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardMaxProfit,
+		LadderedTakerMaxProfitPnL: 0,
 	}, nil)
 
 	model := tuiModel{
@@ -1944,13 +1944,13 @@ func TestSettingsLadderMinProfitPnLSupportsArrowAndTypedEdit(t *testing.T) {
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	updated := next.(tuiModel)
-	if got := tui.GetSettings().LadderedTakerMinProfitPnL; got != 0 {
+	if got := tui.GetSettings().LadderedTakerMaxProfitPnL; got != 0 {
 		t.Fatalf("expected left arrow to clamp ladder min profit pnl at auto 0.00, got %.2f", got)
 	}
 
 	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRight})
 	updated = next.(tuiModel)
-	if got := tui.GetSettings().LadderedTakerMinProfitPnL; got != 0.25 {
+	if got := tui.GetSettings().LadderedTakerMaxProfitPnL; got != 0.25 {
 		t.Fatalf("expected right arrow to increase ladder min profit pnl to 0.25, got %.2f", got)
 	}
 
@@ -1970,7 +1970,7 @@ func TestSettingsLadderMinProfitPnLSupportsArrowAndTypedEdit(t *testing.T) {
 	if updated.settingsEdit {
 		t.Fatal("expected enter to commit the typed ladder min profit pnl edit")
 	}
-	if got := tui.GetSettings().LadderedTakerMinProfitPnL; got != 0 {
+	if got := tui.GetSettings().LadderedTakerMaxProfitPnL; got != 0 {
 		t.Fatalf("expected typed ladder min profit pnl 0 to become auto 0.00, got %.2f", got)
 	}
 }
@@ -3761,18 +3761,18 @@ func TestNormalizeTUISettingsClampsLadderedTakerWorstPnLFloor(t *testing.T) {
 	}
 }
 
-func TestNormalizeTUISettingsClampsLadderedTakerMinProfitPnL(t *testing.T) {
-	got := normalizeTUISettings(TUISettings{LadderedTakerMinProfitPnL: math.NaN()})
-	if got.LadderedTakerMinProfitPnL != 0 {
-		t.Fatalf("expected NaN ladder min profit pnl to normalize to 0, got %.2f", got.LadderedTakerMinProfitPnL)
+func TestNormalizeTUISettingsClampsLadderedTakerMaxProfitPnL(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{LadderedTakerMaxProfitPnL: math.NaN()})
+	if got.LadderedTakerMaxProfitPnL != 0 {
+		t.Fatalf("expected NaN ladder min profit pnl to normalize to 0, got %.2f", got.LadderedTakerMaxProfitPnL)
 	}
-	got = normalizeTUISettings(TUISettings{LadderedTakerMinProfitPnL: -5})
-	if got.LadderedTakerMinProfitPnL != 0 {
-		t.Fatalf("expected negative ladder min profit pnl to clamp to 0, got %.2f", got.LadderedTakerMinProfitPnL)
+	got = normalizeTUISettings(TUISettings{LadderedTakerMaxProfitPnL: -5})
+	if got.LadderedTakerMaxProfitPnL != 0 {
+		t.Fatalf("expected negative ladder min profit pnl to clamp to 0, got %.2f", got.LadderedTakerMaxProfitPnL)
 	}
-	got = normalizeTUISettings(TUISettings{LadderedTakerMinProfitPnL: 1005})
-	if got.LadderedTakerMinProfitPnL != 1000.0 {
-		t.Fatalf("expected ladder min profit pnl to clamp to 1000.0, got %.2f", got.LadderedTakerMinProfitPnL)
+	got = normalizeTUISettings(TUISettings{LadderedTakerMaxProfitPnL: 1005})
+	if got.LadderedTakerMaxProfitPnL != 1000.0 {
+		t.Fatalf("expected ladder min profit pnl to clamp to 1000.0, got %.2f", got.LadderedTakerMaxProfitPnL)
 	}
 }
 

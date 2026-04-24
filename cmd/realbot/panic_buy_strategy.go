@@ -411,7 +411,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			activePrice,
 			realbotCfg.LadderedTakerPnLGuardMode,
 			realbotCfg.LadderedTakerWorstPnLFloor,
-			realbotCfg.LadderedTakerMinProfitPnL,
+			realbotCfg.LadderedTakerMaxProfitPnL,
 		); blocked {
 			setEntryCooldown(500 * time.Millisecond)
 			return true
