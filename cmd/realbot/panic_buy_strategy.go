@@ -227,8 +227,8 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
 	asks2 := append([]paper.MarketLevel(nil), args.tokenFullAsks[args.outcomes[1]]...)
-	asks2 = realbotEnsureTopAskLevel(tasks2, ask2, requestedShares)
-	sort.Slice(tasks2, func(i, j int) bool { return tasks2[i].Price < tasks2[j].Price })
+	asks2 = realbotEnsureTopAskLevel(asks2, ask2, requestedShares)
+	sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
 
 	totalMatchedLiquidity := 0.0
 	rawLiq1, rawLiq2 := 0.0, 0.0
