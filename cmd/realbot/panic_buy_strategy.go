@@ -51,6 +51,8 @@ type realbotPanicBuyStrategyState struct {
 	entryExecutionInFlight *bool
 }
 
+const realbotLadderedStartupWarmup = 30 * time.Second
+
 func realbotPairTokenIDs(tokenToOutcome map[string]string, outcomes []string) (string, string) {
 	token0, token1 := "", ""
 	for tid, out := range tokenToOutcome {
@@ -117,10 +119,12 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return false
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil && len(*state.ladderedEntries) == 0 {
+		warmup := realbotLadderedStartupWarmup
 		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, realbotCfg.LadderedTakerReentryMoveCents)
+		setEntryCooldown(warmup)
 		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
-			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; waiting for next fixed rung",
-			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2)
+			"[%s] 🪜 Ladder armed from live quotes: %s=$%.3f, %s=$%.3f; waiting %s before first live rung",
+			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2, warmup)
 		return true
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil {
@@ -223,8 +227,8 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	sort.Slice(asks1, func(i, j int) bool { return asks1[i].Price < asks1[j].Price })
 
 	asks2 := append([]paper.MarketLevel(nil), args.tokenFullAsks[args.outcomes[1]]...)
-	asks2 = realbotEnsureTopAskLevel(asks2, ask2, requestedShares)
-	sort.Slice(asks2, func(i, j int) bool { return asks2[i].Price < asks2[j].Price })
+	asks2 = realbotEnsureTopAskLevel(tasks2, ask2, requestedShares)
+	sort.Slice(tasks2, func(i, j int) bool { return tasks2[i].Price < tasks2[j].Price })
 
 	totalMatchedLiquidity := 0.0
 	rawLiq1, rawLiq2 := 0.0, 0.0
