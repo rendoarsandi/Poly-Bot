@@ -76,6 +76,23 @@ func TestPlaceOrder_FOK_Killed(t *testing.T) {
 	}
 }
 
+func TestNormalizeBatchOrderResponseDoesNotPromoteErrorWithOrderID(t *testing.T) {
+	resp := &OrderResponse{
+		Success:  false,
+		OrderID:  "0x123",
+		ErrorMsg: "error: insufficient balance",
+	}
+
+	normalizeBatchOrderResponse(resp)
+
+	if resp.Success {
+		t.Fatal("expected batch response with error message to remain unsuccessful")
+	}
+	if !strings.Contains(resp.ErrorMsg, "insufficient balance") {
+		t.Fatalf("expected error message to be preserved, got %q", resp.ErrorMsg)
+	}
+}
+
 func TestPlaceOrder_FOK_Success(t *testing.T) {
 	// 1. Setup Mock Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

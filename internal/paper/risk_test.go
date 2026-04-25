@@ -31,6 +31,29 @@ func TestRiskManager_KillSwitch_ExposurePlusUnmatched(t *testing.T) {
 	}
 }
 
+func TestRiskManager_KillSwitchAggregatesMarketScopedPositions(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBookWithRealism(0, 0)
+	outcomes := []string{"Up", "Down"}
+
+	config := RiskConfig{
+		MaxExposure:        100.0,
+		MaxUnmatchedRatio:  0.15,
+		MaxUnmatchedShares: 500.0,
+		SkewThreshold:      0.10,
+		KillSwitchDrawdown: 0.50,
+	}
+
+	rm := NewRiskManager(config, engine, orderBook, outcomes)
+	_, _ = engine.BuyForMarket("btc-updown-5m-1", "Up", 0.50, 200)
+	_, _ = engine.BuyForMarket("btc-updown-5m-1", "Down", 0.50, 100)
+
+	action, reason := rm.Evaluate()
+	if action != RiskActionKillSwitch {
+		t.Errorf("expected kill switch for market-scoped exposure+unmatched, got %s: %s", action, reason)
+	}
+}
+
 // TestRiskManager_KillSwitch_UnmatchedSharesAbsolute verifies absolute unmatched limit
 func TestRiskManager_KillSwitch_UnmatchedSharesAbsolute(t *testing.T) {
 	engine := NewEngine(10000.0)

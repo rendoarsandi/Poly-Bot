@@ -525,7 +525,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 
 	if ladderedMode && ladderedEntrySeq != 0 && state != nil && state.ladderedEntries != nil {
-		*state.ladderedEntries = append(*state.ladderedEntries, pendingLadderedEntry)
+		*state.ladderedEntries = realbotTrimLadderedEntries(append(*state.ladderedEntries, pendingLadderedEntry))
 	}
 	if state != nil && state.entryExecutionInFlight != nil {
 		*state.entryExecutionInFlight = true

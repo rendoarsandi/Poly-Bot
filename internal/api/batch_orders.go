@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,15 +18,25 @@ func normalizeBatchOrderResponse(resp *OrderResponse) {
 	if resp == nil {
 		return
 	}
-	if !resp.Success && resp.ErrorMsg == "" && resp.OrderID != "" {
-		resp.Success = true
-	}
-	switch resp.Status {
+	status := strings.ToUpper(strings.TrimSpace(resp.Status))
+	errMsg := strings.TrimSpace(resp.ErrorMsg)
+	switch status {
 	case "KILLED", "CANCELLED", "EXPIRED", "REJECTED":
 		resp.Success = false
 		if resp.ErrorMsg == "" {
-			resp.ErrorMsg = fmt.Sprintf("Order was %s", resp.Status)
+			resp.ErrorMsg = fmt.Sprintf("Order was %s", status)
 		}
+		return
+	}
+	if errMsg != "" && strings.Contains(strings.ToLower(errMsg), "error") {
+		resp.Success = false
+		if resp.ErrorMsg == "" {
+			resp.ErrorMsg = errMsg
+		}
+		return
+	}
+	if !resp.Success && resp.ErrorMsg == "" && resp.OrderID != "" {
+		resp.Success = true
 	}
 }
 

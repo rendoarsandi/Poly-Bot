@@ -111,12 +111,17 @@ type GammaMarket struct {
 
 func (c *RestClient) GetEventByTokenID(ctx context.Context, tokenID string) (*GammaEvent, error) {
 	url := fmt.Sprintf("%s/events?clobTokenIds=%s", c.GammaURL, tokenID)
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +132,7 @@ func (c *RestClient) GetEventByTokenID(ctx context.Context, tokenID string) (*Ga
 	}
 
 	var events []GammaEvent
-	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&events); err != nil {
 		return nil, err
 	}
 

@@ -34,6 +34,9 @@ type SplitInventory struct {
 
 	// Total proceeds from selling split shares
 	totalSellProceeds float64
+
+	// Total capital recovered through merges or redemptions.
+	totalRecoveredProceeds float64
 }
 
 // NewSplitInventory creates a new split inventory tracker
@@ -148,10 +151,11 @@ func (s *SplitInventory) RecordMerge(marketID, outcome1, outcome2 string, shares
 
 	s.splitShares[key1] -= shares
 	s.splitShares[key2] -= shares
+	s.totalRecoveredProceeds += shares
 
 	// Merge returns $1 per pair, cost was $1 per pair, so break-even
-	// Unlike selling, merging doesn't generate profit/loss - it just recovers capital
-	// So we DON'T add to totalSellProceeds (that would incorrectly count as profit)
+	// Unlike selling, merging doesn't generate profit/loss; it recovers capital
+	// and must still be included in realized PnL accounting.
 
 	return shares
 }
@@ -167,7 +171,7 @@ func (s *SplitInventory) GetStats() (totalCost, totalProceeds, unrealizedValue f
 		unrealizedValue += shares * costBasis
 	}
 
-	return s.totalSplitCost, s.totalSellProceeds, unrealizedValue
+	return s.totalSplitCost, s.totalSellProceeds + s.totalRecoveredProceeds, unrealizedValue
 }
 
 // GetRealizedPnL returns the realized P&L from selling split shares
@@ -183,7 +187,7 @@ func (s *SplitInventory) GetRealizedPnL() float64 {
 	// Cost of shares sold = total cost - cost of remaining shares
 	costOfSold := s.totalSplitCost - unrealizedCost
 
-	return s.totalSellProceeds - costOfSold
+	return s.totalSellProceeds + s.totalRecoveredProceeds - costOfSold
 }
 
 // NeedsReplenish checks if inventory is below threshold for a given margin target
@@ -235,6 +239,7 @@ func (s *SplitInventory) Redeem(marketID, winningOutcome string) (payout, pnl fl
 			delete(s.splitCostBasis, key)
 		}
 	}
+	s.totalRecoveredProceeds += totalPayout
 
 	return totalPayout, totalPayout - totalCost
 }
@@ -246,6 +251,9 @@ func (s *SplitInventory) ClearAll() {
 
 	s.splitShares = make(map[string]float64)
 	s.splitCostBasis = make(map[string]float64)
+	s.totalSplitCost = 0
+	s.totalSellProceeds = 0
+	s.totalRecoveredProceeds = 0
 }
 
 // SplitPosition represents a split inventory position for display

@@ -80,6 +80,25 @@ func TestSplitInventory_RecordMerge(t *testing.T) {
 	if downShares != 20.0 {
 		t.Errorf("Expected 20 Down shares, got %.2f", downShares)
 	}
+	if pnl := inv.GetRealizedPnL(); pnl != 0 {
+		t.Errorf("Expected merge to realize break-even PnL, got %.2f", pnl)
+	}
+}
+
+func TestSplitInventory_GetRealizedPnLIncludesRedemptionPayout(t *testing.T) {
+	inv := NewSplitInventory()
+	inv.RecordSplit("BTC", "Up", "Down", 10.0)
+
+	payout, pnl := inv.Redeem("BTC", "Up")
+	if payout != 10.0 {
+		t.Fatalf("expected payout 10.00, got %.2f", payout)
+	}
+	if pnl != 0 {
+		t.Fatalf("expected redemption PnL 0.00, got %.2f", pnl)
+	}
+	if realized := inv.GetRealizedPnL(); realized != 0 {
+		t.Fatalf("expected realized PnL to include recovered payout, got %.2f", realized)
+	}
 }
 
 func TestSplitInventory_MergeWithUnbalanced(t *testing.T) {

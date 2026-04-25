@@ -244,7 +244,7 @@ func realbotApplyRedeemCashCorrection(engine *paper.Engine, tui *paper.TUI, mark
 	return correction
 }
 
-func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
+func launchRealbotRedeemRetryLoop(ctx context.Context, marketID, conditionID, winner string, numOutcomes int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	go func() {
 		attempt := 0
 		pendingTxHash := ""
@@ -255,11 +255,14 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 		highestObservedBalance := redeemStartBalance
 		winnerDepletedAt := time.Time{}
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			attempt++
 			skipSubmit := false
 
 			if pendingTxHash != "" {
-				probeCtx, probeCancel := context.WithTimeout(context.Background(), realbotRedeemProbeTimeout)
+				probeCtx, probeCancel := context.WithTimeout(ctx, realbotRedeemProbeTimeout)
 				txState, probeErr := trader.GetOnChainTxState(probeCtx, pendingTxHash)
 				probeCancel()
 
@@ -290,7 +293,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 			}
 
 			if !skipSubmit && pendingTxHash == "" {
-				redeemCtx, cancel := context.WithTimeout(context.Background(), realbotRedeemSubmitTimeout)
+				redeemCtx, cancel := context.WithTimeout(ctx, realbotRedeemSubmitTimeout)
 				gasMode := core.RedeemGasModeFast
 				if tui != nil {
 					gasMode = realbotNormalizeRedeemGasMode(tui.GetSettings().RedeemGasMode)
@@ -309,7 +312,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 				}
 			}
 
-			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			refreshCtx, refreshCancel := context.WithTimeout(ctx, 20*time.Second)
 			positions, refreshErr := refreshWalletTruthForRedemptionFresh(refreshCtx, marketID, conditionID, trader, engine, tui)
 			refreshCancel()
 
@@ -319,7 +322,7 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 				tui.UpdateWalletTruthResolution(marketID, true, winner)
 			}
 
-			balanceCtx, balanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			balanceCtx, balanceCancel := context.WithTimeout(ctx, 10*time.Second)
 			if newBal, balErr := trader.ForceRefreshBalance(balanceCtx); balErr != nil {
 				tui.LogEvent("[%s] ⚠️ Post-redeem balance refresh failed: %v", marketID, balErr)
 			} else {
@@ -359,7 +362,9 @@ func launchRealbotRedeemRetryLoop(marketID, conditionID, winner string, numOutco
 				}
 			}
 
-			time.Sleep(realbotRedeemRetryInterval)
+			if !watchRealbotSleep(ctx, realbotRedeemRetryInterval) {
+				return
+			}
 		}
 	}()
 }
@@ -435,7 +440,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 
 	wsResCh := make(chan struct{}, 1)
 	if globalResWatcher != nil {
-		globalResWatcher.RegisterCallback(func(eventCondID string) {
+		unregister := globalResWatcher.RegisterCallback(func(eventCondID string) {
 			if strings.EqualFold(eventCondID, conditionID) {
 				select {
 				case wsResCh <- struct{}{}:
@@ -443,6 +448,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 				}
 			}
 		})
+		defer unregister()
 	}
 
 	ticker := time.NewTicker(realbotRedemptionPollInterval)
@@ -533,7 +539,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 				}
 
 				tui.LogEvent("[%s] ⏳ Starting forced on-chain redemption retry loop (every %s)...", id, realbotRedeemRetryInterval)
-				launchRealbotRedeemRetryLoop(id, conditionID, winner, numOutcomes, trader, engine, tui)
+				launchRealbotRedeemRetryLoop(ctx, id, conditionID, winner, numOutcomes, trader, engine, tui)
 			} else {
 				tui.LogEvent("[%s] 📭 Market resolved: %s (no positions)", id, winner)
 			}

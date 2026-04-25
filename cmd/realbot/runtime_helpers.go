@@ -74,6 +74,20 @@ func realbotRefreshWalletCashDisplay(ctx context.Context, trader *trading.RealTr
 	}
 }
 
+func watchRealbotSleep(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func realbotLogGasBalance(ctx context.Context, polygonClient *api.PolygonClient, trader *trading.RealTrader, tui *paper.TUI, timeout time.Duration) {
 	if polygonClient == nil || trader == nil || tui == nil || trader.IsEmbeddedPaperMode() {
 		return

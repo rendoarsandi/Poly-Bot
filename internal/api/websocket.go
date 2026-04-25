@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -219,8 +220,7 @@ func (m *WSManager) heartbeatLoop() {
 			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 			pingStart := now
 
-			// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame)
-			err := conn.Write(pingCtx, websocket.MessageText, []byte("PING"))
+			err := m.sendHeartbeatPing(pingCtx, conn, pingStart)
 			pingCancel()
 			if err != nil {
 				consecutiveHeartbeatMisses++
@@ -235,11 +235,34 @@ func (m *WSManager) heartbeatLoop() {
 				continue
 			}
 
-			m.lastPingSentNs.Store(pingStart.UnixNano())
-			// NOTE: Do NOT update lastMessage here - only actual inbound traffic
-			// should count as feed/connection freshness.
+			if m.usesTextHeartbeat() {
+				m.lastPingSentNs.Store(pingStart.UnixNano())
+				// NOTE: Do NOT update lastMessage here - only actual inbound traffic
+				// should count as feed/connection freshness.
+			}
 		}
 	}
+}
+
+func (m *WSManager) sendHeartbeatPing(ctx context.Context, conn *websocket.Conn, sentAt time.Time) error {
+	if m.usesTextHeartbeat() {
+		// Polymarket requires a text frame with exactly "PING" (not a WebSocket control frame).
+		return conn.Write(ctx, websocket.MessageText, []byte("PING"))
+	}
+	if err := conn.Ping(ctx); err != nil {
+		return err
+	}
+	now := time.Now()
+	m.pingLatencyNs.Store(now.Sub(sentAt).Nanoseconds())
+	m.lastHeartbeat.Store(now.Unix())
+	m.lastMessage.Store(now.Unix())
+	m.lastPingSentNs.Store(0)
+	return nil
+}
+
+func (m *WSManager) usesTextHeartbeat() bool {
+	exchange := strings.TrimSpace(m.Exchange)
+	return exchange == "" || strings.EqualFold(exchange, "polymarket")
 }
 
 func (m *WSManager) tryReconnect() {

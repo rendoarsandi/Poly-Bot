@@ -43,6 +43,12 @@ func realbotExecuteAggressiveEntry(
 ) {
 	asyncResult := realbotAsyncEntryResult{ladderedEntrySeq: ladderedEntrySeq}
 	defer func() {
+		if r := recover(); r != nil {
+			asyncResult.cooldownUntil = time.Now().Add(2 * time.Second)
+			if tui != nil {
+				tui.LogEvent("[%s] ⚠️ Aggressive entry recovered from panic: %v", id, r)
+			}
+		}
 		asyncResult.lastTradeAt = time.Now()
 		if acquiredGate && entryGate != nil {
 			entryGate.Release()

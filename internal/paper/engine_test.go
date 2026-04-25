@@ -495,7 +495,7 @@ func TestEngine_MaxDrawdownCashPreservesActualLossAcrossNewPeaks(t *testing.T) {
 	}
 }
 
-func TestEngine_RedeemWithDetailsDefersDrawdownWhilePayoutPending(t *testing.T) {
+func TestEngine_RedeemWithDetailsRecordsEconomicDrawdownWhilePayoutPending(t *testing.T) {
 	engine := NewEngine(20.73)
 
 	if _, err := engine.BuyForMarket("m1", "Up", 0.38, 5.83802); err != nil {
@@ -514,8 +514,8 @@ func TestEngine_RedeemWithDetailsDefersDrawdownWhilePayoutPending(t *testing.T) 
 	}
 
 	stats := engine.GetStats()
-	if absFloat(stats.MaxDrawdownCash) > 0.0001 {
-		t.Fatalf("expected pending redemption not to stamp max drawdown, got %.4f", stats.MaxDrawdownCash)
+	if absFloat(stats.MaxDrawdownCash-7.0301176) > 0.0001 {
+		t.Fatalf("expected pending redemption to record economic drawdown 7.0301, got %.4f", stats.MaxDrawdownCash)
 	}
 }
 
@@ -533,8 +533,8 @@ func TestEngine_SettlePendingRedemptionRecordsDrawdownAfterPayoutFinalizes(t *te
 	if absFloat(res.TotalPnL+71.0) > 0.0001 {
 		t.Fatalf("expected local redemption loss -71.00, got %.4f", res.TotalPnL)
 	}
-	if got := engine.GetStats().MaxDrawdownCash; absFloat(got) > 0.0001 {
-		t.Fatalf("expected no max drawdown before pending payout settles, got %.4f", got)
+	if got := engine.GetStats().MaxDrawdownCash; absFloat(got-71.0) > 0.0001 {
+		t.Fatalf("expected max drawdown before pending payout settles, got %.4f", got)
 	}
 
 	settled := engine.SettlePendingRedemption("m1")
@@ -912,6 +912,23 @@ func TestEngine_RedeemWithDetails(t *testing.T) {
 	}
 	if res.TotalPnL != 2.0 {
 		t.Errorf("Expected total PnL $2, got %f", res.TotalPnL)
+	}
+}
+
+func TestEngine_RedeemDoesNotClearMultipleMarkets(t *testing.T) {
+	engine := NewEngine(100.0)
+	if _, err := engine.BuyForMarket("m1", "Up", 0.50, 10); err != nil {
+		t.Fatalf("buy m1 failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("m2", "Down", 0.50, 10); err != nil {
+		t.Fatalf("buy m2 failed: %v", err)
+	}
+
+	if payout := engine.Redeem("Up"); payout != 0 {
+		t.Fatalf("expected ambiguous legacy redeem to no-op, got payout %.2f", payout)
+	}
+	if got := len(engine.GetPositions()); got != 2 {
+		t.Fatalf("expected both market positions to remain, got %d", got)
 	}
 }
 

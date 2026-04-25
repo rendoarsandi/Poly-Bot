@@ -15,9 +15,10 @@ type InventoryWatcher struct {
 	wsURL   string
 	address string
 
-	mu        sync.Mutex
-	callbacks []func()
-	started   bool
+	mu             sync.Mutex
+	callbacks      map[uint64]func()
+	nextCallbackID uint64
+	started        bool
 }
 
 func NewInventoryWatcher(wsURL string, walletAddress string) *InventoryWatcher {
@@ -26,18 +27,29 @@ func NewInventoryWatcher(wsURL string, walletAddress string) *InventoryWatcher {
 		return nil
 	}
 	return &InventoryWatcher{
-		wsURL:   wsURL,
-		address: strings.ToLower(walletAddress),
+		wsURL:     wsURL,
+		address:   strings.ToLower(walletAddress),
+		callbacks: make(map[uint64]func()),
 	}
 }
 
-func (w *InventoryWatcher) RegisterCallback(cb func()) {
-	if w == nil {
-		return
+func (w *InventoryWatcher) RegisterCallback(cb func()) func() {
+	if w == nil || cb == nil {
+		return func() {}
 	}
 	w.mu.Lock()
+	if w.callbacks == nil {
+		w.callbacks = make(map[uint64]func())
+	}
+	w.nextCallbackID++
+	id := w.nextCallbackID
+	w.callbacks[id] = cb
 	defer w.mu.Unlock()
-	w.callbacks = append(w.callbacks, cb)
+	return func() {
+		w.mu.Lock()
+		delete(w.callbacks, id)
+		w.mu.Unlock()
+	}
 }
 
 func (w *InventoryWatcher) Start(ctx context.Context, logf func(string, ...interface{})) {
@@ -147,12 +159,17 @@ func (w *InventoryWatcher) dialAndListen(ctx context.Context, logf func(string, 
 	subCancel()
 
 	// Read both subscription responses
-	for i := 0; i < 2; i++ {
-		var subResp map[string]interface{}
+	for _, ack := range []struct {
+		id    int
+		label string
+	}{
+		{id: 1, label: "incoming inventory"},
+		{id: 2, label: "outgoing inventory"},
+	} {
 		subReadCtx, subReadCancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := wsjson.Read(subReadCtx, c, &subResp); err != nil {
+		if err := readWatcherSubscriptionAck(subReadCtx, c, ack.id, ack.label); err != nil {
 			subReadCancel()
-			return fmt.Errorf("subscribe read %d: %w", i+1, err)
+			return fmt.Errorf("subscribe read %d: %w", ack.id, err)
 		}
 		subReadCancel()
 	}
@@ -175,7 +192,10 @@ func (w *InventoryWatcher) dialAndListen(ctx context.Context, logf func(string, 
 
 		if event.Method == "eth_subscription" {
 			w.mu.Lock()
-			callbacks := append([]func(){}, w.callbacks...)
+			callbacks := make([]func(), 0, len(w.callbacks))
+			for _, cb := range w.callbacks {
+				callbacks = append(callbacks, cb)
+			}
 			w.mu.Unlock()
 			for _, cb := range callbacks {
 				go cb()

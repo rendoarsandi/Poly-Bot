@@ -33,18 +33,18 @@ type Position struct {
 
 // Stats holds all trading statistics
 type Stats struct {
-	TotalTrades     int
-	WinningTrades   int
-	LosingTrades    int
-	RealizedPnL     float64
-	UnrealizedPnL   float64
-	PeakExposure    float64
-	MaxDrawdown     float64
-	MaxDrawdownCash float64
+	TotalTrades       int
+	WinningTrades     int
+	LosingTrades      int
+	RealizedPnL       float64
+	UnrealizedPnL     float64
+	PeakExposure      float64
+	MaxDrawdown       float64
+	MaxDrawdownCash   float64
 	MaxLossStreakCash float64
-	PeakBalance     float64
-	CurrentBalance  float64
-	StartingBalance float64
+	PeakBalance       float64
+	CurrentBalance    float64
+	StartingBalance   float64
 }
 
 // Engine is the paper trading engine
@@ -81,16 +81,16 @@ type Engine struct {
 	maxTrades int
 
 	// Stats tracking
-	totalTrades     int
-	realizedPnL     float64
-	peakExposure    float64
-	peakBalance     float64
-	maxDrawdown     float64
-	maxDrawdownCash float64
+	totalTrades           int
+	realizedPnL           float64
+	peakExposure          float64
+	peakBalance           float64
+	maxDrawdown           float64
+	maxDrawdownCash       float64
 	currentLossStreakCash float64
 	maxLossStreakCash     float64
-	winningTrades   int
-	losingTrades    int
+	winningTrades         int
+	losingTrades          int
 
 	// Current market prices for unrealized PnL (legacy - outcome only)
 	currentPrices map[string]float64
@@ -616,9 +616,24 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	payout := 0.0
+	marketID, ok := e.singleRedeemableMarketLocked()
+	if !ok {
+		return 0
+	}
 
-	for _, pos := range e.positions {
+	payout := 0.0
+	prefix := ""
+	if marketID != "" {
+		prefix = marketID + ":"
+	}
+
+	for key, pos := range e.positions {
+		if marketID != "" && !strings.HasPrefix(key, prefix) && pos.MarketID != marketID {
+			continue
+		}
+		if marketID == "" && pos.MarketID != "" {
+			continue
+		}
 		if strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(winningOutcome)) {
 			// Winning shares pay $1 each (no fees!)
 			proceeds := pos.Quantity * 1.0
@@ -637,13 +652,35 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 			e.trackRealizedPnL(-pos.TotalCost)
 			e.losingTrades++
 		}
+		delete(e.positions, key)
 	}
-
-	// Clear all positions
-	e.positions = make(map[string]*Position)
 
 	e.updateDrawdown()
 	return payout
+}
+
+func (e *Engine) singleRedeemableMarketLocked() (string, bool) {
+	if len(e.positions) == 0 {
+		return "", true
+	}
+	marketID := ""
+	initialized := false
+	for key, pos := range e.positions {
+		posMarketID := strings.TrimSpace(pos.MarketID)
+		if posMarketID == "" && strings.Contains(key, ":") {
+			parts := strings.SplitN(key, ":", 2)
+			posMarketID = strings.TrimSpace(parts[0])
+		}
+		if !initialized {
+			marketID = posMarketID
+			initialized = true
+			continue
+		}
+		if posMarketID != marketID {
+			return "", false
+		}
+	}
+	return marketID, true
 }
 
 // RedeemWithDetails simulates market resolution and returns detailed results
@@ -931,9 +968,6 @@ func (e *Engine) recalculateDrawdown() {
 	if totalEquity > e.peakBalance {
 		e.peakBalance = totalEquity
 	}
-	if e.getPendingRedemptionValue() > 0.000001 {
-		return
-	}
 	if e.peakBalance > 0 {
 		drawdownCash := e.peakBalance - totalEquity
 		drawdown := drawdownCash / e.peakBalance
@@ -1118,18 +1152,18 @@ func (e *Engine) GetStats() Stats {
 	defer e.mu.RUnlock()
 
 	return Stats{
-		TotalTrades:     e.totalTrades,
-		WinningTrades:   e.winningTrades,
-		LosingTrades:    e.losingTrades,
-		RealizedPnL:     e.realizedPnL,
-		UnrealizedPnL:   e.getUnrealizedPnL(),
-		PeakExposure:    e.peakExposure,
-		MaxDrawdown:     e.maxDrawdown * 100, // as percentage
-		MaxDrawdownCash: e.maxDrawdownCash,
+		TotalTrades:       e.totalTrades,
+		WinningTrades:     e.winningTrades,
+		LosingTrades:      e.losingTrades,
+		RealizedPnL:       e.realizedPnL,
+		UnrealizedPnL:     e.getUnrealizedPnL(),
+		PeakExposure:      e.peakExposure,
+		MaxDrawdown:       e.maxDrawdown * 100, // as percentage
+		MaxDrawdownCash:   e.maxDrawdownCash,
 		MaxLossStreakCash: e.maxLossStreakCash,
-		PeakBalance:     e.peakBalance,
-		CurrentBalance:  e.currentBalance,
-		StartingBalance: e.pnlBaseline,
+		PeakBalance:       e.peakBalance,
+		CurrentBalance:    e.currentBalance,
+		StartingBalance:   e.pnlBaseline,
 	}
 }
 

@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 const watcherBackoffResetAfter = 30 * time.Second
@@ -66,4 +68,32 @@ func watcherDisconnectSummary(err error) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+type watcherSubscriptionError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type watcherSubscriptionResponse struct {
+	ID     int                       `json:"id"`
+	Result string                    `json:"result"`
+	Error  *watcherSubscriptionError `json:"error"`
+}
+
+func readWatcherSubscriptionAck(ctx context.Context, c *websocket.Conn, wantID int, label string) error {
+	var resp watcherSubscriptionResponse
+	if err := wsjson.Read(ctx, c, &resp); err != nil {
+		return err
+	}
+	if resp.ID != wantID {
+		return fmt.Errorf("%s subscription id mismatch: got %d, want %d", label, resp.ID, wantID)
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("%s subscription rejected: %d %s", label, resp.Error.Code, resp.Error.Message)
+	}
+	if strings.TrimSpace(resp.Result) == "" {
+		return fmt.Errorf("%s subscription missing result", label)
+	}
+	return nil
 }

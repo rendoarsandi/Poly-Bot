@@ -3,6 +3,7 @@ package paper
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -106,10 +107,10 @@ func (rm *RiskManager) Evaluate() (RiskAction, string) {
 	unmatched := 0.0
 
 	if len(positions) > 0 && len(rm.outcomes) == 2 {
-		pos1 := positions[rm.outcomes[0]]
-		pos2 := positions[rm.outcomes[1]]
-		unmatched = math.Abs(pos1.Quantity - pos2.Quantity)
-		totalShares := pos1.Quantity + pos2.Quantity
+		pos1Qty := aggregatePositionQtyByOutcome(positions, rm.outcomes[0])
+		pos2Qty := aggregatePositionQtyByOutcome(positions, rm.outcomes[1])
+		unmatched = math.Abs(pos1Qty - pos2Qty)
+		totalShares := pos1Qty + pos2Qty
 		if totalShares > 0 {
 			unmatchedRatio = unmatched / totalShares
 		}
@@ -151,19 +152,19 @@ func (rm *RiskManager) calculateInventorySkew() (float64, string) {
 	}
 
 	positions := rm.engine.GetPositions()
-	pos1 := positions[rm.outcomes[0]]
-	pos2 := positions[rm.outcomes[1]]
+	pos1Qty := aggregatePositionQtyByOutcome(positions, rm.outcomes[0])
+	pos2Qty := aggregatePositionQtyByOutcome(positions, rm.outcomes[1])
 
-	total := pos1.Quantity + pos2.Quantity
+	total := pos1Qty + pos2Qty
 	if total == 0 {
 		return 0, ""
 	}
 
-	diff := math.Abs(pos1.Quantity - pos2.Quantity)
+	diff := math.Abs(pos1Qty - pos2Qty)
 	skew := diff / total
 
 	heavySide := rm.outcomes[0]
-	if pos2.Quantity > pos1.Quantity {
+	if pos2Qty > pos1Qty {
 		heavySide = rm.outcomes[1]
 	}
 
@@ -178,10 +179,10 @@ func (rm *RiskManager) GetSkewAdjustment() (string, float64) {
 	}
 
 	positions := rm.engine.GetPositions()
-	pos1 := positions[rm.outcomes[0]]
-	pos2 := positions[rm.outcomes[1]]
+	pos1Qty := aggregatePositionQtyByOutcome(positions, rm.outcomes[0])
+	pos2Qty := aggregatePositionQtyByOutcome(positions, rm.outcomes[1])
 
-	diff := pos1.Quantity - pos2.Quantity
+	diff := pos1Qty - pos2Qty
 
 	if math.Abs(diff) < 10 { // Less than 10 shares difference, no adjustment needed
 		return "", 0
@@ -203,6 +204,16 @@ func (rm *RiskManager) GetSkewAdjustment() (string, float64) {
 		}
 		return rm.outcomes[0], adjustment
 	}
+}
+
+func aggregatePositionQtyByOutcome(positions map[string]Position, outcome string) float64 {
+	total := 0.0
+	for _, pos := range positions {
+		if strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(outcome)) {
+			total += pos.Quantity
+		}
+	}
+	return total
 }
 
 // triggerKillSwitch activates kill switch

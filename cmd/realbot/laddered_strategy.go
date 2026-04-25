@@ -330,17 +330,25 @@ func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask
 	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1, side: side, rung: realbotLadderedRungIndex(ask, basePrice, moveCents)}
 }
 
+func realbotTrimLadderedEntries(entries []realbotLadderedEntry) []realbotLadderedEntry {
+	const maxLadderedEntries = 256
+	if len(entries) <= maxLadderedEntries {
+		return entries
+	}
+	return append([]realbotLadderedEntry(nil), entries[len(entries)-maxLadderedEntries:]...)
+}
+
 func realbotResolveLadderedEntry(entries []realbotLadderedEntry, seq uint64, confirmed bool) []realbotLadderedEntry {
 	if seq == 0 || confirmed {
-		return entries
+		return realbotTrimLadderedEntries(entries)
 	}
 	for i := range entries {
 		if entries[i].seq != seq {
 			continue
 		}
-		return append(entries[:i], entries[i+1:]...)
+		return realbotTrimLadderedEntries(append(entries[:i], entries[i+1:]...))
 	}
-	return entries
+	return realbotTrimLadderedEntries(entries)
 }
 
 func realbotLadderedMoveThreshold(moveCents float64) float64 {
@@ -439,7 +447,7 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 
 	if strings.EqualFold(strings.TrimSpace(guardMode), core.LadderedTakerPnLGuardMaxProfit) {
 		maxProfitCap := realbotLadderedMaxProfitPnLCap(configuredMaxProfitPnL)
-		
+
 		if maxProfitCap > 0 && activeResolvePnL > maxProfitCap+1e-9 {
 			return true, fmt.Sprintf("projected active-side resolve PnL would rise to %s for %s above cap %s",
 				realbotFormatSignedUSD(activeResolvePnL),
