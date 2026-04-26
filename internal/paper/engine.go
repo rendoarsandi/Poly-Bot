@@ -281,6 +281,20 @@ func (e *Engine) BuyForMarketWithFeeRate(marketID, outcome string, price, quanti
 	return e.executeBuy(marketID, outcome, price, quantity, false, feeRateBps)
 }
 
+// BuyFilledForMarket records an externally confirmed buy using exact net
+// shares and exact USDC spent. Use this for live fills where fees are already
+// reflected in the observed quantity/cost.
+func (e *Engine) BuyFilledForMarket(marketID, outcome string, totalCost, quantity float64) (*Trade, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("invalid buy quantity %.4f", quantity)
+	}
+	price := totalCost / quantity
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.executeBuy(marketID, outcome, price, quantity, true, 0)
+}
+
 // MarketBuy executes a market order by consuming liquidity from provided levels
 // This simulates a "taker" order that "chases" liquidity across multiple price levels.
 func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []MarketLevel) (*Trade, float64, error) {
@@ -533,6 +547,24 @@ func (e *Engine) SellForMarketWithFeeRate(marketID, outcome string, price, quant
 		posKey = marketID + ":" + outcome
 	}
 	return e.executeSell(posKey, outcome, price, quantity, false, feeRateBps)
+}
+
+// SellFilledForMarket records an externally confirmed sell using exact shares
+// sold and exact net USDC proceeds. Use this for live fills where fees are
+// already reflected in the observed proceeds.
+func (e *Engine) SellFilledForMarket(marketID, outcome string, proceeds, quantity float64) (*Trade, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("invalid sell quantity %.4f", quantity)
+	}
+	price := proceeds / quantity
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+	return e.executeSell(posKey, outcome, price, quantity, true, 0)
 }
 
 func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, isMaker bool, feeRateBps int) (*Trade, error) {

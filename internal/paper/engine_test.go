@@ -101,6 +101,43 @@ func TestMarketBuy_NoLiquidity(t *testing.T) {
 	}
 }
 
+func TestBuyFilledForMarketUsesExactObservedCostAndQuantity(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	trade, err := engine.BuyFilledForMarket("BTC", "Up", 10.50, 10.0)
+	if err != nil {
+		t.Fatalf("BuyFilledForMarket failed: %v", err)
+	}
+	if math.Abs(trade.Quantity-10.0) > 0.000001 {
+		t.Fatalf("expected exact net quantity 10, got %.6f", trade.Quantity)
+	}
+	if math.Abs(trade.Value-10.50) > 0.000001 {
+		t.Fatalf("expected exact cost 10.50, got %.6f", trade.Value)
+	}
+	pos := engine.GetPositions()["BTC:Up"]
+	if math.Abs(pos.AvgPrice-1.05) > 0.000001 {
+		t.Fatalf("expected fee-inclusive avg cost 1.05, got %.6f", pos.AvgPrice)
+	}
+}
+
+func TestSellFilledForMarketUsesExactObservedProceedsInRealizedPnL(t *testing.T) {
+	engine := NewEngine(100.0)
+	if _, err := engine.BuyFilledForMarket("BTC", "Up", 10.50, 10.0); err != nil {
+		t.Fatalf("BuyFilledForMarket failed: %v", err)
+	}
+
+	trade, err := engine.SellFilledForMarket("BTC", "Up", 7.25, 10.0)
+	if err != nil {
+		t.Fatalf("SellFilledForMarket failed: %v", err)
+	}
+	if math.Abs(trade.Value-7.25) > 0.000001 {
+		t.Fatalf("expected exact proceeds 7.25, got %.6f", trade.Value)
+	}
+	if got := engine.GetStats().RealizedPnL; math.Abs(got+3.25) > 0.000001 {
+		t.Fatalf("expected realized PnL -3.25, got %.6f", got)
+	}
+}
+
 // TestMarketBuy_ZeroSizeLevels verifies it skips levels with zero size
 func TestMarketBuy_ZeroSizeLevels(t *testing.T) {
 	engine := NewEngine(1000.0)

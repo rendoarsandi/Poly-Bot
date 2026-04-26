@@ -218,14 +218,6 @@ func realbotExecuteAggressiveEntry(
 
 	cost1 := reportedBuyCost(exec1, ask1, filled1, requestSize1)
 	cost2 := reportedBuyCost(exec2, ask2, filled2, requestSize2)
-	mirrorBuyPrice1 := venueExecutionEffectivePrice(exec1)
-	if mirrorBuyPrice1 <= 0 {
-		mirrorBuyPrice1 = ask1
-	}
-	mirrorBuyPrice2 := venueExecutionEffectivePrice(exec2)
-	if mirrorBuyPrice2 <= 0 {
-		mirrorBuyPrice2 = ask2
-	}
 	executionMode := paperArbModeTaker
 	if ladderedMode {
 		executionMode = paperArbModeLaddered
@@ -337,7 +329,7 @@ func realbotExecuteAggressiveEntry(
 	if ladderedMode {
 		if ladderedDirection == 0 && side1Success {
 			if shouldMirrorEngine {
-				_, _ = engine.BuyForMarketWithFeeRate(id, outcomes[0], mirrorBuyPrice1, filled1, rate1)
+				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[0], cost1, filled1)
 			}
 			advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize1, filled1)
 			anchorNote := "anchor advanced"
@@ -357,7 +349,7 @@ func realbotExecuteAggressiveEntry(
 			refreshWalletTruth(5 * time.Second)
 		} else if ladderedDirection == 1 && side2Success {
 			if shouldMirrorEngine {
-				_, _ = engine.BuyForMarketWithFeeRate(id, outcomes[1], mirrorBuyPrice2, filled2, rate2)
+				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[1], cost2, filled2)
 			}
 			advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize2, filled2)
 			anchorNote := "anchor advanced"
@@ -378,8 +370,8 @@ func realbotExecuteAggressiveEntry(
 		}
 	} else if side1Success && side2Success {
 		if shouldMirrorEngine {
-			_, _ = engine.BuyForMarketWithFeeRate(id, outcomes[0], mirrorBuyPrice1, filled1, rate1)
-			_, _ = engine.BuyForMarketWithFeeRate(id, outcomes[1], mirrorBuyPrice2, filled2, rate2)
+			_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[0], cost1, filled1)
+			_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[1], cost2, filled2)
 		}
 
 		settleCtx, settleCancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -404,13 +396,13 @@ func realbotExecuteAggressiveEntry(
 	} else if side1Success || side2Success {
 		if side1Success {
 			if shouldMirrorEngine {
-				_, _ = engine.BuyForMarketWithFeeRate(id, outcomes[0], mirrorBuyPrice1, filled1, rate1)
+				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[0], cost1, filled1)
 			}
 			tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
 		}
 		if side2Success {
 			if shouldMirrorEngine {
-				_, _ = engine.BuyForMarketWithFeeRate(id, outcomes[1], mirrorBuyPrice2, filled2, rate2)
+				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[1], cost2, filled2)
 			}
 			tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
 		}
@@ -479,7 +471,8 @@ func realbotExecuteAggressiveEntry(
 				if sellPrice0 <= 0 {
 					sellPrice0 = cleanupSellPrice
 				}
-				if _, sellErr := engine.SellForMarketWithFeeRate(id, outcomes[0], sellPrice0, actualSold0, cfg.FeeRateBps); sellErr != nil {
+				proceeds0 := reportedSellProceeds(sell0Exec, sellPrice0, actualSold0, acquired0)
+				if _, sellErr := realbotMirrorLiveSellIntoEngine(engine, id, outcomes[0], proceeds0, actualSold0); sellErr != nil {
 					tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[0], sellErr)
 				}
 			}
@@ -490,7 +483,8 @@ func realbotExecuteAggressiveEntry(
 				if sellPrice1 <= 0 {
 					sellPrice1 = cleanupSellPrice
 				}
-				if _, sellErr := engine.SellForMarketWithFeeRate(id, outcomes[1], sellPrice1, actualSold1, cfg.FeeRateBps); sellErr != nil {
+				proceeds1 := reportedSellProceeds(sell1Exec, sellPrice1, actualSold1, acquired1)
+				if _, sellErr := realbotMirrorLiveSellIntoEngine(engine, id, outcomes[1], proceeds1, actualSold1); sellErr != nil {
 					tui.LogEvent("[%s] ⚠️ Engine cleanup sync failed for %s: %v", id, outcomes[1], sellErr)
 				}
 			}

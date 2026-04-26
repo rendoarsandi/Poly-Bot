@@ -4473,6 +4473,19 @@ func TestReportedSellProceedsUsesAttributedSizeWhenAcknowledgedSizeDrifts(t *tes
 	}
 }
 
+func TestRealbotMirrorLiveFillUsesObservedCostAndProceeds(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := realbotMirrorLiveBuyIntoEngine(engine, "BTC", "Up", 10.50, 10); err != nil {
+		t.Fatalf("live buy mirror failed: %v", err)
+	}
+	if _, err := realbotMirrorLiveSellIntoEngine(engine, "BTC", "Up", 7.25, 10); err != nil {
+		t.Fatalf("live sell mirror failed: %v", err)
+	}
+	if got := engine.GetStats().RealizedPnL; math.Abs(got+3.25) > 0.000001 {
+		t.Fatalf("expected realized PnL to include observed fee/cost delta -3.25, got %.6f", got)
+	}
+}
+
 func TestRealbotApplySplitSellAccountingCreditsBalanceAndRealizedPnL(t *testing.T) {
 	engine := paper.NewEngine(10)
 	engine.DeductBalance(2)

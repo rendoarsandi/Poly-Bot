@@ -232,6 +232,20 @@ func realbotShouldMirrorExecutionIntoEngine(trader *trading.RealTrader) bool {
 	return trader == nil || !trader.IsEmbeddedPaperMode()
 }
 
+func realbotMirrorLiveBuyIntoEngine(engine *paper.Engine, marketID, outcome string, totalCost, quantity float64) (*paper.Trade, error) {
+	if engine == nil {
+		return nil, fmt.Errorf("missing engine")
+	}
+	return engine.BuyFilledForMarket(marketID, outcome, totalCost, quantity)
+}
+
+func realbotMirrorLiveSellIntoEngine(engine *paper.Engine, marketID, outcome string, proceeds, quantity float64) (*paper.Trade, error) {
+	if engine == nil {
+		return nil, fmt.Errorf("missing engine")
+	}
+	return engine.SellFilledForMarket(marketID, outcome, proceeds, quantity)
+}
+
 func normalizePaperArbMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case paperArbModeLaddered:
