@@ -859,7 +859,7 @@ func TestRealbotSwitchExecutionBackendBuildsLiveTraderAndResetsFlatEngine(t *tes
 	}
 }
 
-func TestRealbotSwitchExecutionBackendRequiresFlatEngine(t *testing.T) {
+func TestRealbotSwitchExecutionBackendToLiveClearsPaperInventory(t *testing.T) {
 	engine := paper.NewEngine(25)
 	if _, err := engine.BuyForMarket("btc-updown-15m-1", "Up", 0.50, 1); err != nil {
 		t.Fatalf("failed to seed open paper inventory: %v", err)
@@ -871,18 +871,27 @@ func TestRealbotSwitchExecutionBackendRequiresFlatEngine(t *testing.T) {
 	}
 
 	setupCalled := false
-	_, got, err := realbotSwitchExecutionBackend(context.Background(), cfg, engine, paperTrader, func(context.Context, *core.Config) (*realbotBackendState, error) {
+	state, got, err := realbotSwitchExecutionBackend(context.Background(), cfg, engine, paperTrader, func(context.Context, *core.Config) (*realbotBackendState, error) {
 		setupCalled = true
 		return &realbotBackendState{trader: &trading.RealTrader{}, startingBalance: 100}, nil
 	})
-	if err == nil {
-		t.Fatal("expected backend switch to fail while engine has open inventory")
+	if err != nil {
+		t.Fatalf("expected backend switch to discard paper inventory after live setup, got %v", err)
 	}
-	if setupCalled {
-		t.Fatal("expected live setup to be skipped when engine is not flat")
+	if !setupCalled {
+		t.Fatal("expected live setup to run")
 	}
-	if got != paperTrader {
-		t.Fatal("expected failed backend switch to keep the current paper trader")
+	if state == nil || state.trader == nil {
+		t.Fatalf("expected live backend state, got %+v", state)
+	}
+	if got == paperTrader || got == nil || got.IsEmbeddedPaperMode() {
+		t.Fatal("expected switched trader to be the live trader")
+	}
+	if len(engine.GetPositions()) != 0 {
+		t.Fatal("expected simulated paper inventory to be cleared when switching to live")
+	}
+	if math.Abs(engine.GetBalance()-100) > 0.000001 {
+		t.Fatalf("expected engine balance to reset to live balance 100, got %.2f", engine.GetBalance())
 	}
 }
 

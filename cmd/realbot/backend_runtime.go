@@ -133,9 +133,6 @@ func realbotSwitchExecutionBackend(ctx context.Context, cfg *core.Config, engine
 
 	switch realbotDesiredExecutionBackend(cfg) {
 	case core.ExecutionBackendLive:
-		if engine != nil && !engine.CanResetPaperSession() {
-			return nil, currentTrader, fmt.Errorf("execution backend switch to live requires a flat engine")
-		}
 		if setupLive == nil {
 			setupLive = realbotInitBackend
 		}
@@ -147,9 +144,7 @@ func realbotSwitchExecutionBackend(ctx context.Context, cfg *core.Config, engine
 			return nil, currentTrader, fmt.Errorf("live backend setup returned no trader")
 		}
 		if engine != nil {
-			if err := engine.ResetPaperSession(state.startingBalance); err != nil {
-				return nil, currentTrader, err
-			}
+			engine.ForceResetPaperSession(state.startingBalance)
 		}
 		return state, state.trader, nil
 	default:

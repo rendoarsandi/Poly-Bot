@@ -1188,6 +1188,32 @@ func TestExecutionBackendChangeDoesNotDeadlockWhenSettingsCallbackLogs(t *testin
 	}
 }
 
+func TestExecutionBackendChangeRequestsImmediateRestart(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetMode("Real")
+	tui.InitSettings(TUISettings{
+		ExecutionBackend: core.ExecutionBackendPaper,
+		PaperArbMode:     "taker",
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowExecutionBackend,
+		settingsBackup: tui.GetSettings(),
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	updated := next.(tuiModel)
+
+	if got := updated.tui.GetSettings().ExecutionBackend; got != core.ExecutionBackendLive {
+		t.Fatalf("expected execution backend to change to live, got %q", got)
+	}
+	if !tui.GetAndClearRestart() {
+		t.Fatal("expected execution backend change to request immediate restart")
+	}
+}
+
 func TestSettingsPanelAutoScrollsSelectedRowIntoViewOnSmallTerminal(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.SetMode("Real")

@@ -1452,6 +1452,11 @@ func (e *Engine) ResetPaperSession(balance float64) error {
 	if !e.canResetPaperSessionLocked() {
 		return ErrPaperSessionNotFlat
 	}
+	e.resetPaperSessionLocked(balance)
+	return nil
+}
+
+func (e *Engine) resetPaperSessionLocked(balance float64) {
 	if balance <= 0 {
 		balance = 100.0
 	}
@@ -1476,9 +1481,24 @@ func (e *Engine) ResetPaperSession(balance float64) error {
 	e.maxLossStreakCash = 0
 	e.winningTrades = 0
 	e.losingTrades = 0
+	e.positions = make(map[string]*Position)
+	e.currentPrices = make(map[string]float64)
+	e.currentBids = make(map[string]float64)
+	e.currentAsks = make(map[string]float64)
+	e.marketBids = make(map[string]float64)
+	e.marketAsks = make(map[string]float64)
+	e.splitInventories = nil
+	e.settledLosers = make(map[string]float64)
 	e.pendingRedemptions = make(map[string]float64)
+	e.settledRedemptions = make(map[string]time.Time)
 	e.recalculateDrawdown()
-	return nil
+}
+
+func (e *Engine) ForceResetPaperSession(balance float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.resetPaperSessionLocked(balance)
 }
 
 // SyncBalanceNeutral updates wallet cash from an external source. If unresolved

@@ -3152,6 +3152,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowExecutionBackend:
 					m.tui.settings.ExecutionBackend = cycleString([]string{core.ExecutionBackendPaper, core.ExecutionBackendLive}, m.tui.settings.ExecutionBackend, 1)
+					m.tui.restartReq = true
 					changed = true
 				case settingsRowTakerCloseTime:
 					m.tui.settings.TakerCloseMarketTime += 1
