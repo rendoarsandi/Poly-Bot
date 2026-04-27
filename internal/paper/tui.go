@@ -1867,7 +1867,7 @@ func normalizeTUIFixedTradeSizeUSDC(size float64, fallback float64) float64 {
 	if size <= 0 {
 		size = fallback
 	}
-	size = math.Round(size*10.0) / 10.0
+	size = math.Round(size*100.0) / 100.0
 	if size < 1.0 {
 		return 1.0
 	}

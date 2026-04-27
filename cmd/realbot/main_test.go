@@ -382,6 +382,31 @@ func TestRealbotLadderedRequestedQtyUSDCRespectsMaxTradeSize(t *testing.T) {
 	}
 }
 
+func TestRealbotLadderedRequestedQtyUSDCClampsSubDollarBudgetToVenueMinimum(t *testing.T) {
+	cfg := paper.TUISettings{
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   0.01,
+	}
+
+	want := normalizeMarketBuyShares(1.0 / 0.80)
+	if got := realbotLadderedRequestedQty(1.00, cfg, 0.80, 0.80); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("expected sub-dollar ladder budget to clamp to the $1 venue minimum, got %.4f want %.4f", got, want)
+	}
+}
+
+func TestRealbotLadderedRequestedQtyUSDCFloorsSubDollarMaxTradeCapToVenueMinimum(t *testing.T) {
+	cfg := paper.TUISettings{
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   1.10,
+		MaxTradeSize:            0.10,
+	}
+
+	want := normalizeMarketBuyShares(1.0 / 0.80)
+	if got := realbotLadderedRequestedQty(1.00, cfg, 0.80, 0.80); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("expected sub-dollar ladder max trade cap to floor at the $1 venue minimum, got %.4f want %.4f", got, want)
+	}
+}
+
 func TestRealbotLadderedInventoryCapBlocksHeavyLeader(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 3.1); err != nil {

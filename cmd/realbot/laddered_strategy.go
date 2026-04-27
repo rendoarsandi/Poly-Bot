@@ -15,6 +15,23 @@ import (
 
 type realbotPairSnapshotLoader func(context.Context) (float64, float64, string, error)
 
+func realbotNormalizedLadderedUSDCBudget(liveCfg paper.TUISettings) float64 {
+	budget := math.Round(liveCfg.LadderedTakerSizeUSDC*100.0) / 100.0
+	if budget < realbotMinDirectOrderValue {
+		budget = realbotMinDirectOrderValue
+	}
+	if liveCfg.MaxTradeSize > 0 {
+		maxTradeSize := math.Round(liveCfg.MaxTradeSize*100.0) / 100.0
+		if maxTradeSize < realbotMinDirectOrderValue {
+			maxTradeSize = realbotMinDirectOrderValue
+		}
+		if budget > maxTradeSize {
+			budget = maxTradeSize
+		}
+	}
+	return budget
+}
+
 func realbotLadderedRequestedQty(pairSum float64, liveCfg paper.TUISettings, ask, limitPrice float64) float64 {
 	if strings.EqualFold(strings.TrimSpace(liveCfg.LadderedTakerSizingMode), core.LadderedTakerSizingModeShares) {
 		return normalizeMarketBuyShares(core.CalculateLadderedTakerSharesForMode(
@@ -26,13 +43,7 @@ func realbotLadderedRequestedQty(pairSum float64, liveCfg paper.TUISettings, ask
 		))
 	}
 
-	budget := liveCfg.LadderedTakerSizeUSDC
-	if budget <= 0 {
-		budget = 0.1
-	}
-	if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
-		budget = liveCfg.MaxTradeSize
-	}
+	budget := realbotNormalizedLadderedUSDCBudget(liveCfg)
 
 	sizingPrice := ask
 	if sizingPrice <= 0 {

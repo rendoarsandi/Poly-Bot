@@ -222,6 +222,12 @@ func TestNormalizeFixedTradeSizeUSDCClampsToOneDollarMinimum(t *testing.T) {
 	}
 }
 
+func TestNormalizeFixedTradeSizeUSDCPreservesCentPrecision(t *testing.T) {
+	if got := normalizeFixedTradeSizeUSDC(1.01); got != 1.01 {
+		t.Fatalf("expected fixed trade size to keep cent precision, got %.2f", got)
+	}
+}
+
 func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg, err := LoadConfig()
 	if err != nil {

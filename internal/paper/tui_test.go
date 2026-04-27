@@ -949,8 +949,8 @@ func TestNormalizeTUISettingsRoundsFixedTradeSizeUSDC(t *testing.T) {
 	if cfg.TradeSizingMode != core.TradeSizingModeUSDC {
 		t.Fatalf("expected trade sizing mode usdc, got %q", cfg.TradeSizingMode)
 	}
-	if cfg.TradeSizeUSDC != 2.3 {
-		t.Fatalf("expected trade size to round to 2.3, got %.1f", cfg.TradeSizeUSDC)
+	if cfg.TradeSizeUSDC != 2.34 {
+		t.Fatalf("expected trade size to keep cent precision, got %.2f", cfg.TradeSizeUSDC)
 	}
 }
 
