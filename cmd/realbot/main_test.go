@@ -2110,7 +2110,7 @@ func TestRealbotFinalizePendingRedemptionSettlesWhenBalanceNotYetReflected(t *te
 	}
 }
 
-func TestRealbotResolutionSyncZerosStaleLosingLocalShares(t *testing.T) {
+func TestRealbotResolutionSyncPreservesLosingLocalSharesForRedemption(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("BTC", "Up", 0.30, 10); err != nil {
 		t.Fatalf("seed up buy failed: %v", err)
@@ -2123,19 +2123,40 @@ func TestRealbotResolutionSyncZerosStaleLosingLocalShares(t *testing.T) {
 		{MarketID: "BTC", Outcome: "Up", LocalShares: 10, OnChainShares: 10},
 		{MarketID: "BTC", Outcome: "Down", LocalShares: 10, OnChainShares: 0},
 	})
-	if adjusted == 0 {
-		t.Fatal("expected stale losing side to be adjusted away")
+	if adjusted != 0 {
+		t.Fatalf("expected losing local lot to stay intact for redemption, got %d adjustments", adjusted)
 	}
 	if len(missing) != 0 {
 		t.Fatalf("expected no missing cost basis, got %v", missing)
 	}
 
 	result := engine.RedeemWithDetails("BTC", "Up")
-	if math.Abs(result.LosingCost) > 0.000001 {
-		t.Fatalf("expected stale losing local inventory not to count as resolution loss, got %.2f", result.LosingCost)
+	if math.Abs(result.LosingCost-8.0) > 0.000001 {
+		t.Fatalf("expected losing cost 8.00 to be realized at redemption, got %.2f", result.LosingCost)
 	}
-	if math.Abs(result.TotalPnL-7.0) > 0.000001 {
-		t.Fatalf("expected winning PnL 7.00, got %.2f", result.TotalPnL)
+	if math.Abs(result.TotalPnL+1.0) > 0.000001 {
+		t.Fatalf("expected total PnL -1.00 after realizing both sides, got %.2f", result.TotalPnL)
+	}
+}
+
+func TestRealbotResolutionSyncClearsAlreadySettledLosingLocalShares(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Down", 0.80, 10); err != nil {
+		t.Fatalf("seed down buy failed: %v", err)
+	}
+	engine.RecordSettledLoser("BTC", "Down", 10)
+
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", "Up", []paper.WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Down", LocalShares: 10, OnChainShares: 0},
+	})
+	if adjusted != 1 {
+		t.Fatalf("expected settled losing lot to be cleared locally, got %d adjustments", adjusted)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing cost basis, got %v", missing)
+	}
+	if pos := engine.GetPositions()["BTC:Down"]; pos.Quantity != 0 {
+		t.Fatalf("expected settled losing local position cleared, got %+v", pos)
 	}
 }
 

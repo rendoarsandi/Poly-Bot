@@ -97,12 +97,18 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 		return 0, nil
 	}
 	enginePositions := engine.GetPositions()
+	winnerKey := realbotRedemptionOutcomeKey(winner)
 	for _, wt := range positions {
 		if wt.MarketID != marketID {
 			continue
 		}
 		key := marketID + ":" + wt.Outcome
 		pos, exists := enginePositions[key]
+		outcomeKey := realbotRedemptionOutcomeKey(wt.Outcome)
+		localShares := wt.LocalShares
+		if exists && pos.Quantity > localShares {
+			localShares = pos.Quantity
+		}
 		markPrice := 0.0
 		if exists {
 			markPrice = pos.AvgPrice
@@ -114,11 +120,7 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 			markPrice = 0.5
 		}
 		if !hasActionableCleanupRemainder(wt.OnChainShares) {
-			if winner != "" && realbotRedemptionOutcomeKey(wt.Outcome) == realbotRedemptionOutcomeKey(winner) {
-				localShares := wt.LocalShares
-				if exists && pos.Quantity > localShares {
-					localShares = pos.Quantity
-				}
+			if winnerKey != "" && outcomeKey == winnerKey {
 				if hasActionableCleanupRemainder(localShares) {
 					// A zero winning CTF balance at resolution can mean the redeem
 					// transaction already cleared before this poll. Keep the local
@@ -133,6 +135,15 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 					continue
 				}
 			}
+			if winnerKey != "" && outcomeKey != winnerKey && hasActionableCleanupRemainder(localShares) {
+				settledLoserShares := engine.GetSettledLoserShares(marketID, wt.Outcome)
+				if settledLoserShares+1e-6 < localShares {
+					// Losing ladder outcomes can already read as zero on-chain once the
+					// market resolves. Keep the local lot so redemption books the loss
+					// unless we already marked it settled earlier.
+					continue
+				}
+			}
 			if exists || hasActionableCleanupRemainder(wt.LocalShares) {
 				if engine.SyncExternalPosition(marketID, wt.Outcome, 0, markPrice) {
 					adjusted++
@@ -142,7 +153,7 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 		}
 		if !exists || pos.Quantity <= 0 {
 			missingCostBasis = append(missingCostBasis, wt.Outcome)
-			if winner != "" && realbotRedemptionOutcomeKey(wt.Outcome) == realbotRedemptionOutcomeKey(winner) {
+			if winnerKey != "" && outcomeKey == winnerKey {
 				// If the wallet holds winning shares that the local engine did not
 				// cost, book them at payout value so redemption accounting recognizes
 				// the receivable without inventing PnL.
