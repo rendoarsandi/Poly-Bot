@@ -331,6 +331,7 @@ func realbotExecuteAggressiveEntry(
 	if ladderedMode {
 		if ladderedDirection == 0 && side1Success {
 			if shouldMirrorEngine {
+				trader.RecordExecutionBuy(token0, filled1, cost1)
 				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[0], cost1, filled1)
 			}
 			advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize1, filled1)
@@ -351,6 +352,7 @@ func realbotExecuteAggressiveEntry(
 			refreshWalletTruth(5 * time.Second)
 		} else if ladderedDirection == 1 && side2Success {
 			if shouldMirrorEngine {
+				trader.RecordExecutionBuy(token1, filled2, cost2)
 				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[1], cost2, filled2)
 			}
 			advancedAnchor := realbotShouldAdvanceLadderedEntry(requestSize2, filled2)
@@ -372,6 +374,8 @@ func realbotExecuteAggressiveEntry(
 		}
 	} else if side1Success && side2Success {
 		if shouldMirrorEngine {
+			trader.RecordExecutionBuy(token0, filled1, cost1)
+			trader.RecordExecutionBuy(token1, filled2, cost2)
 			_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[0], cost1, filled1)
 			_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[1], cost2, filled2)
 		}
@@ -398,12 +402,14 @@ func realbotExecuteAggressiveEntry(
 	} else if side1Success || side2Success {
 		if side1Success {
 			if shouldMirrorEngine {
+				trader.RecordExecutionBuy(token0, filled1, cost1)
 				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[0], cost1, filled1)
 			}
 			tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[0])
 		}
 		if side2Success {
 			if shouldMirrorEngine {
+				trader.RecordExecutionBuy(token1, filled2, cost2)
 				_, _ = realbotMirrorLiveBuyIntoEngine(engine, id, outcomes[1], cost2, filled2)
 			}
 			tui.LogEvent("[%s] ⚠️ Engine: Recording unbalanced position (only %s)", id, outcomes[1])
@@ -469,6 +475,7 @@ func realbotExecuteAggressiveEntry(
 
 		if hasActionableCleanupRemainder(actualSold0) {
 			if shouldMirrorEngine {
+				trader.RecordExecutionSell(token0, actualSold0)
 				sellPrice0 := venueExecutionEffectivePrice(sell0Exec)
 				if sellPrice0 <= 0 {
 					sellPrice0 = cleanupSellPrice
@@ -481,6 +488,7 @@ func realbotExecuteAggressiveEntry(
 		}
 		if hasActionableCleanupRemainder(actualSold1) {
 			if shouldMirrorEngine {
+				trader.RecordExecutionSell(token1, actualSold1)
 				sellPrice1 := venueExecutionEffectivePrice(sell1Exec)
 				if sellPrice1 <= 0 {
 					sellPrice1 = cleanupSellPrice

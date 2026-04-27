@@ -53,6 +53,10 @@ func realbotRecordWalletTruthAdjustment(tui *paper.TUI, marketID, outcome string
 }
 
 func syncWalletTruthOutcomePosition(engine *paper.Engine, tui *paper.TUI, marketID, outcome string, localBoughtShares, onChainShares, splitShares float64) (float64, bool) {
+	return syncWalletTruthOutcomePositionWithCostBasis(nil, "", engine, tui, marketID, outcome, localBoughtShares, onChainShares, splitShares)
+}
+
+func syncWalletTruthOutcomePositionWithCostBasis(trader *trading.RealTrader, tokenID string, engine *paper.Engine, tui *paper.TUI, marketID, outcome string, localBoughtShares, onChainShares, splitShares float64) (float64, bool) {
 	desiredBoughtShares := realbotNormalizeTrackedShares(math.Max(0, onChainShares-splitShares))
 	deltaShares := desiredBoughtShares - localBoughtShares
 	if math.Abs(deltaShares) <= 1e-6 {
@@ -60,7 +64,7 @@ func syncWalletTruthOutcomePosition(engine *paper.Engine, tui *paper.TUI, market
 	}
 
 	markPrice := walletTruthSyncMarkPrice(engine, marketID, outcome)
-	if !engine.SyncExternalPosition(marketID, outcome, desiredBoughtShares, markPrice) {
+	if !realbotSyncExternalPositionWithCostBasis(trader, engine, marketID, outcome, tokenID, desiredBoughtShares, markPrice) {
 		return desiredBoughtShares, false
 	}
 
@@ -99,7 +103,7 @@ func syncWalletTruthPositions(ctx context.Context, marketID string, tokenToOutco
 			splitShares = splitInventory.GetSplitShares(marketID, outcome)
 		}
 		var adjusted bool
-		localBoughtShares, adjusted = syncWalletTruthOutcomePosition(engine, tui, marketID, outcome, localBoughtShares, onChainShares, splitShares+engine.GetSettledLoserShares(marketID, outcome))
+		localBoughtShares, adjusted = syncWalletTruthOutcomePositionWithCostBasis(trader, tokenID, engine, tui, marketID, outcome, localBoughtShares, onChainShares, splitShares+engine.GetSettledLoserShares(marketID, outcome))
 		if adjusted {
 			changed = true
 		}
@@ -240,14 +244,14 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	if local0 > desired0+1e-6 {
 		trimQty := local0 - desired0
 		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[0])
-		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, markPrice) {
+		if realbotSyncExternalPositionWithCostBasis(trader, engine, marketID, outcomes[0], token0, desired0, markPrice) {
 			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[0], -trimQty, local0, onChain0, split0, markPrice, "trimmed")
 			changed = true
 		}
 	} else if desired0 > local0+1e-6 {
 		addQty := desired0 - local0
 		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[0])
-		if engine.SyncExternalPosition(marketID, outcomes[0], desired0, markPrice) {
+		if realbotSyncExternalPositionWithCostBasis(trader, engine, marketID, outcomes[0], token0, desired0, markPrice) {
 			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[0], addQty, local0, onChain0, split0, markPrice, "restored")
 			changed = true
 		}
@@ -255,14 +259,14 @@ func reconcileLocalBoughtPositionsToWalletTruth(ctx context.Context, marketID, t
 	if local1 > desired1+1e-6 {
 		trimQty := local1 - desired1
 		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[1])
-		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, markPrice) {
+		if realbotSyncExternalPositionWithCostBasis(trader, engine, marketID, outcomes[1], token1, desired1, markPrice) {
 			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[1], -trimQty, local1, onChain1, split1, markPrice, "trimmed")
 			changed = true
 		}
 	} else if desired1 > local1+1e-6 {
 		addQty := desired1 - local1
 		markPrice := walletTruthSyncMarkPrice(engine, marketID, outcomes[1])
-		if engine.SyncExternalPosition(marketID, outcomes[1], desired1, markPrice) {
+		if realbotSyncExternalPositionWithCostBasis(trader, engine, marketID, outcomes[1], token1, desired1, markPrice) {
 			realbotRecordWalletTruthAdjustment(tui, marketID, outcomes[1], addQty, local1, onChain1, split1, markPrice, "restored")
 			changed = true
 		}

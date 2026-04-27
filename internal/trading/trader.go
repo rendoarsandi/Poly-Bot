@@ -274,11 +274,13 @@ type RealTrader struct {
 	lastCTFBalanceTry    map[string]time.Time
 	ctfMu                sync.Mutex
 
-	livePositions       map[string]float64
-	confirmedOrderFills map[string]float64
-	paperEngine         *paper.Engine
-	paperTokenMeta      map[string]paperTokenMeta
-	posMu               sync.Mutex
+	livePositions           map[string]float64
+	confirmedOrderFills     map[string]float64
+	positionLedgerQty       map[string]float64
+	positionLedgerTotalCost map[string]float64
+	paperEngine             *paper.Engine
+	paperTokenMeta          map[string]paperTokenMeta
+	posMu                   sync.Mutex
 }
 
 type paperTokenMeta struct {
@@ -327,15 +329,17 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 	polygon := api.NewPolygonClient(cfg.PolygonRPCURL)
 
 	trader := &RealTrader{
-		client:               client,
-		polygon:              polygon,
-		config:               cfg,
-		startOfDay:           time.Now().Truncate(24 * time.Hour),
-		ctfBalanceCache:      make(map[string]float64),
-		lastCTFBalanceUpdate: make(map[string]time.Time),
-		lastCTFBalanceTry:    make(map[string]time.Time),
-		livePositions:        make(map[string]float64),
-		confirmedOrderFills:  make(map[string]float64),
+		client:                  client,
+		polygon:                 polygon,
+		config:                  cfg,
+		startOfDay:              time.Now().Truncate(24 * time.Hour),
+		ctfBalanceCache:         make(map[string]float64),
+		lastCTFBalanceUpdate:    make(map[string]time.Time),
+		lastCTFBalanceTry:       make(map[string]time.Time),
+		livePositions:           make(map[string]float64),
+		confirmedOrderFills:     make(map[string]float64),
+		positionLedgerQty:       make(map[string]float64),
+		positionLedgerTotalCost: make(map[string]float64),
 	}
 
 	// Initialize User WebSocket for real-time fills
@@ -358,15 +362,17 @@ func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTra
 		cfg = &core.Config{}
 	}
 	return &RealTrader{
-		config:               cfg,
-		startOfDay:           time.Now().Truncate(24 * time.Hour),
-		ctfBalanceCache:      make(map[string]float64),
-		lastCTFBalanceUpdate: make(map[string]time.Time),
-		lastCTFBalanceTry:    make(map[string]time.Time),
-		livePositions:        make(map[string]float64),
-		confirmedOrderFills:  make(map[string]float64),
-		paperEngine:          engine,
-		paperTokenMeta:       make(map[string]paperTokenMeta),
+		config:                  cfg,
+		startOfDay:              time.Now().Truncate(24 * time.Hour),
+		ctfBalanceCache:         make(map[string]float64),
+		lastCTFBalanceUpdate:    make(map[string]time.Time),
+		lastCTFBalanceTry:       make(map[string]time.Time),
+		livePositions:           make(map[string]float64),
+		confirmedOrderFills:     make(map[string]float64),
+		positionLedgerQty:       make(map[string]float64),
+		positionLedgerTotalCost: make(map[string]float64),
+		paperEngine:             engine,
+		paperTokenMeta:          make(map[string]paperTokenMeta),
 	}
 }
 
@@ -379,9 +385,11 @@ func (t *RealTrader) RegisterPaperToken(tokenID, marketID, outcome string) {
 		return
 	}
 	seed := 0.0
+	seedCost := 0.0
 	for _, pos := range t.paperEngine.GetPositions() {
 		if pos.MarketID == marketID && pos.Outcome == outcome && pos.Quantity > 0 {
 			seed += pos.Quantity
+			seedCost += pos.TotalCost
 		}
 	}
 	t.posMu.Lock()
@@ -390,6 +398,7 @@ func (t *RealTrader) RegisterPaperToken(tokenID, marketID, outcome string) {
 	}
 	t.paperTokenMeta[tokenID] = paperTokenMeta{MarketID: marketID, Outcome: outcome}
 	t.livePositions[tokenID] = seed
+	t.setPositionLedgerLocked(tokenID, seed, seedCost)
 	t.posMu.Unlock()
 }
 
@@ -409,9 +418,123 @@ func (t *RealTrader) paperPositionsSnapshot() []PositionInfo {
 		if meta, ok := t.paperTokenMeta[tokenID]; ok {
 			info.Outcome = meta.Outcome
 		}
+		if ledgerQty := t.positionLedgerQty[tokenID]; ledgerQty > 0 {
+			info.AvgPrice = t.positionLedgerTotalCost[tokenID] / ledgerQty
+		}
 		positions = append(positions, info)
 	}
 	return positions
+}
+
+func (t *RealTrader) setPositionLedgerLocked(tokenID string, quantity, totalCost float64) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return
+	}
+	if t.positionLedgerQty == nil {
+		t.positionLedgerQty = make(map[string]float64)
+	}
+	if t.positionLedgerTotalCost == nil {
+		t.positionLedgerTotalCost = make(map[string]float64)
+	}
+	if quantity <= 1e-9 {
+		delete(t.positionLedgerQty, tokenID)
+		delete(t.positionLedgerTotalCost, tokenID)
+		return
+	}
+	if totalCost < 0 {
+		totalCost = 0
+	}
+	t.positionLedgerQty[tokenID] = quantity
+	t.positionLedgerTotalCost[tokenID] = totalCost
+}
+
+func (t *RealTrader) importPositionLedgerLocked(tokenID string, quantity, avgPrice float64) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return
+	}
+	if quantity <= 1e-9 {
+		t.setPositionLedgerLocked(tokenID, 0, 0)
+		return
+	}
+	if avgPrice > 0 {
+		t.setPositionLedgerLocked(tokenID, quantity, quantity*avgPrice)
+		return
+	}
+	prevQty := t.positionLedgerQty[tokenID]
+	prevCost := t.positionLedgerTotalCost[tokenID]
+	if prevQty > 1e-9 && prevCost > 0 {
+		avgCost := prevCost / prevQty
+		t.setPositionLedgerLocked(tokenID, quantity, avgCost*quantity)
+		return
+	}
+	t.setPositionLedgerLocked(tokenID, quantity, 0)
+}
+
+func (t *RealTrader) RecordExecutionBuy(tokenID string, quantity, totalCost float64) {
+	if t == nil || quantity <= 1e-9 {
+		return
+	}
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	currentQty := t.positionLedgerQty[tokenID]
+	currentCost := t.positionLedgerTotalCost[tokenID]
+	t.setPositionLedgerLocked(tokenID, currentQty+quantity, currentCost+math.Max(0, totalCost))
+}
+
+func (t *RealTrader) RecordExecutionSell(tokenID string, quantity float64) {
+	if t == nil || quantity <= 1e-9 {
+		return
+	}
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	currentQty := t.positionLedgerQty[tokenID]
+	currentCost := t.positionLedgerTotalCost[tokenID]
+	if currentQty <= 1e-9 {
+		t.setPositionLedgerLocked(tokenID, 0, 0)
+		return
+	}
+	if quantity >= currentQty-1e-9 {
+		t.setPositionLedgerLocked(tokenID, 0, 0)
+		return
+	}
+	avgCost := 0.0
+	if currentQty > 1e-9 {
+		avgCost = currentCost / currentQty
+	}
+	remainingQty := currentQty - quantity
+	remainingCost := currentCost - (avgCost * quantity)
+	if remainingCost < 0 {
+		remainingCost = 0
+	}
+	t.setPositionLedgerLocked(tokenID, remainingQty, remainingCost)
+}
+
+func (t *RealTrader) ImportPositionCostBasis(tokenID string, quantity, avgPrice float64) {
+	if t == nil {
+		return
+	}
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	t.importPositionLedgerLocked(tokenID, quantity, avgPrice)
+}
+
+func (t *RealTrader) GetPositionCostBasis(tokenID string) (quantity, totalCost, avgPrice float64, ok bool) {
+	if t == nil {
+		return 0, 0, 0, false
+	}
+	t.posMu.Lock()
+	defer t.posMu.Unlock()
+	quantity = t.positionLedgerQty[tokenID]
+	if quantity <= 1e-9 {
+		return 0, 0, 0, false
+	}
+	totalCost = t.positionLedgerTotalCost[tokenID]
+	if totalCost > 0 {
+		avgPrice = totalCost / quantity
+	}
+	return quantity, totalCost, avgPrice, true
 }
 
 func (t *RealTrader) resolveEmbeddedPaperExecutionPrice(side api.Side, marketID, outcome string, limitPrice float64) (float64, error) {
@@ -509,6 +632,9 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		}
 		t.livePositions[tokenID] += trade.Quantity
 		t.confirmedOrderFills[orderID] = trade.Quantity
+		currentQty := t.positionLedgerQty[tokenID]
+		currentCost := t.positionLedgerTotalCost[tokenID]
+		t.setPositionLedgerLocked(tokenID, currentQty+trade.Quantity, currentCost+math.Max(0, trade.Value))
 		t.posMu.Unlock()
 		fee := math.Max(0, (size-trade.Quantity)*execPrice)
 		return &TradeResult{
@@ -558,6 +684,20 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			t.livePositions[tokenID] = 0
 		}
 		t.confirmedOrderFills[orderID] = trade.Quantity
+		currentQty := t.positionLedgerQty[tokenID]
+		currentCost := t.positionLedgerTotalCost[tokenID]
+		switch {
+		case currentQty <= 1e-9 || trade.Quantity >= currentQty-1e-9:
+			t.setPositionLedgerLocked(tokenID, 0, 0)
+		default:
+			avgCost := currentCost / currentQty
+			remainingQty := currentQty - trade.Quantity
+			remainingCost := currentCost - (avgCost * trade.Quantity)
+			if remainingCost < 0 {
+				remainingCost = 0
+			}
+			t.setPositionLedgerLocked(tokenID, remainingQty, remainingCost)
+		}
 		t.posMu.Unlock()
 		fee := math.Max(0, (execPrice*trade.Quantity)-trade.Value)
 		return &TradeResult{
@@ -617,6 +757,18 @@ func (t *RealTrader) applyLiveAssetBalance(assetID, balance string) {
 	t.posMu.Lock()
 	defer t.posMu.Unlock()
 	t.livePositions[assetID] = size
+	if size <= 1e-9 {
+		t.setPositionLedgerLocked(assetID, 0, 0)
+		return
+	}
+	if ledgerQty := t.positionLedgerQty[assetID]; ledgerQty > size+1e-9 {
+		ledgerCost := t.positionLedgerTotalCost[assetID]
+		avgCost := 0.0
+		if ledgerQty > 1e-9 {
+			avgCost = ledgerCost / ledgerQty
+		}
+		t.setPositionLedgerLocked(assetID, size, avgCost*size)
+	}
 }
 
 // Exchange returns the underlying ExchangeClient for direct API access.
@@ -1254,11 +1406,29 @@ func (t *RealTrader) ForceRefreshPositions(ctx context.Context) ([]PositionInfo,
 	}
 
 	t.posMu.Lock()
+	oldLedgerQty := t.positionLedgerQty
+	oldLedgerCost := t.positionLedgerTotalCost
 	// Clear and rebuild cache
 	t.livePositions = make(map[string]float64)
+	t.positionLedgerQty = make(map[string]float64)
+	t.positionLedgerTotalCost = make(map[string]float64)
 	result := make([]PositionInfo, len(positions))
 	for i, pos := range positions {
 		t.livePositions[pos.TokenID] = pos.Size
+		if pos.Size > 0 {
+			if pos.AvgPrice > 0 {
+				t.importPositionLedgerLocked(pos.TokenID, pos.Size, pos.AvgPrice)
+			} else if prevQty := oldLedgerQty[pos.TokenID]; prevQty > 1e-9 {
+				prevCost := oldLedgerCost[pos.TokenID]
+				prevAvg := 0.0
+				if prevCost > 0 {
+					prevAvg = prevCost / prevQty
+				}
+				t.importPositionLedgerLocked(pos.TokenID, pos.Size, prevAvg)
+			} else {
+				t.importPositionLedgerLocked(pos.TokenID, pos.Size, 0)
+			}
+		}
 		result[i] = PositionInfo{
 			TokenID:         pos.TokenID,
 			Size:            pos.Size,

@@ -101,10 +101,10 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 
 	if upTokenID := getTokenID(mapping.Up); upTokenID != "" {
-		engine.SyncExternalPosition(id, mapping.Up, trader.GetLivePositionSize(upTokenID), tokenAsks[mapping.Up])
+		realbotSyncExternalPositionWithCostBasis(trader, engine, id, mapping.Up, upTokenID, trader.GetLivePositionSize(upTokenID), tokenAsks[mapping.Up])
 	}
 	if downTokenID := getTokenID(mapping.Down); downTokenID != "" {
-		engine.SyncExternalPosition(id, mapping.Down, trader.GetLivePositionSize(downTokenID), tokenAsks[mapping.Down])
+		realbotSyncExternalPositionWithCostBasis(trader, engine, id, mapping.Down, downTokenID, trader.GetLivePositionSize(downTokenID), tokenAsks[mapping.Down])
 	}
 
 	if binanceFeed == nil {
@@ -265,6 +265,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	}
 	cost := reportedBuyCost(exec, buyPrice, buyQty, shares)
 	if realbotShouldMirrorExecutionIntoEngine(trader) {
+		trader.RecordExecutionBuy(tokenID, buyQty, cost)
 		if _, err := realbotMirrorLiveBuyIntoEngine(engine, id, targetOutcome, cost, buyQty); err != nil {
 			status.Ready = false
 			status.Status = "blocked"

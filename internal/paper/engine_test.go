@@ -402,6 +402,40 @@ func TestEngine_SyncExternalPositionTrimsWithoutChangingRealizedPnL(t *testing.T
 	}
 }
 
+func TestEngine_SyncExternalPositionWithTotalCostUsesExactBasis(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	if !engine.SyncExternalPositionWithTotalCost("BTC", "Up", 2.0, 0.62) {
+		t.Fatal("expected exact-cost sync to import carry position")
+	}
+
+	pos := engine.GetPositions()["BTC:Up"]
+	if absFloat(pos.Quantity-2.0) > 0.000001 {
+		t.Fatalf("expected quantity 2.0, got %.6f", pos.Quantity)
+	}
+	if absFloat(pos.TotalCost-0.62) > 0.000001 {
+		t.Fatalf("expected total cost 0.62, got %.6f", pos.TotalCost)
+	}
+	if absFloat(pos.AvgPrice-0.31) > 0.000001 {
+		t.Fatalf("expected avg price 0.31, got %.6f", pos.AvgPrice)
+	}
+
+	if !engine.SyncExternalPositionWithTotalCost("BTC", "Up", 1.25, 0.3875) {
+		t.Fatal("expected exact-cost trim to report a change")
+	}
+
+	pos = engine.GetPositions()["BTC:Up"]
+	if absFloat(pos.Quantity-1.25) > 0.000001 {
+		t.Fatalf("expected quantity 1.25 after trim, got %.6f", pos.Quantity)
+	}
+	if absFloat(pos.TotalCost-0.3875) > 0.000001 {
+		t.Fatalf("expected total cost 0.3875 after trim, got %.6f", pos.TotalCost)
+	}
+	if absFloat(pos.AvgPrice-0.31) > 0.000001 {
+		t.Fatalf("expected avg price 0.31 after trim, got %.6f", pos.AvgPrice)
+	}
+}
+
 func TestEngine_SyncExternalPositionCarryRoundTripRestoresSizingBase(t *testing.T) {
 	engine := NewEngine(62.24)
 

@@ -61,6 +61,7 @@ func realbotLoadStartupPositionsAsync(ctx context.Context, realTrader *trading.R
 			tui.AddMarket(carry.MarketID, carry.Slug, carry.Outcomes, carry.EndTime)
 		}
 		for _, pos := range positions {
+			realTrader.ImportPositionCostBasis(pos.TokenID, pos.Size, pos.AvgPrice)
 			engine.SyncExternalPosition(realbotStartupCarryMarketID(pos), pos.Outcome, pos.Size, pos.AvgPrice)
 		}
 		tui.LogEvent("✅ Loaded %d startup carry position(s)", len(positions))
@@ -270,7 +271,7 @@ func run() error {
 
 			if UseLiveUI {
 				tui.StopAndWait()
-				fmt.Print("\033[H\033[2J")         // Clear screen for backend prints
+				fmt.Print("\033[H\033[2J") // Clear screen for backend prints
 				fmt.Printf("🔁 Switching execution backend to %s...\n", desiredBackend)
 			}
 

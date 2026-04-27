@@ -424,7 +424,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			setEntryCooldown(2 * time.Second)
 			return true
 		}
-		
+
 		local0, local1 := localBoughtPairBalances(args.engine, args.marketID, args.outcomes[0], args.outcomes[1])
 		split0, split1 := 0.0, 0.0
 		if args.splitInventory != nil {
@@ -436,13 +436,13 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 
 		if math.Abs(local0-desired0) > 1e-4 {
 			markPrice0 := walletTruthSyncMarkPrice(args.engine, args.marketID, args.outcomes[0])
-			if args.engine.SyncExternalPosition(args.marketID, args.outcomes[0], desired0, markPrice0) {
+			if realbotSyncExternalPositionWithCostBasis(args.trader, args.engine, args.marketID, args.outcomes[0], token0, desired0, markPrice0) {
 				realbotRecordWalletTruthAdjustment(args.tui, args.marketID, args.outcomes[0], desired0-local0, local0, initial0, split0, markPrice0, "restored")
 			}
 		}
 		if math.Abs(local1-desired1) > 1e-4 {
 			markPrice1 := walletTruthSyncMarkPrice(args.engine, args.marketID, args.outcomes[1])
-			if args.engine.SyncExternalPosition(args.marketID, args.outcomes[1], desired1, markPrice1) {
+			if realbotSyncExternalPositionWithCostBasis(args.trader, args.engine, args.marketID, args.outcomes[1], token1, desired1, markPrice1) {
 				realbotRecordWalletTruthAdjustment(args.tui, args.marketID, args.outcomes[1], desired1-local1, local1, initial1, split1, markPrice1, "restored")
 			}
 		}

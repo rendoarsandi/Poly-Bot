@@ -371,6 +371,7 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 	preLocalQty, _ := localBoughtPositionAvg(args.engine, args.marketID, bestOutcome)
 	execCost := reportedBuyCost(exec, execPrice, execQty, plan.RequestedQty)
 	if shouldMirrorEngine {
+		args.trader.RecordExecutionBuy(tokenID, execQty, execCost)
 		if _, buyErr := realbotMirrorLiveBuyIntoEngine(args.engine, args.marketID, bestOutcome, execCost, execQty); buyErr != nil {
 			args.tui.LogEvent("[%s] ⚠️ Taker close local inventory sync failed after confirmed fill: %v", args.marketID, buyErr)
 		}

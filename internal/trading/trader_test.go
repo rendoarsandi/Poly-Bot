@@ -486,6 +486,47 @@ func TestEmbeddedPaperExecuteBatchUsesConfiguredFeeForSafety(t *testing.T) {
 	}
 }
 
+func TestRealTraderExecutionCostBasisTracksBuysAndSells(t *testing.T) {
+	trader := &RealTrader{}
+
+	trader.RecordExecutionBuy("token-up", 2.0, 0.62)
+	trader.RecordExecutionBuy("token-up", 1.0, 0.45)
+
+	qty, totalCost, avgPrice, ok := trader.GetPositionCostBasis("token-up")
+	if !ok {
+		t.Fatal("expected token-up cost basis to exist after buys")
+	}
+	if math.Abs(qty-3.0) > 0.000001 {
+		t.Fatalf("expected quantity 3.0, got %.6f", qty)
+	}
+	if math.Abs(totalCost-1.07) > 0.000001 {
+		t.Fatalf("expected total cost 1.07, got %.6f", totalCost)
+	}
+	if math.Abs(avgPrice-(1.07/3.0)) > 0.000001 {
+		t.Fatalf("expected avg price %.6f, got %.6f", 1.07/3.0, avgPrice)
+	}
+
+	trader.RecordExecutionSell("token-up", 1.5)
+	qty, totalCost, avgPrice, ok = trader.GetPositionCostBasis("token-up")
+	if !ok {
+		t.Fatal("expected remaining token-up cost basis after partial sell")
+	}
+	if math.Abs(qty-1.5) > 0.000001 {
+		t.Fatalf("expected quantity 1.5 after sell, got %.6f", qty)
+	}
+	if math.Abs(totalCost-0.535) > 0.000001 {
+		t.Fatalf("expected remaining total cost 0.535, got %.6f", totalCost)
+	}
+	if math.Abs(avgPrice-(1.07/3.0)) > 0.000001 {
+		t.Fatalf("expected avg price %.6f after sell, got %.6f", 1.07/3.0, avgPrice)
+	}
+
+	trader.RecordExecutionSell("token-up", 1.5)
+	if _, _, _, ok := trader.GetPositionCostBasis("token-up"); ok {
+		t.Fatal("expected cost basis to clear after fully selling token-up")
+	}
+}
+
 func TestDeriveAcknowledgedExecutionForMatchedBuy(t *testing.T) {
 	resp := &api.OrderResponse{
 		Status:       "matched",

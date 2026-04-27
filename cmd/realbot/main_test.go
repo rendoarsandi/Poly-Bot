@@ -2598,7 +2598,8 @@ func TestRealbotHandlePanicBuyStrategySyncsHiddenSharesBeforeInventoryCheck(t *t
 	}, nil)
 	riskMgr := paper.NewRiskManager(paper.DefaultRiskConfig(), engine, paper.NewOrderBook(), []string{"Down", "Up"})
 
-	if _, err := engine.BuyForMarket("BTC", "Up", 0.50, 1.0); err != nil {
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.89, 0.90)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.23, 1.0); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
 	}
 	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
@@ -2606,7 +2607,7 @@ func TestRealbotHandlePanicBuyStrategySyncsHiddenSharesBeforeInventoryCheck(t *t
 	trader.RegisterPaperToken("up-token", "BTC", "Up")
 
 	// Wipe the local engine so only the trader's authoritative snapshot still knows about the share.
-	engine.SyncExternalPosition("BTC", "Up", 0, 0.50)
+	engine.SyncExternalPosition("BTC", "Up", 0, 0.23)
 	if engine.GetPositions()["BTC:Up"].Quantity != 0 {
 		t.Fatalf("expected engine to be wiped to 0 shares")
 	}
@@ -2653,6 +2654,9 @@ func TestRealbotHandlePanicBuyStrategySyncsHiddenSharesBeforeInventoryCheck(t *t
 	}
 	if got := engine.GetPositions()["BTC:Up"].Quantity; math.Abs(got-1.0) > 0.000001 {
 		t.Fatalf("expected pre-trade snapshot sync to discover and restore the hidden 1 share, got %.2f", got)
+	}
+	if got := engine.GetPositions()["BTC:Up"].AvgPrice; math.Abs(got-0.23) > 0.000001 {
+		t.Fatalf("expected restored hidden share to keep its 0.23 cost basis instead of current mark, got %.4f", got)
 	}
 }
 

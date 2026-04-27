@@ -1651,11 +1651,15 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 	pos, exists := e.positions[posKey]
 	if !exists {
 		totalCost := quantity * markPrice
+		avgPrice := 0.5
+		if quantity > eps && totalCost > eps {
+			avgPrice = totalCost / quantity
+		}
 		e.positions[posKey] = &Position{
 			Outcome:   outcome,
 			MarketID:  marketID,
 			Quantity:  quantity,
-			AvgPrice:  markPrice,
+			AvgPrice:  avgPrice,
 			TotalCost: totalCost,
 		}
 		// External carry should start neutral in the session PnL view until it is
@@ -1696,7 +1700,95 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 	}
 
 	if pos.Quantity > eps {
-		newAvgPrice := pos.TotalCost / pos.Quantity
+		newAvgPrice := 0.5
+		if pos.TotalCost > eps {
+			newAvgPrice = pos.TotalCost / pos.Quantity
+		}
+		if math.Abs(pos.AvgPrice-newAvgPrice) > eps {
+			pos.AvgPrice = newAvgPrice
+			changed = true
+		}
+	} else {
+		delete(e.positions, posKey)
+		changed = true
+	}
+
+	if changed {
+		e.recalculateDrawdown()
+	}
+	return changed
+}
+
+// SyncExternalPositionWithTotalCost aligns the shadow inventory to authoritative
+// external holdings using an exact total cost basis instead of reconstructing
+// cost from the current mark.
+func (e *Engine) SyncExternalPositionWithTotalCost(marketID, outcome string, quantity, totalCost float64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+
+	const eps = 1e-6
+
+	if quantity <= eps {
+		if pos, exists := e.positions[posKey]; exists {
+			removedCost := pos.TotalCost
+			e.pnlBaseline -= removedCost
+			e.sizingBalance -= removedCost
+			e.refreshCompoundStateLocked(e.sizingBalance)
+			delete(e.positions, posKey)
+			e.recalculateDrawdown()
+			return true
+		}
+		return false
+	}
+
+	if totalCost < 0 {
+		totalCost = 0
+	}
+
+	pos, exists := e.positions[posKey]
+	if !exists {
+		avgPrice := 0.5
+		if quantity > eps && totalCost > eps {
+			avgPrice = totalCost / quantity
+		}
+		e.positions[posKey] = &Position{
+			Outcome:   outcome,
+			MarketID:  marketID,
+			Quantity:  quantity,
+			AvgPrice:  avgPrice,
+			TotalCost: totalCost,
+		}
+		e.pnlBaseline += totalCost
+		e.sizingBalance += totalCost
+		e.refreshCompoundStateLocked(e.sizingBalance)
+		e.recalculateDrawdown()
+		return true
+	}
+
+	changed := false
+	prevCost := pos.TotalCost
+	prevQty := pos.Quantity
+
+	if math.Abs(quantity-prevQty) > eps || math.Abs(totalCost-prevCost) > eps {
+		pos.Quantity = quantity
+		pos.TotalCost = totalCost
+		deltaCost := totalCost - prevCost
+		e.pnlBaseline += deltaCost
+		e.sizingBalance += deltaCost
+		e.refreshCompoundStateLocked(e.sizingBalance)
+		changed = true
+	}
+
+	if pos.Quantity > eps {
+		newAvgPrice := 0.5
+		if pos.TotalCost > eps {
+			newAvgPrice = pos.TotalCost / pos.Quantity
+		}
 		if math.Abs(pos.AvgPrice-newAvgPrice) > eps {
 			pos.AvgPrice = newAvgPrice
 			changed = true
