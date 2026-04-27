@@ -533,6 +533,30 @@ func TestUsesMarketLikePrecision(t *testing.T) {
 	if usesMarketLikePrecision(&OrderRequest{OrderType: OrderTypeLimit, TimeInForce: TIFGoodTilCancelled}) {
 		t.Fatal("expected LIMIT+GTC to keep limit precision")
 	}
+	if !usesMarketLikePrecision(&OrderRequest{Side: SideBuy, OrderType: OrderTypeLimit, TimeInForce: TIFGoodTilCancelled, UseMarketBuyPrecision: true}) {
+		t.Fatal("expected exact-share buy precision hint to use market-like precision")
+	}
+}
+
+func TestComputeOrderAmounts_LimitGTCBuyExactSharesUsesMarketPrecisionWhenRequested(t *testing.T) {
+	amounts, err := ComputeOrderAmounts(&OrderRequest{
+		TokenID:               "123456",
+		Price:                 0.60,
+		Size:                  1.8333,
+		Side:                  SideBuy,
+		OrderType:             OrderTypeLimit,
+		TimeInForce:           TIFGoodTilCancelled,
+		UseMarketBuyPrecision: true,
+	})
+	if err != nil {
+		t.Fatalf("ComputeOrderAmounts failed: %v", err)
+	}
+	if amounts.MakerAmount != "1100000" {
+		t.Fatalf("expected makerAmount 1100000, got %s", amounts.MakerAmount)
+	}
+	if amounts.TakerAmount != "1833300" {
+		t.Fatalf("expected takerAmount 1833300, got %s", amounts.TakerAmount)
+	}
 }
 
 func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {

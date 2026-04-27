@@ -6945,7 +6945,14 @@ func (m tuiModel) renderEventLog(w int, maxItems int) string {
 		}
 
 		for i := startIdx; i < len(s.eventLog); i++ {
-			sb.WriteString("  " + truncateText(s.eventLog[i], maxLineWidth) + "\n")
+			wrapped := strings.Split(ansi.Wordwrap(s.eventLog[i], maxLineWidth, " "), "\n")
+			for _, line := range wrapped {
+				line = strings.TrimRight(line, " ")
+				if line == "" {
+					continue
+				}
+				sb.WriteString("  " + line + "\n")
+			}
 		}
 	}
 	return makePanel(inner, clrSlate, sb.String())

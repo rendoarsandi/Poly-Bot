@@ -118,6 +118,9 @@ func usesMarketLikePrecision(req *OrderRequest) bool {
 	if req == nil {
 		return false
 	}
+	if req.Side == SideBuy && req.UseMarketBuyPrecision {
+		return true
+	}
 	if req.OrderType == OrderTypeMarket {
 		return true
 	}
@@ -140,6 +143,9 @@ type OrderRequest struct {
 	TimeInForce TimeInForce `json:"timeInForce,omitempty"`
 	Expiration  int64       `json:"expiration,omitempty"`
 	FeeRateBps  int         `json:"feeRateBps,omitempty"`
+	// Internal-only hint for exact-share buys that should still obey the
+	// market-buy amount precision rules required by the venue.
+	UseMarketBuyPrecision bool `json:"-"`
 }
 
 // SignedOrder represents a signed order ready for submission

@@ -336,13 +336,14 @@ func buildDirectMarketOrderRequest(req directMarketOrderSignalRequest) *api.Orde
 		timeInForce = api.TIFGoodTilCancelled
 	}
 	return &api.OrderRequest{
-		TokenID:     req.TokenID,
-		Price:       req.Price,
-		Size:        req.Size,
-		Side:        req.Side,
-		OrderType:   api.OrderTypeLimit,
-		TimeInForce: timeInForce,
-		FeeRateBps:  req.FeeRateBps,
+		TokenID:               req.TokenID,
+		Price:                 req.Price,
+		Size:                  req.Size,
+		Side:                  req.Side,
+		OrderType:             api.OrderTypeLimit,
+		TimeInForce:           timeInForce,
+		FeeRateBps:            req.FeeRateBps,
+		UseMarketBuyPrecision: req.Side == api.SideBuy && req.ExactShares,
 	}
 }
 
