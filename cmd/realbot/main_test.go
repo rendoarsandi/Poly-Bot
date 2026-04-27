@@ -385,11 +385,11 @@ func TestRealbotLadderedRequestedQtyUSDCRespectsMaxTradeSize(t *testing.T) {
 func TestRealbotLadderedRequestedQtyUSDCRespectsSubmitCapPrecision(t *testing.T) {
 	cfg := paper.TUISettings{
 		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
-		LadderedTakerSizeUSDC:   1.10,
+		LadderedTakerSizeUSDC:   2.10,
 	}
 
-	if got := realbotLadderedRequestedQty(1.00, cfg, 0.52, 0.99); math.Abs(got-1.0) > 1e-9 {
-		t.Fatalf("expected 1.10 budget at 0.99 cap to floor to 1.0 share, got %.4f", got)
+	if got := realbotLadderedRequestedQty(1.00, cfg, 0.52, 0.99); math.Abs(got-2.0) > 1e-9 {
+		t.Fatalf("expected 2.10 budget at 0.99 cap to floor to 2.0 shares, got %.4f", got)
 	}
 }
 
@@ -1812,9 +1812,16 @@ func TestRealbotClampBuySharesToBudgetKeepsMarketLikeFractionalShares(t *testing
 }
 
 func TestRealbotClampSingleBuySharesToBudgetUsesVenueCompatibleShareStep(t *testing.T) {
-	shares := realbotClampSingleBuySharesToBudget(2.1153, 1.10, 0.99)
-	if math.Abs(shares-1.0) > 0.000001 {
-		t.Fatalf("expected 0.99-capped buy to floor to 1 whole share, got %.4f", shares)
+	// Strict venue-compatible step case (budget $2.10 -> 2.0 shares = $1.98 cost, >= $1.00)
+	shares := realbotClampSingleBuySharesToBudget(3.1153, 2.10, 0.99)
+	if math.Abs(shares-2.0) > 0.000001 {
+		t.Fatalf("expected 0.99-capped buy with $2.10 budget to floor to 2 whole shares, got %.4f", shares)
+	}
+
+	// Fallback case (budget $1.10 -> strict step 1.0 shares = $0.99 cost < $1.00 minimum, so it falls back to 1.1111 shares = $1.10 cost)
+	fallbackShares := realbotClampSingleBuySharesToBudget(2.1153, 1.10, 0.99)
+	if math.Abs(fallbackShares-1.1111) > 0.000001 {
+		t.Fatalf("expected 0.99-capped buy with $1.10 budget to fallback to 1.1111 shares to satisfy $1.00 minimum, got %.4f", fallbackShares)
 	}
 }
 

@@ -469,13 +469,22 @@ func realbotClampSingleBuySharesToBudget(requestedShares, budget, limitPrice flo
 	if affordable := normalizeMarketBuyShares(budget / limitPrice); affordable < qty {
 		qty = affordable
 	}
+
 	step := realbotVenueCompatibleBuyShareStep(limitPrice)
-	qty = realbotFloorBuySharesToVenueStep(qty, limitPrice)
-	for qty+1e-9 >= step {
+	strictQty := realbotFloorBuySharesToVenueStep(qty, limitPrice)
+	for strictQty+1e-9 >= step {
+		cost := realbotRoundedLimitBuyCost(limitPrice, strictQty)
+		if cost >= 1.0 && cost <= budget+1e-9 {
+			return strictQty
+		}
+		strictQty = realbotFloorBuySharesToVenueStep(strictQty-step, limitPrice)
+	}
+
+	for qty >= 0.0001 {
 		if cost := realbotRoundedLimitBuyCost(limitPrice, qty); cost > 0 && cost <= budget+1e-9 {
 			return qty
 		}
-		qty = realbotFloorBuySharesToVenueStep(qty-step, limitPrice)
+		qty = normalizeMarketBuyShares(qty - 0.0001)
 	}
 	return 0
 }
