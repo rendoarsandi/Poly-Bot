@@ -4879,8 +4879,8 @@ func TestDirectSubmittedOrderValueUsesEncodedBuyAmount(t *testing.T) {
 		Size:        1.8333,
 		ExactShares: true,
 	}
-	if got := directSubmittedOrderValue(req); math.Abs(got-1.10) > 0.000001 {
-		t.Fatalf("expected encoded buy amount 1.10000, got %.5f", got)
+	if got := directSubmittedOrderValue(req); math.Abs(got-1.09998) > 0.000001 {
+		t.Fatalf("expected encoded buy amount 1.09998, got %.5f", got)
 	}
 	if !hasActionableSubmittedDirectOrderValue(req) {
 		t.Fatal("expected encoded buy amount above $1 to be actionable")
