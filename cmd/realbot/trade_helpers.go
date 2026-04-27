@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -468,13 +469,58 @@ func realbotClampSingleBuySharesToBudget(requestedShares, budget, limitPrice flo
 	if affordable := normalizeMarketBuyShares(budget / limitPrice); affordable < qty {
 		qty = affordable
 	}
-	for qty >= 0.0001 {
+	step := realbotVenueCompatibleBuyShareStep(limitPrice)
+	qty = realbotFloorBuySharesToVenueStep(qty, limitPrice)
+	for qty+1e-9 >= step {
 		if cost := realbotRoundedLimitBuyCost(limitPrice, qty); cost > 0 && cost <= budget+1e-9 {
 			return qty
 		}
-		qty = normalizeMarketBuyShares(qty - 0.0001)
+		qty = realbotFloorBuySharesToVenueStep(qty-step, limitPrice)
 	}
 	return 0
+}
+
+func realbotVenueCompatibleBuyShareStep(limitPrice float64) float64 {
+	if limitPrice <= 0 || limitPrice >= 1.0 {
+		return 0.0001
+	}
+	priceCents := int64(math.Round(limitPrice * 100.0))
+	if priceCents <= 0 {
+		return 0.0001
+	}
+	stepUnits := int64(10000) / gcdInt64(priceCents, 10000)
+	if stepUnits <= 0 {
+		return 0.0001
+	}
+	return float64(stepUnits) / 10000.0
+}
+
+func realbotFloorBuySharesToVenueStep(qty, limitPrice float64) float64 {
+	step := realbotVenueCompatibleBuyShareStep(limitPrice)
+	if qty <= 0 || step <= 0 {
+		return 0
+	}
+	steps := math.Floor((qty + 1e-9) / step)
+	if steps <= 0 {
+		return 0
+	}
+	return normalizeMarketBuyShares(steps * step)
+}
+
+func gcdInt64(a, b int64) int64 {
+	if a < 0 {
+		a = -a
+	}
+	if b < 0 {
+		b = -b
+	}
+	for b != 0 {
+		a, b = b, a%b
+	}
+	if a == 0 {
+		return 1
+	}
+	return a
 }
 
 func realbotCanUseLocalDirectionalBuyQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullAsks map[string][]paper.MarketLevel, lastPairUpdate time.Time, maxAge time.Duration) (bool, string) {

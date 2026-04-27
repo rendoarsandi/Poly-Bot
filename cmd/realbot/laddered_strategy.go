@@ -54,9 +54,10 @@ func realbotLadderedRequestedQty(pairSum float64, liveCfg paper.TUISettings, ask
 	}
 
 	requestedQty := normalizeMarketBuyShares(budget / sizingPrice)
-	// We size against the expected ask price to get the true notional amount requested,
-	// rather than artificially shrinking the size due to high slippage limits.
-	return realbotClampSingleBuySharesToBudget(requestedQty, budget, sizingPrice)
+	// The venue validates buy amounts against the submitted cap, not the
+	// observed ask. Clamp to the actual limit price so the order stays inside
+	// budget and lands on a venue-compatible share increment.
+	return realbotClampSingleBuySharesToBudget(requestedQty, budget, limitPrice)
 }
 
 func realbotLadderedRecoveredFillQty(ladderedDirection int, requestedQty, acquired0, acquired1 float64) float64 {

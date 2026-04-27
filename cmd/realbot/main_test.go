@@ -376,9 +376,20 @@ func TestRealbotLadderedRequestedQtyUSDCRespectsMaxTradeSize(t *testing.T) {
 		MaxTradeSize:            4.0,
 	}
 
-	want := normalizeMarketBuyShares(4.0 / 0.60)
+	want := 6.0
 	if got := realbotLadderedRequestedQty(0.90, cfg, 0.60, 0.61); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("expected max trade size to cap directional ladder sizing at %.4f, got %.4f", want, got)
+	}
+}
+
+func TestRealbotLadderedRequestedQtyUSDCRespectsSubmitCapPrecision(t *testing.T) {
+	cfg := paper.TUISettings{
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   1.10,
+	}
+
+	if got := realbotLadderedRequestedQty(1.00, cfg, 0.52, 0.99); math.Abs(got-1.0) > 1e-9 {
+		t.Fatalf("expected 1.10 budget at 0.99 cap to floor to 1.0 share, got %.4f", got)
 	}
 }
 
@@ -1797,6 +1808,13 @@ func TestRealbotClampBuySharesToBudgetKeepsMarketLikeFractionalShares(t *testing
 	shares := realbotClampBuySharesToBudget(3.3131, 3.28, 0.50, 0.49)
 	if math.Abs(shares-3.3061) > 0.000001 {
 		t.Fatalf("expected clamp to 3.3061 shares, got %.4f", shares)
+	}
+}
+
+func TestRealbotClampSingleBuySharesToBudgetUsesVenueCompatibleShareStep(t *testing.T) {
+	shares := realbotClampSingleBuySharesToBudget(2.1153, 1.10, 0.99)
+	if math.Abs(shares-1.0) > 0.000001 {
+		t.Fatalf("expected 0.99-capped buy to floor to 1 whole share, got %.4f", shares)
 	}
 }
 
