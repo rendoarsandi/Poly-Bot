@@ -216,6 +216,12 @@ func TestLoadBotConfigInvalidExecutionBackendFailsClosedToPaper(t *testing.T) {
 	}
 }
 
+func TestNormalizeFixedTradeSizeUSDCClampsToOneDollarMinimum(t *testing.T) {
+	if got := normalizeFixedTradeSizeUSDC(0.01); got != 1.0 {
+		t.Fatalf("expected fixed trade size minimum 1.0, got %.1f", got)
+	}
+}
+
 func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -467,8 +473,8 @@ func TestCalculateTradeSizeForModeUsesFixedUSDC(t *testing.T) {
 
 func TestCalculateTradeSizeForModeRoundsAndClampsFixedUSDC(t *testing.T) {
 	got := CalculateTradeSizeForMode(1000, 0.05, 0.04, 0, TradeSizingModeUSDC)
-	if got != 0.1 {
-		t.Fatalf("expected fixed trade size to clamp to 0.1, got %.1f", got)
+	if got != 1.0 {
+		t.Fatalf("expected fixed trade size to clamp to 1.0, got %.1f", got)
 	}
 }
 

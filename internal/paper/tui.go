@@ -1066,13 +1066,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	} else {
 		s.TradeSizingMode = core.TradeSizingModePercent
 	}
-	if s.TradeSizeUSDC <= 0 {
-		s.TradeSizeUSDC = math.Round(math.Max(s.TradeScaleFactor*100.0, 0.1)*10.0) / 10.0
-	}
-	s.TradeSizeUSDC = math.Round(s.TradeSizeUSDC*10.0) / 10.0
-	if s.TradeSizeUSDC < 0.1 {
-		s.TradeSizeUSDC = 0.1
-	}
+	s.TradeSizeUSDC = normalizeTUIFixedTradeSizeUSDC(s.TradeSizeUSDC, math.Max(s.TradeScaleFactor*100.0, 1.0))
 	if s.TradeScaleFactor <= 0 {
 		s.TradeScaleFactor = 0.01
 	}
@@ -1116,13 +1110,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	default:
 		s.CopytradeSizingMode = core.CopytradeSizingModeUSDC
 	}
-	if s.CopytradeSizeUSDC <= 0 {
-		s.CopytradeSizeUSDC = math.Round(math.Max(s.TradeSizeUSDC, 0.1)*10.0) / 10.0
-	}
-	s.CopytradeSizeUSDC = math.Round(s.CopytradeSizeUSDC*10.0) / 10.0
-	if s.CopytradeSizeUSDC < 0.1 {
-		s.CopytradeSizeUSDC = 0.1
-	}
+	s.CopytradeSizeUSDC = normalizeTUIFixedTradeSizeUSDC(s.CopytradeSizeUSDC, math.Max(s.TradeSizeUSDC, 1.0))
 	if s.CopytradeSizeShares <= 0 {
 		s.CopytradeSizeShares = 1.0
 	}
@@ -1152,13 +1140,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	default:
 		s.LadderedTakerPnLGuardMode = core.LadderedTakerPnLGuardWorst
 	}
-	if s.LadderedTakerSizeUSDC <= 0 {
-		s.LadderedTakerSizeUSDC = math.Round(math.Max(s.TradeSizeUSDC, 0.1)*10.0) / 10.0
-	}
-	s.LadderedTakerSizeUSDC = math.Round(s.LadderedTakerSizeUSDC*10.0) / 10.0
-	if s.LadderedTakerSizeUSDC < 0.1 {
-		s.LadderedTakerSizeUSDC = 0.1
-	}
+	s.LadderedTakerSizeUSDC = normalizeTUIFixedTradeSizeUSDC(s.LadderedTakerSizeUSDC, math.Max(s.TradeSizeUSDC, 1.0))
 	if s.LadderedTakerSizeShares <= 0 {
 		s.LadderedTakerSizeShares = 1.0
 	}
@@ -1808,12 +1790,88 @@ func settingsRowSupportsTypedEdit(cfg TUISettings, mode string, row int) bool {
 	}
 }
 
-func settingsKeyStartsTypedEdit(msg tea.KeyMsg) bool {
-	if len(msg.Runes) != 1 {
+func settingsRowUsesFreeformTypedInput(row int) bool {
+	switch row {
+	case settingsRowCopytradeTarget,
+		settingsRowTradingHoursMode,
+		settingsRowRPCEdit,
+		settingsRowPrivateKeyEdit:
+		return true
+	default:
 		return false
 	}
-	r := msg.Runes[0]
-	return (r >= '0' && r <= '9') || r == '.' || r == '-'
+}
+
+func settingsRowAllowsNegativeNumber(cfg TUISettings, row int) bool {
+	switch row {
+	case settingsRowLadderWorstPnLFloor:
+		return isLadderedTakerWorstPnLMode(cfg)
+	case settingsRowExecutionSlip:
+		return !isCopytradeSettingsMode(cfg)
+	default:
+		return false
+	}
+}
+
+func appendSettingsNumericRune(cfg TUISettings, row int, input string, r rune) (string, bool) {
+	switch {
+	case r >= '0' && r <= '9':
+		return input + string(r), true
+	case r == '.':
+		if strings.ContainsRune(input, '.') {
+			return input, false
+		}
+		switch input {
+		case "":
+			return "0.", true
+		case "-":
+			if settingsRowAllowsNegativeNumber(cfg, row) {
+				return "-0.", true
+			}
+			return input, false
+		default:
+			return input + ".", true
+		}
+	case r == '-':
+		if !settingsRowAllowsNegativeNumber(cfg, row) || input != "" {
+			return input, false
+		}
+		return "-", true
+	default:
+		return input, false
+	}
+}
+
+func appendSettingsTypedInput(cfg TUISettings, row int, input string, runes []rune) string {
+	if settingsRowUsesFreeformTypedInput(row) {
+		return input + string(runes)
+	}
+	for _, r := range runes {
+		next, ok := appendSettingsNumericRune(cfg, row, input, r)
+		if ok {
+			input = next
+		}
+	}
+	return input
+}
+
+func settingsTypedEditSeedInput(cfg TUISettings, row int, msg tea.KeyMsg) (string, bool) {
+	if settingsRowUsesFreeformTypedInput(row) || len(msg.Runes) != 1 {
+		return "", false
+	}
+	input := appendSettingsTypedInput(cfg, row, "", msg.Runes)
+	return input, input != ""
+}
+
+func normalizeTUIFixedTradeSizeUSDC(size float64, fallback float64) float64 {
+	if size <= 0 {
+		size = fallback
+	}
+	size = math.Round(size*10.0) / 10.0
+	if size < 1.0 {
+		return 1.0
+	}
+	return size
 }
 
 func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
@@ -1881,6 +1939,7 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 				cfg.CopytradeSizePercent = value
 				return true
 			}
+			value = normalizeTUIFixedTradeSizeUSDC(value, cfg.CopytradeSizeUSDC)
 			if cfg.CopytradeSizeUSDC == value {
 				return false
 			}
@@ -1895,6 +1954,7 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 				cfg.LadderedTakerSizeShares = value
 				return true
 			}
+			value = normalizeTUIFixedTradeSizeUSDC(value, cfg.LadderedTakerSizeUSDC)
 			if cfg.LadderedTakerSizeUSDC == value {
 				return false
 			}
@@ -1902,6 +1962,7 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 			return true
 		}
 		if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
+			value = normalizeTUIFixedTradeSizeUSDC(value, cfg.TradeSizeUSDC)
 			if cfg.TradeSizeUSDC == value {
 				return false
 			}
@@ -2543,15 +2604,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if len(msg.Runes) > 0 {
-					m.settingsInput += string(msg.Runes)
+					m.settingsInput = appendSettingsTypedInput(m.tui.settings, m.settingsCursor, m.settingsInput, msg.Runes)
 				}
 				return m, nil
 			}
 
-			if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) && settingsKeyStartsTypedEdit(msg) {
-				m.settingsEdit = true
-				m.settingsInput = string(msg.Runes)
-				return m, nil
+			if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) {
+				if seed, ok := settingsTypedEditSeedInput(m.tui.settings, m.settingsCursor, msg); ok {
+					m.settingsEdit = true
+					m.settingsInput = seed
+					return m, nil
+				}
 			}
 
 			switch key {
@@ -2681,8 +2744,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						} else {
 							m.tui.settings.CopytradeSizeUSDC -= 0.1
-							if m.tui.settings.CopytradeSizeUSDC < 0.1 {
-								m.tui.settings.CopytradeSizeUSDC = 0.1
+							if m.tui.settings.CopytradeSizeUSDC < 1.0 {
+								m.tui.settings.CopytradeSizeUSDC = 1.0
 							}
 						}
 					} else if isLadderedTakerSettingsMode(m.tui.settings) {
@@ -2693,15 +2756,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						} else {
 							m.tui.settings.LadderedTakerSizeUSDC -= 0.1
-							if m.tui.settings.LadderedTakerSizeUSDC < 0.1 {
-								m.tui.settings.LadderedTakerSizeUSDC = 0.1
+							if m.tui.settings.LadderedTakerSizeUSDC < 1.0 {
+								m.tui.settings.LadderedTakerSizeUSDC = 1.0
 							}
 						}
 					} else {
 						if strings.EqualFold(m.tui.settings.TradeSizingMode, core.TradeSizingModeUSDC) {
 							m.tui.settings.TradeSizeUSDC -= 0.1
-							if m.tui.settings.TradeSizeUSDC < 0.1 {
-								m.tui.settings.TradeSizeUSDC = 0.1
+							if m.tui.settings.TradeSizeUSDC < 1.0 {
+								m.tui.settings.TradeSizeUSDC = 1.0
 							}
 						} else {
 							m.tui.settings.TradeScaleFactor -= 0.01

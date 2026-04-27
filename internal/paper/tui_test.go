@@ -954,6 +954,16 @@ func TestNormalizeTUISettingsRoundsFixedTradeSizeUSDC(t *testing.T) {
 	}
 }
 
+func TestNormalizeTUISettingsClampsFixedTradeSizeUSDCToOneDollarMinimum(t *testing.T) {
+	cfg := normalizeTUISettings(TUISettings{
+		TradeSizingMode: core.TradeSizingModeUSDC,
+		TradeSizeUSDC:   0.01,
+	})
+	if cfg.TradeSizeUSDC != 1.0 {
+		t.Fatalf("expected trade size minimum 1.0, got %.1f", cfg.TradeSizeUSDC)
+	}
+}
+
 func TestRenderSettingsShowsFixedTradeSizeControls(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
@@ -1795,6 +1805,71 @@ func TestSettingsTradeSizingValueSupportsDirectTypedEditInLadderedUSDCMode(t *te
 	}
 }
 
+func TestSettingsTradeSizingValueIgnoresLettersDuringNumericEdit(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode:            "laddered-taker",
+		LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC,
+		LadderedTakerSizeUSDC:   1.0,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowTradeSizingValue,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	updated := next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected typing on the ladder usdc size row to enter edit mode")
+	}
+
+	for _, r := range []rune{'a', '.', '7', 'b'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+
+	if updated.settingsInput != "2.7" {
+		t.Fatalf("expected numeric edit buffer to ignore letters, got %q", updated.settingsInput)
+	}
+}
+
+func TestSettingsTradeSizingValueClampsTypedUSDCMinimumToOneDollar(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.InitSettings(TUISettings{
+		PaperArbMode:    "taker",
+		TradeSizingMode: core.TradeSizingModeUSDC,
+		TradeSizeUSDC:   2.0,
+	}, nil)
+
+	model := tuiModel{
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowTradeSizingValue,
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'0'}})
+	updated := next.(tuiModel)
+	if !updated.settingsEdit {
+		t.Fatal("expected typing on the fixed usdc size row to enter edit mode")
+	}
+
+	for _, r := range []rune{'.', '0', '1'} {
+		next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated = next.(tuiModel)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated = next.(tuiModel)
+	if updated.settingsEdit {
+		t.Fatal("expected enter to commit the typed usdc size edit")
+	}
+	if got := tui.GetSettings().TradeSizeUSDC; got != 1.0 {
+		t.Fatalf("expected typed fixed usdc size to clamp to 1.0, got %.2f", got)
+	}
+}
+
 func TestSettingsTradeSizingValueEnterUsesLadderedUSDCValueAfterModeSwitch(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
@@ -2205,10 +2280,11 @@ func TestPauseHotkeyTogglesTradingPause(t *testing.T) {
 func TestPauseHotkeyDoesNotInterceptSettingsTextEdit(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	model := tuiModel{
-		tui:           tui,
-		showSettings:  true,
-		settingsEdit:  true,
-		settingsInput: "rpc-",
+		tui:            tui,
+		showSettings:   true,
+		settingsCursor: settingsRowRPCEdit,
+		settingsEdit:   true,
+		settingsInput:  "rpc-",
 	}
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})

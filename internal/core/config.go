@@ -407,8 +407,8 @@ func normalizeFixedTradeSizeUSDC(size float64) float64 {
 		return 1.0
 	}
 	size = math.Round(size*10.0) / 10.0
-	if size < 0.1 {
-		return 0.1
+	if size < 1.0 {
+		return 1.0
 	}
 	return size
 }
