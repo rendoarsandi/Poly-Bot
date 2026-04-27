@@ -4746,6 +4746,66 @@ func TestHasActionableDirectOrderValueRequiresOneDollarMinimum(t *testing.T) {
 	}
 }
 
+func TestDirectSubmittedOrderValueUsesEncodedBuyAmount(t *testing.T) {
+	req := directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		Price:       0.60,
+		Size:        1.8333,
+		ExactShares: true,
+	}
+	if got := directSubmittedOrderValue(req); math.Abs(got-1.09998) > 0.000001 {
+		t.Fatalf("expected encoded buy amount 1.09998, got %.5f", got)
+	}
+	if !hasActionableSubmittedDirectOrderValue(req) {
+		t.Fatal("expected encoded buy amount above $1 to be actionable")
+	}
+}
+
+func TestHasActionableSubmittedDirectOrderValueRejectsShareSizedBuyBelowOneDollar(t *testing.T) {
+	req := directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		Price:       0.90,
+		Size:        1.10,
+		ExactShares: true,
+	}
+	if got := directSubmittedOrderValue(req); math.Abs(got-0.99) > 0.000001 {
+		t.Fatalf("expected encoded buy amount 0.99, got %.4f", got)
+	}
+	if hasActionableSubmittedDirectOrderValue(req) {
+		t.Fatal("expected encoded buy amount below $1 to be rejected")
+	}
+}
+
+func TestExecuteMarketOrderWithSignalsRejectsBuyBelowVenueMinimumBeforeSubmission(t *testing.T) {
+	exec := executeMarketOrderWithSignals(context.Background(), nil, api.SideBuy, "token-up", "Up", 0.90, 1.10, 0, 0, time.Second)
+	if exec.Success {
+		t.Fatal("expected sub-$1 encoded buy to fail locally")
+	}
+	if exec.Result == nil || !strings.Contains(exec.Result.Message, "below Polymarket $1 minimum") {
+		t.Fatalf("expected local min-size failure message, got %+v", exec.Result)
+	}
+}
+
+func TestExecuteMarketOrderBatchWithSignalsRejectsBuyBelowVenueMinimumBeforeSubmission(t *testing.T) {
+	execs := executeMarketOrderBatchWithSignals(context.Background(), nil, []directMarketOrderSignalRequest{{
+		Side:        api.SideBuy,
+		TokenID:     "token-up",
+		Outcome:     "Up",
+		Price:       0.90,
+		Size:        1.10,
+		ExactShares: true,
+	}}, time.Second)
+	if len(execs) != 1 {
+		t.Fatalf("expected 1 execution result, got %d", len(execs))
+	}
+	if execs[0].Success {
+		t.Fatal("expected batch sub-$1 encoded buy to fail locally")
+	}
+	if execs[0].Result == nil || !strings.Contains(execs[0].Result.Message, "below Polymarket $1 minimum") {
+		t.Fatalf("expected local min-size failure message, got %+v", execs[0].Result)
+	}
+}
+
 func TestBuildDirectMarketOrderRequestSellKeepsFAK(t *testing.T) {
 	req := buildDirectMarketOrderRequest(directMarketOrderSignalRequest{
 		Side:       api.SideSell,

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,71 +63,10 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 			defer wg.Done()
 			computeStart := time.Now()
 			salt := generateSalt()
-			var makerAmount, takerAmount string
-
-			if req.Side == SideBuy {
-				sizeMicro := int64(req.Size*1e6 + 0.5)
-				priceMicro := int64(req.Price*1e6 + 0.5)
-
-				if usesMarketLikePrecision(req) {
-					// Market Buy Restrictions (per API error):
-					// - Maker (USDC): Max 2 decimals (multiple of 10000 units)
-					// - Taker (Shares): Max 4 decimals (multiple of 100 units)
-
-					// Truncate size (taker) to 4 decimals
-					sizeMicro = (sizeMicro / 100) * 100
-
-					// Calculate USDC cost with truncated size
-					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-					usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
-
-					// Round up USDC (maker) to nearest 2 decimals (multiple of 10000 units)
-					// to ensure implied price remains >= limit price
-					usdcVal := usdcMicroBig.Int64()
-					if usdcVal%10000 != 0 {
-						usdcVal = ((usdcVal / 10000) + 1) * 10000
-					}
-					usdcMicroBig.SetInt64(usdcVal)
-
-					makerAmount = usdcMicroBig.String()
-					takerAmount = strconv.FormatInt(sizeMicro, 10)
-				} else {
-					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-					usdcMicroBig.Div(usdcMicroBig, big.NewInt(1e6))
-					makerAmount = usdcMicroBig.String()
-					takerAmount = strconv.FormatInt(sizeMicro, 10)
-				}
-			} else {
-				sizeMicro := int64(req.Size*1e6 + 0.5)
-				priceMicro := int64(req.Price*1e6 + 0.5)
-
-				if usesMarketLikePrecision(req) {
-					sizeMicro = (sizeMicro / 10000) * 10000
-					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-					divisor := big.NewInt(1e6)
-					remainder := new(big.Int).Mod(usdcMicroBig, divisor)
-					usdcMicroBig.Div(usdcMicroBig, divisor)
-					if remainder.Sign() > 0 {
-						usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
-					}
-					usdcVal := usdcMicroBig.Int64()
-					if usdcVal%100 != 0 {
-						usdcVal = ((usdcVal / 100) + 1) * 100
-					}
-					usdcMicroBig.SetInt64(usdcVal)
-					makerAmount = strconv.FormatInt(sizeMicro, 10)
-					takerAmount = usdcMicroBig.String()
-				} else {
-					usdcMicroBig := new(big.Int).Mul(big.NewInt(priceMicro), big.NewInt(sizeMicro))
-					divisor := big.NewInt(1e6)
-					remainder := new(big.Int).Mod(usdcMicroBig, divisor)
-					usdcMicroBig.Div(usdcMicroBig, divisor)
-					if remainder.Sign() > 0 {
-						usdcMicroBig.Add(usdcMicroBig, big.NewInt(1))
-					}
-					makerAmount = strconv.FormatInt(sizeMicro, 10)
-					takerAmount = usdcMicroBig.String()
-				}
+			amounts, err := ComputeOrderAmounts(req)
+			if err != nil {
+				errCh <- err
+				return
 			}
 			computeMs := time.Since(computeStart).Milliseconds()
 
@@ -148,8 +86,8 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 				Signer:        c.signer.Address(),
 				Taker:         "0x0000000000000000000000000000000000000000",
 				TokenID:       req.TokenID,
-				MakerAmount:   makerAmount,
-				TakerAmount:   takerAmount,
+				MakerAmount:   amounts.MakerAmount,
+				TakerAmount:   amounts.TakerAmount,
 				Expiration:    expirationStr,
 				Nonce:         "0",
 				FeeRateBps:    strconv.Itoa(req.FeeRateBps),

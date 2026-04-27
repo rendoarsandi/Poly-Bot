@@ -59,8 +59,60 @@ func directOrderNotional(price, size float64) float64 {
 	return price * size
 }
 
+func directSubmittedOrderValue(req directMarketOrderSignalRequest) float64 {
+	orderReq := buildDirectMarketOrderRequest(req)
+	amounts, err := api.ComputeOrderAmounts(orderReq)
+	if err != nil {
+		return 0
+	}
+	if req.Side == api.SideBuy {
+		return float64(amounts.MakerMicro) / 1e6
+	}
+	return float64(amounts.TakerMicro) / 1e6
+}
+
 func hasActionableDirectOrderValue(price, size float64) bool {
 	return directOrderNotional(price, size) >= realbotMinDirectOrderValue-1e-9
+}
+
+func hasActionableSubmittedDirectOrderValue(req directMarketOrderSignalRequest) bool {
+	return directSubmittedOrderValue(req) >= realbotMinDirectOrderValue-1e-9
+}
+
+func directSubmittedOrderSummary(req directMarketOrderSignalRequest) string {
+	orderReq := buildDirectMarketOrderRequest(req)
+	amounts, err := api.ComputeOrderAmounts(orderReq)
+	if err != nil {
+		return fmt.Sprintf("%s shares @ $%.3f (encode err: %v)", formatShareQty(req.Size), req.Price, err)
+	}
+	submittedValue := float64(amounts.MakerMicro) / 1e6
+	valueLabel := "buy"
+	if req.Side == api.SideSell {
+		submittedValue = float64(amounts.TakerMicro) / 1e6
+		valueLabel = "sell"
+	}
+	return fmt.Sprintf("%s shares @ $%.3f => %sValue=$%.4f maker=%s taker=%s",
+		formatShareQty(req.Size),
+		req.Price,
+		valueLabel,
+		submittedValue,
+		amounts.MakerAmount,
+		amounts.TakerAmount,
+	)
+}
+
+func directRejectedMinSizeTradeResult(req directMarketOrderSignalRequest) *trading.TradeResult {
+	submittedValue := directSubmittedOrderValue(req)
+	message := fmt.Sprintf("submitted marketable %s amount $%.4f is below Polymarket $1 minimum (%s)",
+		strings.ToLower(string(req.Side)),
+		submittedValue,
+		directSubmittedOrderSummary(req),
+	)
+	return hydrateDirectMarketTradeResult(req, &trading.TradeResult{
+		Success: false,
+		Status:  "REJECTED",
+		Message: message,
+	})
 }
 
 func isDustCleanupRemainder(qty float64) bool {
@@ -399,6 +451,18 @@ func executeMarketOrderBatchWithSignals(ctx context.Context, trader *trading.Rea
 	if len(reqs) == 0 {
 		return nil
 	}
+	for _, req := range reqs {
+		if req.Side == api.SideBuy && !hasActionableSubmittedDirectOrderValue(req) {
+			execs := make([]directMarketExecution, len(reqs))
+			for i := range reqs {
+				execs[i] = directMarketExecution{
+					Result:  directRejectedMinSizeTradeResult(req),
+					Success: false,
+				}
+			}
+			return execs
+		}
+	}
 
 	primeRealbotOrderPath(ctx, trader)
 
@@ -438,6 +502,12 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 		FeeRateBps:     feeRateBps,
 		InitialBalance: initialBalance,
 		ExactShares:    side == api.SideBuy,
+	}
+	if req.Side == api.SideBuy && !hasActionableSubmittedDirectOrderValue(req) {
+		return directMarketExecution{
+			Result:  directRejectedMinSizeTradeResult(req),
+			Success: false,
+		}
 	}
 	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
 	return finalizeDirectMarketExecutionWithSignals(ctx, trader, req, confirmTimeout, result, err)

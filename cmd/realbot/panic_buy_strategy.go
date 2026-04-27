@@ -496,14 +496,28 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 
 	side1Requested := !ladderedMode || ladderedDirection == 0
 	side2Requested := !ladderedMode || ladderedDirection == 1
-	if !ladderedMode && side1Requested && !hasActionableDirectOrderValue(limitPrice1, requestSize1) {
-		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg cap notional $%.3f is below $%.2f minimum (%s @ $%.3f)",
-			args.marketID, args.outcomes[0], directOrderNotional(limitPrice1, requestSize1), realbotMinDirectOrderValue, formatShareQty(requestSize1), limitPrice1)
+	side1Req := directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		Outcome:     args.outcomes[0],
+		Price:       limitPrice1,
+		Size:        requestSize1,
+		ExactShares: true,
+	}
+	side2Req := directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		Outcome:     args.outcomes[1],
+		Price:       limitPrice2,
+		Size:        requestSize2,
+		ExactShares: true,
+	}
+	if side1Requested && !hasActionableSubmittedDirectOrderValue(side1Req) {
+		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg submitted size is below Polymarket $%.2f minimum (%s)",
+			args.marketID, args.outcomes[0], realbotMinDirectOrderValue, directSubmittedOrderSummary(side1Req))
 		return true
 	}
-	if !ladderedMode && side2Requested && !hasActionableDirectOrderValue(limitPrice2, requestSize2) {
-		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg cap notional $%.3f is below $%.2f minimum (%s @ $%.3f)",
-			args.marketID, args.outcomes[1], directOrderNotional(limitPrice2, requestSize2), realbotMinDirectOrderValue, formatShareQty(requestSize2), limitPrice2)
+	if side2Requested && !hasActionableSubmittedDirectOrderValue(side2Req) {
+		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg submitted size is below Polymarket $%.2f minimum (%s)",
+			args.marketID, args.outcomes[1], realbotMinDirectOrderValue, directSubmittedOrderSummary(side2Req))
 		return true
 	}
 
