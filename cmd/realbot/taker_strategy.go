@@ -65,10 +65,12 @@ func realbotExecuteAggressiveEntry(
 	haveInitialSnapshot := true
 	initialBal0 := initialSnapshot0
 	initialBal1 := initialSnapshot1
-	if ladderedMode && initialSnapshotErr != nil {
-		tui.LogEvent("[%s] ⚠️ Skipping ladder buy: authoritative pre-trade snapshot unavailable (%v)", id, initialSnapshotErr)
-		asyncResult.cooldownUntil = time.Now().Add(2 * time.Second)
-		return
+	if ladderedMode {
+		if initialSnapshotErr != nil {
+			tui.LogEvent("[%s] ⚠️ Skipping ladder buy: authoritative pre-trade snapshot unavailable (%v)", id, initialSnapshotErr)
+			asyncResult.cooldownUntil = time.Now().Add(2 * time.Second)
+			return
+		}
 	}
 
 	rate1 := realbotResolveFeeRateBps(tokenFeeRates, outcomes[0], cfg)

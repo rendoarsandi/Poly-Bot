@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"sort"
 	"time"
 
@@ -402,6 +403,50 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		if ladderedDirection == 1 {
 			activePrice = limitPrice2
 		}
+
+		// Synchronize the local engine position using the authoritative pre-trade snapshot
+		// before checking the inventory cap and profit floors. This prevents "false negative"
+		// rejections (like an ignored API error on a previous ladder step) from causing runaway
+		// buys or bad profit calculations, since the engine learns about the true on-chain
+		// balance before calculating the next step.
+		syncCtx, cancelSync := context.WithTimeout(context.Background(), 2*time.Second)
+		tokenToOutcome := make(map[string]string)
+		for _, t := range args.market.Tokens {
+			if t.TokenID != "" && t.Outcome != "" {
+				tokenToOutcome[t.TokenID] = t.Outcome
+			}
+		}
+		token0, token1 := realbotPairTokenIDs(tokenToOutcome, args.outcomes)
+		initial0, initial1, _, err := realbotInitialPairSnapshot(syncCtx, args.trader, token0, token1, ladderedMode)
+		cancelSync()
+		if err != nil {
+			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: pre-trade inventory check failed (%v)", args.marketID, err)
+			setEntryCooldown(2 * time.Second)
+			return true
+		}
+		
+		local0, local1 := localBoughtPairBalances(args.engine, args.marketID, args.outcomes[0], args.outcomes[1])
+		split0, split1 := 0.0, 0.0
+		if args.splitInventory != nil {
+			split0 = args.splitInventory.GetSplitShares(args.marketID, args.outcomes[0])
+			split1 = args.splitInventory.GetSplitShares(args.marketID, args.outcomes[1])
+		}
+		desired0 := math.Max(0, initial0-split0)
+		desired1 := math.Max(0, initial1-split1)
+
+		if math.Abs(local0-desired0) > 1e-4 {
+			markPrice0 := walletTruthSyncMarkPrice(args.engine, args.marketID, args.outcomes[0])
+			if args.engine.SyncExternalPosition(args.marketID, args.outcomes[0], desired0, markPrice0) {
+				realbotRecordWalletTruthAdjustment(args.tui, args.marketID, args.outcomes[0], desired0-local0, local0, initial0, split0, markPrice0, "restored")
+			}
+		}
+		if math.Abs(local1-desired1) > 1e-4 {
+			markPrice1 := walletTruthSyncMarkPrice(args.engine, args.marketID, args.outcomes[1])
+			if args.engine.SyncExternalPosition(args.marketID, args.outcomes[1], desired1, markPrice1) {
+				realbotRecordWalletTruthAdjustment(args.tui, args.marketID, args.outcomes[1], desired1-local1, local1, initial1, split1, markPrice1, "restored")
+			}
+		}
+
 		if blocked, _ := realbotLadderedInventoryCapReached(
 			args.engine,
 			args.marketID,
