@@ -4877,6 +4877,22 @@ func TestHasActionableSubmittedDirectOrderValueRejectsShareSizedBuyBelowOneDolla
 	}
 }
 
+func TestVenueRequiredFeeRateBpsParsesMismatchMessage(t *testing.T) {
+	got, ok := venueRequiredFeeRateBps("invalid fee rate (312), current market's taker fee: 1000")
+	if !ok {
+		t.Fatal("expected fee mismatch parser to succeed")
+	}
+	if got != 1000 {
+		t.Fatalf("expected required fee rate 1000, got %d", got)
+	}
+}
+
+func TestVenueRequiredFeeRateBpsRejectsOtherMessages(t *testing.T) {
+	if _, ok := venueRequiredFeeRateBps("invalid amount for a marketable BUY order ($0.88), min size: $1"); ok {
+		t.Fatal("expected non-fee rejection to be ignored")
+	}
+}
+
 func TestExecuteMarketOrderWithSignalsRejectsBuyBelowVenueMinimumBeforeSubmission(t *testing.T) {
 	exec := executeMarketOrderWithSignals(context.Background(), nil, api.SideBuy, "token-up", "Up", 0.90, 1.10, 0, 0, time.Second)
 	if exec.Success {

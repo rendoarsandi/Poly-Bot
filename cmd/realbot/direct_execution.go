@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,8 +38,22 @@ type directMarketOrderSignalRequest struct {
 	ExactShares    bool
 }
 
+var venueFeeRateMismatchPattern = regexp.MustCompile(`current market's taker fee:\s*(\d+)`)
+
 func isMinSizeRejectionMessage(message string) bool {
 	return strings.Contains(strings.ToLower(message), "min size")
+}
+
+func venueRequiredFeeRateBps(message string) (int, bool) {
+	match := venueFeeRateMismatchPattern.FindStringSubmatch(strings.ToLower(strings.TrimSpace(message)))
+	if len(match) != 2 {
+		return 0, false
+	}
+	rate, err := strconv.Atoi(match[1])
+	if err != nil || rate < 0 {
+		return 0, false
+	}
+	return rate, true
 }
 
 func cleanupRejectionMessage(qty float64, outcome, venueMessage string) string {
@@ -516,10 +532,32 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*trading.TradeResult, error) {
 	primeRealbotOrderPath(ctx, trader)
 
-	if side == api.SideSell {
-		return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, feeRateBps)
+	submitWithFeeRate := func(rate int) (*trading.TradeResult, error) {
+		if side == api.SideSell {
+			return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, rate)
+		}
+		return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, rate)
 	}
-	return trader.Buy(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFGoodTilCancelled, feeRateBps)
+
+	result, err := submitWithFeeRate(feeRateBps)
+	if err != nil || result == nil || result.Success {
+		return result, err
+	}
+
+	requiredRate, ok := venueRequiredFeeRateBps(result.Message)
+	if !ok || requiredRate == feeRateBps {
+		return result, err
+	}
+
+	retried, retryErr := submitWithFeeRate(requiredRate)
+	if retried != nil {
+		if retried.Success {
+			retried.Message = fmt.Sprintf("retried after venue fee mismatch %d→%d bps", feeRateBps, requiredRate)
+		} else if strings.TrimSpace(retried.Message) == "" {
+			retried.Message = result.Message
+		}
+	}
+	return retried, retryErr
 }
 
 func confirmMarketOrderExecution(ctx context.Context, trader *trading.RealTrader, req directMarketOrderSignalRequest, orderID string, timeout time.Duration) (executedQty float64, wsConfirmed bool, orderConfirmed bool, verifyErr error) {

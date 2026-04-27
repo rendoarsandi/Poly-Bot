@@ -243,6 +243,15 @@ func realbotExecuteAggressiveEntry(
 			} else {
 				tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 			}
+			tui.LogEvent("[%s] 🧾 Side 1 submit: %s | fee=%dbps", id, directSubmittedOrderSummary(directMarketOrderSignalRequest{
+				Side:        api.SideBuy,
+				TokenID:     token0,
+				Outcome:     outcomes[0],
+				Price:       limitPrice1,
+				Size:        requestSize1,
+				FeeRateBps:  rate1,
+				ExactShares: true,
+			}), rate1)
 		}
 		tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
 	}
@@ -264,6 +273,15 @@ func realbotExecuteAggressiveEntry(
 			} else {
 				tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 			}
+			tui.LogEvent("[%s] 🧾 Side 2 submit: %s | fee=%dbps", id, directSubmittedOrderSummary(directMarketOrderSignalRequest{
+				Side:        api.SideBuy,
+				TokenID:     token1,
+				Outcome:     outcomes[1],
+				Price:       limitPrice2,
+				Size:        requestSize2,
+				FeeRateBps:  rate2,
+				ExactShares: true,
+			}), rate2)
 		}
 		tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")
 	}
