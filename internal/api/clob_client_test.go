@@ -15,9 +15,21 @@ import (
 	"time"
 )
 
+func handleNegRiskLookup(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != "/neg-risk" {
+		return false
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"neg_risk":false}`))
+	return true
+}
+
 func TestPlaceOrder_FOK_Killed(t *testing.T) {
 	// 1. Setup Mock Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		// Verify request path
 		if r.URL.Path != "/order" {
 			t.Errorf("Expected path /order, got %s", r.URL.Path)
@@ -96,6 +108,9 @@ func TestNormalizeBatchOrderResponseDoesNotPromoteErrorWithOrderID(t *testing.T)
 func TestPlaceOrder_FOK_Success(t *testing.T) {
 	// 1. Setup Mock Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		resp := OrderResponse{
 			Success: true,
 			Status:  "MATCHED", // or FILLED
@@ -139,6 +154,9 @@ func TestPlaceOrder_FOK_Success(t *testing.T) {
 func TestPlaceOrder_DoesNotRetryExecutionError(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		calls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"could not run the execution"}`))
@@ -180,6 +198,9 @@ func TestPlaceOrder_DoesNotRetryExecutionError(t *testing.T) {
 func TestPlaceOrder_DoesNotRetryTooEarly(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		calls.Add(1)
 		w.WriteHeader(http.StatusTooEarly)
 		_, _ = w.Write([]byte(`{"error":"matching engine restarting"}`))
@@ -221,6 +242,9 @@ func TestPlaceOrder_DoesNotRetryTooEarly(t *testing.T) {
 func TestPlaceOrders_DoNotRetryExecutionError(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		calls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`[{"error":"could not run the execution"}]`))
@@ -261,6 +285,9 @@ func TestPlaceOrders_DoNotRetryExecutionError(t *testing.T) {
 
 func TestPlaceOrders_FAK_Killed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		if r.URL.Path != "/orders" {
 			t.Errorf("Expected path /orders, got %s", r.URL.Path)
 		}
@@ -329,8 +356,102 @@ func TestOrderResponseUnmarshal_PolymarketSchema(t *testing.T) {
 	}
 }
 
+func TestGetOpenOrders_PaginatesV2Response(t *testing.T) {
+	var cursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/data/orders" {
+			t.Fatalf("expected /data/orders, got %s", r.URL.Path)
+		}
+		cursor := r.URL.Query().Get("next_cursor")
+		cursors = append(cursors, cursor)
+		switch cursor {
+		case openOrdersInitialCursor:
+			_, _ = w.Write([]byte(`{
+				"data":[{"id":"order-1","asset_id":"token-1","side":"BUY","price":"0.51","original_size":"500000","size_matched":"125000","status":"ORDER_STATUS_LIVE","created_at":1700000000}],
+				"next_cursor":"cursor-2"
+			}`))
+		case "cursor-2":
+			_, _ = w.Write([]byte(`{
+				"data":[{"id":"order-2","asset_id":"token-2","side":"SELL","price":"0.49","original_size":"250000","size_matched":"250000","status":"ORDER_STATUS_MATCHED","created_at":"1700000001"}],
+				"next_cursor":"` + openOrdersEndCursor + `"
+			}`))
+		default:
+			t.Fatalf("unexpected cursor %q", cursor)
+		}
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("NewCLOBClient failed: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	orders, err := client.GetOpenOrders(context.Background())
+	if err != nil {
+		t.Fatalf("GetOpenOrders failed: %v", err)
+	}
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 open orders, got %d", len(orders))
+	}
+	if orders[0].OrderID != "order-1" || orders[0].Status != "LIVE" {
+		t.Fatalf("unexpected first order %+v", orders[0])
+	}
+	if math.Abs(orders[0].OriginalSize-0.5) > 0.000001 || math.Abs(orders[0].RemainingSize-0.375) > 0.000001 {
+		t.Fatalf("unexpected decoded sizes %+v", orders[0])
+	}
+	if orders[1].OrderID != "order-2" || orders[1].Status != "MATCHED" || orders[1].RemainingSize != 0 {
+		t.Fatalf("unexpected second order %+v", orders[1])
+	}
+	if len(cursors) != 2 || cursors[0] != openOrdersInitialCursor || cursors[1] != "cursor-2" {
+		t.Fatalf("unexpected pagination cursors %v", cursors)
+	}
+}
+
+func TestCancelOrder_UsesDeleteBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("expected DELETE, got %s", r.Method)
+		}
+		if r.URL.Path != "/order" {
+			t.Fatalf("expected /order, got %s", r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode cancel payload: %v", err)
+		}
+		if payload["orderID"] != "order-1" {
+			t.Fatalf("expected orderID order-1, got %+v", payload)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"canceled":["order-1"],"not_canceled":{}}`))
+	}))
+	defer server.Close()
+
+	originalClient := httpClient
+	httpClient = server.Client()
+	defer func() { httpClient = originalClient }()
+
+	client, err := NewCLOBClient(strings.Repeat("1", 64), "key", "secret", "pass")
+	if err != nil {
+		t.Fatalf("NewCLOBClient failed: %v", err)
+	}
+	client.BaseURL = server.URL
+
+	if err := client.CancelOrder(context.Background(), "order-1"); err != nil {
+		t.Fatalf("CancelOrder failed: %v", err)
+	}
+}
+
 func TestPlaceOrders_DocBatchResponseDecodes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		if r.URL.Path != "/orders" {
 			t.Fatalf("Expected path /orders, got %s", r.URL.Path)
 		}
@@ -385,6 +506,9 @@ func TestPlaceOrders_DocBatchResponseDecodes(t *testing.T) {
 
 func TestPlaceOrders_SignatureUsesPayloadSalt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		var payload []struct {
 			Order OrderPayload `json:"order"`
 		}
@@ -401,18 +525,19 @@ func TestPlaceOrders_SignatureUsesPayloadSalt(t *testing.T) {
 			t.Fatalf("NewSigner failed: %v", err)
 		}
 		expectedSig, err := expectedSigner.SignOrder(&OrderData{
-			Salt:          strconv.FormatInt(order.Salt, 10),
-			Maker:         order.Maker,
-			Signer:        order.Signer,
-			Taker:         order.Taker,
-			TokenID:       order.TokenID,
-			MakerAmount:   order.MakerAmount,
-			TakerAmount:   order.TakerAmount,
-			Expiration:    order.Expiration,
-			Nonce:         order.Nonce,
-			FeeRateBps:    order.FeeRateBps,
-			Side:          0,
-			SignatureType: order.SignatureType,
+			Salt:              strconv.FormatInt(order.Salt, 10),
+			Maker:             order.Maker,
+			Signer:            order.Signer,
+			TokenID:           order.TokenID,
+			MakerAmount:       order.MakerAmount,
+			TakerAmount:       order.TakerAmount,
+			Timestamp:         order.Timestamp,
+			Expiration:        order.Expiration,
+			Metadata:          order.Metadata,
+			Builder:           order.Builder,
+			VerifyingContract: CTFExchange,
+			Side:              0,
+			SignatureType:     order.SignatureType,
 		})
 		if err != nil {
 			t.Fatalf("SignOrder failed: %v", err)
@@ -452,6 +577,9 @@ func TestPlaceOrder_MarketSellPrecision(t *testing.T) {
 	var makerAmount, takerAmount string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleNegRiskLookup(w, r) {
+			return
+		}
 		var reqBody struct {
 			Order OrderPayload `json:"order"`
 		}
@@ -537,7 +665,6 @@ func TestUsesMarketLikePrecision(t *testing.T) {
 		t.Fatal("expected exact-share buy precision hint to use market-like precision")
 	}
 }
-
 
 func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {
 	var makerAmount, takerAmount string

@@ -30,7 +30,7 @@ func TestMergePositions_CallDataEncoding(t *testing.T) {
 	amount := big.NewInt(19707500)
 
 	// Build calldata manually (same logic as MergePositions)
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
@@ -42,7 +42,7 @@ func TestMergePositions_CallDataEncoding(t *testing.T) {
 	expected := "0x9e7212ad" + collateral + parent + cond + offset + amtHex + arrayLen + idx1 + idx2
 
 	// What our code generates
-	actualCollateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	actualCollateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	actualParent := "0000000000000000000000000000000000000000000000000000000000000000"
 	actualCond := strings.TrimPrefix(conditionID, "0x")
 	actualOffset := "00000000000000000000000000000000000000000000000000000000000000a0"
@@ -74,7 +74,7 @@ func TestSplitPositions_CallDataEncoding(t *testing.T) {
 	// Verify function selector
 	expectedSelector := "0x72ce4275"
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	conditionID := "e235e4439819c4df8bd73ee5dd1470cd01b63addda00e9bc9e44c1a016d75d65"
 	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
@@ -109,10 +109,10 @@ func TestRedeemPositions_CallDataEncoding(t *testing.T) {
 		t.Errorf("Wrong redeem function selector, expected 0x01b7037c")
 	}
 
-	// Verify USDC contract address is correct
-	expectedUSDC := "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-	if !strings.EqualFold(USDCContract, expectedUSDC) {
-		t.Errorf("Wrong USDC contract address")
+	// Verify pUSD contract address is correct
+	expectedCollateral := "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+	if !strings.EqualFold(PUSDContract, expectedCollateral) {
+		t.Errorf("Wrong pUSD contract address")
 	}
 
 	// Verify CTF contract address is correct

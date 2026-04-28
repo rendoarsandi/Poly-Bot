@@ -19,8 +19,9 @@
   },
   "homepage": "https://github.com/rendoarsandi/Poly-Bot#readme",
   "dependencies": {
-    "@polymarket/clob-client": "^5.7.0",
+    "@polymarket/clob-client-v2": "^1.0.2",
     "dotenv": "^17.2.4",
-    "ethers": "^5.8.0"
+    "viem": "^2.38.5",
+    "ws": "^8.18.3"
   }
 }

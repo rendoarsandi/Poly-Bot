@@ -106,6 +106,37 @@ func TestGetFeeRateRejectsUnknownObject(t *testing.T) {
 	}
 }
 
+func TestGetClobMarketInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/clob-markets/cond-1" {
+			t.Fatalf("expected /clob-markets/cond-1, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"c":"cond-1",
+			"t":[{"t":"token-yes","o":"Yes"},{"t":"token-no","o":"No"}],
+			"mts":0.01,
+			"nr":true,
+			"fd":{"r":35,"e":6}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.BaseURL = server.URL
+
+	info, err := client.GetClobMarketInfo(context.Background(), "cond-1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if info.ConditionID != "cond-1" || !info.NegRisk || info.FeeDetails == nil || info.FeeDetails.Rate != 35 {
+		t.Fatalf("unexpected clob market info %+v", info)
+	}
+	if len(info.Tokens) != 2 || info.Tokens[0].TokenID != "token-yes" {
+		t.Fatalf("unexpected tokens %+v", info.Tokens)
+	}
+}
+
 func TestListMarkets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

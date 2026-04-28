@@ -67,6 +67,24 @@ type ListMarketsResponse struct {
 	Data []Market `json:"data"`
 }
 
+type ClobMarketToken struct {
+	TokenID string `json:"t"`
+	Outcome string `json:"o"`
+}
+
+type ClobMarketFeeDetails struct {
+	Rate     int `json:"r"`
+	Exponent int `json:"e"`
+}
+
+type ClobMarketInfo struct {
+	ConditionID string                `json:"c"`
+	Tokens      []ClobMarketToken     `json:"t"`
+	MinTickSize float64               `json:"mts"`
+	NegRisk     bool                  `json:"nr"`
+	FeeDetails  *ClobMarketFeeDetails `json:"fd,omitempty"`
+}
+
 type RestClient struct {
 	Exchange      string
 	KalshiBaseURL string
@@ -626,6 +644,36 @@ func (c *RestClient) GetMarket(ctx context.Context, slug string) (*Market, error
 	}
 
 	return &market, nil
+}
+
+func (c *RestClient) GetClobMarketInfo(ctx context.Context, conditionID string) (*ClobMarketInfo, error) {
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/clob-markets/%s", c.BaseURL, conditionID), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch clob market info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+		return nil, fmt.Errorf("failed to fetch clob market info: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var info ClobMarketInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&info); err != nil {
+		return nil, fmt.Errorf("failed to decode clob market info: %w", err)
+	}
+	return &info, nil
 }
 
 // OrderBookResponse represents the CLOB order book

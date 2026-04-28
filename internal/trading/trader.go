@@ -52,7 +52,7 @@ type Trader interface {
 	// GetMarketInfo retrieves market info including resolution status
 	GetMarketInfo(ctx context.Context, conditionID string) (*api.MarketInfo, error)
 
-	// GetTradingAllowance returns the currently authorized trading allowance (USDC)
+	// GetTradingAllowance returns the currently authorized trading allowance (pUSD collateral)
 	GetTradingAllowance(ctx context.Context) (float64, error)
 }
 
@@ -1811,21 +1811,21 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 		})
 	}
 
-	// Require at least $10,000 USDC allowance to avoid frequent re-approvals
+	// Require at least $10,000 pUSD allowance to avoid frequent re-approvals
 	minAllowance := new(big.Int).SetUint64(10000 * 1000000)
 
-	// 1. Approve USDC for Legacy Exchange (Binary Markets)
+	// 1. Approve pUSD for the standard exchange
 	allowanceLegacy, err := checkAllowance(api.CTFExchange)
 	if err != nil {
-		return false, fmt.Errorf("failed to check legacy allowance: %w", err)
+		return false, fmt.Errorf("failed to check exchange allowance: %w", err)
 	}
 	if allowanceLegacy.Cmp(minAllowance) < 0 {
-		fmt.Println("🔓 Approving USDC for Legacy Exchange...")
+		fmt.Println("🔓 Approving pUSD for Exchange...")
 		// Approve max uint256
 		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
 		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.CTFExchange, maxUint256)
 		if err != nil {
-			return false, fmt.Errorf("failed to approve legacy exchange: %w", err)
+			return false, fmt.Errorf("failed to approve exchange: %w", err)
 		}
 		fmt.Printf("   Tx sent: %s\n", tx)
 		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
@@ -1835,16 +1835,16 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 		time.Sleep(2 * time.Second) // Rate limit buffer
 	}
 
-	// 2. Approve CTF Operator for Legacy Exchange
+	// 2. Approve the CTF operator for the standard exchange
 	isApprovedLegacy, err := checkApproval(api.CTFExchange)
 	if err != nil {
-		return false, fmt.Errorf("failed to check legacy CTF approval: %w", err)
+		return false, fmt.Errorf("failed to check exchange CTF approval: %w", err)
 	}
 	if !isApprovedLegacy {
-		fmt.Println("🔓 Approving CTF Operator for Legacy Exchange...")
+		fmt.Println("🔓 Approving CTF Operator for Exchange...")
 		tx, err := t.polygon.ApproveCTF(ctx, signer, api.CTFExchange, true)
 		if err != nil {
-			return false, fmt.Errorf("failed to approve legacy CTF operator: %w", err)
+			return false, fmt.Errorf("failed to approve exchange CTF operator: %w", err)
 		}
 		fmt.Printf("   Tx sent: %s\n", tx)
 		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
@@ -1854,13 +1854,13 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 3. Approve USDC for NegRisk Exchange (Multi-Outcome)
+	// 3. Approve pUSD for the neg-risk exchange
 	allowanceNegRisk, err := checkAllowance(api.NegRiskExchange)
 	if err != nil {
 		return false, fmt.Errorf("failed to check NegRisk allowance: %w", err)
 	}
 	if allowanceNegRisk.Cmp(minAllowance) < 0 {
-		fmt.Println("🔓 Approving USDC for NegRisk Exchange...")
+		fmt.Println("🔓 Approving pUSD for NegRisk Exchange...")
 		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
 		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.NegRiskExchange, maxUint256)
 		if err != nil {

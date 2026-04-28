@@ -80,19 +80,26 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 				sideInt = 1
 			}
 
+			verifyingContract, err := c.getExchangeVerifyingContract(ctx, req.TokenID)
+			if err != nil {
+				errCh <- err
+				return
+			}
+
 			orderData := &OrderData{
-				Salt:          strconv.FormatInt(salt, 10),
-				Maker:         c.signer.Address(),
-				Signer:        c.signer.Address(),
-				Taker:         "0x0000000000000000000000000000000000000000",
-				TokenID:       req.TokenID,
-				MakerAmount:   amounts.MakerAmount,
-				TakerAmount:   amounts.TakerAmount,
-				Expiration:    expirationStr,
-				Nonce:         "0",
-				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-				Side:          sideInt,
-				SignatureType: 0,
+				Salt:              strconv.FormatInt(salt, 10),
+				Maker:             c.signer.Address(),
+				Signer:            c.signer.Address(),
+				TokenID:           req.TokenID,
+				MakerAmount:       amounts.MakerAmount,
+				TakerAmount:       amounts.TakerAmount,
+				Timestamp:         strconv.FormatInt(time.Now().UnixMilli(), 10),
+				Expiration:        expirationStr,
+				Metadata:          zeroBytes32,
+				Builder:           zeroBytes32,
+				VerifyingContract: verifyingContract,
+				Side:              sideInt,
+				SignatureType:     0,
 			}
 
 			signStart := time.Now()
@@ -107,15 +114,15 @@ func (c *CLOBClient) PlaceOrders(ctx context.Context, reqs []*OrderRequest) ([]*
 				Salt:          salt,
 				Maker:         orderData.Maker,
 				Signer:        orderData.Signer,
-				Taker:         orderData.Taker,
 				TokenID:       req.TokenID,
 				MakerAmount:   orderData.MakerAmount,
 				TakerAmount:   orderData.TakerAmount,
-				Expiration:    orderData.Expiration,
-				Nonce:         orderData.Nonce,
-				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
 				Side:          string(req.Side),
 				SignatureType: orderData.SignatureType,
+				Timestamp:     orderData.Timestamp,
+				Expiration:    orderData.Expiration,
+				Metadata:      orderData.Metadata,
+				Builder:       orderData.Builder,
 				Signature:     signature,
 			}
 

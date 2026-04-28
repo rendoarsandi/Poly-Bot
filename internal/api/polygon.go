@@ -17,20 +17,26 @@ import (
 	"Market-bot/internal/core"
 )
 
-// Polygon USDC contract address
-const USDCContract = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+// Polygon legacy USDC.e contract address used for pUSD wrapping.
+const USDCeContract = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+
+// Polygon pUSD collateral token contract address.
+const PUSDContract = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+
+// Polygon collateral onramp contract used to wrap USDC.e into pUSD.
+const CollateralOnrampContract = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
 
 // Polygon CTF (Conditional Tokens Framework) contract address
 const CTFContract = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
-// Polygon CTF Exchange (Legacy/Binary) contract address
-const CTFExchange = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+// Polygon CTF Exchange v2 contract address.
+const CTFExchange = "0xE111180000d2663C0091e4f400237545B87B996B"
 
-// Polygon Negative Risk Exchange (Multi-outcome) contract address
-const NegRiskExchange = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+// Polygon Negative Risk CTF Exchange v2 contract address.
+const NegRiskExchange = "0xe2222d279d744050d28e00520010520000310F59"
 
-// Polymarket Exchange Router (used by web UI for matching)
-const RouterExchange = "0xE3f18aCc55091E2C48d883fc8C8413319D4aB7b0"
+// Polygon Negative Risk Adapter contract address.
+const NegRiskAdapter = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 
 const (
 	polygonInitialReceiptPollInterval    = 2 * time.Second
@@ -185,12 +191,12 @@ func generateIndexSetsHex(numOutcomes int) string {
 func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
 	// Function selector for redeemPositions(address,bytes32,bytes32,uint256[]): 0x01b7037c
 	// Parameters:
-	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+	// 1. collateralToken (pUSD): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
 	// 2. parentCollectionId: 0x0000000000000000000000000000000000000000000000000000000000000000
 	// 3. conditionId: (provided)
 	// 4. indexSets: dynamic array of index sets (only winner pays out)
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
@@ -205,7 +211,7 @@ func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, con
 
 // RedeemPositionsFast submits redeemPositions with a moderate gas profile.
 func (c *PolygonClient) RedeemPositionsFast(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 	offset := "0000000000000000000000000000000000000000000000000000000000000080"
@@ -218,7 +224,7 @@ func (c *PolygonClient) RedeemPositionsFast(ctx context.Context, signer *Signer,
 // RedeemPositionsUrgent submits the same redeem call with a more aggressive
 // gas policy so resolved-market payouts clear faster.
 func (c *PolygonClient) RedeemPositionsUrgent(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 	offset := "0000000000000000000000000000000000000000000000000000000000000080"
@@ -241,20 +247,20 @@ func (c *PolygonClient) RedeemPositionsWithGasMode(ctx context.Context, signer *
 	}
 }
 
-// SplitPositions converts USDC into YES+NO tokens via CTF contract (PAID WRITE)
+// SplitPositions converts pUSD into YES+NO tokens via CTF contract (PAID WRITE)
 // This is the inverse of MergePositions - use to create inventory for panic selling.
-// 1 USDC → 1 YES token + 1 NO token
+// 1 pUSD → 1 YES token + 1 NO token
 // Use this to build inventory, then sell when bid_sum > $1.03 for profit.
 func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
 	// Function selector for splitPosition(address,bytes32,bytes32,uint256[],uint256): 0x72ce4275
 	// Parameters:
-	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+	// 1. collateralToken (pUSD): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
 	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
 	// 3. conditionId: (provided)
 	// 4. partition: dynamic array of index sets
-	// 5. amount: USDC amount to split (returns this many token pairs)
+	// 5. amount: pUSD amount to split (returns this many token pairs)
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
@@ -270,19 +276,19 @@ func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, cond
 	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 200000, data)
 }
 
-// MergePositions burns equal YES+NO tokens to get USDC back instantly (PAID WRITE)
+// MergePositions burns equal YES+NO tokens to get pUSD back instantly (PAID WRITE)
 // Unlike RedeemPositions, this works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides to capture arbitrage profit instantly.
 func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
 	// Function selector for mergePositions(address,bytes32,bytes32,uint256[],uint256): 0x9e7212ad
 	// Parameters:
-	// 1. collateralToken (USDC): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+	// 1. collateralToken (pUSD): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
 	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
 	// 3. conditionId: (provided)
 	// 4. partition: dynamic array of index sets
-	// 5. amount: number of full sets to merge (returns this much USDC)
+	// 5. amount: number of full sets to merge (returns this much pUSD)
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCContract), "0x")
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
 
@@ -658,8 +664,8 @@ func rpcError(raw json.RawMessage) *RPCError {
 	return &RPCError{Code: -1, Message: string(raw)}
 }
 
-// GetUSDCBalance returns the USDC balance for an address in human-readable format (6 decimals)
-func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (float64, error) {
+// GetCollateralBalance returns the pUSD collateral balance for an address in human-readable format (6 decimals).
+func (c *PolygonClient) GetCollateralBalance(ctx context.Context, address string) (float64, error) {
 	// ERC20 balanceOf function selector: 0x70a08231
 	// Followed by address padded to 32 bytes
 	addr := strings.TrimPrefix(address, "0x")
@@ -670,13 +676,13 @@ func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (flo
 
 	// Make eth_call
 	callParams := map[string]string{
-		"to":   USDCContract,
+		"to":   PUSDContract,
 		"data": data,
 	}
 
 	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
 	if err != nil {
-		return 0, fmt.Errorf("failed to get USDC balance: %w", err)
+		return 0, fmt.Errorf("failed to get pUSD balance: %w", err)
 	}
 
 	// Parse hex result
@@ -699,8 +705,13 @@ func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (flo
 	return result64, nil
 }
 
-// GetUSDCAllowance returns the current allowance for a spender to use an owner's USDC
-func (c *PolygonClient) GetUSDCAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
+// GetUSDCBalance is kept for backwards compatibility and now returns pUSD collateral balance.
+func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (float64, error) {
+	return c.GetCollateralBalance(ctx, address)
+}
+
+// GetCollateralAllowance returns the current allowance for a spender to use an owner's pUSD.
+func (c *PolygonClient) GetCollateralAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
 	// ERC20 allowance(address,address) function selector: 0xdd62ed3e
 	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
 	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
@@ -708,13 +719,13 @@ func (c *PolygonClient) GetUSDCAllowance(ctx context.Context, owner, spender str
 	data := "0xdd62ed3e" + ownerAddr + spenderAddr
 
 	callParams := map[string]string{
-		"to":   USDCContract,
+		"to":   PUSDContract,
 		"data": data,
 	}
 
 	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get USDC allowance: %w", err)
+		return nil, fmt.Errorf("failed to get pUSD allowance: %w", err)
 	}
 
 	var hexResult string
@@ -723,6 +734,11 @@ func (c *PolygonClient) GetUSDCAllowance(ctx context.Context, owner, spender str
 	}
 
 	return parseHexBigInt(hexResult)
+}
+
+// GetUSDCAllowance is kept for backwards compatibility and now returns pUSD collateral allowance.
+func (c *PolygonClient) GetUSDCAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
+	return c.GetCollateralAllowance(ctx, owner, spender)
 }
 
 // IsCTFApproved checks if a spender is approved for all of an owner's CTF tokens
@@ -756,8 +772,8 @@ func (c *PolygonClient) IsCTFApproved(ctx context.Context, owner, operator strin
 	return val.Cmp(big.NewInt(0)) > 0, nil
 }
 
-// ApproveUSDC grants allowance to the Polymarket Exchange contract to spend USDC (PAID WRITE)
-func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
+// ApproveCollateral grants allowance to the Polymarket Exchange contract to spend pUSD (PAID WRITE).
+func (c *PolygonClient) ApproveCollateral(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
 	// Function selector for approve(address,uint256): 0x095ea7b3
 	// Parameters:
 	// 1. spender: (provided)
@@ -767,7 +783,12 @@ func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender
 	amtHex := fmt.Sprintf("%064x", amount)
 
 	data := "0x095ea7b3" + spenderAddr + amtHex
-	return c.signAndSendWriteTransaction(ctx, signer, USDCContract, big.NewInt(0), 100000, data)
+	return c.signAndSendWriteTransaction(ctx, signer, PUSDContract, big.NewInt(0), 100000, data)
+}
+
+// ApproveUSDC is kept for backwards compatibility and now approves pUSD collateral.
+func (c *PolygonClient) ApproveUSDC(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
+	return c.ApproveCollateral(ctx, signer, spender, amount)
 }
 
 // ApproveCTF grants allowance for Conditional Tokens (ERC1155) (PAID WRITE)

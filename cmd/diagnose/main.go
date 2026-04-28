@@ -47,7 +47,7 @@ func main() {
 	matic, _ := polygon.GetMATICBalance(ctx, address)
 	usdc, _ := polygon.GetUSDCBalance(ctx, address)
 	fmt.Printf("💰 MATIC:   %.4f\n", matic)
-	fmt.Printf("💰 USDC:    $%.2f\n", usdc)
+	fmt.Printf("💰 pUSD:    $%.2f\n", usdc)
 
 	// 2. Check Permissions
 	fmt.Println("\n🔐 Permission Analysis:")
@@ -60,7 +60,7 @@ func main() {
 		usdcIcon := "✅"
 		var allowanceStr string
 
-		// Check USDC Allowance
+		// Check pUSD allowance
 		if errAllow != nil {
 			usdcIcon = "⚠️"
 			allowanceStr = fmt.Sprintf("(%v)", errAllow)
@@ -92,15 +92,15 @@ func main() {
 		}
 
 		fmt.Printf("   • %-20s\n", name)
-		fmt.Printf("     USDC Allowance: %s %s\n", usdcIcon, allowanceStr)
+		fmt.Printf("     pUSD Allowance: %s %s\n", usdcIcon, allowanceStr)
 		if name != "CTF Contract" {
 			fmt.Printf("     CTF Operator:   %s %s\n", ctfIcon, ctfStr)
 		}
 	}
 
 	printPerms("CTF Contract", api.CTFContract)
-	printPerms("Exchange (Legacy)", api.CTFExchange)
-	printPerms("Exchange (NegRisk)", api.NegRiskExchange)
+	printPerms("Exchange", api.CTFExchange)
+	printPerms("NegRisk Exchange", api.NegRiskExchange)
 
 	// 3. Smart Scan for Tokens
 	fmt.Println("\n🔍 Scanning for tokens in recent 15m markets...")

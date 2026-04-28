@@ -32,7 +32,7 @@ func TestRealbotLoadMarketFeeRatesUsesConfiguredRateForEmbeddedPaper(t *testing.
 	defer server.Close()
 	restClient.BaseURL = server.URL
 
-	got := realbotLoadMarketFeeRates(context.Background(), "BTC", restClient, map[string]string{
+	got := realbotLoadMarketFeeRates(context.Background(), "BTC", nil, restClient, map[string]string{
 		"token-up":   "Up",
 		"token-down": "Down",
 	}, cfg, trader, tui)
@@ -42,5 +42,45 @@ func TestRealbotLoadMarketFeeRatesUsesConfiguredRateForEmbeddedPaper(t *testing.
 	}
 	if got["Up"] != 312 || got["Down"] != 312 {
 		t.Fatalf("expected configured paper fee rate for both outcomes, got %+v", got)
+	}
+}
+
+func TestRealbotLoadMarketFeeRatesPrefersClobMarketInfo(t *testing.T) {
+	cfg := &core.Config{FeeRateBps: 111}
+	tui := paper.NewTUI(paper.NewEngine(100), nil)
+	restClient := api.NewRestClient("polymarket")
+
+	var clobMarketHits int32
+	var feeRateHits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/clob-markets/cond-1":
+			atomic.AddInt32(&clobMarketHits, 1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"c":"cond-1","t":[{"t":"token-up","o":"Up"},{"t":"token-down","o":"Down"}],"mts":0.01,"nr":false,"fd":{"r":42,"e":6}}`))
+		case "/fee-rate":
+			atomic.AddInt32(&feeRateHits, 1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`1000`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	restClient.BaseURL = server.URL
+
+	got := realbotLoadMarketFeeRates(context.Background(), "BTC", &api.Market{ConditionID: "cond-1"}, restClient, map[string]string{
+		"token-up":   "Up",
+		"token-down": "Down",
+	}, cfg, nil, tui)
+
+	if atomic.LoadInt32(&clobMarketHits) != 1 {
+		t.Fatalf("expected one clob-market lookup, got %d", clobMarketHits)
+	}
+	if atomic.LoadInt32(&feeRateHits) != 0 {
+		t.Fatalf("expected fee-rate fallback to be skipped, got %d hits", feeRateHits)
+	}
+	if got["Up"] != 42 || got["Down"] != 42 {
+		t.Fatalf("expected clob-market fee rate for both outcomes, got %+v", got)
 	}
 }

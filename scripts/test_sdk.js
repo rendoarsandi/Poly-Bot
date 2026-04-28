@@ -1,24 +1,25 @@
 require('dotenv').config();
-const { ClobClient } = require('@polymarket/clob-client');
-const { ethers } = require('ethers');
+const { Chain, ClobClient } = require('@polymarket/clob-client-v2');
+const { createWalletClient, http } = require('viem');
+const { privateKeyToAccount } = require('viem/accounts');
 
 async function main() {
-    const provider = new ethers.providers.JsonRpcProvider(process.env.POLYGON_RPC_URL || "https://polygon-rpc.com");
-    const wallet = new ethers.Wallet(process.env.POLY_PK, provider);
-    
-    // Hardcode poly chain id for prod
-    const chainId = 137;
+    const account = privateKeyToAccount(process.env.POLY_PK);
+    const wallet = createWalletClient({
+        account,
+        transport: http(process.env.POLYGON_RPC_URL || "https://polygon-rpc.com"),
+    });
 
-    const clobClient = new ClobClient(
-        "https://clob.polymarket.com",
-        chainId,
-        wallet,
-        {
+    const clobClient = new ClobClient({
+        host: "https://clob.polymarket.com",
+        chain: Chain.POLYGON,
+        signer: wallet,
+        creds: {
             key: process.env.POLY_API_KEY,
             secret: process.env.POLY_API_SECRET,
             passphrase: process.env.POLY_PASSPHRASE
         }
-    );
+    });
 
     // Let's manually trigger GetPositions using their SDK which doesn't seem to export WS logic?
     // Wait, their github readme says there is a WS client. How is it instantiated?

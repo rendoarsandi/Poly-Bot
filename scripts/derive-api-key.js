@@ -13,11 +13,12 @@
  *   - Or pass it as an argument: node scripts/derive-api-key.js 0x...
  */
 
-const { ClobClient } = require("@polymarket/clob-client");
-const { Wallet } = require("ethers");
+const { Chain, ClobClient } = require("@polymarket/clob-client-v2");
+const { createWalletClient, http } = require("viem");
+const { privateKeyToAccount } = require("viem/accounts");
 
 const HOST = "https://clob.polymarket.com";
-const CHAIN_ID = 137; // Polygon mainnet
+const CHAIN_ID = Chain.POLYGON;
 
 async function deriveApiKey() {
     // Get private key from env or argument
@@ -42,10 +43,14 @@ async function deriveApiKey() {
     try {
         console.log("Connecting to Polymarket CLOB...");
 
-        const signer = new Wallet(privateKey);
-        const client = new ClobClient(HOST, CHAIN_ID, signer);
+        const account = privateKeyToAccount(privateKey);
+        const signer = createWalletClient({
+            account,
+            transport: http(process.env.POLYGON_RPC_URL || "https://polygon-rpc.com"),
+        });
+        const client = new ClobClient({ host: HOST, chain: CHAIN_ID, signer });
 
-        console.log("Wallet address:", signer.address);
+        console.log("Wallet address:", account.address);
         console.log("");
         console.log("Deriving API credentials...");
 

@@ -85,7 +85,6 @@ func (s *Signer) SignDynamicFeeTransaction(nonce uint64, to string, value *big.I
 type Signer struct {
 	privateKey *ecdsa.PrivateKey
 	address    string
-	domainSep  [32]byte
 	orderType  [32]byte
 }
 
@@ -98,13 +97,11 @@ func NewSigner(privateKeyHex string) (*Signer, error) {
 	}
 
 	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
-	domainSep := buildDomainSeparator()
 	orderType := buildOrderTypeHash()
 
 	return &Signer{
 		privateKey: privateKey,
 		address:    address,
-		domainSep:  domainSep,
 		orderType:  orderType,
 	}, nil
 }
@@ -116,26 +113,27 @@ func (s *Signer) Address() string {
 
 // OrderData represents the data needed to sign an order
 type OrderData struct {
-	Salt          string
-	Maker         string
-	Signer        string
-	Taker         string
-	TokenID       string
-	MakerAmount   string
-	TakerAmount   string
-	Expiration    string
-	Nonce         string
-	FeeRateBps    string
-	Side          int // 0 for BUY, 1 for SELL
-	SignatureType int
+	Salt              string
+	Maker             string
+	Signer            string
+	Taker             string
+	TokenID           string
+	MakerAmount       string
+	TakerAmount       string
+	Expiration        string
+	Nonce             string
+	FeeRateBps        string
+	Timestamp         string
+	Metadata          string
+	Builder           string
+	VerifyingContract string
+	Side              int // 0 for BUY, 1 for SELL
+	SignatureType     int
 }
 
 // SignOrder signs an order using EIP-712
 func (s *Signer) SignOrder(order *OrderData) (string, error) {
-	// Polymarket CLOB uses EIP-712 typed data signing
-	// Domain: { name: "Polymarket CTF Exchange", version: "1", chainId: 137 }
-
-	domainSeparator := s.getDomainSeparator()
+	domainSeparator := buildDomainSeparator(order.VerifyingContract)
 	structHash := s.getOrderStructHash(order)
 
 	// EIP-712: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -156,46 +154,35 @@ func (s *Signer) SignOrder(order *OrderData) (string, error) {
 	return "0x" + hex.EncodeToString(sig), nil
 }
 
-// getDomainSeparator returns the EIP-712 domain separator for Polymarket CTF Exchange
-func (s *Signer) getDomainSeparator() [32]byte {
-	return s.domainSep
-}
-
 // getOrderStructHash returns the struct hash for an order
 func (s *Signer) getOrderStructHash(order *OrderData) [32]byte {
-	// Parse values
 	salt := parseBigInt(order.Salt)
 	maker := parseAddress(order.Maker)
 	signer := parseAddress(order.Signer)
-	taker := parseAddress(order.Taker)
 	tokenID := parseBigInt(order.TokenID)
 	makerAmount := parseBigInt(order.MakerAmount)
 	takerAmount := parseBigInt(order.TakerAmount)
-	expiration := parseBigInt(order.Expiration)
-	nonce := parseBigInt(order.Nonce)
-	feeRateBps := parseBigInt(order.FeeRateBps)
+	timestamp := parseBigInt(order.Timestamp)
+	metadata := parseBytes32(order.Metadata)
+	builder := parseBytes32(order.Builder)
 
 	side := uint8(order.Side)
 	signatureType := uint8(order.SignatureType)
 
-	// Encode all fields (32 bytes each, padded)
-	// Sequence: salt, maker, signer, taker, tokenId, makerAmount, takerAmount, expiration, nonce, feeRateBps, side, signatureType
-	encoded := make([]byte, 13*32) // typeHash + 12 fields
+	encoded := make([]byte, 12*32) // typeHash + 11 fields
 	copy(encoded[0:32], s.orderType[:])
 	copy(encoded[32:64], padLeft(salt.Bytes(), 32))
 	copy(encoded[64:96], padLeft(maker, 32))
 	copy(encoded[96:128], padLeft(signer, 32))
-	copy(encoded[128:160], padLeft(taker, 32))
-	copy(encoded[160:192], padLeft(tokenID.Bytes(), 32))
-	copy(encoded[192:224], padLeft(makerAmount.Bytes(), 32))
-	copy(encoded[224:256], padLeft(takerAmount.Bytes(), 32))
-	copy(encoded[256:288], padLeft(expiration.Bytes(), 32))
-	copy(encoded[288:320], padLeft(nonce.Bytes(), 32))
-	copy(encoded[320:352], padLeft(feeRateBps.Bytes(), 32))
+	copy(encoded[128:160], padLeft(tokenID.Bytes(), 32))
+	copy(encoded[160:192], padLeft(makerAmount.Bytes(), 32))
+	copy(encoded[192:224], padLeft(takerAmount.Bytes(), 32))
 
-	// uint8 fields are at the end of their 32-byte slots (padded left)
-	encoded[352+31] = side
-	encoded[384+31] = signatureType
+	encoded[224+31] = side
+	encoded[256+31] = signatureType
+	copy(encoded[288:320], padLeft(timestamp.Bytes(), 32))
+	copy(encoded[320:352], metadata[:])
+	copy(encoded[352:384], builder[:])
 
 	return keccak256(encoded)
 }
@@ -263,27 +250,30 @@ func decodeAPISecret(secret string) []byte {
 	return key
 }
 
-func buildDomainSeparator() [32]byte {
+func buildDomainSeparator(verifyingContract string) [32]byte {
 	// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 	typeHash := keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 	nameHash := keccak256([]byte("Polymarket CTF Exchange"))
-	versionHash := keccak256([]byte("1"))
+	versionHash := keccak256([]byte("2"))
 	chainID := big.NewInt(137)
-	verifyingContract := parseAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+	if strings.TrimSpace(verifyingContract) == "" {
+		verifyingContract = CTFExchange
+	}
+	verifyingContractAddr := parseAddress(verifyingContract)
 
 	encoded := make([]byte, 32*5)
 	copy(encoded[0:32], typeHash[:])
 	copy(encoded[32:64], nameHash[:])
 	copy(encoded[64:96], versionHash[:])
 	copy(encoded[96:128], padLeft(chainID.Bytes(), 32))
-	copy(encoded[128:160], padLeft(verifyingContract, 32))
+	copy(encoded[128:160], padLeft(verifyingContractAddr, 32))
 
 	return keccak256(encoded)
 }
 
 func buildOrderTypeHash() [32]byte {
 	return keccak256([]byte(
-		"Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)",
+		"Order(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder)",
 	))
 }
 
@@ -313,6 +303,17 @@ func parseAddress(s string) []byte {
 		return padded
 	}
 	return addr[:20]
+}
+
+func parseBytes32(s string) [32]byte {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "0x")
+	decoded, _ := hex.DecodeString(s)
+	var out [32]byte
+	if len(decoded) > len(out) {
+		decoded = decoded[len(decoded)-len(out):]
+	}
+	copy(out[32-len(decoded):], decoded)
+	return out
 }
 
 func padLeft(data []byte, size int) []byte {

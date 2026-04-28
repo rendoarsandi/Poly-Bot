@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"Market-bot/internal/core"
@@ -23,6 +26,7 @@ type CLOBClient struct {
 	auth      *APIAuth
 	testMode  bool
 	rawLogger *rawAPILogger
+	negRisk   sync.Map
 }
 
 // NewCLOBClient creates a new authenticated CLOB client
@@ -160,15 +164,16 @@ type OrderPayload struct {
 	Salt          int64  `json:"salt"`
 	Maker         string `json:"maker"`
 	Signer        string `json:"signer"`
-	Taker         string `json:"taker"`
+	Taker         string `json:"taker,omitempty"`
 	TokenID       string `json:"tokenId"`
 	MakerAmount   string `json:"makerAmount"`
 	TakerAmount   string `json:"takerAmount"`
-	Expiration    string `json:"expiration"`
-	Nonce         string `json:"nonce"`
-	FeeRateBps    string `json:"feeRateBps"`
-	Side          string `json:"side"` // API expects string "0" or "1"
+	Side          string `json:"side"`
 	SignatureType int    `json:"signatureType"`
+	Timestamp     string `json:"timestamp"`
+	Expiration    string `json:"expiration"`
+	Metadata      string `json:"metadata"`
+	Builder       string `json:"builder"`
 	Signature     string `json:"signature"`
 }
 
@@ -225,6 +230,12 @@ type HeartbeatResponse struct {
 	Status string `json:"status"`
 }
 
+const (
+	openOrdersInitialCursor = "MA=="
+	openOrdersEndCursor     = "LTE="
+	zeroBytes32             = "0x0000000000000000000000000000000000000000000000000000000000000000"
+)
+
 // PlaceOrder places a new limit order
 func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderResponse, error) {
 	// Generate random salt
@@ -244,20 +255,27 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 		expirationStr = strconv.FormatInt(req.Expiration, 10)
 	}
 
+	verifyingContract, err := c.getExchangeVerifyingContract(ctx, req.TokenID)
+	if err != nil {
+		return nil, err
+	}
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+
 	submitSigned := func(salt int64, makerAmt, takerAmt string, sideInt int) (*OrderResponse, error) {
 		orderData := &OrderData{
-			Salt:          strconv.FormatInt(salt, 10),
-			Maker:         c.signer.Address(),
-			Signer:        c.signer.Address(),
-			Taker:         "0x0000000000000000000000000000000000000000", // Any taker
-			TokenID:       req.TokenID,
-			MakerAmount:   makerAmt,
-			TakerAmount:   takerAmt,
-			Expiration:    expirationStr,
-			Nonce:         "0",
-			FeeRateBps:    strconv.Itoa(req.FeeRateBps),
-			Side:          sideInt,
-			SignatureType: 0, // EOA signature
+			Salt:              strconv.FormatInt(salt, 10),
+			Maker:             c.signer.Address(),
+			Signer:            c.signer.Address(),
+			TokenID:           req.TokenID,
+			MakerAmount:       makerAmt,
+			TakerAmount:       takerAmt,
+			Timestamp:         timestamp,
+			Expiration:        expirationStr,
+			Metadata:          zeroBytes32,
+			Builder:           zeroBytes32,
+			VerifyingContract: verifyingContract,
+			Side:              sideInt,
+			SignatureType:     0, // EOA signature
 		}
 
 		signStart := time.Now()
@@ -271,15 +289,15 @@ func (c *CLOBClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*OrderR
 				Salt:          salt,
 				Maker:         orderData.Maker,
 				Signer:        orderData.Signer,
-				Taker:         orderData.Taker,
 				TokenID:       req.TokenID,
 				MakerAmount:   orderData.MakerAmount,
 				TakerAmount:   orderData.TakerAmount,
-				Expiration:    orderData.Expiration,
-				Nonce:         orderData.Nonce,
-				FeeRateBps:    strconv.Itoa(req.FeeRateBps),
 				Side:          string(req.Side), // Send "BUY" or "SELL"
 				SignatureType: orderData.SignatureType,
+				Timestamp:     orderData.Timestamp,
+				Expiration:    orderData.Expiration,
+				Metadata:      orderData.Metadata,
+				Builder:       orderData.Builder,
 				Signature:     signature,
 			},
 			Owner:     c.auth.APIKey,
@@ -364,7 +382,7 @@ func (c *CLOBClient) submitOrder(ctx context.Context, signedOrder *SignedOrder, 
 		makerAmount, _ := strconv.ParseFloat(signedOrder.Order.MakerAmount, 64)
 		makerAmountUSDC := makerAmount / 1e6 // Convert from base units
 
-		if signedOrder.Order.Side == "0" && (allowance.Balance < makerAmountUSDC || allowance.Allowance < makerAmountUSDC) {
+		if signedOrder.Order.Side == string(SideBuy) && (allowance.Balance < makerAmountUSDC || allowance.Allowance < makerAmountUSDC) {
 			return &OrderResponse{
 				OrderID:  fmt.Sprintf("test-%d", time.Now().UnixNano()),
 				Success:  false,
@@ -523,14 +541,20 @@ func (c *CLOBClient) CancelOrder(ctx context.Context, orderID string) error {
 		return nil
 	}
 
-	path := "/order/" + orderID
-	timestamp, signature := c.auth.SignL2Request("DELETE", path, "")
+	path := "/order"
+	payload := map[string]string{"orderID": orderID}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cancel order payload: %w", err)
+	}
+	timestamp, signature := c.auth.SignL2Request("DELETE", path, string(body))
 
-	req, err := http.NewRequestWithContext(ctx, "DELETE", c.BaseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
 	req.Header.Set("POLY_ADDRESS", c.signer.Address())
 	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
@@ -556,7 +580,7 @@ func (c *CLOBClient) CancelAllOrders(ctx context.Context) error {
 		return nil
 	}
 
-	path := "/orders"
+	path := "/cancel-all"
 	timestamp, signature := c.auth.SignL2Request("DELETE", path, "")
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", c.BaseURL+path, nil)
@@ -637,35 +661,123 @@ type OpenOrder struct {
 	CreatedAt     string  `json:"createdAt"`
 }
 
+func (o *OpenOrder) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		OrderID         string          `json:"orderID"`
+		ID              string          `json:"id"`
+		TokenID         string          `json:"tokenID"`
+		AssetID         string          `json:"asset_id"`
+		Side            string          `json:"side"`
+		Status          string          `json:"status"`
+		OriginalSize    json.RawMessage `json:"original_size"`
+		SizeMatched     json.RawMessage `json:"size_matched"`
+		PriceRaw        json.RawMessage `json:"price"`
+		CreatedAtRaw    json.RawMessage `json:"created_at"`
+		CreatedAtAlt    json.RawMessage `json:"createdAt"`
+		RemainingSize   json.RawMessage `json:"remaining_size"`
+		RemainingAlt    json.RawMessage `json:"remainingSize"`
+		OriginalSizeAlt json.RawMessage `json:"originalSize"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	o.OrderID = aux.OrderID
+	if o.OrderID == "" {
+		o.OrderID = aux.ID
+	}
+	o.TokenID = aux.TokenID
+	if o.TokenID == "" {
+		o.TokenID = aux.AssetID
+	}
+	o.Side = aux.Side
+	o.Status = normalizeOpenOrderStatus(aux.Status)
+	price, _ := parseFlexibleFloat(aux.PriceRaw)
+	if price != 0 || len(aux.PriceRaw) > 0 {
+		o.Price = price
+	}
+
+	originalSize := 0.0
+	if size, ok := parseHumanOrderSize(aux.OriginalSizeAlt); ok {
+		originalSize = size
+	}
+	if size, ok := parseBaseUnitOrderSize(aux.OriginalSize); ok {
+		originalSize = size
+	}
+	o.OriginalSize = originalSize
+
+	remainingSize := 0.0
+	if size, ok := parseHumanOrderSize(aux.RemainingAlt); ok {
+		remainingSize = size
+	}
+	if size, ok := parseBaseUnitOrderSize(aux.RemainingSize); ok {
+		remainingSize = size
+	}
+	if matched, ok := parseBaseUnitOrderSize(aux.SizeMatched); ok && o.OriginalSize >= matched {
+		remainingSize = math.Max(o.OriginalSize-matched, 0)
+	}
+	o.RemainingSize = remainingSize
+
+	if createdAt := parseFlexibleString(aux.CreatedAtRaw); createdAt != "" {
+		o.CreatedAt = createdAt
+	}
+	if o.CreatedAt == "" {
+		o.CreatedAt = parseFlexibleString(aux.CreatedAtAlt)
+	}
+	return nil
+}
+
 // GetOpenOrders retrieves all open orders
 func (c *CLOBClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
-	path := "/orders"
+	path := "/data/orders"
 	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+	nextCursor := openOrdersInitialCursor
+	orders := make([]OpenOrder, 0)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
+	for nextCursor != openOrdersEndCursor {
+		reqURL := c.BaseURL + path
+		if nextCursor != "" {
+			values := url.Values{}
+			values.Set("next_cursor", nextCursor)
+			reqURL += "?" + values.Encode()
+		}
 
-	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
-	req.Header.Set("POLY_ADDRESS", c.signer.Address())
-	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
-	req.Header.Set("POLY_TIMESTAMP", timestamp)
-	req.Header.Set("POLY_SIGNATURE", signature)
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get open orders: %w", err)
-	}
-	defer resp.Body.Close()
+		req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+		req.Header.Set("POLY_ADDRESS", c.signer.Address())
+		req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+		req.Header.Set("POLY_TIMESTAMP", timestamp)
+		req.Header.Set("POLY_SIGNATURE", signature)
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get open orders failed with status %d", resp.StatusCode)
-	}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get open orders: %w", err)
+		}
 
-	var orders []OpenOrder
-	if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
-		return nil, fmt.Errorf("failed to decode orders: %w", err)
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("get open orders failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		}
+
+		var page struct {
+			Data       []OpenOrder `json:"data"`
+			NextCursor string      `json:"next_cursor"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode orders: %w", err)
+		}
+		_ = resp.Body.Close()
+
+		orders = append(orders, page.Data...)
+		if page.NextCursor == "" || page.NextCursor == nextCursor {
+			break
+		}
+		nextCursor = page.NextCursor
 	}
 
 	return orders, nil
@@ -712,7 +824,7 @@ func (c *CLOBClient) GetOrder(ctx context.Context, orderID string) (*OpenOrder, 
 		c.logRawOrderDebug("GET", path, nil, bodyBytes, resp.StatusCode, err, "get_order_decode_error")
 		return nil, fmt.Errorf("failed to decode order: %w", err)
 	}
-	if order.Status == "FAILED" || order.Status == "CANCELLED" || order.Status == "EXPIRED" || order.Status == "REJECTED" {
+	if order.Status == "FAILED" || order.Status == "CANCELLED" || order.Status == "EXPIRED" || order.Status == "REJECTED" || order.Status == "INVALID" {
 		c.logRawOrderDebug("GET", path, nil, bodyBytes, resp.StatusCode, nil, "order_"+strings.ToLower(order.Status))
 	}
 
@@ -905,39 +1017,59 @@ type TradeHistory struct {
 
 // GetTradeHistory retrieves trade history
 func (c *CLOBClient) GetTradeHistory(ctx context.Context) ([]TradeHistory, error) {
-	path := "/trades"
+	path := "/data/trades"
 	timestamp, signature := c.auth.SignL2Request("GET", path, "")
+	trades := make([]TradeHistory, 0)
+	nextCursor := openOrdersInitialCursor
 
-	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
-	if err != nil {
-		return nil, err
+	for nextCursor != openOrdersEndCursor {
+		reqURL := c.BaseURL + path
+		if nextCursor != "" {
+			values := url.Values{}
+			values.Set("next_cursor", nextCursor)
+			reqURL += "?" + values.Encode()
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("POLY_API_KEY", c.auth.APIKey)
+		req.Header.Set("POLY_ADDRESS", c.signer.Address())
+		req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
+		req.Header.Set("POLY_TIMESTAMP", timestamp)
+		req.Header.Set("POLY_SIGNATURE", signature)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get trades: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("get trades failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		}
+
+		var response struct {
+			Data       []TradeHistory `json:"data"`
+			NextCursor string         `json:"next_cursor"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode trades: %w", err)
+		}
+		_ = resp.Body.Close()
+
+		trades = append(trades, response.Data...)
+		if response.NextCursor == "" || response.NextCursor == nextCursor {
+			break
+		}
+		nextCursor = response.NextCursor
 	}
 
-	req.Header.Set("POLY_API_KEY", c.auth.APIKey)
-	req.Header.Set("POLY_ADDRESS", c.signer.Address())
-	req.Header.Set("POLY_PASSPHRASE", c.auth.Passphrase)
-	req.Header.Set("POLY_TIMESTAMP", timestamp)
-	req.Header.Set("POLY_SIGNATURE", signature)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get trades: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get trades failed with status %d", resp.StatusCode)
-	}
-
-	var response struct {
-		Data       []TradeHistory `json:"data"`
-		NextCursor string         `json:"next_cursor"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode trades: %w", err)
-	}
-
-	return response.Data, nil
+	return trades, nil
 }
 
 // MarketInfo represents market resolution info
@@ -955,6 +1087,120 @@ type MarketInfo struct {
 		Winner  bool        `json:"winner"`
 		Price   interface{} `json:"price"` // Can be string, number, or null
 	} `json:"tokens"`
+}
+
+func normalizeOpenOrderStatus(status string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(status))
+	normalized = strings.TrimPrefix(normalized, "ORDER_STATUS_")
+	switch normalized {
+	case "CANCELED":
+		return "CANCELLED"
+	case "CANCELED_MARKET_RESOLVED":
+		return "CANCELLED"
+	default:
+		return normalized
+	}
+}
+
+func parseFlexibleFloat(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return asFloat, true
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		asString = strings.TrimSpace(asString)
+		if asString == "" {
+			return 0, false
+		}
+		value, err := strconv.ParseFloat(asString, 64)
+		if err == nil {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func parseFlexibleString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+	var asInt int64
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return strconv.FormatInt(asInt, 10)
+	}
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return strconv.FormatInt(int64(asFloat), 10)
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func parseBaseUnitOrderSize(raw json.RawMessage) (float64, bool) {
+	value, ok := parseFlexibleFloat(raw)
+	if !ok {
+		return 0, false
+	}
+	return value / usdcBaseUnitsPerToken, true
+}
+
+func parseHumanOrderSize(raw json.RawMessage) (float64, bool) {
+	return parseFlexibleFloat(raw)
+}
+
+func (c *CLOBClient) getExchangeVerifyingContract(ctx context.Context, tokenID string) (string, error) {
+	negRisk, err := c.getNegRisk(ctx, tokenID)
+	if err != nil {
+		return "", err
+	}
+	if negRisk {
+		return NegRiskExchange, nil
+	}
+	return CTFExchange, nil
+}
+
+func (c *CLOBClient) getNegRisk(ctx context.Context, tokenID string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+	if cached, ok := c.negRisk.Load(tokenID); ok {
+		if negRisk, ok := cached.(bool); ok {
+			return negRisk, nil
+		}
+	}
+
+	values := url.Values{}
+	values.Set("token_id", tokenID)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/neg-risk?"+values.Encode(), nil)
+	if err != nil {
+		return false, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve neg-risk market for token %s: %w", tokenID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("neg-risk lookup failed with status %d for token %s: %s", resp.StatusCode, tokenID, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var result struct {
+		NegRisk bool `json:"neg_risk"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, fmt.Errorf("failed to decode neg-risk lookup for token %s: %w", tokenID, err)
+	}
+	c.negRisk.Store(tokenID, result.NegRisk)
+	return result.NegRisk, nil
 }
 
 // GetMarketInfo retrieves market info including resolution status
@@ -1028,7 +1274,12 @@ func (c *CLOBClient) RedeemPositions(ctx context.Context, conditionID string, nu
 func generateSalt() int64 {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
-	// Clear highest bit to ensure it fits in a positive int64
-	b[0] &= 0x7f
-	return new(big.Int).SetBytes(b).Int64()
+	// The official SDK sends salt as a JS number, so keep it within the
+	// IEEE-754 safe integer range to avoid precision loss on the wire.
+	const maxSafeInt53 = (1 << 53) - 1
+	salt := binary.BigEndian.Uint64(b) & maxSafeInt53
+	if salt == 0 {
+		salt = 1
+	}
+	return int64(salt)
 }
