@@ -371,7 +371,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			return true
 		}
 		if !realbotLadderedHasConfirmedEntries(currentEntries) {
-			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
+			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents, ladderedDirection)
 			if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {
 				return true
 			}
@@ -383,7 +383,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		}
 		// Reset the ladder anchor to the current live quote after each actionable re-entry
 		// so large gaps do not trigger a backlog of catch-up buys at worse prices.
-		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
+		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents, ladderedDirection)
 
 		if state != nil && state.ladderBasePrice != nil {
 			activeAsk := ask1

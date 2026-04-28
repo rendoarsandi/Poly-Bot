@@ -307,10 +307,10 @@ func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing
 }
 
 func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.01, side: 1, rung: 0, armed: true}}
 
-	pending := realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 5.0)
-	if math.Abs(pending.ask0-0.12) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
+	pending := realbotPendingLadderedEntry(entries, 2, 0.01, 0.36, 0.01, 5.0, 1)
+	if math.Abs(pending.ask0-0.01) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
 		t.Fatalf("expected pending anchor to jump to the current quote, got %+v", pending)
 	}
 	if pending.side != 1 || pending.rung != 7 {
@@ -318,19 +318,19 @@ func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
 	}
 
 	entries = append(entries, pending)
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.36, 0.01, 5.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.36, 0.01, 5.0); ok {
 		t.Fatalf("expected unchanged quote to stop replaying missed rungs, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
 
 func TestRealbotLargeGapRequiresFreshStepAfterAnchorReset(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
-	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 2.0))
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.01, side: 1, rung: 0, armed: true}}
+	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.01, 0.36, 0.01, 2.0, 1))
 
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.369, 0.01, 2.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.369, 0.01, 2.0); ok {
 		t.Fatalf("expected move below the next full 2c step to stay blocked, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.37, 0.01, 2.0); !ok || side != 1 || mult != 1 {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.37, 0.01, 2.0); !ok || side != 1 || mult != 1 {
 		t.Fatalf("expected the next fresh 2c move to allow exactly one new re-entry, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
@@ -512,16 +512,17 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredMaxProfitPnL(t *testing.T) {
 
 func TestRealbotResolveLadderedEntryDropsRejectedPendingAnchor(t *testing.T) {
 	entries := []realbotLadderedEntry{
-		{seq: 1, ask0: 0.50, ask1: 0.40},
-		{seq: 2, ask0: 0.52, ask1: 0.40},
+		{seq: 1, ask0: 0.50, ask1: 0.40, side: 0, rung: 49, armed: true},
+		{seq: 1, ask0: 0.50, ask1: 0.40, side: 1, rung: 39, armed: true},
+		{seq: 2, ask0: 0.52, ask1: 0.40, side: 0, rung: 51},
 	}
 
 	entries = realbotResolveLadderedEntry(entries, 2, false)
 
-	if len(entries) != 1 {
+	if len(entries) != 2 {
 		t.Fatalf("expected failed pending rung to be removed, got %d entries", len(entries))
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.50102, 0.401, 0.01, 1.0); !ok || side != 0 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.512, 0.401, 0.01, 1.0); !ok || side != 0 {
 		t.Fatalf("expected re-entry to fall back to the last confirmed ladder anchor, got side=%d ok=%v", side, ok)
 	}
 }

@@ -349,8 +349,7 @@ func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, ba
 	return -1, 0, false
 }
 
-func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, basePrice, moveCents float64) realbotLadderedEntry {
-	side := realbotLadderedLeaderSide(ask0, ask1)
+func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, basePrice, moveCents float64, side int) realbotLadderedEntry {
 	ask := ask0
 	if side == 1 {
 		ask = ask1
