@@ -40,8 +40,9 @@ func realbotExecuteAggressiveEntry(
 	entryExecutionDone chan<- realbotAsyncEntryResult,
 	acquiredGate bool,
 	ladderedEntrySeq uint64,
+	ladderBasePrice float64,
 ) {
-	asyncResult := realbotAsyncEntryResult{ladderedEntrySeq: ladderedEntrySeq}
+	asyncResult := realbotAsyncEntryResult{ladderedEntrySeq: ladderedEntrySeq, ladderBasePrice: ladderBasePrice}
 	defer func() {
 		if r := recover(); r != nil {
 			asyncResult.cooldownUntil = time.Now().Add(2 * time.Second)

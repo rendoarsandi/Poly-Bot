@@ -150,7 +150,7 @@ func normalizeMarketBuyShares(qty float64) float64 {
 	if qty <= 0 {
 		return 0
 	}
-	return math.Floor((qty*10000)+1e-9) / 10000
+	return math.Floor((qty*100)+1e-9) / 100
 }
 
 func hasConfirmedExecutedQty(side api.Side, qty float64) bool {

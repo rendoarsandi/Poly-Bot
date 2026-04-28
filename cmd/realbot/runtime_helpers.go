@@ -225,6 +225,7 @@ type realbotAsyncEntryResult struct {
 	cooldownUntil          time.Time
 	ladderedEntrySeq       uint64
 	ladderedEntryConfirmed bool
+	ladderBasePrice        float64
 }
 
 type realbotLadderedEntry struct {

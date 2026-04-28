@@ -14,6 +14,7 @@ type realbotAsyncEntryState struct {
 	ladderedEntries        *[]realbotLadderedEntry
 	lastTrade              *time.Time
 	panicBuyCooldown       *time.Time
+	ladderBasePrice        *float64
 }
 
 func realbotApplyAsyncEntryResult(result realbotAsyncEntryResult, state *realbotAsyncEntryState) {
@@ -31,6 +32,9 @@ func realbotApplyAsyncEntryResult(result realbotAsyncEntryResult, state *realbot
 	}
 	if state.panicBuyCooldown != nil && !result.cooldownUntil.IsZero() && state.panicBuyCooldown.Before(result.cooldownUntil) {
 		*state.panicBuyCooldown = result.cooldownUntil
+	}
+	if state.ladderBasePrice != nil && result.ladderBasePrice > 0 {
+		*state.ladderBasePrice = result.ladderBasePrice
 	}
 }
 
