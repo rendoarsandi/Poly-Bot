@@ -174,52 +174,58 @@ func TestRealbotLadderedMoveThresholdMatchesPaperbotClamp(t *testing.T) {
 	}
 }
 
-func TestRealbotLadderedRungIndexUsesConfiguredBasePrice(t *testing.T) {
-	if got := realbotLadderedRungIndex(0.05, 0.01, 5.0); got != 0 {
-		t.Fatalf("expected 5c to stay on the 1c base rung, got %d", got)
+func TestRealbotLadderedRungIndexAnchoredAtFiftyCents(t *testing.T) {
+	// The base rung price is now hardcoded at $0.50; the basePrice argument
+	// passed in by callers is ignored.
+	if got := realbotLadderedRungIndex(0.50, 0.01, 5.0); got != 0 {
+		t.Fatalf("expected 50c to sit on the anchored base rung, got %d", got)
 	}
-	if got := realbotLadderedRungIndex(0.06, 0.01, 5.0); got != 1 {
-		t.Fatalf("expected 6c to enter rung 1 above the 1c base, got %d", got)
+	if got := realbotLadderedRungIndex(0.55, 0.01, 5.0); got != 1 {
+		t.Fatalf("expected 55c to enter rung 1 above the $0.50 anchor, got %d", got)
 	}
-	if got := realbotLadderedRungIndex(0.11, 0.01, 5.0); got != 2 {
-		t.Fatalf("expected 11c to enter rung 2 above the 1c base, got %d", got)
+	if got := realbotLadderedRungIndex(0.60, 0.01, 5.0); got != 2 {
+		t.Fatalf("expected 60c to enter rung 2 above the $0.50 anchor, got %d", got)
 	}
-	if got := realbotLadderedRungIndex(0.009, 0.01, 5.0); got != 0 {
-		t.Fatalf("expected prices below the configured base to clamp to rung 0, got %d", got)
+	if got := realbotLadderedRungIndex(0.45, 0.01, 5.0); got != 0 {
+		t.Fatalf("expected prices below the $0.50 anchor to clamp to rung 0, got %d", got)
+	}
+	// The basePrice argument is intentionally ignored.
+	if got := realbotLadderedRungIndex(0.55, 0.30, 5.0); got != 1 {
+		t.Fatalf("expected the basePrice argument to be ignored, got %d", got)
 	}
 }
 
-func TestRealbotLadderedDirectionalSideUsesConfiguredBasePriceRungs(t *testing.T) {
-	if side, _, ok := ladderedTakerDirectionalSide(nil, 0.08, 0.04, 0.01, 1.0); !ok || side != 0 {
+func TestRealbotLadderedDirectionalSideUsesAnchoredRungs(t *testing.T) {
+	if side, _, ok := ladderedTakerDirectionalSide(nil, 0.55, 0.45, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected initial higher-ask side 0, got side=%d ok=%v", side, ok)
 	}
 
 	entries := []realbotLadderedEntry{
-		{seq: 1, ask0: 0.06, ask1: 0.04, side: 0, rung: 1},
+		{seq: 1, ask0: 0.55, ask1: 0.45, side: 0, rung: 1},
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.109, 0.041, 0.01, 5.0); ok {
-		t.Fatalf("expected same fixed 5c rung to block re-entry, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.59, 0.41, 0.01, 5.0); ok {
+		t.Fatalf("expected same anchored 5c rung to block re-entry, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.041, 0.01, 5.0); !ok || side != 0 {
-		t.Fatalf("expected side 0 re-entry after crossing the next fixed rung, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.40, 0.01, 5.0); !ok || side != 0 {
+		t.Fatalf("expected side 0 re-entry after crossing the next anchored rung, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.09, 0.08, 0.01, 5.0); ok {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.59, 0.54, 0.01, 5.0); ok {
 		t.Fatalf("expected lower side 1 move to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
 	}
 }
 
 func TestRealbotLadderedDirectionalSideOnlyBuysCurrentHigherSide(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.06, ask1: 0.04, side: 0, rung: 1}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.55, ask1: 0.45, side: 0, rung: 1}}
 
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.09, 0.01, 5.0); !ok || side != 0 {
-		t.Fatalf("expected higher side 0 to re-enter after crossing the next fixed 5c rung, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.55, 0.01, 5.0); !ok || side != 0 {
+		t.Fatalf("expected higher side 0 to re-enter after crossing the next anchored 5c rung, got side=%d ok=%v", side, ok)
 	}
 
-	entries = append(entries, realbotLadderedEntry{seq: 2, ask0: 0.11, ask1: 0.09, side: 0, rung: 2})
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.06, 0.01, 5.0); ok {
+	entries = append(entries, realbotLadderedEntry{seq: 2, ask0: 0.60, ask1: 0.55, side: 0, rung: 2})
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.55, 0.01, 5.0); ok {
 		t.Fatalf("expected lower side 1 at the first rung to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.06, 0.01, 5.0); !ok || side != 1 {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.50, 0.55, 0.01, 5.0); !ok || side != 1 {
 		t.Fatalf("expected side 1 to re-enter only after becoming the higher side, got side=%d ok=%v", side, ok)
 	}
 }
@@ -240,7 +246,10 @@ func TestRealbotArmInitialLadderedEntriesStartsFromBaseRung(t *testing.T) {
 	}
 }
 
-func TestRealbotLadderedStartupStabilityReadyRequiresStableFirstRung(t *testing.T) {
+func TestRealbotLadderedStartupStabilityReadyAlwaysAllowsImmediateEntry(t *testing.T) {
+	// The startup stability gate is permanently disabled; rungs can fire
+	// immediately. The state pointers should still be updated so downstream
+	// inspection sees the most recently observed side/rung.
 	stableAt := time.Time{}
 	side := -1
 	rung := -1
@@ -251,29 +260,26 @@ func TestRealbotLadderedStartupStabilityReadyRequiresStableFirstRung(t *testing.
 	}
 	now := time.Now()
 
-	if realbotLadderedStartupStabilityReady(state, 0, 1, now) {
-		t.Fatal("expected first observed startup rung to begin stability timing")
+	if !realbotLadderedStartupStabilityReady(state, 0, 1, now) {
+		t.Fatal("expected stability gate to be disabled and allow the first rung immediately")
 	}
-	if got := side; got != 0 {
-		t.Fatalf("expected startup side 0, got %d", got)
+	if side != 0 {
+		t.Fatalf("expected startup side recorded as 0, got %d", side)
 	}
-	if got := rung; got != 1 {
-		t.Fatalf("expected startup rung 1, got %d", got)
+	if rung != 1 {
+		t.Fatalf("expected startup rung recorded as 1, got %d", rung)
 	}
 	if stableAt.IsZero() {
-		t.Fatal("expected startup stability timer to be recorded")
+		t.Fatal("expected startup stability timer to be initialized on first observation")
 	}
-	if realbotLadderedStartupStabilityReady(state, 0, 1, now.Add(realbotLadderedStartupStability-time.Millisecond)) {
-		t.Fatal("expected unchanged startup rung to remain blocked before the stability window elapses")
+	if !realbotLadderedStartupStabilityReady(state, 1, 3, now.Add(time.Millisecond)) {
+		t.Fatal("expected rung changes to remain unblocked without any waiting period")
 	}
-	if !realbotLadderedStartupStabilityReady(state, 0, 1, now.Add(realbotLadderedStartupStability)) {
-		t.Fatal("expected unchanged startup rung to unlock once the stability window elapses")
+	if rung != 3 {
+		t.Fatalf("expected startup rung updated to 3, got %d", rung)
 	}
-	if realbotLadderedStartupStabilityReady(state, 0, 2, now.Add(realbotLadderedStartupStability+time.Second)) {
-		t.Fatal("expected rung change to restart the startup stability timer")
-	}
-	if got := rung; got != 2 {
-		t.Fatalf("expected startup rung to update to 2, got %d", got)
+	if side != 1 {
+		t.Fatalf("expected startup side updated to 1, got %d", side)
 	}
 }
 
@@ -301,48 +307,53 @@ func TestRealbotResetLadderedStartupStabilityClearsState(t *testing.T) {
 }
 
 func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing.T) {
+	// Anchored at $0.50 with a 5c step: rungs 0..3 sit at 0.50/0.55/0.60/0.65.
 	entries := []realbotLadderedEntry{
-		{seq: 0, ask0: 0.01, ask1: 0.20, side: 0, rung: 0, armed: true},
-		{seq: 1, ask0: 0.06, ask1: 0.20, side: 0, rung: 1},
-		{seq: 2, ask0: 0.11, ask1: 0.20, side: 0, rung: 2},
-		{seq: 3, ask0: 0.16, ask1: 0.20, side: 0, rung: 3},
+		{seq: 0, ask0: 0.50, ask1: 0.45, side: 0, rung: 0, armed: true},
+		{seq: 1, ask0: 0.55, ask1: 0.45, side: 0, rung: 1},
+		{seq: 2, ask0: 0.60, ask1: 0.45, side: 0, rung: 2},
+		{seq: 3, ask0: 0.65, ask1: 0.45, side: 0, rung: 3},
 	}
 
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.16, 0.10, 0.01, 5.0); ok {
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.65, 0.40, 0.01, 5.0); ok {
 		t.Fatalf("expected side 0 to stay blocked until it rearms, got side=%d ok=%v", side, ok)
 	}
 
-	entries = realbotRefreshLadderedEntries(entries, 0.01, 0.16, 0.01, 5.0)
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.06, 0.04, 0.01, 5.0); !ok || side != 0 {
+	// Side 0 drops back to the $0.50 anchor; refresh should arm a new rung 0
+	// marker so a subsequent leadership flip lets side 0 re-enter.
+	entries = realbotRefreshLadderedEntries(entries, 0.50, 0.65, 0.01, 5.0)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.45, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 to re-arm after returning to the base rung, got side=%d ok=%v", side, ok)
 	}
 }
 
 func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.85}}
 
-	pending := realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 5.0)
-	if math.Abs(pending.ask0-0.12) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
+	// With the anchor at $0.50 and a 5c step, an ask of 0.85 = (0.85-0.50)/0.05 = rung 7.
+	pending := realbotPendingLadderedEntry(entries, 2, 0.55, 0.85, 0.01, 5.0)
+	if math.Abs(pending.ask0-0.55) > 1e-9 || math.Abs(pending.ask1-0.85) > 1e-9 {
 		t.Fatalf("expected pending anchor to jump to the current quote, got %+v", pending)
 	}
 	if pending.side != 1 || pending.rung != 7 {
-		t.Fatalf("expected pending entry to remember side 1 rung 7 from a 1c base, got %+v", pending)
+		t.Fatalf("expected pending entry to remember side 1 rung 7 from the anchored base, got %+v", pending)
 	}
 
 	entries = append(entries, pending)
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.36, 0.01, 5.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.85, 0.01, 5.0); ok {
 		t.Fatalf("expected unchanged quote to stop replaying missed rungs, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
 
 func TestRealbotLargeGapRequiresFreshStepAfterAnchorReset(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
-	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 2.0))
+	// Anchored at $0.50 with a 2c step: an ask of 0.85 sits at rung 17.
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.85}}
+	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.55, 0.85, 0.01, 2.0))
 
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.369, 0.01, 2.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.859, 0.01, 2.0); ok {
 		t.Fatalf("expected move below the next full 2c step to stay blocked, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.37, 0.01, 2.0); !ok || side != 1 || mult != 1 {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.86, 0.01, 2.0); !ok || side != 1 || mult != 1 {
 		t.Fatalf("expected the next fresh 2c move to allow exactly one new re-entry, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
@@ -424,7 +435,7 @@ func TestRealbotLadderedInventoryCapBlocksHeavyLeader(t *testing.T) {
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
 	if !blocked {
 		t.Fatal("expected active side inventory cap to block an already-heavy leader")
 	}
@@ -442,7 +453,7 @@ func TestRealbotLadderedInventoryCapAllowsLeaderToBalanceOtherSide(t *testing.T)
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
 	if blocked {
 		t.Fatalf("expected cap to allow buying the leader while it is balancing the other side, got %q", reason)
 	}
@@ -451,7 +462,7 @@ func TestRealbotLadderedInventoryCapAllowsLeaderToBalanceOtherSide(t *testing.T)
 func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *testing.T) {
 	engine := paper.NewEngine(100)
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
 	if blocked {
 		t.Fatalf("expected first ladder chunk to be allowed, got %q", reason)
 	}
@@ -459,7 +470,7 @@ func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
 	if blocked {
 		t.Fatalf("expected second ladder chunk to stay allowed, got %q", reason)
 	}
@@ -467,9 +478,35 @@ func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
 	if !blocked {
 		t.Fatal("expected third same-side chunk to be blocked once worst-case resolve loss gets too deep")
+	}
+}
+
+func TestRealbotLadderedInventoryCapZeroFloorDisablesWorstPnLGuard(t *testing.T) {
+	// configuredWorstPnLFloor == 0 means the operator turned the safety guard
+	// OFF. Even an arbitrarily heavy one-sided position should not block.
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 50.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	if blocked {
+		t.Fatalf("expected zero worst-PnL floor to disable the safety guard, got %q", reason)
+	}
+}
+
+func TestRealbotLadderedInventoryCapZeroCapDisablesMaxProfitGuard(t *testing.T) {
+	// configuredMaxProfitPnL == 0 means the operator turned the safety guard
+	// OFF. Even a deeply profitable winning-side projection should not block.
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.30, 100.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.30, core.LadderedTakerPnLGuardMaxProfit, 0, 0)
+	if blocked {
+		t.Fatalf("expected zero max-profit cap to disable the safety guard, got %q", reason)
 	}
 }
 

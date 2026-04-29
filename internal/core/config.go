@@ -153,8 +153,8 @@ type Config struct {
 	LadderedTakerReentryMoveCents      float64 // Minimum quote movement (in cents) required before the next laddered entry
 	LadderedTakerMaxSlippagePct        float64 // Maximum slippage allowed for laddered taker orders (in cents)
 	LadderedTakerPnLGuardMode          string  // "worst-pnl" or "max-profit-pnl" for ladder entry blocking
-	LadderedTakerWorstPnLFloor         float64 // 0 = auto floor, otherwise block entries below this projected worst-case resolve PnL
-	LadderedTakerMaxProfitPnL          float64 // 0 = auto floor, otherwise require this projected winning-side resolve PnL
+	LadderedTakerWorstPnLFloor         float64 // 0 = no safety guard (DISABLED), otherwise block entries below this projected worst-case resolve PnL
+	LadderedTakerMaxProfitPnL          float64 // 0 = no safety guard (DISABLED), otherwise require this projected winning-side resolve PnL cap
 	BinanceQuoteAsset                  string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct          float64 // Percent move over the lookback window required to trigger entry
 	PaperBinanceExecutionDelayMs       int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds

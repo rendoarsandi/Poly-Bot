@@ -81,17 +81,23 @@ func realbotLadderedHasConfirmedEntries(entries []realbotLadderedEntry) bool {
 	return false
 }
 
+// realbotLadderedStartupStabilityReady is a no-op: the startup stability gate
+// has been removed at the operator's request so the first live rung can fire
+// immediately. The function still records the observed side/rung for downstream
+// state inspection but never blocks.
 func realbotLadderedStartupStabilityReady(state *realbotPanicBuyStrategyState, side, rung int, now time.Time) bool {
-	if state == nil || state.ladderedStartupStableAt == nil || state.ladderedStartupSide == nil || state.ladderedStartupRung == nil {
-		return true
+	if state != nil {
+		if state.ladderedStartupStableAt != nil && state.ladderedStartupStableAt.IsZero() {
+			*state.ladderedStartupStableAt = now
+		}
+		if state.ladderedStartupSide != nil {
+			*state.ladderedStartupSide = side
+		}
+		if state.ladderedStartupRung != nil {
+			*state.ladderedStartupRung = rung
+		}
 	}
-	if state.ladderedStartupStableAt.IsZero() || *state.ladderedStartupSide != side || *state.ladderedStartupRung != rung {
-		*state.ladderedStartupStableAt = now
-		*state.ladderedStartupSide = side
-		*state.ladderedStartupRung = rung
-		return false
-	}
-	return now.Sub(*state.ladderedStartupStableAt) >= realbotLadderedStartupStability
+	return true
 }
 
 func realbotPairTokenIDs(tokenToOutcome map[string]string, outcomes []string) (string, string) {
@@ -123,7 +129,11 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	ladderedMode := args.arbMode == paperArbModeLaddered
 	if ladderedMode {
 		rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
-		ladderBasePrice = rMinAsk
+		// Pin the ladder rung-zero anchor at $0.50 for both sides instead of
+		// tracking the operator's MinAskPrice. This makes the ladder symmetric
+		// and predictable: rung 0 fires at <= $0.50 on either outcome, rung N
+		// fires N re-entry moves above that anchor.
+		ladderBasePrice = ladderedTakerBaseRungPrice
 	}
 
 	if ask1 <= bid1 || ask2 <= bid2 || (!ladderedMode && (bid1 <= 0 || bid2 <= 0)) {
@@ -168,8 +178,8 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 		realbotResetLadderedStartupStability(state)
 		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
-			"[%s] 🪜 Ladder fresh market reset to base rung: %s=$%.3f, %s=$%.3f; first live rung needs %s stability",
-			args.marketID, args.outcomes[0], ask1, args.outcomes[1], ask2, realbotLadderedStartupStability)
+			"[%s] 🪜 Ladder fresh market: anchored at $%.3f for both sides (live asks: %s=$%.3f, %s=$%.3f)",
+			args.marketID, ladderBasePrice, args.outcomes[0], ask1, args.outcomes[1], ask2)
 		return true
 	}
 	if ladderedMode && state != nil && state.ladderedEntries != nil {

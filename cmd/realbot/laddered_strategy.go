@@ -214,14 +214,14 @@ func realbotLadderedLeaderSide(ask0, ask1 float64) int {
 	}
 }
 
-func realbotLadderedBasePrice(minAsk float64) float64 {
-	if minAsk < ladderedTakerMinAsk {
-		return ladderedTakerMinAsk
-	}
-	if minAsk >= ladderedTakerMaxAsk {
-		return ladderedTakerMaxAsk
-	}
-	return minAsk
+// ladderedTakerBaseRungPrice anchors the ladder rung-zero price at $0.50 for
+// BOTH outcomes (Down and Up), independent of the operator's MinAskPrice
+// setting. This means rung 0 fires whenever the ask is at or below $0.50,
+// and each subsequent rung is one re-entry move above that anchor.
+const ladderedTakerBaseRungPrice = 0.50
+
+func realbotLadderedBasePrice(_ float64) float64 {
+	return ladderedTakerBaseRungPrice
 }
 
 func realbotLadderedRungIndex(ask, basePrice, moveCents float64) int {
@@ -383,12 +383,20 @@ func realbotShouldAdvanceLadderedEntry(requestedQty, filledQty float64) bool {
 	return filledQty >= minOnChainActionShares-1e-9
 }
 
-func realbotLadderedWorstPnLFloor(projectedCost, configuredFloor float64) float64 {
+// realbotLadderedWorstPnLFloor returns the worst-case resolve PnL floor used
+// to gate new ladder rungs. A configured value of 0 (within rounding) means
+// the safety guard is DISABLED and 0 is returned to signal the caller to skip
+// the check entirely. Any non-zero configured value is normalized to its
+// negative form and returned as-is.
+func realbotLadderedWorstPnLFloor(_ float64, configuredFloor float64) float64 {
 	configuredFloor = math.Round(configuredFloor*100.0) / 100.0
-	if math.Abs(configuredFloor) >= 0.005 {
-		return configuredFloor
+	if math.Abs(configuredFloor) < 0.005 {
+		return 0
 	}
-	return -math.Max(projectedCost*2.0, minOnChainActionShares)
+	if configuredFloor > 0 {
+		configuredFloor = -configuredFloor
+	}
+	return configuredFloor
 }
 
 func realbotLadderedMaxProfitPnLCap(configuredCap float64) float64 {
@@ -471,6 +479,10 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 	}
 
 	worstPnLFloor := realbotLadderedWorstPnLFloor(projectedCost, configuredWorstPnLFloor)
+	// A floor of 0 means the operator disabled the safety guard entirely.
+	if worstPnLFloor == 0 {
+		return false, ""
+	}
 	if worstResolvePnL >= worstPnLFloor-1e-9 {
 		return false, ""
 	}

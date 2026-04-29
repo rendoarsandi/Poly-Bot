@@ -573,8 +573,8 @@ type TUISettings struct {
 	LadderedTakerReentryMoveCents      float64 // minimum quote movement in cents required before the next laddered entry
 	LadderedTakerMaxSlippagePct        float64 // maximum slippage in cents for laddered taker
 	LadderedTakerPnLGuardMode          string  // "worst-pnl" or "max-profit-pnl" for laddered taker entry blocking
-	LadderedTakerWorstPnLFloor         float64 // 0 = auto floor, otherwise block entries below this projected worst-case resolve PnL
-	LadderedTakerMaxProfitPnL          float64 // 0 = auto floor, otherwise require projected winning-side resolve PnL
+	LadderedTakerWorstPnLFloor         float64 // 0 = no safety guard (DISABLED), otherwise block entries below this projected worst-case resolve PnL
+	LadderedTakerMaxProfitPnL          float64 // 0 = no safety guard (DISABLED), otherwise require projected winning-side resolve PnL cap
 	BuyExecutionMarginFloorPercent     float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell                 float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled               bool    // toggle split strategy on/off
@@ -1522,8 +1522,8 @@ type TUI struct {
 
 	// Optional callbacks invoked when the user confirms a Wrap/Unwrap from the TUI.
 	// `amount` is in pUSD/USDC.e units; pass <=0 to mean "wrap/unwrap full balance".
-	onWrapUSDCe   func(amount float64)
-	onUnwrapPUSD  func(amount float64)
+	onWrapUSDCe  func(amount float64)
+	onUnwrapPUSD func(amount float64)
 
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
 	settings         TUISettings
@@ -1783,12 +1783,12 @@ func settingsEditValue(cfg TUISettings, row int) string {
 	case settingsRowLadderWorstPnLFloor:
 		if isLadderedTakerWorstPnLMode(cfg) {
 			if math.Abs(cfg.LadderedTakerWorstPnLFloor) < 0.005 {
-				return "AUTO"
+				return "OFF"
 			}
 			return fmt.Sprintf("%.2f", cfg.LadderedTakerWorstPnLFloor)
 		}
 		if math.Abs(cfg.LadderedTakerMaxProfitPnL) < 0.005 {
-			return "AUTO"
+			return "OFF"
 		}
 		return fmt.Sprintf("%.2f", cfg.LadderedTakerMaxProfitPnL)
 	case settingsRowMinAskPrice:
@@ -7428,12 +7428,12 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				if isLadderedTakerWorstPnLMode(cfg) {
 					if math.Abs(cfg.LadderedTakerWorstPnLFloor) < 0.005 {
-						return styleMuted.Render(" AUTO ")
+						return styleMuted.Render(" OFF ")
 					}
 					return fmt.Sprintf(" -$%.2f ", math.Abs(cfg.LadderedTakerWorstPnLFloor))
 				}
 				if math.Abs(cfg.LadderedTakerMaxProfitPnL) < 0.005 {
-					return styleMuted.Render(" AUTO ")
+					return styleMuted.Render(" OFF ")
 				}
 				return fmt.Sprintf(" $%.2f ", cfg.LadderedTakerMaxProfitPnL)
 			}(),
@@ -7901,7 +7901,7 @@ func (m tuiModel) renderSettings(w int) string {
 		modeNote = styleDimmed.Render("  Laddered taker mode accumulates paired taker inventory in small slices and leaves it for later cleanup/merge instead of instant merge.") + "\n"
 		if isLadderedTakerWorstPnLMode(cfg) {
 			if math.Abs(cfg.LadderedTakerWorstPnLFloor) < 0.005 {
-				modeNote += styleDimmed.Render("  Ladder Worst PnL Floor = AUTO uses the built-in dynamic worst-case resolve guard.") + "\n"
+				modeNote += styleDimmed.Render("  Ladder Worst PnL Floor = OFF disables the safety guard; rungs fire regardless of projected worst-case resolve PnL.") + "\n"
 			} else {
 				modeNote += styleDimmed.Render(fmt.Sprintf(
 					"  Ladder Worst PnL Floor blocks new rungs once projected worst-case resolve PnL drops below -$%.2f.",
@@ -7910,7 +7910,7 @@ func (m tuiModel) renderSettings(w int) string {
 			}
 		} else {
 			if math.Abs(cfg.LadderedTakerMaxProfitPnL) < 0.005 {
-				modeNote += styleDimmed.Render("  Ladder Min Profit PnL = AUTO uses a break-even winning-side resolve check.") + "\n"
+				modeNote += styleDimmed.Render("  Ladder Min Profit PnL = OFF disables the safety guard; rungs fire regardless of the projected winning-side resolve PnL.") + "\n"
 			} else {
 				modeNote += styleDimmed.Render(fmt.Sprintf(
 					"  Ladder Min Profit PnL blocks new rungs once the bought side would resolve below +$%.2f even if it wins.",
