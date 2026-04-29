@@ -1515,6 +1515,15 @@ type TUI struct {
 	walletTruth      map[string][]WalletTruthPosition
 	walletCash       float64
 	hasWalletCash    bool
+	walletUSDCe      float64
+	hasWalletUSDCe   bool
+	walletPOL        float64
+	hasWalletPOL     bool
+
+	// Optional callbacks invoked when the user confirms a Wrap/Unwrap from the TUI.
+	// `amount` is in pUSD/USDC.e units; pass <=0 to mean "wrap/unwrap full balance".
+	onWrapUSDCe   func(amount float64)
+	onUnwrapPUSD  func(amount float64)
 
 	// Runtime-adjustable settings (readable by the trading loop via GetSettings)
 	settings         TUISettings
@@ -1582,6 +1591,10 @@ type tuiSnapshot struct {
 	walletTruth        []WalletTruthPosition
 	walletCash         float64
 	hasWalletCash      bool
+	walletUSDCe        float64
+	hasWalletUSDCe     bool
+	walletPOL          float64
+	hasWalletPOL       bool
 
 	stats           Stats
 	exposure        float64
@@ -1640,6 +1653,45 @@ func (t *TUI) ClearWalletCash() {
 	t.markDirtyLocked()
 }
 
+// SetWalletUSDCe records the wallet's legacy USDC.e balance for display.
+func (t *TUI) SetWalletUSDCe(balance float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if balance < 0 {
+		balance = 0
+	}
+	if t.hasWalletUSDCe && math.Abs(t.walletUSDCe-balance) < 0.000001 {
+		return
+	}
+	t.walletUSDCe = balance
+	t.hasWalletUSDCe = true
+	t.markDirtyLocked()
+}
+
+// SetWalletPOL records the wallet's native POL (gas) balance for display.
+func (t *TUI) SetWalletPOL(balance float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if balance < 0 {
+		balance = 0
+	}
+	if t.hasWalletPOL && math.Abs(t.walletPOL-balance) < 0.000001 {
+		return
+	}
+	t.walletPOL = balance
+	t.hasWalletPOL = true
+	t.markDirtyLocked()
+}
+
+// SetCollateralWrapHandlers registers callbacks invoked when the user confirms a
+// wrap/unwrap from the TUI. Pass nil for either handler to disable that hotkey.
+func (t *TUI) SetCollateralWrapHandlers(onWrap func(amount float64), onUnwrap func(amount float64)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onWrapUSDCe = onWrap
+	t.onUnwrapPUSD = onUnwrap
+}
+
 type tuiModel struct {
 	tui      *TUI
 	interval time.Duration
@@ -1662,6 +1714,10 @@ type tuiModel struct {
 	mainContentWidth    int
 	mainContentSettings bool
 	mainContentCached   string
+	// Wrap/Unwrap confirmation overlay state. Empty action means no overlay.
+	wrapConfirmAction string  // "wrap" or "unwrap"
+	wrapConfirmAmount float64 // amount that will be wrapped/unwrapped
+	wrapConfirmStatus string  // optional status line ("submitted", error message, etc.)
 }
 
 const (
@@ -2539,6 +2595,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snap.walletTruth = walletTruth
 		m.snap.walletCash = m.tui.walletCash
 		m.snap.hasWalletCash = m.tui.hasWalletCash
+		m.snap.walletUSDCe = m.tui.walletUSDCe
+		m.snap.hasWalletUSDCe = m.tui.hasWalletUSDCe
+		m.snap.walletPOL = m.tui.walletPOL
+		m.snap.hasWalletPOL = m.tui.hasWalletPOL
 		m.snap.stats = stats
 		m.snap.exposure = exposure
 		m.snap.maxExposure = stats.PeakExposure
@@ -2559,6 +2619,46 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		key := msg.String()
+
+		// ── Wrap/Unwrap confirmation overlay (highest priority) ──────────────
+		if m.wrapConfirmAction != "" {
+			switch key {
+			case "y", "Y":
+				action := m.wrapConfirmAction
+				amount := m.wrapConfirmAmount
+				m.tui.mu.Lock()
+				wrapCb := m.tui.onWrapUSDCe
+				unwrapCb := m.tui.onUnwrapPUSD
+				m.tui.mu.Unlock()
+				switch action {
+				case "wrap":
+					if wrapCb != nil {
+						go wrapCb(amount)
+						m.tui.LogEvent("🔁 Wrap requested: %.2f USDC.e → pUSD", amount)
+					} else {
+						m.tui.LogEvent("⚠️ Wrap handler not registered")
+					}
+				case "unwrap":
+					if unwrapCb != nil {
+						go unwrapCb(amount)
+						m.tui.LogEvent("🔁 Unwrap requested: %.2f pUSD → USDC.e", amount)
+					} else {
+						m.tui.LogEvent("⚠️ Unwrap handler not registered")
+					}
+				}
+				m.wrapConfirmAction = ""
+				m.wrapConfirmAmount = 0
+				m.wrapConfirmStatus = ""
+				return m, nil
+			case "n", "N", "esc":
+				m.wrapConfirmAction = ""
+				m.wrapConfirmAmount = 0
+				m.wrapConfirmStatus = ""
+				return m, nil
+			}
+			// Swallow any other key while overlay is open.
+			return m, nil
+		}
 
 		// ── Settings overlay key handling ────────────────────────────────────
 		if m.showSettings {
@@ -3359,6 +3459,44 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tui.restartReq = true
 			m.tui.mu.Unlock()
 			return m, nil
+		case "w", "W":
+			// Wrap full USDC.e -> pUSD (only meaningful in real mode).
+			m.tui.mu.Lock()
+			amount := m.tui.walletUSDCe
+			has := m.tui.hasWalletUSDCe
+			cb := m.tui.onWrapUSDCe
+			m.tui.mu.Unlock()
+			if cb == nil {
+				m.tui.LogEvent("⚠️ Wrap not available (paper mode or handler not registered)")
+				return m, nil
+			}
+			if !has || amount < 0.01 {
+				m.tui.LogEvent("⚠️ No USDC.e balance to wrap")
+				return m, nil
+			}
+			m.wrapConfirmAction = "wrap"
+			m.wrapConfirmAmount = amount
+			m.wrapConfirmStatus = ""
+			return m, nil
+		case "u", "U":
+			// Unwrap full pUSD -> USDC.e (only meaningful in real mode).
+			m.tui.mu.Lock()
+			amount := m.tui.walletCash
+			has := m.tui.hasWalletCash
+			cb := m.tui.onUnwrapPUSD
+			m.tui.mu.Unlock()
+			if cb == nil {
+				m.tui.LogEvent("⚠️ Unwrap not available (paper mode or handler not registered)")
+				return m, nil
+			}
+			if !has || amount < 0.01 {
+				m.tui.LogEvent("⚠️ No pUSD balance to unwrap")
+				return m, nil
+			}
+			m.wrapConfirmAction = "unwrap"
+			m.wrapConfirmAmount = amount
+			m.wrapConfirmStatus = ""
+			return m, nil
 		case "q", "Q", "ctrl+c":
 			// Call the parent cancel func FIRST so the trading loop shuts down
 			// immediately (fixes double Ctrl+C requirement).
@@ -3392,12 +3530,62 @@ func (m tuiModel) View() string {
 	if m.showSettings {
 		return m.renderSettings(w)
 	}
+	// Wrap/Unwrap confirmation overlay: replace entire view while open.
+	if m.wrapConfirmAction != "" {
+		return m.renderWrapConfirmOverlay(w)
+	}
 	body := m.renderMainContent(w)
 	lines := strings.Split(body, "\n")
 	visibleHeight := m.bodyViewportHeight()
 	visibleLines, effectiveOffset, maxOffset := viewportLines(lines, m.scrollOffset, visibleHeight)
 	footer := m.renderFooter(w, effectiveOffset, maxOffset)
 	return strings.Join(append(visibleLines, footer), "\n")
+}
+
+// renderWrapConfirmOverlay paints a centered Y/N confirmation prompt for wrap/unwrap actions.
+func (m tuiModel) renderWrapConfirmOverlay(w int) string {
+	if w < 40 {
+		w = 40
+	}
+	var title, line1, line2 string
+	switch m.wrapConfirmAction {
+	case "wrap":
+		title = "  Confirm Wrap (USDC.e → pUSD)  "
+		line1 = fmt.Sprintf("  Wrap %.2f USDC.e into pUSD via Collateral Onramp.", m.wrapConfirmAmount)
+		line2 = "  This will submit one or two on-chain transactions (approve + wrap)."
+	case "unwrap":
+		title = "  Confirm Unwrap (pUSD → USDC.e)  "
+		line1 = fmt.Sprintf("  Unwrap %.2f pUSD into USDC.e via Collateral Offramp.", m.wrapConfirmAmount)
+		line2 = "  This will submit one or two on-chain transactions (approve + unwrap)."
+	default:
+		title = "  Confirm  "
+		line1 = "  (no action)"
+		line2 = ""
+	}
+	prompt := "  Press [Y] to confirm, [N] or [Esc] to cancel."
+
+	bar := strings.Repeat("─", w)
+	pad := func(s string) string {
+		if len(s) >= w {
+			return s[:w]
+		}
+		return s + strings.Repeat(" ", w-len(s))
+	}
+	out := []string{
+		bar,
+		pad(title),
+		bar,
+		pad(""),
+		pad(line1),
+		pad(line2),
+		pad(""),
+		pad(prompt),
+		bar,
+	}
+	if m.wrapConfirmStatus != "" {
+		out = append(out, pad("  "+m.wrapConfirmStatus), bar)
+	}
+	return strings.Join(out, "\n")
 }
 
 // ─── TUI Public API ───────────────────────────────────────────────────────────
@@ -5842,7 +6030,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	cashLabel := "Cash"
 	cashText := fmt.Sprintf("$%.2f", displayCash)
 	if isRealMode {
-		cashLabel = "Spendable"
+		cashLabel = "pUSD"
 	}
 	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s  ·  Loss Streak %s",
 		cashLabel,
@@ -5854,6 +6042,23 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		drawdownSt.Render(formatDrawdownCash(stats.MaxDrawdownCash)),
 		lossStreakSt.Render(formatDrawdownCash(stats.MaxLossStreakCash)),
 	)
+	// Real-mode wallet line: surface legacy USDC.e (wrap candidate) and POL (gas) so the
+	// operator can see what's available before pressing W/U.
+	walletLine := ""
+	if isRealMode && !paperExecutionMode && (s.hasWalletUSDCe || s.hasWalletPOL) {
+		usdceText := "—"
+		if s.hasWalletUSDCe {
+			usdceText = fmt.Sprintf("$%.2f", s.walletUSDCe)
+		}
+		polText := "—"
+		if s.hasWalletPOL {
+			polText = fmt.Sprintf("%.4f", s.walletPOL)
+		}
+		walletLine = fmt.Sprintf("  Wallet  ·  USDC.e %s  ·  POL %s  ·  [W] wrap → pUSD  ·  [U] unwrap → USDC.e",
+			styleWhite.Render(usdceText),
+			styleWhite.Render(polText),
+		)
+	}
 	row3 := tradeLine
 	row4 := ""
 	if useRoundSummary {
@@ -5875,7 +6080,11 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	}
 	row5 := "  " + renderTradingHoursStatus(s.settings.TradingHoursMode, time.Now())
 
-	content := header + "\n" + row1 + "\n" + barLine + "\n" + row3 + "\n" + row4 + "\n" + row5
+	content := header + "\n" + row1
+	if walletLine != "" {
+		content += "\n" + walletLine
+	}
+	content += "\n" + barLine + "\n" + row3 + "\n" + row4 + "\n" + row5
 	return makePanel(inner, clrTeal, content)
 }
 

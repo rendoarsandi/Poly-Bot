@@ -107,7 +107,7 @@ func realbotHandleSplitStrategy(args realbotSplitStrategyArgs, state *realbotSpl
 	args.splitMu.Unlock()
 
 	if shouldSplit && args.replenishCtrl.MarkInProgress() {
-		baseTradeSize := args.cfg.CalculateTradeSize(realbotSizingCapitalForTrade(args.engine, args.liveCfg))
+		baseTradeSize := realbotLiveTradeSize(realbotSizingCapitalForTrade(args.engine, args.liveCfg), args.liveCfg)
 
 		// Scale initial buffer based on balance: 2x trade size, but at least $2 and at most 25% of balance.
 		initialBuffer := baseTradeSize * 2.0
@@ -175,7 +175,7 @@ func realbotHandleSplitStrategy(args realbotSplitStrategyArgs, state *realbotSpl
 	bidSum := bid1 + bid2
 	sellMargin := (bidSum - 1.0) * 100
 
-	baseTradeSize := args.cfg.CalculateTradeSize(realbotSizingCapitalForTrade(args.engine, args.liveCfg))
+	baseTradeSize := realbotLiveTradeSize(realbotSizingCapitalForTrade(args.engine, args.liveCfg), args.liveCfg)
 	targetBuffer := baseTradeSize * args.cfg.MaxAggressionMultiplier
 	currentShares := args.splitInventory.GetMinSplitShares(args.marketID, args.outcomes[0], args.outcomes[1])
 	replenishAmount := baseTradeSize * 2.0

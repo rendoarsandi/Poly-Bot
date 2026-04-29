@@ -26,6 +26,9 @@ const PUSDContract = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 // Polygon collateral onramp contract used to wrap USDC.e into pUSD.
 const CollateralOnrampContract = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
 
+// Polygon collateral offramp contract used to unwrap pUSD back to USDC.e.
+const CollateralOfframpContract = "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
+
 // Polygon CTF (Conditional Tokens Framework) contract address
 const CTFContract = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
@@ -838,6 +841,102 @@ func (c *PolygonClient) GetCTFBalance(ctx context.Context, address string, token
 	}
 
 	return parseHexBigInt(hexResult)
+}
+
+// GetUSDCeBalance returns the legacy USDC.e ERC-20 balance for an address (6 decimals).
+func (c *PolygonClient) GetUSDCeBalance(ctx context.Context, address string) (float64, error) {
+	addr := strings.TrimPrefix(address, "0x")
+	if len(addr) < 40 {
+		addr = strings.Repeat("0", 40-len(addr)) + addr
+	}
+	data := "0x70a08231000000000000000000000000" + addr
+
+	callParams := map[string]string{
+		"to":   USDCeContract,
+		"data": data,
+	}
+
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return 0, fmt.Errorf("failed to get USDC.e balance: %w", err)
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return 0, fmt.Errorf("failed to parse USDC.e balance result: %w", err)
+	}
+
+	balance, err := parseHexBigInt(hexResult)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse USDC.e balance hex: %w", err)
+	}
+
+	balanceFloat := new(big.Float).SetInt(balance)
+	divisor := new(big.Float).SetInt64(1e6)
+	balanceFloat.Quo(balanceFloat, divisor)
+
+	result64, _ := balanceFloat.Float64()
+	return result64, nil
+}
+
+// GetUSDCeAllowance returns the current USDC.e allowance for a spender against the given owner.
+func (c *PolygonClient) GetUSDCeAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
+	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
+	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+
+	data := "0xdd62ed3e" + ownerAddr + spenderAddr
+
+	callParams := map[string]string{
+		"to":   USDCeContract,
+		"data": data,
+	}
+
+	result, err := c.call(ctx, "eth_call", []interface{}{callParams, "latest"})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get USDC.e allowance: %w", err)
+	}
+
+	var hexResult string
+	if err := json.Unmarshal(result, &hexResult); err != nil {
+		return nil, fmt.Errorf("failed to parse USDC.e allowance result: %w", err)
+	}
+
+	return parseHexBigInt(hexResult)
+}
+
+// ApproveUSDCe grants allowance on USDC.e to a spender (e.g. the Collateral Onramp) (PAID WRITE).
+func (c *PolygonClient) ApproveUSDCe(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
+	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	amtHex := fmt.Sprintf("%064x", amount)
+
+	data := "0x095ea7b3" + spenderAddr + amtHex
+	return c.signAndSendWriteTransaction(ctx, signer, USDCeContract, big.NewInt(0), 100000, data)
+}
+
+// WrapUSDCe wraps USDC.e into pUSD via the Collateral Onramp's wrap(address,address,uint256) (PAID WRITE).
+// `to` receives the resulting pUSD; pass the signer's own address to keep the funds in-wallet.
+// `amount` is in 6-decimal USDC.e units (e.g. 1.00 USDC.e == 1_000_000).
+func (c *PolygonClient) WrapUSDCe(ctx context.Context, signer *Signer, to string, amount *big.Int) (string, error) {
+	asset := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCeContract), "0x")
+	toPad := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(to), "0x")
+	amtHex := fmt.Sprintf("%064x", amount)
+
+	// Selector for wrap(address,address,uint256)
+	data := "0x62355638" + asset + toPad + amtHex
+	return c.signAndSendWriteTransaction(ctx, signer, CollateralOnrampContract, big.NewInt(0), 200000, data)
+}
+
+// UnwrapPUSD unwraps pUSD back to USDC.e via the Collateral Offramp's unwrap(address,address,uint256) (PAID WRITE).
+// `to` receives the resulting USDC.e; pass the signer's own address to keep the funds in-wallet.
+// `amount` is in 6-decimal pUSD units (e.g. 1.00 pUSD == 1_000_000).
+func (c *PolygonClient) UnwrapPUSD(ctx context.Context, signer *Signer, to string, amount *big.Int) (string, error) {
+	asset := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCeContract), "0x")
+	toPad := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(to), "0x")
+	amtHex := fmt.Sprintf("%064x", amount)
+
+	// Selector for unwrap(address,address,uint256)
+	data := "0x8cc7104f" + asset + toPad + amtHex
+	return c.signAndSendWriteTransaction(ctx, signer, CollateralOfframpContract, big.NewInt(0), 200000, data)
 }
 
 // GetMATICBalance returns the native MATIC balance for an address

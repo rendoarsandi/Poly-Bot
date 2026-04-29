@@ -325,7 +325,7 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		capMult = realbotMakerInventoryCapMult
 	}
 
-	baseTradeValue := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, liveCfg))
+	baseTradeValue := realbotLiveTradeSize(realbotSizingCapitalForTrade(engine, liveCfg), liveCfg)
 	targetValue := math.Max(minQuoteValue, baseTradeValue*targetMult)
 	maxInventoryValue := math.Max(targetValue, baseTradeValue*capMult)
 	minPairEdge := liveCfg.MinMarginPercent / 100.0

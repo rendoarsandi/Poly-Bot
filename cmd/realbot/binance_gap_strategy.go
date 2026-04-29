@@ -196,7 +196,7 @@ func realbotHandleBinanceGapMarket(ctx context.Context, id string, outcomes []st
 	if limitPrice <= 0 {
 		return
 	}
-	tradeBudget := cfg.CalculateTradeSize(realbotSizingCapitalForTrade(engine, liveCfg))
+	tradeBudget := realbotLiveTradeSize(realbotSizingCapitalForTrade(engine, liveCfg), liveCfg)
 	liq := realbotAskLiquidityAtOrBelow(tokenFullAsks[targetOutcome], limitPrice)
 	shares := normalizeMarketBuyShares(math.Min(tradeBudget/limitPrice, liq))
 	shares = realbotClampSingleBuySharesToBudget(shares, tradeBudget, limitPrice)

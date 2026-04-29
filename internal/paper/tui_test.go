@@ -3322,8 +3322,8 @@ func TestRenderAccountStatusRealModeShowsWalletCashSeparatelyFromSpendableBalanc
 		RealizedPnL:     -4.08,
 	}, 0.0, 0, 9.93, 9.93, 1.0, 18.00, 3, 1, 1, nil)
 
-	if !strings.Contains(rendered, "Spendable $18.00") {
-		t.Fatalf("expected spendable to show wallet cash in real-mode account status, got %q", rendered)
+	if !strings.Contains(rendered, "pUSD $18.00") {
+		t.Fatalf("expected pUSD label to show wallet cash in real-mode account status, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "Equity ") || !strings.Contains(rendered, "$9.93") {
 		t.Fatalf("expected real-mode equity labels to reflect local book equity, got %q", rendered)

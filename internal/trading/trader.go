@@ -1942,6 +1942,129 @@ func (t *RealTrader) Address() string {
 	return t.client.Address()
 }
 
+// GetUSDCeBalance returns the wallet's USDC.e (legacy) on-chain balance.
+func (t *RealTrader) GetUSDCeBalance(ctx context.Context) (float64, error) {
+	if t.paperEngine != nil {
+		return 0, nil
+	}
+	if t.polygon == nil {
+		return 0, fmt.Errorf("polygon client not initialized")
+	}
+	if t.client == nil {
+		return 0, fmt.Errorf("exchange client not initialized")
+	}
+	return t.polygon.GetUSDCeBalance(ctx, t.client.Address())
+}
+
+// GetPOLBalance returns the wallet's native POL (formerly MATIC) gas balance.
+func (t *RealTrader) GetPOLBalance(ctx context.Context) (float64, error) {
+	if t.paperEngine != nil {
+		return 0, nil
+	}
+	if t.polygon == nil {
+		return 0, fmt.Errorf("polygon client not initialized")
+	}
+	if t.client == nil {
+		return 0, fmt.Errorf("exchange client not initialized")
+	}
+	return t.polygon.GetMATICBalance(ctx, t.client.Address())
+}
+
+// usdcMicroAmountFromFloat converts a 6-decimal USDC/pUSD float into the integer micro units expected on-chain.
+func usdcMicroAmountFromFloat(amount float64) (*big.Int, error) {
+	if amount <= 0 {
+		return nil, fmt.Errorf("amount must be positive")
+	}
+	micro := new(big.Float).Mul(big.NewFloat(amount), big.NewFloat(1e6))
+	asInt, _ := micro.Int(nil)
+	if asInt == nil || asInt.Sign() <= 0 {
+		return nil, fmt.Errorf("amount underflow")
+	}
+	return asInt, nil
+}
+
+// WrapUSDCeToPUSD ensures USDC.e is approved for the Collateral Onramp, then wraps the
+// requested amount of USDC.e into pUSD held by the trader's wallet. Returns the wrap tx hash.
+func (t *RealTrader) WrapUSDCeToPUSD(ctx context.Context, amount float64) (string, error) {
+	if t.paperEngine != nil {
+		return "", fmt.Errorf("wrap is not available in paper mode")
+	}
+	if t.polygon == nil || t.client == nil {
+		return "", fmt.Errorf("real trader not initialized")
+	}
+	signer := t.GetSigner()
+	if signer == nil {
+		return "", fmt.Errorf("signer unavailable")
+	}
+	micro, err := usdcMicroAmountFromFloat(amount)
+	if err != nil {
+		return "", err
+	}
+
+	t.onChainMu.Lock()
+	defer t.onChainMu.Unlock()
+
+	owner := t.client.Address()
+	allowance, err := t.polygon.GetUSDCeAllowance(ctx, owner, api.CollateralOnrampContract)
+	if err != nil {
+		return "", fmt.Errorf("read USDC.e allowance: %w", err)
+	}
+	if allowance == nil || allowance.Cmp(micro) < 0 {
+		maxApprove := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+		if _, err := t.polygon.ApproveUSDCe(ctx, signer, api.CollateralOnrampContract, maxApprove); err != nil {
+			return "", fmt.Errorf("approve USDC.e for onramp: %w", err)
+		}
+	}
+
+	tx, err := t.polygon.WrapUSDCe(ctx, signer, owner, micro)
+	if err != nil {
+		return "", fmt.Errorf("wrap USDC.e: %w", err)
+	}
+	t.invalidateOnChainBalanceCache()
+	return tx, nil
+}
+
+// UnwrapPUSDToUSDCe ensures pUSD is approved for the Collateral Offramp, then unwraps the
+// requested amount of pUSD back into USDC.e in the trader's wallet. Returns the unwrap tx hash.
+func (t *RealTrader) UnwrapPUSDToUSDCe(ctx context.Context, amount float64) (string, error) {
+	if t.paperEngine != nil {
+		return "", fmt.Errorf("unwrap is not available in paper mode")
+	}
+	if t.polygon == nil || t.client == nil {
+		return "", fmt.Errorf("real trader not initialized")
+	}
+	signer := t.GetSigner()
+	if signer == nil {
+		return "", fmt.Errorf("signer unavailable")
+	}
+	micro, err := usdcMicroAmountFromFloat(amount)
+	if err != nil {
+		return "", err
+	}
+
+	t.onChainMu.Lock()
+	defer t.onChainMu.Unlock()
+
+	owner := t.client.Address()
+	allowance, err := t.polygon.GetCollateralAllowance(ctx, owner, api.CollateralOfframpContract)
+	if err != nil {
+		return "", fmt.Errorf("read pUSD allowance: %w", err)
+	}
+	if allowance == nil || allowance.Cmp(micro) < 0 {
+		maxApprove := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+		if _, err := t.polygon.ApproveCollateral(ctx, signer, api.CollateralOfframpContract, maxApprove); err != nil {
+			return "", fmt.Errorf("approve pUSD for offramp: %w", err)
+		}
+	}
+
+	tx, err := t.polygon.UnwrapPUSD(ctx, signer, owner, micro)
+	if err != nil {
+		return "", fmt.Errorf("unwrap pUSD: %w", err)
+	}
+	t.invalidateOnChainBalanceCache()
+	return tx, nil
+}
+
 // GetCTFBalanceFloat returns the on-chain CTF token balance as a float64 (human-readable shares)
 func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (float64, error) {
 	if t.paperEngine != nil {

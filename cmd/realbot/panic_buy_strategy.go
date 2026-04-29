@@ -190,7 +190,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 
-	tradeSize := args.cfg.CalculateTradeSize(realbotSizingCapitalForTrade(args.engine, realbotCfg))
+	tradeSize := realbotLiveTradeSize(realbotSizingCapitalForTrade(args.engine, realbotCfg), realbotCfg)
 
 	maxFeeRateBps := 0
 	if rate1 := args.tokenFeeRates[args.outcomes[0]]; rate1 > maxFeeRateBps {

@@ -27,6 +27,22 @@ func realbotCurrentSizingCapital(engine *paper.Engine) float64 {
 	return sizing
 }
 
+// realbotLiveTradeSize computes the per-trade USDC budget using the live TUI
+// settings (TradeSizingMode, TradeSizeUSDC, TradeScaleFactor, MaxTradeSize) so
+// that the operator's runtime adjustments — including switching between
+// percent-of-equity and fixed-USDC sizing — take effect immediately. This
+// supersedes the older path that read the same fields from the startup-time
+// *core.Config, which became stale once the user edited them in the TUI.
+func realbotLiveTradeSize(currentBalance float64, liveCfg paper.TUISettings) float64 {
+	return core.CalculateTradeSizeForMode(
+		currentBalance,
+		liveCfg.TradeScaleFactor,
+		liveCfg.TradeSizeUSDC,
+		liveCfg.MaxTradeSize,
+		liveCfg.TradeSizingMode,
+	)
+}
+
 func realbotSizingCapitalForTrade(engine *paper.Engine, liveCfg paper.TUISettings) float64 {
 	if engine == nil {
 		return 0

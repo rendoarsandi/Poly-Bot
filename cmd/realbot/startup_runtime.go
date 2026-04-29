@@ -209,6 +209,10 @@ func run() error {
 
 	realbotInitSettingsRuntime(tui, cfg, restClient)
 
+	if realTrader != nil && !realTrader.IsEmbeddedPaperMode() {
+		realbotBindCollateralWrapHandlers(ctx, realTrader, tui)
+	}
+
 	if UseLiveUI {
 		tui.StartRenderLoop(realbotUIInterval(tui.GetSettings()), stop)
 		defer tui.Stop()

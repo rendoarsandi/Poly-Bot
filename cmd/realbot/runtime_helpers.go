@@ -67,10 +67,16 @@ func realbotRefreshWalletCashDisplay(ctx context.Context, trader *trading.RealTr
 	defer cancel()
 	if walletCash, err := trader.ForceRefreshOnChainUSDCBalance(cashCtx); err == nil {
 		tui.SetWalletCash(walletCash)
-		return
-	}
-	if spendable, err := trader.GetBalance(cashCtx); err == nil {
+	} else if spendable, err := trader.GetBalance(cashCtx); err == nil {
 		tui.SetWalletCash(spendable)
+	}
+	// Also surface legacy USDC.e (wrap candidate) and POL (gas) balances for the
+	// account panel so the operator can see what's available before pressing W/U.
+	if usdce, err := trader.GetUSDCeBalance(cashCtx); err == nil {
+		tui.SetWalletUSDCe(usdce)
+	}
+	if pol, err := trader.GetPOLBalance(cashCtx); err == nil {
+		tui.SetWalletPOL(pol)
 	}
 }
 
@@ -86,6 +92,45 @@ func watchRealbotSleep(ctx context.Context, delay time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// realbotBindCollateralWrapHandlers wires the TUI W/U keys to the trader's
+// USDC.e <-> pUSD wrap/unwrap helpers. Only call this in real (non-paper) mode.
+func realbotBindCollateralWrapHandlers(ctx context.Context, trader *trading.RealTrader, tui *paper.TUI) {
+	if trader == nil || tui == nil || trader.IsEmbeddedPaperMode() {
+		return
+	}
+	wrap := func(amount float64) {
+		if amount <= 0 {
+			tui.LogEvent("⚠️ Wrap aborted: amount must be > 0")
+			return
+		}
+		txCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		tx, err := trader.WrapUSDCeToPUSD(txCtx, amount)
+		if err != nil {
+			tui.LogEvent("❌ Wrap failed: %v", err)
+			return
+		}
+		tui.LogEvent("✅ Wrapped %.2f USDC.e → pUSD (tx %s)", amount, tx)
+		realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
+	}
+	unwrap := func(amount float64) {
+		if amount <= 0 {
+			tui.LogEvent("⚠️ Unwrap aborted: amount must be > 0")
+			return
+		}
+		txCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		tx, err := trader.UnwrapPUSDToUSDCe(txCtx, amount)
+		if err != nil {
+			tui.LogEvent("❌ Unwrap failed: %v", err)
+			return
+		}
+		tui.LogEvent("✅ Unwrapped %.2f pUSD → USDC.e (tx %s)", amount, tx)
+		realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
+	}
+	tui.SetCollateralWrapHandlers(wrap, unwrap)
 }
 
 func realbotLogGasBalance(ctx context.Context, polygonClient *api.PolygonClient, trader *trading.RealTrader, tui *paper.TUI, timeout time.Duration) {
