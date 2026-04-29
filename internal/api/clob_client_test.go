@@ -666,6 +666,27 @@ func TestUsesMarketLikePrecision(t *testing.T) {
 	}
 }
 
+func TestComputeOrderAmounts_LimitGTCBuyExactSharesUsesMarketPrecisionWhenRequested(t *testing.T) {
+	amounts, err := ComputeOrderAmounts(&OrderRequest{
+		TokenID:               "123456",
+		Price:                 0.60,
+		Size:                  1.8333,
+		Side:                  SideBuy,
+		OrderType:             OrderTypeLimit,
+		TimeInForce:           TIFGoodTilCancelled,
+		UseMarketBuyPrecision: true,
+	})
+	if err != nil {
+		t.Fatalf("ComputeOrderAmounts failed: %v", err)
+	}
+	if amounts.MakerAmount != "1100000" {
+		t.Fatalf("expected makerAmount 1100000, got %s", amounts.MakerAmount)
+	}
+	if amounts.TakerAmount != "1833300" {
+		t.Fatalf("expected takerAmount 1833300, got %s", amounts.TakerAmount)
+	}
+}
+
 func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {
 	var makerAmount, takerAmount string
 
@@ -701,11 +722,11 @@ func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {
 		t.Fatalf("PlaceOrder failed: %v", err)
 	}
 
-	if takerAmount != "10120000" {
-		t.Fatalf("expected takerAmount (shares) 10120000, got %s", takerAmount)
+	if takerAmount != "10123400" {
+		t.Fatalf("expected takerAmount (shares) 10123400, got %s", takerAmount)
 	}
-	if makerAmount != "5060000" {
-		t.Fatalf("expected makerAmount (USDC) 5060000, got %s", makerAmount)
+	if makerAmount != "5070000" {
+		t.Fatalf("expected makerAmount (USDC) 5070000, got %s", makerAmount)
 	}
 }
 

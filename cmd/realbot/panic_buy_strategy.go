@@ -53,7 +53,6 @@ type realbotPanicBuyStrategyState struct {
 	ladderedStartupStableAt *time.Time
 	ladderedStartupSide     *int
 	ladderedStartupRung     *int
-	ladderBasePrice         *float64
 }
 
 const realbotLadderedStartupStability = 3 * time.Second
@@ -71,9 +70,6 @@ func realbotResetLadderedStartupStability(state *realbotPanicBuyStrategyState) {
 	if state.ladderedStartupRung != nil {
 		*state.ladderedStartupRung = -1
 	}
-	if state.ladderBasePrice != nil {
-		*state.ladderBasePrice = 0
-	}
 }
 
 func realbotLadderedHasConfirmedEntries(entries []realbotLadderedEntry) bool {
@@ -86,7 +82,16 @@ func realbotLadderedHasConfirmedEntries(entries []realbotLadderedEntry) bool {
 }
 
 func realbotLadderedStartupStabilityReady(state *realbotPanicBuyStrategyState, side, rung int, now time.Time) bool {
-	return true
+	if state == nil || state.ladderedStartupStableAt == nil || state.ladderedStartupSide == nil || state.ladderedStartupRung == nil {
+		return true
+	}
+	if state.ladderedStartupStableAt.IsZero() || *state.ladderedStartupSide != side || *state.ladderedStartupRung != rung {
+		*state.ladderedStartupStableAt = now
+		*state.ladderedStartupSide = side
+		*state.ladderedStartupRung = rung
+		return false
+	}
+	return now.Sub(*state.ladderedStartupStableAt) >= realbotLadderedStartupStability
 }
 
 func realbotPairTokenIDs(tokenToOutcome map[string]string, outcomes []string) (string, string) {
@@ -119,14 +124,6 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	if ladderedMode {
 		rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
 		ladderBasePrice = rMinAsk
-		if state != nil && state.ladderBasePrice != nil {
-			minAsk := math.Min(ask1, ask2)
-			if *state.ladderBasePrice <= 1e-9 || minAsk < *state.ladderBasePrice {
-				*state.ladderBasePrice = minAsk
-			}
-			ladderBasePrice = *state.ladderBasePrice
-			rMinAsk = ladderBasePrice
-		}
 	}
 
 	if ask1 <= bid1 || ask2 <= bid2 || (!ladderedMode && (bid1 <= 0 || bid2 <= 0)) {
@@ -371,7 +368,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 			return true
 		}
 		if !realbotLadderedHasConfirmedEntries(currentEntries) {
-			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents, ladderedDirection)
+			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 			if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {
 				return true
 			}
@@ -383,16 +380,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		}
 		// Reset the ladder anchor to the current live quote after each actionable re-entry
 		// so large gaps do not trigger a backlog of catch-up buys at worse prices.
-		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents, ladderedDirection)
-
-		if state != nil && state.ladderBasePrice != nil {
-			activeAsk := ask1
-			if ladderedDirection == 1 {
-				activeAsk = ask2
-			}
-			*state.ladderBasePrice = activeAsk
-			ladderBasePrice = *state.ladderBasePrice
-		}
+		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
 	requestSize1, requestSize2 := shares, shares
@@ -636,7 +624,6 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		args.entryExecutionDone,
 		acquiredGate,
 		ladderedEntrySeq,
-		ladderBasePrice,
 	)
 	return true
 }

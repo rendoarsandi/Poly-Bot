@@ -98,7 +98,7 @@ func TestLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	if ladderedTakerEntryEligible(0.61, 0.60) {
 		t.Fatal("expected pair above ladder sum cap to be ineligible")
 	}
-	if ladderedTakerEntryEligible(0.5010, 0.50) {
+	if ladderedTakerEntryEligible(0.51, 0.50) {
 		t.Fatal("expected low-skew pair to be ineligible")
 	}
 }
@@ -203,33 +203,24 @@ func TestRealbotLadderedDirectionalSideUsesConfiguredBasePriceRungs(t *testing.T
 	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.041, 0.01, 5.0); !ok || side != 0 {
 		t.Fatalf("expected side 0 re-entry after crossing the next fixed rung, got side=%d ok=%v", side, ok)
 	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.09, 0.08, 0.01, 5.0); !ok || side != 1 {
-		t.Fatalf("expected lower side 1 move to enter its own first rung independently, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.09, 0.08, 0.01, 5.0); ok {
+		t.Fatalf("expected lower side 1 move to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
 	}
 }
 
-func TestRealbotLadderedDirectionalSideAllowsBuyingIndependentSides(t *testing.T) {
-	// Base price 0.01, step 5.0 (0.05)
-	// Side 0: 0.06 (rung 1), Side 1: 0.11 (rung 2)
-	entries := []realbotLadderedEntry{
-		{seq: 1, ask0: 0.06, ask1: 0.11, side: 1, rung: 2},
-	}
-	// maxRungs: side0=0, side1=2
+func TestRealbotLadderedDirectionalSideOnlyBuysCurrentHigherSide(t *testing.T) {
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.06, ask1: 0.04, side: 0, rung: 1}}
 
-	// Side 1 still leader, but hasn't moved. Side 0 moved to 0.11 (rung 2)
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.12, 0.01, 5.0); !ok || side != 0 {
-		t.Fatalf("expected side 0 to enter rung 2 even if side 1 is leader, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.09, 0.01, 5.0); !ok || side != 0 {
+		t.Fatalf("expected higher side 0 to re-enter after crossing the next fixed 5c rung, got side=%d ok=%v", side, ok)
 	}
-}
 
-func TestRealbotLadderedDirectionalSidePicksSideWithLargestMove(t *testing.T) {
-	// Base price 0.01, step 5.0 (0.05)
-	entries := []realbotLadderedEntry{
-		{seq: 1, ask0: 0.01, ask1: 0.01, side: 0, rung: 0, armed: true},
+	entries = append(entries, realbotLadderedEntry{seq: 2, ask0: 0.11, ask1: 0.09, side: 0, rung: 2})
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.06, 0.01, 5.0); ok {
+		t.Fatalf("expected lower side 1 at the first rung to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
 	}
-	// Side 0 moved to 0.11 (rung 2), Side 1 moved to 0.16 (rung 3)
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.11, 0.16, 0.01, 5.0); !ok || side != 1 {
-		t.Fatalf("expected side 1 to be picked due to larger rung move (3 vs 2), got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.06, 0.01, 5.0); !ok || side != 1 {
+		t.Fatalf("expected side 1 to re-enter only after becoming the higher side, got side=%d ok=%v", side, ok)
 	}
 }
 
@@ -250,11 +241,39 @@ func TestRealbotArmInitialLadderedEntriesStartsFromBaseRung(t *testing.T) {
 }
 
 func TestRealbotLadderedStartupStabilityReadyRequiresStableFirstRung(t *testing.T) {
-	state := &realbotPanicBuyStrategyState{}
+	stableAt := time.Time{}
+	side := -1
+	rung := -1
+	state := &realbotPanicBuyStrategyState{
+		ladderedStartupStableAt: &stableAt,
+		ladderedStartupSide:     &side,
+		ladderedStartupRung:     &rung,
+	}
 	now := time.Now()
 
-	if !realbotLadderedStartupStabilityReady(state, 0, 1, now) {
-		t.Fatal("expected startup stability logic to be disabled and return true immediately")
+	if realbotLadderedStartupStabilityReady(state, 0, 1, now) {
+		t.Fatal("expected first observed startup rung to begin stability timing")
+	}
+	if got := side; got != 0 {
+		t.Fatalf("expected startup side 0, got %d", got)
+	}
+	if got := rung; got != 1 {
+		t.Fatalf("expected startup rung 1, got %d", got)
+	}
+	if stableAt.IsZero() {
+		t.Fatal("expected startup stability timer to be recorded")
+	}
+	if realbotLadderedStartupStabilityReady(state, 0, 1, now.Add(realbotLadderedStartupStability-time.Millisecond)) {
+		t.Fatal("expected unchanged startup rung to remain blocked before the stability window elapses")
+	}
+	if !realbotLadderedStartupStabilityReady(state, 0, 1, now.Add(realbotLadderedStartupStability)) {
+		t.Fatal("expected unchanged startup rung to unlock once the stability window elapses")
+	}
+	if realbotLadderedStartupStabilityReady(state, 0, 2, now.Add(realbotLadderedStartupStability+time.Second)) {
+		t.Fatal("expected rung change to restart the startup stability timer")
+	}
+	if got := rung; got != 2 {
+		t.Fatalf("expected startup rung to update to 2, got %d", got)
 	}
 }
 
@@ -289,15 +308,8 @@ func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing
 		{seq: 3, ask0: 0.16, ask1: 0.20, side: 0, rung: 3},
 	}
 
-	// Side 0 at 0.16 (rung 3) matches its previous max rung, so it stays blocked.
-	// Side 1 at 0.04 (rung 0) matches its previous max rung, so it stays blocked.
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.16, 0.04, 0.01, 5.0); ok {
-		t.Fatalf("expected both sides to stay blocked, got side=%d ok=%v", side, ok)
-	}
-
-	// Side 1 moves to 0.10 (rung 1). It should now buy independently even if Side 0 is higher.
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.16, 0.10, 0.01, 5.0); !ok || side != 1 {
-		t.Fatalf("expected side 1 to enter rung 1 independently, got side=%d ok=%v", side, ok)
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.16, 0.10, 0.01, 5.0); ok {
+		t.Fatalf("expected side 0 to stay blocked until it rearms, got side=%d ok=%v", side, ok)
 	}
 
 	entries = realbotRefreshLadderedEntries(entries, 0.01, 0.16, 0.01, 5.0)
@@ -307,10 +319,10 @@ func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing
 }
 
 func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.01, side: 1, rung: 0, armed: true}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
 
-	pending := realbotPendingLadderedEntry(entries, 2, 0.01, 0.36, 0.01, 5.0, 1)
-	if math.Abs(pending.ask0-0.01) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
+	pending := realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 5.0)
+	if math.Abs(pending.ask0-0.12) > 1e-9 || math.Abs(pending.ask1-0.36) > 1e-9 {
 		t.Fatalf("expected pending anchor to jump to the current quote, got %+v", pending)
 	}
 	if pending.side != 1 || pending.rung != 7 {
@@ -318,19 +330,19 @@ func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
 	}
 
 	entries = append(entries, pending)
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.36, 0.01, 5.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.36, 0.01, 5.0); ok {
 		t.Fatalf("expected unchanged quote to stop replaying missed rungs, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
 
 func TestRealbotLargeGapRequiresFreshStepAfterAnchorReset(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.01, side: 1, rung: 0, armed: true}}
-	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.01, 0.36, 0.01, 2.0, 1))
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.01, ask1: 0.36}}
+	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.12, 0.36, 0.01, 2.0))
 
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.369, 0.01, 2.0); ok {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.369, 0.01, 2.0); ok {
 		t.Fatalf("expected move below the next full 2c step to stay blocked, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
-	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.01, 0.37, 0.01, 2.0); !ok || side != 1 || mult != 1 {
+	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.12, 0.37, 0.01, 2.0); !ok || side != 1 || mult != 1 {
 		t.Fatalf("expected the next fresh 2c move to allow exactly one new re-entry, got side=%d mult=%d ok=%v", side, mult, ok)
 	}
 }
@@ -364,7 +376,7 @@ func TestRealbotLadderedRequestedQtyUSDCRespectsMaxTradeSize(t *testing.T) {
 		MaxTradeSize:            4.0,
 	}
 
-	want := 6.55
+	want := 6.0
 	if got := realbotLadderedRequestedQty(0.90, cfg, 0.60, 0.61); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("expected max trade size to cap directional ladder sizing at %.4f, got %.4f", want, got)
 	}
@@ -376,8 +388,8 @@ func TestRealbotLadderedRequestedQtyUSDCRespectsSubmitCapPrecision(t *testing.T)
 		LadderedTakerSizeUSDC:   2.10,
 	}
 
-	if got := realbotLadderedRequestedQty(1.00, cfg, 0.52, 0.99); math.Abs(got-2.12) > 1e-9 {
-		t.Fatalf("expected 2.10 budget at 0.99 cap to floor to 2.12 shares, got %.4f", got)
+	if got := realbotLadderedRequestedQty(1.00, cfg, 0.52, 0.99); math.Abs(got-2.0) > 1e-9 {
+		t.Fatalf("expected 2.10 budget at 0.99 cap to floor to 2.0 shares, got %.4f", got)
 	}
 }
 
@@ -512,14 +524,13 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredMaxProfitPnL(t *testing.T) {
 
 func TestRealbotResolveLadderedEntryDropsRejectedPendingAnchor(t *testing.T) {
 	entries := []realbotLadderedEntry{
-		{seq: 1, ask0: 0.50, ask1: 0.40, side: 0, rung: 49, armed: true},
-		{seq: 1, ask0: 0.50, ask1: 0.40, side: 1, rung: 39, armed: true},
-		{seq: 2, ask0: 0.52, ask1: 0.40, side: 0, rung: 51},
+		{seq: 1, ask0: 0.50, ask1: 0.40},
+		{seq: 2, ask0: 0.52, ask1: 0.40},
 	}
 
 	entries = realbotResolveLadderedEntry(entries, 2, false)
 
-	if len(entries) != 2 {
+	if len(entries) != 1 {
 		t.Fatalf("expected failed pending rung to be removed, got %d entries", len(entries))
 	}
 	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.512, 0.401, 0.01, 1.0); !ok || side != 0 {
@@ -1661,12 +1672,12 @@ func TestDirectExecutionTxSummaryIncludesAllReturnedHashes(t *testing.T) {
 func TestAttributedSellFillFallsBackToAcknowledgedQty(t *testing.T) {
 	exec := directMarketExecution{
 		ExecutedQty:     0,
-		AcknowledgedQty: 0.5010,
+		AcknowledgedQty: 0.51,
 	}
 
 	got := attributedSellFill(exec, 0.75)
-	if math.Abs(got-0.5010) > 0.000001 {
-		t.Fatalf("expected acknowledged sell qty fallback 0.5010, got %.4f", got)
+	if math.Abs(got-0.51) > 0.000001 {
+		t.Fatalf("expected acknowledged sell qty fallback 0.51, got %.4f", got)
 	}
 }
 
@@ -1757,8 +1768,8 @@ func TestBuildRealbotTakerClosePlanRespectsBuyExecSizing(t *testing.T) {
 	if math.Abs(plan.SizingPrice-0.99) > 0.000001 {
 		t.Fatalf("expected sizing price 0.99, got %.6f", plan.SizingPrice)
 	}
-	if math.Abs(plan.RequestedQty-50.50) > 0.000001 {
-		t.Fatalf("expected 50.50 shares, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-50.5050) > 0.000001 {
+		t.Fatalf("expected 50.5050 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
@@ -1781,43 +1792,42 @@ func TestBuildRealbotTakerClosePlanFloorsLimitToMinPrice(t *testing.T) {
 
 func TestRealbotRoundedLimitBuyCostMatchesVenueCentRounding(t *testing.T) {
 	cost := realbotRoundedLimitBuyCost(0.501, 1)
-	if math.Abs(cost-0.5010) > 0.000001 {
-		t.Fatalf("expected rounded venue cost 0.5010, got %.4f", cost)
+	if math.Abs(cost-0.51) > 0.000001 {
+		t.Fatalf("expected rounded venue cost 0.51, got %.4f", cost)
 	}
 }
 
 func TestRealbotClampBuySharesToBudgetUsesCapPriceNotObservedQuote(t *testing.T) {
-	shares := realbotClampBuySharesToBudget(2, 2.0, 0.50, 0.5010)
-	if math.Abs(shares-1.99) > 0.000001 {
-		t.Fatalf("expected clamp to 1.99 shares, got %.4f", shares)
+	shares := realbotClampBuySharesToBudget(2, 2.0, 0.50, 0.51)
+	if math.Abs(shares-1.98) > 0.000001 {
+		t.Fatalf("expected clamp to 1.9800 shares, got %.4f", shares)
 	}
 }
 
 func TestRealbotClampBuySharesToBudgetKeepsMarketLikeFractionalShares(t *testing.T) {
 	shares := realbotClampBuySharesToBudget(3.3131, 3.28, 0.50, 0.49)
-	if math.Abs(shares-3.31) > 0.000001 {
-		t.Fatalf("expected clamp to 3.31 shares, got %.4f", shares)
+	if math.Abs(shares-3.3061) > 0.000001 {
+		t.Fatalf("expected clamp to 3.3061 shares, got %.4f", shares)
 	}
 }
 
 func TestRealbotClampSingleBuySharesToBudgetUsesVenueCompatibleShareStep(t *testing.T) {
-	// With the 2-decimal constraint, step is always 0.01
-	// budget $2.10 at $0.99 limit = 2.1212 shares max, floored to 2.12 shares
+	// Strict venue-compatible step case (budget $2.10 -> 2.0 shares = $1.98 cost, >= $1.00)
 	shares := realbotClampSingleBuySharesToBudget(3.1153, 2.10, 0.99)
-	if math.Abs(shares-2.12) > 0.000001 {
-		t.Fatalf("expected 0.99-capped buy with $2.10 budget to floor to 2.12 shares, got %.4f", shares)
+	if math.Abs(shares-2.0) > 0.000001 {
+		t.Fatalf("expected 0.99-capped buy with $2.10 budget to floor to 2 whole shares, got %.4f", shares)
 	}
 
-	// Budget $1.10 at $0.99 limit = 1.1111 shares max, floored to 1.11 shares
+	// Fallback case (budget $1.10 -> strict step 1.0 shares = $0.99 cost < $1.00 minimum, so it falls back to 1.1111 shares = $1.10 cost)
 	fallbackShares := realbotClampSingleBuySharesToBudget(2.1153, 1.10, 0.99)
-	if math.Abs(fallbackShares-1.11) > 0.000001 {
-		t.Fatalf("expected 0.99-capped buy with $1.10 budget to floor to 1.11 shares, got %.4f", fallbackShares)
+	if math.Abs(fallbackShares-1.1111) > 0.000001 {
+		t.Fatalf("expected 0.99-capped buy with $1.10 budget to fallback to 1.1111 shares to satisfy $1.00 minimum, got %.4f", fallbackShares)
 	}
 }
 
-func TestNormalizeMarketBuySharesUsesTwoDecimals(t *testing.T) {
-	if got := normalizeMarketBuyShares(3.31319); got != 3.31 {
-		t.Fatalf("expected 3.31, got %.4f", got)
+func TestNormalizeMarketBuySharesUsesFourDecimals(t *testing.T) {
+	if got := normalizeMarketBuyShares(3.31319); got != 3.3131 {
+		t.Fatalf("expected 3.3131, got %.4f", got)
 	}
 	if got := normalizeMarketBuyShares(0.00009); got != 0 {
 		t.Fatalf("expected dust to round down to 0, got %.5f", got)
@@ -2420,7 +2430,7 @@ func TestRealbotHandlePanicBuyStrategySkipsCrossedNonLadderedQuotes(t *testing.T
 		outcomes:       []string{"Down", "Up"},
 		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
 		tokenBids:      map[string]float64{"Down": 0.52, "Up": 0.48},
-		tokenAsks:      map[string]float64{"Down": 0.5010, "Up": 0.49},
+		tokenAsks:      map[string]float64{"Down": 0.51, "Up": 0.49},
 		tui:            tui,
 		engine:         engine,
 		arbMode:        paperArbModeTaker,
@@ -2747,7 +2757,7 @@ func TestShouldRealbotMakerBlockBuyBlocksExpensivePairCompletion(t *testing.T) {
 
 func TestRealbotShouldReconnectWSOnlyForInvalidStaleBook(t *testing.T) {
 	outcomes := []string{"Down", "Up"}
-	validBids := map[string]float64{"Down": 0.46, "Up": 0.5010}
+	validBids := map[string]float64{"Down": 0.46, "Up": 0.51}
 	validAsks := map[string]float64{"Down": 0.48, "Up": 0.53}
 
 	if realbotShouldReconnectWS(outcomes, validBids, validAsks, 25*time.Second, 15*time.Second, false) {
@@ -2785,7 +2795,7 @@ func TestRealbotHandleMarketWSMessageUpdatesSnapshotState(t *testing.T) {
 	quoteState := map[string]realbotQuoteState{
 		"Up": {UpdatedAt: time.Now(), Source: "ws"},
 	}
-	tokenBids := map[string]float64{"Up": 0.5010}
+	tokenBids := map[string]float64{"Up": 0.51}
 	tokenAsks := map[string]float64{"Up": 0.52}
 	tokenFullBids := make(map[string][]paper.MarketLevel)
 	tokenFullAsks := make(map[string][]paper.MarketLevel)
@@ -2904,11 +2914,11 @@ func TestRealbotProcessMarketQuotesPublishesDisplayAndFreshness(t *testing.T) {
 	displayAsks := make(map[string]float64)
 	publishedBids := make(map[string]float64)
 	publishedAsks := make(map[string]float64)
-	tokenBids := map[string]float64{"Down": 0.48, "Up": 0.5010}
+	tokenBids := map[string]float64{"Down": 0.48, "Up": 0.51}
 	tokenAsks := map[string]float64{"Down": 0.49, "Up": 0.52}
 	tokenFullBids := map[string][]paper.MarketLevel{
 		"Down": {{Price: 0.48, Size: 10}},
-		"Up":   {{Price: 0.5010, Size: 10}},
+		"Up":   {{Price: 0.51, Size: 10}},
 	}
 	tokenFullAsks := map[string][]paper.MarketLevel{
 		"Down": {{Price: 0.49, Size: 10}},
@@ -2969,7 +2979,7 @@ func TestRealbotProcessMarketQuotesPublishesDisplayAndFreshness(t *testing.T) {
 	if math.Abs(displayBids["Down"]-0.48) > 0.000001 || math.Abs(displayAsks["Up"]-0.52) > 0.000001 {
 		t.Fatalf("expected display quotes to publish sane pair, got bids=%v asks=%v", displayBids, displayAsks)
 	}
-	if math.Abs(publishedBids["Up"]-0.5010) > 0.000001 || math.Abs(publishedAsks["Down"]-0.49) > 0.000001 {
+	if math.Abs(publishedBids["Up"]-0.51) > 0.000001 || math.Abs(publishedAsks["Down"]-0.49) > 0.000001 {
 		t.Fatalf("expected published quotes to track display, got bids=%v asks=%v", publishedBids, publishedAsks)
 	}
 	if lastPublishedQuoteAt.IsZero() {
@@ -3003,7 +3013,7 @@ func TestRealbotProcessMarketQuotesClosedChannelSchedulesReconnect(t *testing.T)
 		tokenMap:               map[string]string{"down-token": "Down", "up-token": "Up"},
 		tokenToOutcome:         map[string]string{"down-token": "Down", "up-token": "Up"},
 		outcomes:               []string{"Down", "Up"},
-		tokenBids:              map[string]float64{"Down": 0.48, "Up": 0.5010},
+		tokenBids:              map[string]float64{"Down": 0.48, "Up": 0.51},
 		tokenAsks:              map[string]float64{"Down": 0.49, "Up": 0.52},
 		tokenFullBids:          map[string][]paper.MarketLevel{},
 		tokenFullAsks:          map[string][]paper.MarketLevel{},
@@ -4691,8 +4701,8 @@ func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
 		t.Fatalf("buildRealbotTakerClosePlan returned error: %v", err)
 	}
 
-	if math.Abs(plan.RequestedQty-5.05) > 0.000001 {
-		t.Fatalf("expected 5.05 shares at $0.99 cap for a $5 budget, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-5.0505) > 0.000001 {
+		t.Fatalf("expected 5.0505 shares at $0.99 cap for a $5 budget, got %.4f", plan.RequestedQty)
 	}
 
 	if got := plan.RequestedQty * plan.LimitPrice; got > 5.0+1e-9 {
@@ -4710,8 +4720,8 @@ func TestBuildRealbotTakerClosePlan_AllowsSingleShareBudgetNearDollarCap(t *test
 	if err != nil {
 		t.Fatalf("expected close plan to allow a $1 budget at a $0.99 cap, got %v", err)
 	}
-	if math.Abs(plan.RequestedQty-1.01) > 0.000001 {
-		t.Fatalf("expected 1.01 shares, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-1.0101) > 0.000001 {
+		t.Fatalf("expected 1.0101 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
@@ -4725,8 +4735,8 @@ func TestBuildRealbotTakerClosePlan_UsesBudgetFloorWithoutArtificialTwoShareMini
 	if err != nil {
 		t.Fatalf("expected one-share budget floor to pass, got %v", err)
 	}
-	if math.Abs(plan.RequestedQty-1.90) > 0.000001 {
-		t.Fatalf("expected 1.90 shares, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-1.9090) > 0.000001 {
+		t.Fatalf("expected 1.9090 shares, got %.4f", plan.RequestedQty)
 	}
 }
 

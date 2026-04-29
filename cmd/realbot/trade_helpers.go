@@ -480,21 +480,28 @@ func realbotClampSingleBuySharesToBudget(requestedShares, budget, limitPrice flo
 		strictQty = realbotFloorBuySharesToVenueStep(strictQty-step, limitPrice)
 	}
 
-	for qty >= 0.01 {
+	for qty >= 0.0001 {
 		if cost := realbotRoundedLimitBuyCost(limitPrice, qty); cost > 0 && cost <= budget+1e-9 {
 			return qty
 		}
-		qty = normalizeMarketBuyShares(qty - 0.01)
+		qty = normalizeMarketBuyShares(qty - 0.0001)
 	}
 	return 0
 }
 
 func realbotVenueCompatibleBuyShareStep(limitPrice float64) float64 {
-	// Shares (taker amount) are strictly limited to 2 decimals on Polymarket.
-	// Therefore, the only venue-compatible share step is 0.01.
-	// This naturally results in exactly a 4-decimal USDC cost when multiplied by any 2-decimal limit price,
-	// inherently satisfying the tick ratio rule.
-	return 0.01
+	if limitPrice <= 0 || limitPrice >= 1.0 {
+		return 0.0001
+	}
+	priceCents := int64(math.Round(limitPrice * 100.0))
+	if priceCents <= 0 {
+		return 0.0001
+	}
+	stepUnits := int64(10000) / gcdInt64(priceCents, 10000)
+	if stepUnits <= 0 {
+		return 0.0001
+	}
+	return float64(stepUnits) / 10000.0
 }
 
 func realbotFloorBuySharesToVenueStep(qty, limitPrice float64) float64 {
@@ -688,15 +695,15 @@ func realbotRoundedLimitBuyCost(price, qty float64) float64 {
 	}
 
 	sizeMicro := int64(qty*1e6 + 0.5)
-	sizeMicro = (sizeMicro / 10000) * 10000
+	sizeMicro = (sizeMicro / 100) * 100
 	if sizeMicro <= 0 {
 		return 0
 	}
 
 	priceMicro := int64(price*1e6 + 0.5)
 	usdcMicro := (priceMicro * sizeMicro) / 1e6
-	if usdcMicro%100 != 0 {
-		usdcMicro = ((usdcMicro / 100) + 1) * 100
+	if usdcMicro%10000 != 0 {
+		usdcMicro = ((usdcMicro / 10000) + 1) * 10000
 	}
 
 	return float64(usdcMicro) / 1e6
@@ -723,7 +730,7 @@ func realbotClampBuySharesToBudget(requestedShares, budget float64, prices ...fl
 		qty = affordable
 	}
 
-	for qty >= 0.01 {
+	for qty >= 0.0001 {
 		totalCost := 0.0
 		valid := true
 		for _, price := range prices {
@@ -737,7 +744,7 @@ func realbotClampBuySharesToBudget(requestedShares, budget float64, prices ...fl
 		if valid && totalCost <= budget+1e-9 {
 			return qty
 		}
-		qty = normalizeMarketBuyShares(qty - 0.01)
+		qty = normalizeMarketBuyShares(qty - 0.0001)
 	}
 	return 0
 }

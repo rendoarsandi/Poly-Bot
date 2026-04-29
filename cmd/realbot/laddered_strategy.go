@@ -256,7 +256,7 @@ func realbotLadderedEntrySideRung(entry realbotLadderedEntry, basePrice, moveCen
 }
 
 func realbotLadderedMaxRungs(entries []realbotLadderedEntry, basePrice, moveCents float64) [2]int {
-	maxRungs := [2]int{0, 0}
+	maxRungs := [2]int{-1, -1}
 	for _, entry := range entries {
 		side, rung, ok := realbotLadderedEntrySideRung(entry, basePrice, moveCents)
 		if !ok || side < 0 || side > 1 {
@@ -313,43 +313,28 @@ func realbotRefreshLadderedEntries(entries []realbotLadderedEntry, ask0, ask1, b
 }
 
 func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, basePrice, moveCents float64) (int, int, bool) {
-	rung0 := realbotLadderedRungIndex(ask0, basePrice, moveCents)
-	rung1 := realbotLadderedRungIndex(ask1, basePrice, moveCents)
-
-	if len(entries) == 0 {
-		leader := realbotLadderedLeaderSide(ask0, ask1)
-		if leader < 0 {
-			return -1, 0, false
-		}
-		return leader, 1, true
-	}
-
-	maxRungs := realbotLadderedMaxRungs(entries, basePrice, moveCents)
-	diff0 := rung0 - maxRungs[0]
-	diff1 := rung1 - maxRungs[1]
-
-	if diff0 <= 0 && diff1 <= 0 {
+	leader := realbotLadderedLeaderSide(ask0, ask1)
+	if leader < 0 {
 		return -1, 0, false
 	}
 
-	if diff0 > diff1 {
-		return 0, 1, true
-	} else if diff1 > diff0 {
-		return 1, 1, true
+	leaderAsk := ask0
+	if leader == 1 {
+		leaderAsk = ask1
 	}
-
-	// If both advanced equally, pick the leader
-	leader := realbotLadderedLeaderSide(ask0, ask1)
-	if leader == 0 && diff0 > 0 {
-		return 0, 1, true
-	} else if leader == 1 && diff1 > 0 {
-		return 1, 1, true
+	leaderRung := realbotLadderedRungIndex(leaderAsk, basePrice, moveCents)
+	if len(entries) == 0 {
+		return leader, 1, true
 	}
-
-	return -1, 0, false
+	maxRungs := realbotLadderedMaxRungs(entries, basePrice, moveCents)
+	if leaderRung <= maxRungs[leader] {
+		return -1, 0, false
+	}
+	return leader, 1, true
 }
 
-func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, basePrice, moveCents float64, side int) realbotLadderedEntry {
+func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, basePrice, moveCents float64) realbotLadderedEntry {
+	side := realbotLadderedLeaderSide(ask0, ask1)
 	ask := ask0
 	if side == 1 {
 		ask = ask1
