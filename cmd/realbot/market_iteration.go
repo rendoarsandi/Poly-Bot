@@ -242,7 +242,7 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 		return true
 	}
 
-	if realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+	strategyArgs := realbotPanicBuyStrategyArgs{
 		ctx:                  args.ctx,
 		marketID:             args.marketID,
 		market:               args.market,
@@ -269,7 +269,8 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 		refreshWalletTruth:   args.refreshWalletTruth,
 		entryGate:            args.entryGate,
 		entryExecutionDone:   args.entryExecutionDone,
-	}, &realbotPanicBuyStrategyState{
+	}
+	strategyState := &realbotPanicBuyStrategyState{
 		lastPairUpdate:          state.lastPairUpdate,
 		ladderedEntries:         state.ladderedEntries,
 		nextLadderedEntrySeq:    state.nextLadderedEntrySeq,
@@ -280,7 +281,13 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 		ladderedStartupStableAt: state.ladderedStartupStableAt,
 		ladderedStartupSide:     state.ladderedStartupSide,
 		ladderedStartupRung:     state.ladderedStartupRung,
-	}) {
+	}
+
+	if arbMode == paperArbModeLaddered {
+		if realbotHandleLadderedStrategy(strategyArgs, strategyState) {
+			return true
+		}
+	} else if realbotHandlePanicBuyStrategy(strategyArgs, strategyState) {
 		return true
 	}
 

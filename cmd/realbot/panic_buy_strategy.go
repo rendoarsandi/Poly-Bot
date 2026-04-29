@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"math"
 	"sort"
 	"time"
 
@@ -125,18 +124,8 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	realbotCfg := args.tui.GetSettings()
 	rMinAsk := realbotCfg.MinAskPrice
 	rMaxAsk := realbotCfg.MaxAskPrice
-	ladderBasePrice := rMinAsk
-	ladderedMode := args.arbMode == paperArbModeLaddered
-	if ladderedMode {
-		rMinAsk, rMaxAsk = ladderedTakerAskBounds(rMinAsk, rMaxAsk)
-		// Pin the ladder rung-zero anchor at $0.50 for both sides instead of
-		// tracking the operator's MinAskPrice. This makes the ladder symmetric
-		// and predictable: rung 0 fires at <= $0.50 on either outcome, rung N
-		// fires N re-entry moves above that anchor.
-		ladderBasePrice = ladderedTakerBaseRungPrice
-	}
 
-	if ask1 <= bid1 || ask2 <= bid2 || (!ladderedMode && (bid1 <= 0 || bid2 <= 0)) {
+	if ask1 <= bid1 || ask2 <= bid2 || bid1 <= 0 || bid2 <= 0 {
 		return true
 	}
 
@@ -160,30 +149,9 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	executionMarginFloor := clampExecutionMarginFloor(realbotCfg.MinMarginPercent, realbotCfg.BuyExecutionMarginFloorPercent)
 	executionPriceCap := normalizedRealbotExecutionPriceCap(realbotCfg)
 	maxExecutionSum := maxExecutablePairSum(executionMarginFloor, executionPriceCap)
-	if ladderedMode {
-		maxExecutionSum = ladderedTakerMaxPairSum
-	}
 
-	entryReady := observedMargin >= realbotCfg.MinMarginPercent-1e-4
-	if ladderedMode {
-		entryReady = ladderedTakerEntryEligible(ask1, ask2)
-	}
-	if !entryReady {
-		if ladderedMode {
-			realbotResetLadderedStartupStability(state)
-		}
+	if observedMargin < realbotCfg.MinMarginPercent-1e-4 {
 		return false
-	}
-	if ladderedMode && state != nil && state.ladderedEntries != nil && len(*state.ladderedEntries) == 0 {
-		*state.ladderedEntries = realbotArmInitialLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
-		realbotResetLadderedStartupStability(state)
-		args.tui.LogEventDedup("ladder-arm:"+args.marketID, 30*time.Second,
-			"[%s] 🪜 Ladder fresh market: anchored at $%.3f for both sides (live asks: %s=$%.3f, %s=$%.3f)",
-			args.marketID, ladderBasePrice, args.outcomes[0], ask1, args.outcomes[1], ask2)
-		return true
-	}
-	if ladderedMode && state != nil && state.ladderedEntries != nil {
-		*state.ladderedEntries = realbotRefreshLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
 	}
 
 	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
@@ -211,9 +179,6 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 
 	shares := normalizeMarketBuyShares(tradeSize / sum)
-	if ladderedMode {
-		shares = normalizeMarketBuyShares(core.CalculateLadderedTakerSharesForMode(sum, realbotCfg.LadderedTakerSizeUSDC, realbotCfg.LadderedTakerSizeShares, realbotCfg.MaxTradeSize, realbotCfg.LadderedTakerSizingMode))
-	}
 	requestedShares := shares
 
 	pairUpdatePtr := (*time.Time)(nil)
@@ -221,28 +186,26 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		pairUpdatePtr = state.lastPairUpdate
 	}
 
-	if !ladderedMode {
-		buyQuoteCtx, cancelBuyQuote := context.WithTimeout(args.ctx, realbotExecQuoteTimeout)
-		_, _, _, buyQuoteErr := realbotEnsureFreshBuyExecutionQuote(
-			buyQuoteCtx,
-			args.restClient,
-			args.market,
-			args.outcomes,
-			args.tokenBids,
-			args.tokenAsks,
-			args.tokenFullBids,
-			args.tokenFullAsks,
-			args.quoteState,
-			derefTime(pairUpdatePtr),
-			args.executionQuoteMaxAge,
-			pairUpdatePtr,
-		)
-		cancelBuyQuote()
-		if buyQuoteErr != nil {
-			args.tui.LogEvent("[%s] ⚠️ Skipping buy: fresh execution quote unavailable (%v)", args.marketID, buyQuoteErr)
-			setEntryCooldown(500 * time.Millisecond)
-			return true
-		}
+	buyQuoteCtx, cancelBuyQuote := context.WithTimeout(args.ctx, realbotExecQuoteTimeout)
+	_, _, _, buyQuoteErr := realbotEnsureFreshBuyExecutionQuote(
+		buyQuoteCtx,
+		args.restClient,
+		args.market,
+		args.outcomes,
+		args.tokenBids,
+		args.tokenAsks,
+		args.tokenFullBids,
+		args.tokenFullAsks,
+		args.quoteState,
+		derefTime(pairUpdatePtr),
+		args.executionQuoteMaxAge,
+		pairUpdatePtr,
+	)
+	cancelBuyQuote()
+	if buyQuoteErr != nil {
+		args.tui.LogEvent("[%s] ⚠️ Skipping buy: fresh execution quote unavailable (%v)", args.marketID, buyQuoteErr)
+		setEntryCooldown(500 * time.Millisecond)
+		return true
 	}
 
 	ask1 = args.tokenAsks[args.outcomes[0]]
@@ -253,29 +216,19 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 	sum = ask1 + ask2
 	observedMargin = pairMarginPercent(sum)
-	if !ladderedMode && observedMargin < realbotCfg.MinMarginPercent-1e-4 {
+	if observedMargin < realbotCfg.MinMarginPercent-1e-4 {
 		args.tui.LogEvent("[%s] ⚠️ Skipping buy: local pair margin %.2f%% below configured %.2f%%", args.marketID, observedMargin, realbotCfg.MinMarginPercent)
-		setEntryCooldown(500 * time.Millisecond)
-		return true
-	}
-	if ladderedMode && !ladderedTakerEntryEligible(ask1, ask2) {
-		realbotResetLadderedStartupStability(state)
 		setEntryCooldown(500 * time.Millisecond)
 		return true
 	}
 
 	shares = normalizeMarketBuyShares(tradeSize / sum)
-	if ladderedMode {
-		shares = normalizeMarketBuyShares(core.CalculateLadderedTakerSharesForMode(sum, realbotCfg.LadderedTakerSizeUSDC, realbotCfg.LadderedTakerSizeShares, realbotCfg.MaxTradeSize, realbotCfg.LadderedTakerSizingMode))
-	}
 	requestedShares = shares
 
-	if !ladderedMode {
-		if block, reason := realbotPanicBuyCompletionGuard(args.engine, args.marketID, args.outcomes[0], args.outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
-			args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s", args.marketID, reason)
-			setEntryCooldown(500 * time.Millisecond)
-			return true
-		}
+	if block, reason := realbotPanicBuyCompletionGuard(args.engine, args.marketID, args.outcomes[0], args.outcomes[1], ask1, ask2, realbotCfg.MinMarginPercent); block {
+		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s", args.marketID, reason)
+		setEntryCooldown(500 * time.Millisecond)
+		return true
 	}
 
 	asks1 := append([]paper.MarketLevel(nil), args.tokenFullAsks[args.outcomes[0]]...)
@@ -333,224 +286,65 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 	bookDepth1 := len(args.tokenFullAsks[args.outcomes[0]])
 	bookDepth2 := len(args.tokenFullAsks[args.outcomes[1]])
 
-	if !ladderedMode && requestedShares > minLiquidity+1e-6 {
+	if requestedShares > minLiquidity+1e-6 {
 		setEntryCooldown(500 * time.Millisecond)
 		return true
 	}
 
-	minEntryShares := 1.0
-	if ladderedMode {
-		minEntryShares = minOnChainActionShares
-	}
+	const minEntryShares = 1.0
 	if shares < minEntryShares {
 		args.tui.LogEvent("[%s] ⚠️ Actionable matched liquidity below %.2f share minimum: %.4f", args.marketID, minEntryShares, shares)
 		return true
 	}
-	if !ladderedMode && state != nil && state.lastTrade != nil && time.Since(*state.lastTrade) <= 2*time.Second {
+	if state != nil && state.lastTrade != nil && time.Since(*state.lastTrade) <= 2*time.Second {
 		return true
 	}
 
-	limitPrice1 := 0.0
-	limitPrice2 := 0.0
-	if ladderedMode {
-		limitPrice1 = realbotDirectionalBuyLimitPrice(ask1, rMaxAsk, realbotCfg.LadderedTakerMaxSlippagePct)
-		limitPrice2 = realbotDirectionalBuyLimitPrice(ask2, rMaxAsk, realbotCfg.LadderedTakerMaxSlippagePct)
-	} else {
-		var capErr error
-		limitPrice1, limitPrice2, capErr = core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, executionPriceCap, executionMarginFloor)
-		if capErr != nil {
-			args.tui.LogEvent("[%s] ⚠️ Skipping trade: %v", args.marketID, capErr)
-			return true
-		}
-	}
-
-	ladderedDirection := -1
-	ladderedEntrySeq := uint64(0)
-	var pendingLadderedEntry realbotLadderedEntry
-	if ladderedMode {
-		var directionalReady bool
-		currentEntries := derefLadderedEntries(stateEntries(state))
-		ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(currentEntries, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
-		if !directionalReady {
-			if !realbotLadderedHasConfirmedEntries(currentEntries) {
-				realbotResetLadderedStartupStability(state)
-			}
-			return true
-		}
-		if !realbotLadderedHasConfirmedEntries(currentEntries) {
-			candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
-			if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {
-				return true
-			}
-		}
-
-		if state != nil && state.nextLadderedEntrySeq != nil {
-			*state.nextLadderedEntrySeq = *state.nextLadderedEntrySeq + 1
-			ladderedEntrySeq = *state.nextLadderedEntrySeq
-		}
-		// Reset the ladder anchor to the current live quote after each actionable re-entry
-		// so large gaps do not trigger a backlog of catch-up buys at worse prices.
-		pendingLadderedEntry = realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, realbotCfg.LadderedTakerReentryMoveCents)
+	limitPrice1, limitPrice2, capErr := core.BuyExecutionLimitPrices(ask1, ask2, rMinAsk, executionPriceCap, executionMarginFloor)
+	if capErr != nil {
+		args.tui.LogEvent("[%s] ⚠️ Skipping trade: %v", args.marketID, capErr)
+		return true
 	}
 
 	requestSize1, requestSize2 := shares, shares
-	if ladderedMode {
-		requestSize1, requestSize2 = 0, 0
-		if ladderedDirection == 1 {
-			requestSize2 = realbotLadderedRequestedQty(sum, realbotCfg, ask2, limitPrice2)
-		} else {
-			requestSize1 = realbotLadderedRequestedQty(sum, realbotCfg, ask1, limitPrice1)
-		}
-		activeSize := requestSize1
-		if ladderedDirection == 1 {
-			activeSize = requestSize2
-		}
-		if activeSize < minEntryShares {
-			args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
-			return true
-		}
-		activePrice := limitPrice1
-		if ladderedDirection == 1 {
-			activePrice = limitPrice2
-		}
-
-		// Synchronize the local engine position using the authoritative pre-trade snapshot
-		// before checking the inventory cap and profit floors. This prevents "false negative"
-		// rejections (like an ignored API error on a previous ladder step) from causing runaway
-		// buys or bad profit calculations, since the engine learns about the true on-chain
-		// balance before calculating the next step.
-		syncCtx, cancelSync := context.WithTimeout(context.Background(), 2*time.Second)
-		tokenToOutcome := make(map[string]string)
-		for _, t := range args.market.Tokens {
-			if t.TokenID != "" && t.Outcome != "" {
-				tokenToOutcome[t.TokenID] = t.Outcome
-			}
-		}
-		token0, token1 := realbotPairTokenIDs(tokenToOutcome, args.outcomes)
-		initial0, initial1, _, err := realbotInitialPairSnapshot(syncCtx, args.trader, token0, token1, ladderedMode)
-		cancelSync()
-		if err != nil {
-			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: pre-trade inventory check failed (%v)", args.marketID, err)
-			setEntryCooldown(2 * time.Second)
-			return true
-		}
-
-		local0, local1 := localBoughtPairBalances(args.engine, args.marketID, args.outcomes[0], args.outcomes[1])
-		split0, split1 := 0.0, 0.0
-		if args.splitInventory != nil {
-			split0 = args.splitInventory.GetSplitShares(args.marketID, args.outcomes[0])
-			split1 = args.splitInventory.GetSplitShares(args.marketID, args.outcomes[1])
-		}
-		desired0 := math.Max(0, initial0-split0)
-		desired1 := math.Max(0, initial1-split1)
-
-		if math.Abs(local0-desired0) > 1e-4 {
-			markPrice0 := walletTruthSyncMarkPrice(args.engine, args.marketID, args.outcomes[0])
-			if realbotSyncExternalPositionWithCostBasis(args.trader, args.engine, args.marketID, args.outcomes[0], token0, desired0, markPrice0) {
-				realbotRecordWalletTruthAdjustment(args.tui, args.marketID, args.outcomes[0], desired0-local0, local0, initial0, split0, markPrice0, "restored")
-			}
-		}
-		if math.Abs(local1-desired1) > 1e-4 {
-			markPrice1 := walletTruthSyncMarkPrice(args.engine, args.marketID, args.outcomes[1])
-			if realbotSyncExternalPositionWithCostBasis(args.trader, args.engine, args.marketID, args.outcomes[1], token1, desired1, markPrice1) {
-				realbotRecordWalletTruthAdjustment(args.tui, args.marketID, args.outcomes[1], desired1-local1, local1, initial1, split1, markPrice1, "restored")
-			}
-		}
-
-		if blocked, _ := realbotLadderedInventoryCapReached(
-			args.engine,
-			args.marketID,
-			args.outcomes,
-			ladderedDirection,
-			activeSize,
-			activePrice,
-			realbotCfg.LadderedTakerPnLGuardMode,
-			realbotCfg.LadderedTakerWorstPnLFloor,
-			realbotCfg.LadderedTakerMaxProfitPnL,
-		); blocked {
-			setEntryCooldown(500 * time.Millisecond)
-			return true
-		}
-		shares = activeSize
-		if ladderedDirection == 1 {
-			requestSize2 = shares
-		} else {
-			requestSize1 = shares
-		}
-	} else if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
+	if requestSize1 < minEntryShares || requestSize2 < minEntryShares {
 		args.tui.LogEvent("[%s] ⚠️ Actionable arb legs below %.2f share minimum: %s/%s", args.marketID, minEntryShares, formatShareQty(requestSize1), formatShareQty(requestSize2))
 		return true
 	}
 
 	cost := strategy.CalculateTradeMetricsFlat(shares, maxExecutionSum, maxFeeRateBps).Cost
-	if ladderedMode {
-		cost = requestSize1 * limitPrice1
-		if ladderedDirection == 1 {
-			cost = requestSize2 * limitPrice2
-		}
-	}
 	if !args.riskMgr.CanPlaceOrder(cost) {
 		args.tui.LogEvent("[%s] ⚠️ Risk limit exceeded for cost $%.2f", args.marketID, cost)
 		return true
 	}
 
-	if !ladderedMode {
-		budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
-		if budgetCappedShares < shares {
-			args.tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to stay within $%.2f trade budget at live caps", args.marketID, formatShareQty(shares), formatShareQty(budgetCappedShares), tradeSize)
-			shares = budgetCappedShares
-			requestSize1 = shares
-			requestSize2 = shares
-		}
-		if shares < minEntryShares {
-			args.tui.LogEvent("[%s] ⚠️ Actionable size fell below %.2f share after cap-based budget clamp", args.marketID, minEntryShares)
-			return true
-		}
+	budgetCappedShares := realbotClampBuySharesToBudget(shares, tradeSize, limitPrice1, limitPrice2)
+	if budgetCappedShares < shares {
+		args.tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to stay within $%.2f trade budget at live caps", args.marketID, formatShareQty(shares), formatShareQty(budgetCappedShares), tradeSize)
+		shares = budgetCappedShares
+		requestSize1 = shares
+		requestSize2 = shares
+	}
+	if shares < minEntryShares {
+		args.tui.LogEvent("[%s] ⚠️ Actionable size fell below %.2f share after cap-based budget clamp", args.marketID, minEntryShares)
+		return true
 	}
 
-	if ladderedMode {
-		var activeLimitPrice float64
-		if ladderedDirection == 1 {
-			activeLimitPrice = limitPrice2
-		} else {
-			activeLimitPrice = limitPrice1
+	safeShares := realbotClampBuySharesToBudget(shares, args.currentBalance, limitPrice1, limitPrice2)
+	if safeShares < shares {
+		args.tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", args.marketID, formatShareQty(shares), formatShareQty(safeShares), args.currentBalance)
+		shares = safeShares
+		requestSize1 = shares
+		requestSize2 = shares
+	}
+	if shares < minEntryShares {
+		if state != nil && state.lastDustRecoveryNotice != nil && time.Since(*state.lastDustRecoveryNotice) > 60*time.Second {
+			args.tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", args.marketID)
+			*state.lastDustRecoveryNotice = time.Now()
 		}
-		safeShares := realbotClampBuySharesToBudget(shares, args.currentBalance, activeLimitPrice)
-		if safeShares < shares {
-			args.tui.LogEvent("[%s] 📉 Downscaling ladder chunk from %s to %s shares to fit $%.2f balance limit", args.marketID, formatShareQty(shares), formatShareQty(safeShares), args.currentBalance)
-			shares = safeShares
-			if ladderedDirection == 1 {
-				requestSize2 = shares
-			} else {
-				requestSize1 = shares
-			}
-		}
-		if shares < minEntryShares {
-			if state != nil && state.lastDustRecoveryNotice != nil && time.Since(*state.lastDustRecoveryNotice) > 60*time.Second {
-				args.tui.LogEvent("[%s] ⚠️ Skipping buy: ladder chunk no longer fits available balance", args.marketID)
-				*state.lastDustRecoveryNotice = time.Now()
-			}
-			return true
-		}
-	} else {
-		safeShares := realbotClampBuySharesToBudget(shares, args.currentBalance, limitPrice1, limitPrice2)
-		if safeShares < shares {
-			args.tui.LogEvent("[%s] 📉 Downscaling from %s to %s shares to fit $%.2f balance limit", args.marketID, formatShareQty(shares), formatShareQty(safeShares), args.currentBalance)
-			shares = safeShares
-			requestSize1 = shares
-			requestSize2 = shares
-		}
-		if shares < minEntryShares {
-			if state != nil && state.lastDustRecoveryNotice != nil && time.Since(*state.lastDustRecoveryNotice) > 60*time.Second {
-				args.tui.LogEvent("[%s] ⚠️ Skipping buy: capped share size no longer fits available balance", args.marketID)
-				*state.lastDustRecoveryNotice = time.Now()
-			}
-			return true
-		}
+		return true
 	}
 
-	side1Requested := !ladderedMode || ladderedDirection == 0
-	side2Requested := !ladderedMode || ladderedDirection == 1
 	side1Req := directMarketOrderSignalRequest{
 		Side:        api.SideBuy,
 		Outcome:     args.outcomes[0],
@@ -565,26 +359,24 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		Size:        requestSize2,
 		ExactShares: true,
 	}
-	if side1Requested && !hasActionableSubmittedDirectOrderValue(side1Req) {
+	if !hasActionableSubmittedDirectOrderValue(side1Req) {
 		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg submitted size is below Polymarket $%.2f minimum (%s)",
 			args.marketID, args.outcomes[0], realbotMinDirectOrderValue, directSubmittedOrderSummary(side1Req))
 		return true
 	}
-	if side2Requested && !hasActionableSubmittedDirectOrderValue(side2Req) {
+	if !hasActionableSubmittedDirectOrderValue(side2Req) {
 		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg submitted size is below Polymarket $%.2f minimum (%s)",
 			args.marketID, args.outcomes[1], realbotMinDirectOrderValue, directSubmittedOrderSummary(side2Req))
 		return true
 	}
 
-	if !ladderedMode {
-		args.tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
-			args.marketID, args.outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), args.outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
-	}
+	args.tui.LogEvent("[%s] 🎯 ARB candidate %s@$%.3f→%.3f (%s sh) + %s@$%.3f→%.3f (%s sh) = $%.3f (%.1f%% observed, %.1f%% execution floor) [liq: %.0f/%.0f, levels used: %d/%d (total depth: %d/%d)]",
+		args.marketID, args.outcomes[0], ask1, limitPrice1, formatShareQty(requestSize1), args.outcomes[1], ask2, limitPrice2, formatShareQty(requestSize2), sum, observedMargin, executionMarginFloor, liq1, liq2, maxValidI, maxValidJ, bookDepth1, bookDepth2)
 
 	token0, token1 := realbotPairTokenIDs(args.tokenToOutcome, args.outcomes)
 
 	acquiredGate := false
-	if !ladderedMode && args.entryGate != nil {
+	if args.entryGate != nil {
 		if !args.entryGate.TryAcquire() {
 			setEntryCooldown(500 * time.Millisecond)
 			args.tui.LogEvent("[%s] ⏳ Skipping buy: another market is executing a live entry", args.marketID)
@@ -593,9 +385,6 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		acquiredGate = true
 	}
 
-	if ladderedMode && ladderedEntrySeq != 0 && state != nil && state.ladderedEntries != nil {
-		*state.ladderedEntries = realbotTrimLadderedEntries(append(*state.ladderedEntries, pendingLadderedEntry))
-	}
 	if state != nil && state.entryExecutionInFlight != nil {
 		*state.entryExecutionInFlight = true
 	}
@@ -613,12 +402,12 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		limitPrice1,
 		limitPrice2,
 		observedMargin,
-		ladderedMode,
-		ladderedDirection,
+		false,
+		-1,
 		token0,
 		token1,
-		side1Requested,
-		side2Requested,
+		true,
+		true,
 		args.tokenFeeRates,
 		args.trader,
 		args.engine,
@@ -633,7 +422,7 @@ func realbotHandlePanicBuyStrategy(args realbotPanicBuyStrategyArgs, state *real
 		args.entryGate,
 		args.entryExecutionDone,
 		acquiredGate,
-		ladderedEntrySeq,
+		0,
 	)
 	return true
 }

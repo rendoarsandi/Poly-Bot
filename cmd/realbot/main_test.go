@@ -2503,7 +2503,7 @@ func TestRealbotHandlePanicBuyStrategySkipsCrossedLadderedQuotes(t *testing.T) {
 	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
 	nextLadderedEntrySeq := uint64(1)
 
-	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
 		ctx:            context.Background(),
 		marketID:       "BTC",
 		outcomes:       []string{"Down", "Up"},
@@ -2551,7 +2551,7 @@ func TestRealbotHandlePanicBuyStrategyArmsInitialLadderedRungWithoutBuying(t *te
 	ladderedEntries := []realbotLadderedEntry{}
 	nextLadderedEntrySeq := uint64(4)
 
-	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
 		ctx:            context.Background(),
 		marketID:       "BTC",
 		outcomes:       []string{"Down", "Up"},
@@ -2605,7 +2605,7 @@ func TestRealbotHandlePanicBuyStrategySkipsLadderedEntryWhileInFlight(t *testing
 	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
 	nextLadderedEntrySeq := uint64(1)
 
-	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
 		ctx:            context.Background(),
 		marketID:       "BTC",
 		outcomes:       []string{"Down", "Up"},
@@ -2644,7 +2644,7 @@ func TestRealbotHandlePanicBuyStrategySkipsLadderedEntryDuringCooldown(t *testin
 	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46}}
 	nextLadderedEntrySeq := uint64(1)
 
-	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
 		ctx:            context.Background(),
 		marketID:       "BTC",
 		outcomes:       []string{"Down", "Up"},
@@ -2707,7 +2707,7 @@ func TestRealbotHandlePanicBuyStrategySyncsHiddenSharesBeforeInventoryCheck(t *t
 	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.45, ask1: 0.46, side: 1, rung: 1}}
 	nextLadderedEntrySeq := uint64(1)
 
-	handled := realbotHandlePanicBuyStrategy(realbotPanicBuyStrategyArgs{
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
 		ctx:            context.Background(),
 		marketID:       "BTC",
 		market:         &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}},
