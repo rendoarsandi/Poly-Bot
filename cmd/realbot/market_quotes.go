@@ -307,7 +307,14 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	depthDirty := false
 	quotesSanitized := false
 	telemetryNow := time.Time{}
+	wsMessagesProcessed := 0
+	wsBurstCapped := false
 	for !drained {
+		if wsMessagesProcessed >= realbotMaxWSMessagesPerDrain {
+			wsBurstCapped = true
+			drained = true
+			continue
+		}
 		select {
 		case msg, ok := <-args.wsMsgChan:
 			if !ok {
@@ -321,6 +328,7 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 					continue
 				}
 			}
+			wsMessagesProcessed++
 			*runtime.wsChannelClosed = false
 			if telemetryNow.IsZero() {
 				telemetryNow = time.Now()
@@ -330,6 +338,16 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 			}
 		default:
 			drained = true
+		}
+	}
+	if wsBurstCapped {
+		if args.tui != nil {
+			args.tui.LogEventDedup("ws-burst:"+args.marketID, 30*time.Second,
+				"[%s] ⚠️ WS quote burst capped at %d messages/pass; yielding %s to protect CPU (queue=%d)",
+				args.marketID, realbotMaxWSMessagesPerDrain, realbotWSBurstYield, len(args.wsMsgChan))
+		}
+		if !watchRealbotSleep(args.ctx, realbotWSBurstYield) {
+			return true
 		}
 	}
 

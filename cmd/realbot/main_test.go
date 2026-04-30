@@ -3032,6 +3032,72 @@ func TestRealbotProcessMarketQuotesPublishesDisplayAndFreshness(t *testing.T) {
 	}
 }
 
+func TestRealbotProcessMarketQuotesBoundsWebSocketDrain(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.AddMarket("BTC", "btc", []string{"Down", "Up"}, time.Now().Add(time.Minute))
+
+	ch := make(chan []byte, realbotMaxWSMessagesPerDrain+3)
+	for i := 0; i < cap(ch); i++ {
+		ch <- []byte(`{}`)
+	}
+
+	now := time.Now()
+	lastPairUpdate := now
+	lastPublishedQuoteAt := time.Time{}
+	lastReconnectCount := int32(0)
+	lastWsWarnTime := now
+	lastForceReconnect := now
+	lastRestFallbackPoll := now
+	restFallbackActive := false
+	restRecoveryLogged := false
+	wsChannelClosed := false
+
+	if realbotProcessMarketQuotes(realbotMarketQuoteArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		wsMgr:          &api.WSManager{},
+		wsMsgChan:      ch,
+		tokenMap:       map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
+		outcomes:       []string{"Down", "Up"},
+		tokenBids:      map[string]float64{"Down": 0.48, "Up": 0.51},
+		tokenAsks:      map[string]float64{"Down": 0.49, "Up": 0.52},
+		tokenFullBids:  map[string][]paper.MarketLevel{},
+		tokenFullAsks:  map[string][]paper.MarketLevel{},
+		displayBids:    map[string]float64{},
+		displayAsks:    map[string]float64{},
+		publishedBids:  map[string]float64{},
+		publishedAsks:  map[string]float64{},
+		quoteState: map[string]realbotQuoteState{
+			"Down": {UpdatedAt: now, Source: "ws"},
+			"Up":   {UpdatedAt: now, Source: "ws"},
+		},
+		polySignalTracker:      paper.NewDirectionalSignalTracker(time.Second, []string{"Down", "Up"}),
+		engine:                 engine,
+		restClient:             api.NewRestClient("polymarket"),
+		tui:                    tui,
+		restFallbackQuoteAge:   time.Minute,
+		restFallbackPollPeriod: time.Minute,
+	}, realbotMarketQuoteRuntime{
+		lastPairUpdate:       &lastPairUpdate,
+		lastPublishedQuoteAt: &lastPublishedQuoteAt,
+		lastReconnectCount:   &lastReconnectCount,
+		lastWsWarnTime:       &lastWsWarnTime,
+		lastForceReconnect:   &lastForceReconnect,
+		lastRestFallbackPoll: &lastRestFallbackPoll,
+		restFallbackActive:   &restFallbackActive,
+		restRecoveryLogged:   &restRecoveryLogged,
+		wsChannelClosed:      &wsChannelClosed,
+	}) {
+		t.Fatal("expected active quote loop to continue running")
+	}
+
+	if got := len(ch); got != 3 {
+		t.Fatalf("expected one bounded drain pass to leave 3 queued messages, got %d", got)
+	}
+}
+
 func TestRealbotProcessMarketQuotesClosedChannelSchedulesReconnect(t *testing.T) {
 	engine := paper.NewEngine(100)
 	tui := paper.NewTUI(engine, nil)
