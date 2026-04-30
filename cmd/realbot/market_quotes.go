@@ -48,20 +48,28 @@ type realbotMarketQuoteRuntime struct {
 	lastWsWarnTime       *time.Time
 	lastForceReconnect   *time.Time
 	lastRestFallbackPoll *time.Time
+	lastTelemetryUpdate  *time.Time
 	restFallbackActive   *bool
 	restRecoveryLogged   *bool
 	wsChannelClosed      *bool
 }
 
-func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastPairUpdate *time.Time) {
+func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastPairUpdate *time.Time) bool {
 	// Parse and process WebSocket message immediately.
 	//
 	// Polymarket CLOB WS sends:
 	// 1. Book snapshots ("book") on subscribe/reconnect.
 	// 2. Price-change deltas ("price_change") with changed levels and explicit BBO values.
 	// 3. Best-bid-ask updates ("best_bid_ask") when subscribed with custom_feature_enabled.
-	if books, err := api.ParseOrderBooks(msg); err == nil && len(books) > 0 {
-		for _, book := range books {
+	parsed, err := api.ParseMarketWSMessage(msg)
+	if err != nil || parsed == nil {
+		return false
+	}
+
+	switch parsed.Kind {
+	case api.MarketWSMessageOrderBooks:
+		depthChanged := false
+		for _, book := range parsed.OrderBooks {
 			outcome := args.tokenToOutcome[book.AssetID]
 			if outcome == "" {
 				continue
@@ -96,6 +104,7 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 				args.tokenAsks[outcome] = 0
 				args.tokenFullBids[outcome] = nil
 				args.tokenFullAsks[outcome] = nil
+				depthChanged = true
 				continue
 			}
 
@@ -105,6 +114,7 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 			args.tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 			args.quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
 			realbotSyncPairUpdate(args.outcomes, args.tokenBids, args.tokenAsks, lastPairUpdate, updatedAt)
+			depthChanged = true
 
 			if bid > 0 && ask > 0 {
 				mid := (bid + ask) / 2
@@ -112,11 +122,15 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 				args.polySignalTracker.Record(outcome, bid, ask, updatedAt)
 			}
 		}
-		return
-	}
+		return depthChanged
 
-	if update, err := api.ParsePriceUpdate(msg); err == nil && len(update.PriceChanges) > 0 {
+	case api.MarketWSMessagePriceUpdate:
+		update := parsed.PriceUpdate
+		if update == nil || len(update.PriceChanges) == 0 {
+			return false
+		}
 		foundForThisMarket := false
+		depthChanged := false
 		touchedOutcomes := make(map[string]bool)
 		type explicitTopOfBook struct {
 			bid    float64
@@ -142,8 +156,10 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 			switch pc.Side {
 			case "BUY":
 				args.tokenFullBids[outcome] = mkt.ApplyDelta(args.tokenFullBids[outcome], price, size, true)
+				depthChanged = true
 			case "SELL":
 				args.tokenFullAsks[outcome] = mkt.ApplyDelta(args.tokenFullAsks[outcome], price, size, false)
+				depthChanged = true
 			}
 
 			top := explicitTopByOutcome[outcome]
@@ -193,17 +209,20 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 			}
 			realbotSyncPairUpdate(args.outcomes, args.tokenBids, args.tokenAsks, lastPairUpdate, now)
 		}
-		return
-	}
+		return depthChanged
 
-	if bbo, err := api.ParseBestBidAsk(msg); err == nil && strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") && bbo.AssetID != "" {
+	case api.MarketWSMessageBestBidAsk:
+		bbo := parsed.BestBidAsk
+		if bbo == nil || !strings.EqualFold(strings.TrimSpace(bbo.EventType), "best_bid_ask") || bbo.AssetID == "" {
+			return false
+		}
 		outcome := args.tokenToOutcome[bbo.AssetID]
 		if outcome == "" {
-			return
+			return false
 		}
 		updatedAt := realbotQuoteTimestampOrNow(bbo.Timestamp)
 		if realbotShouldSkipStaleQuoteUpdate(args.quoteState, outcome, updatedAt, args.tokenBids[outcome], args.tokenAsks[outcome]) {
-			return
+			return false
 		}
 		if bestBid, ok := parseWSQuotedPrice(bbo.BestBid); ok {
 			args.tokenBids[outcome] = bestBid
@@ -222,10 +241,13 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 		}
 		args.quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws-bbo"}
 		realbotSyncPairUpdate(args.outcomes, args.tokenBids, args.tokenAsks, lastPairUpdate, updatedAt)
-		return
-	}
+		return false
 
-	if book, err := api.ParseOrderBook(msg); err == nil && book.AssetID != "" {
+	case api.MarketWSMessageOrderBook:
+		book := parsed.OrderBook
+		if book == nil || book.AssetID == "" {
+			return false
+		}
 		bid, ask := 0.0, 0.0
 		for _, bidLevel := range book.Bids {
 			price, _ := strconv.ParseFloat(bidLevel.Price, 64)
@@ -241,16 +263,16 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 		}
 
 		if bid > 0 && ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
-			return
+			return false
 		}
 
 		outcome := args.tokenToOutcome[book.AssetID]
 		if outcome == "" {
-			return
+			return false
 		}
 		updatedAt := realbotQuoteTimestampOrNow(book.Timestamp)
 		if realbotShouldSkipStaleQuoteUpdate(args.quoteState, outcome, updatedAt, args.tokenBids[outcome], args.tokenAsks[outcome]) {
-			return
+			return false
 		}
 		if bid > 0 {
 			args.tokenBids[outcome] = bid
@@ -267,7 +289,10 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 		args.tokenFullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		args.quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "ws"}
 		realbotSyncPairUpdate(args.outcomes, args.tokenBids, args.tokenAsks, lastPairUpdate, updatedAt)
+		return true
 	}
+
+	return false
 }
 
 func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMarketQuoteRuntime) bool {
@@ -279,6 +304,9 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	}
 
 	drained := false
+	depthDirty := false
+	quotesSanitized := false
+	telemetryNow := time.Time{}
 	for !drained {
 		select {
 		case msg, ok := <-args.wsMsgChan:
@@ -294,7 +322,12 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 				}
 			}
 			*runtime.wsChannelClosed = false
-			realbotHandleMarketWSMessage(args, msg, runtime.lastPairUpdate)
+			if telemetryNow.IsZero() {
+				telemetryNow = time.Now()
+			}
+			if realbotHandleMarketWSMessage(args, msg, runtime.lastPairUpdate) {
+				depthDirty = true
+			}
 		default:
 			drained = true
 		}
@@ -304,12 +337,20 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 		if args.tokenBids[outcome] > 0 && args.tokenAsks[outcome] > 0 && !realbotHasSaneTopOfBook(args.tokenBids[outcome], args.tokenAsks[outcome]) {
 			args.tokenBids[outcome] = 0
 			args.tokenAsks[outcome] = 0
+			if len(args.tokenFullBids[outcome]) > 0 || len(args.tokenFullAsks[outcome]) > 0 {
+				depthDirty = true
+			}
 			args.tokenFullBids[outcome] = nil
 			args.tokenFullAsks[outcome] = nil
+			quotesSanitized = true
 		}
 	}
 	if realbotShouldClearLocalPairQuotes(args.outcomes, args.tokenBids, args.tokenAsks) {
 		for _, outcome := range args.outcomes {
+			if args.tokenBids[outcome] != 0 || args.tokenAsks[outcome] != 0 || len(args.tokenFullBids[outcome]) > 0 || len(args.tokenFullAsks[outcome]) > 0 {
+				depthDirty = true
+				quotesSanitized = true
+			}
 			args.tokenBids[outcome] = 0
 			args.tokenAsks[outcome] = 0
 			args.tokenFullBids[outcome] = nil
@@ -318,22 +359,16 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	}
 	realbotSyncDisplayQuotes(args.outcomes, args.tokenBids, args.tokenAsks, args.displayBids, args.displayAsks, false)
 
-	bidDepth := make(map[string][]paper.MarketLevel)
-	askDepth := make(map[string][]paper.MarketLevel)
-	for _, outcome := range args.outcomes {
-		if bids, ok := args.tokenFullBids[outcome]; ok {
-			bidDepth[outcome] = append([]paper.MarketLevel(nil), bids...)
-		}
-		if asks, ok := args.tokenFullAsks[outcome]; ok {
-			askDepth[outcome] = append([]paper.MarketLevel(nil), asks...)
+	wsTimeSinceMsg := args.wsMgr.TimeSinceLastDataMessage()
+	now := time.Now()
+	if runtime.lastTelemetryUpdate != nil {
+		shouldUpdateTelemetry := runtime.lastTelemetryUpdate.IsZero() || now.Sub(*runtime.lastTelemetryUpdate) >= 250*time.Millisecond
+		if shouldUpdateTelemetry {
+			args.tui.UpdateWSLatency(wsTimeSinceMsg)
+			args.tui.UpdateWSPingLatency(args.wsMgr.PingLatency())
+			*runtime.lastTelemetryUpdate = now
 		}
 	}
-	args.tui.UpdateOrderBookDepth(args.marketID, bidDepth, askDepth)
-
-	wsTimeSinceMsg := args.wsMgr.TimeSinceLastDataMessage()
-	args.tui.UpdateWSLatency(wsTimeSinceMsg)
-	args.tui.UpdateWSPingLatency(args.wsMgr.PingLatency())
-	now := time.Now()
 	terminalBookState := realbotLooksLikeTerminalBook(args.outcomes, args.tokenBids, args.tokenAsks)
 	pairQuoteAge := realbotPairQuoteAge(*runtime.lastPairUpdate, now)
 	needsWSReconnect := realbotShouldReconnectWS(args.outcomes, args.tokenBids, args.tokenAsks, pairQuoteAge, args.restFallbackQuoteAge, terminalBookState)
@@ -342,7 +377,10 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	if shouldRestFallback {
 		wasFallbackActive := *runtime.restFallbackActive
 		*runtime.restFallbackActive = true
-		recovered := handleRestFallbackWithDepth(args.ctx, args.marketID, pairQuoteAge, args.tokenMap, args.tokenBids, args.tokenAsks, args.displayBids, args.displayAsks, args.tokenFullBids, args.tokenFullAsks, args.quoteState, runtime.lastPairUpdate, args.polySignalTracker, args.engine, args.restClient, args.tui, wasFallbackActive && !*runtime.restRecoveryLogged)
+		recovered, fallbackDepthDirty := handleRestFallbackWithDepth(args.ctx, args.marketID, pairQuoteAge, args.tokenMap, args.tokenBids, args.tokenAsks, args.displayBids, args.displayAsks, args.tokenFullBids, args.tokenFullAsks, args.quoteState, runtime.lastPairUpdate, args.polySignalTracker, args.engine, args.restClient, args.tui, wasFallbackActive && !*runtime.restRecoveryLogged)
+		if fallbackDepthDirty {
+			depthDirty = true
+		}
 		*runtime.lastRestFallbackPoll = time.Now()
 		if recovered {
 			*runtime.restFallbackActive = false
@@ -353,6 +391,20 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	} else {
 		*runtime.restFallbackActive = false
 		*runtime.restRecoveryLogged = false
+	}
+
+	if depthDirty || quotesSanitized {
+		bidDepth := make(map[string][]paper.MarketLevel)
+		askDepth := make(map[string][]paper.MarketLevel)
+		for _, outcome := range args.outcomes {
+			if bids, ok := args.tokenFullBids[outcome]; ok {
+				bidDepth[outcome] = append([]paper.MarketLevel(nil), bids...)
+			}
+			if asks, ok := args.tokenFullAsks[outcome]; ok {
+				askDepth[outcome] = append([]paper.MarketLevel(nil), asks...)
+			}
+		}
+		args.tui.UpdateOrderBookDepth(args.marketID, bidDepth, askDepth)
 	}
 
 	quotesChanged := !realbotQuoteMapsEqual(args.outcomes, args.displayBids, args.displayAsks, args.publishedBids, args.publishedAsks)
@@ -553,8 +605,9 @@ func realbotSyncPairUpdate(outcomes []string, tokenBids, tokenAsks map[string]fl
 	}
 }
 
-func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, lastPairUpdate *time.Time, polyTracker *paper.DirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) bool {
+func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.Duration, tokenMap map[string]string, bids, asks, displayBids, displayAsks map[string]float64, fullBids, fullAsks map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, lastPairUpdate *time.Time, polyTracker *paper.DirectionalSignalTracker, engine *paper.Engine, restClient *api.RestClient, tui *paper.TUI, logRecovery bool) (bool, bool) {
 	success := false
+	depthChanged := false
 	staleSeconds := int(staleTime.Seconds())
 	restErrors := 0
 	restEmpty := 0
@@ -625,6 +678,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			fullAsks[outcome] = nil
 			quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 			success = true
+			depthChanged = true
 			continue
 		}
 
@@ -649,6 +703,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			fullAsks[outcome] = nil
 			quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
 			success = true
+			depthChanged = true
 			continue
 		}
 
@@ -664,6 +719,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		fullBids[outcome] = mkt.LevelsToPriceDepth(book.Bids, true)
 		fullAsks[outcome] = mkt.LevelsToPriceDepth(book.Asks, false)
 		quoteState[outcome] = realbotQuoteState{UpdatedAt: updatedAt, Source: "rest"}
+		depthChanged = true
 	}
 	realbotSyncDisplayQuotes(outcomes, bids, asks, displayBids, displayAsks, true)
 	if success && realbotShouldClearLocalPairQuotes(outcomes, bids, asks) {
@@ -674,6 +730,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			fullAsks[outcome] = nil
 			quoteState[outcome] = realbotQuoteState{UpdatedAt: time.Now(), Source: "rest"}
 		}
+		depthChanged = true
 	}
 	if success {
 		realbotSyncPairUpdate(outcomes, bids, asks, lastPairUpdate, time.Now())
@@ -691,5 +748,5 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			tui.LogEvent("[%s] 📭 REST returned empty books after %ds", id, staleSeconds)
 		}
 	}
-	return success
+	return success, depthChanged
 }

@@ -1,0 +1,64 @@
+package main
+
+import (
+	"math"
+	"testing"
+	"time"
+
+	"Market-bot/internal/paper"
+)
+
+func TestRealbotHandleMarketWSMessageProcessesPriceChangeEnvelope(t *testing.T) {
+	outcomes := []string{"Yes", "No"}
+	tokenBids := map[string]float64{"No": 0.25}
+	tokenAsks := map[string]float64{"No": 0.26}
+	tokenFullBids := map[string][]paper.MarketLevel{}
+	tokenFullAsks := map[string][]paper.MarketLevel{}
+	quoteState := map[string]realbotQuoteState{}
+	lastPairUpdate := time.Time{}
+
+	depthChanged := realbotHandleMarketWSMessage(realbotMarketQuoteArgs{
+		marketID:       "BTC-5m",
+		tokenToOutcome: map[string]string{"yes-token": "Yes"},
+		outcomes:       outcomes,
+		tokenBids:      tokenBids,
+		tokenAsks:      tokenAsks,
+		tokenFullBids:  tokenFullBids,
+		tokenFullAsks:  tokenFullAsks,
+		quoteState:     quoteState,
+		polySignalTracker: paper.NewDirectionalSignalTracker(
+			time.Second,
+			outcomes,
+		),
+		engine: paper.NewEngine(100),
+	}, []byte(`{
+		"market": "test-market",
+		"price_changes": [
+			{
+				"asset_id": "yes-token",
+				"price": "0.73",
+				"size": "12",
+				"side": "BUY",
+				"best_bid": "0.73",
+				"best_ask": "0.74",
+				"timestamp": "1766789469958"
+			}
+		]
+	}`), &lastPairUpdate)
+
+	if !depthChanged {
+		t.Fatal("expected price-change message to mark order-book depth dirty")
+	}
+	if math.Abs(tokenBids["Yes"]-0.73) > 0.000001 {
+		t.Fatalf("expected Yes bid 0.73, got %.4f", tokenBids["Yes"])
+	}
+	if math.Abs(tokenAsks["Yes"]-0.74) > 0.000001 {
+		t.Fatalf("expected Yes ask 0.74, got %.4f", tokenAsks["Yes"])
+	}
+	if len(tokenFullBids["Yes"]) == 0 {
+		t.Fatal("expected bid depth to be populated")
+	}
+	if quoteState["Yes"].Source != "ws" {
+		t.Fatalf("expected quote source ws, got %q", quoteState["Yes"].Source)
+	}
+}

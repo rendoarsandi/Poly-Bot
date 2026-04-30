@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 type PriceLevel struct {
@@ -48,6 +50,100 @@ type BestBidAskUpdate struct {
 type WSMessage struct {
 	EventType    string        `json:"event_type"`
 	PriceChanges []PriceChange `json:"price_changes"`
+}
+
+type MarketWSMessageKind int
+
+const (
+	MarketWSMessageUnknown MarketWSMessageKind = iota
+	MarketWSMessageOrderBooks
+	MarketWSMessageOrderBook
+	MarketWSMessagePriceUpdate
+	MarketWSMessageBestBidAsk
+)
+
+type MarketWSMessage struct {
+	Kind        MarketWSMessageKind
+	OrderBooks  []OrderBook
+	OrderBook   *OrderBook
+	PriceUpdate *PriceUpdate
+	BestBidAsk  *BestBidAskUpdate
+}
+
+type marketWSMessageEnvelope struct {
+	EventType    string        `json:"event_type"`
+	AssetID      string        `json:"asset_id"`
+	Market       string        `json:"market"`
+	Timestamp    string        `json:"timestamp"`
+	Bids         []PriceLevel  `json:"bids"`
+	Asks         []PriceLevel  `json:"asks"`
+	PriceChanges []PriceChange `json:"price_changes"`
+	BestBid      string        `json:"best_bid"`
+	BestAsk      string        `json:"best_ask"`
+	Spread       string        `json:"spread"`
+}
+
+func ParseMarketWSMessage(data []byte) (*MarketWSMessage, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return &MarketWSMessage{Kind: MarketWSMessageUnknown}, nil
+	}
+	if trimmed[0] == '[' {
+		var books []OrderBook
+		if err := json.Unmarshal(trimmed, &books); err != nil {
+			return nil, err
+		}
+		return &MarketWSMessage{
+			Kind:       MarketWSMessageOrderBooks,
+			OrderBooks: books,
+		}, nil
+	}
+
+	var envelope marketWSMessageEnvelope
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return nil, err
+	}
+
+	if len(envelope.PriceChanges) > 0 {
+		return &MarketWSMessage{
+			Kind: MarketWSMessagePriceUpdate,
+			PriceUpdate: &PriceUpdate{
+				Market:       envelope.Market,
+				PriceChanges: envelope.PriceChanges,
+			},
+		}, nil
+	}
+
+	if strings.EqualFold(strings.TrimSpace(envelope.EventType), "best_bid_ask") && envelope.AssetID != "" {
+		return &MarketWSMessage{
+			Kind: MarketWSMessageBestBidAsk,
+			BestBidAsk: &BestBidAskUpdate{
+				EventType: envelope.EventType,
+				Market:    envelope.Market,
+				AssetID:   envelope.AssetID,
+				BestBid:   envelope.BestBid,
+				BestAsk:   envelope.BestAsk,
+				Spread:    envelope.Spread,
+				Timestamp: envelope.Timestamp,
+			},
+		}, nil
+	}
+
+	if envelope.AssetID != "" || len(envelope.Bids) > 0 || len(envelope.Asks) > 0 || strings.EqualFold(strings.TrimSpace(envelope.EventType), "book") {
+		return &MarketWSMessage{
+			Kind: MarketWSMessageOrderBook,
+			OrderBook: &OrderBook{
+				EventType: envelope.EventType,
+				AssetID:   envelope.AssetID,
+				Market:    envelope.Market,
+				Timestamp: envelope.Timestamp,
+				Bids:      envelope.Bids,
+				Asks:      envelope.Asks,
+			},
+		}, nil
+	}
+
+	return &MarketWSMessage{Kind: MarketWSMessageUnknown}, nil
 }
 
 func ParseOrderBook(data []byte) (*OrderBook, error) {

@@ -102,3 +102,55 @@ func TestParseBestBidAsk(t *testing.T) {
 		t.Fatalf("unexpected best bid/ask payload: %+v", update)
 	}
 }
+
+func TestParseMarketWSMessageDetectsBooksArray(t *testing.T) {
+	rawJSON := `[
+		{
+			"event_type": "book",
+			"asset_id": "yes-token",
+			"market": "test-market",
+			"timestamp": "123456789",
+			"bids": [{"price": "0.48", "size": "100"}],
+			"asks": [{"price": "0.50", "size": "200"}]
+		}
+	]`
+
+	msg, err := ParseMarketWSMessage([]byte(rawJSON))
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if msg.Kind != MarketWSMessageOrderBooks {
+		t.Fatalf("expected order-books message, got kind %d", msg.Kind)
+	}
+	if len(msg.OrderBooks) != 1 || msg.OrderBooks[0].AssetID != "yes-token" {
+		t.Fatalf("unexpected order-books payload: %+v", msg.OrderBooks)
+	}
+}
+
+func TestParseMarketWSMessageDetectsPriceUpdate(t *testing.T) {
+	rawJSON := `{
+		"market": "test-market",
+		"price_changes": [
+			{
+				"asset_id": "yes-token",
+				"price": "0.74",
+				"size": "10",
+				"side": "SELL",
+				"best_bid": "0.73",
+				"best_ask": "0.74",
+				"timestamp": "1766789469958"
+			}
+		]
+	}`
+
+	msg, err := ParseMarketWSMessage([]byte(rawJSON))
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if msg.Kind != MarketWSMessagePriceUpdate {
+		t.Fatalf("expected price-update message, got kind %d", msg.Kind)
+	}
+	if msg.PriceUpdate == nil || len(msg.PriceUpdate.PriceChanges) != 1 {
+		t.Fatalf("unexpected price-update payload: %+v", msg.PriceUpdate)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,5 +124,132 @@ func TestFindMarketsSupportsOneHourMarkets(t *testing.T) {
 	}
 	if _, ok := markets["BTC-1h"]; !ok {
 		t.Fatalf("expected market 'BTC-1h' to be found, got %v", markets)
+	}
+}
+
+func TestFindMarketsSkipsSecondaryTimeframeOutsideCopytrade(t *testing.T) {
+	var (
+		mu             sync.Mutex
+		requestedSlugs []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slug := r.URL.Query().Get("slug")
+		mu.Lock()
+		requestedSlugs = append(requestedSlugs, slug)
+		mu.Unlock()
+		if !strings.Contains(slug, "-5m-") {
+			_ = json.NewEncoder(w).Encode([]api.GammaEvent{})
+			return
+		}
+
+		endDate := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+		event := api.GammaEvent{
+			Slug:    "btc-updown-5m",
+			EndDate: endDate,
+			Markets: []api.GammaMarket{{
+				ConditionID:  "0x5m",
+				Slug:         slug,
+				ClobTokenIds: `["111","222"]`,
+				Outcomes:     `["Yes","No"]`,
+				Active:       true,
+				Closed:       false,
+			}},
+		}
+		_ = json.NewEncoder(w).Encode([]api.GammaEvent{event})
+	}))
+	defer server.Close()
+
+	restClient := api.NewRestClient("")
+	restClient.BaseURL = server.URL
+	restClient.GammaURL = server.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	markets := FindMarkets(ctx, restClient, func() paper.TUISettings {
+		return paper.TUISettings{
+			MarketSlug:   "BTC",
+			Timeframe:    "5m",
+			MaxMarkets:   1,
+			PaperArbMode: "taker",
+		}
+	}, nil)
+
+	if len(markets) == 0 {
+		t.Fatalf("expected 5m market to be discovered")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, slug := range requestedSlugs {
+		if strings.Contains(slug, "-15m-") {
+			t.Fatalf("did not expect secondary 15m lookup outside copytrade, saw %q", slug)
+		}
+	}
+}
+
+func TestFindMarketsKeepsSecondaryTimeframeForCopytrade(t *testing.T) {
+	var (
+		mu             sync.Mutex
+		requestedSlugs []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slug := r.URL.Query().Get("slug")
+		mu.Lock()
+		requestedSlugs = append(requestedSlugs, slug)
+		mu.Unlock()
+		if !strings.Contains(slug, "-5m-") {
+			_ = json.NewEncoder(w).Encode([]api.GammaEvent{})
+			return
+		}
+
+		endDate := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+		event := api.GammaEvent{
+			Slug:    "btc-updown-5m",
+			EndDate: endDate,
+			Markets: []api.GammaMarket{{
+				ConditionID:  "0x5m-copytrade",
+				Slug:         slug,
+				ClobTokenIds: `["111","222"]`,
+				Outcomes:     `["Yes","No"]`,
+				Active:       true,
+				Closed:       false,
+			}},
+		}
+		_ = json.NewEncoder(w).Encode([]api.GammaEvent{event})
+	}))
+	defer server.Close()
+
+	restClient := api.NewRestClient("")
+	restClient.BaseURL = server.URL
+	restClient.GammaURL = server.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	markets := FindMarkets(ctx, restClient, func() paper.TUISettings {
+		return paper.TUISettings{
+			MarketSlug:   "BTC",
+			Timeframe:    "5m",
+			MaxMarkets:   1,
+			PaperArbMode: "copytrade",
+		}
+	}, nil)
+
+	if len(markets) == 0 {
+		t.Fatalf("expected 5m market to be discovered")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	sawSecondary := false
+	for _, slug := range requestedSlugs {
+		if strings.Contains(slug, "-15m-") {
+			sawSecondary = true
+			break
+		}
+	}
+	if !sawSecondary {
+		t.Fatal("expected copytrade discovery to keep secondary 15m lookup")
 	}
 }

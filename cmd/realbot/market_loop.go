@@ -123,6 +123,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	lastWsWarnTime := time.Time{}
 	lastForceReconnect := time.Time{}
 	lastRestFallbackPoll := time.Time{}
+	lastTelemetryUpdate := time.Time{}
 	restFallbackActive := false
 	restRecoveryLogged := false
 	wsChannelClosed := false
@@ -245,6 +246,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			lastWsWarnTime:       &lastWsWarnTime,
 			lastForceReconnect:   &lastForceReconnect,
 			lastRestFallbackPoll: &lastRestFallbackPoll,
+			lastTelemetryUpdate:  &lastTelemetryUpdate,
 			restFallbackActive:   &restFallbackActive,
 			restRecoveryLogged:   &restRecoveryLogged,
 			wsChannelClosed:      &wsChannelClosed,
@@ -256,7 +258,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 		latestQuoteAt, _ := realbotLatestQuoteUpdate(outcomes, quoteState)
 		decisionInterval := realbotDecisionEvalInterval(liveCfg, timeToExpiry, entryExecutionInFlight)
 		if !realbotShouldRunDecisionLoop(now, lastDecisionEvalAt, lastDecisionQuoteAt, latestQuoteAt, decisionInterval) {
-			realbotWaitForMarketWake(quoteArgs, realbotTraderLoopInterval(liveCfg), &lastPairUpdate, entryExecutionDone, &realbotAsyncEntryState{
+			realbotWaitForMarketWake(quoteArgs, decisionInterval, &lastPairUpdate, entryExecutionDone, &realbotAsyncEntryState{
 				entryExecutionInFlight: &entryExecutionInFlight,
 				ladderedEntries:        &ladderedEntries,
 				lastTrade:              &lastTrade,
@@ -342,7 +344,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			continue
 		}
 
-		realbotWaitForMarketWake(quoteArgs, realbotTraderLoopInterval(liveCfg), &lastPairUpdate, entryExecutionDone, &realbotAsyncEntryState{
+		realbotWaitForMarketWake(quoteArgs, decisionInterval, &lastPairUpdate, entryExecutionDone, &realbotAsyncEntryState{
 			entryExecutionInFlight: &entryExecutionInFlight,
 			ladderedEntries:        &ladderedEntries,
 			lastTrade:              &lastTrade,

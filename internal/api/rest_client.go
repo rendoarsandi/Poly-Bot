@@ -509,26 +509,34 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 
 	results := make(chan timeframeResult, len(tasks))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4) // Limit to 4 concurrent requests to save CPU on small instances
-	for _, task := range tasks {
-		task := task
+	taskCh := make(chan timeframeTask)
+	workerCount := 4
+	if len(tasks) < workerCount {
+		workerCount = len(tasks)
+	}
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			
-			var market *Market
-			var err error
-			for _, slug := range task.slugs {
-				market, err = c.getGammaTimeframeMarket(ctx, slug)
-				if market != nil || err == nil {
-					break
+			for task := range taskCh {
+				var market *Market
+				var err error
+				for _, slug := range task.slugs {
+					market, err = c.getGammaTimeframeMarket(ctx, slug)
+					if market != nil || err == nil {
+						break
+					}
 				}
+				results <- timeframeResult{index: task.index, market: market, err: err}
 			}
-			results <- timeframeResult{index: task.index, market: market, err: err}
 		}()
 	}
+	go func() {
+		defer close(taskCh)
+		for _, task := range tasks {
+			taskCh <- task
+		}
+	}()
 	go func() {
 		wg.Wait()
 		close(results)

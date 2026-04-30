@@ -4234,7 +4234,7 @@ func TestHandleRestFallbackWithDepthSkipsOlderBooksWhenCurrentQuoteIsFresh(t *te
 		"Up":   {UpdatedAt: time.Now(), Source: "ws"},
 	}
 
-	ok := handleRestFallbackWithDepth(context.Background(), "SOL", 12*time.Second, map[string]string{
+	ok, _ := handleRestFallbackWithDepth(context.Background(), "SOL", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
 	}, bids, asks, map[string]float64{}, map[string]float64{}, fullBids, fullAsks, quoteState, nil, nil, engine, client, tui, false)
@@ -4274,7 +4274,7 @@ func TestHandleRestFallbackWithDepthPreservesDisplayForOneSidedBooks(t *testing.
 	fullAsks := map[string][]paper.MarketLevel{}
 	quoteState := map[string]realbotQuoteState{}
 
-	ok := handleRestFallbackWithDepth(context.Background(), "BTC", 12*time.Second, map[string]string{
+	ok, _ := handleRestFallbackWithDepth(context.Background(), "BTC", 12*time.Second, map[string]string{
 		"down-token": "Down",
 		"up-token":   "Up",
 	}, bids, asks, displayBids, displayAsks, fullBids, fullAsks, quoteState, nil, nil, engine, client, tui, false)

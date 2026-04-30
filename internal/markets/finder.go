@@ -125,13 +125,16 @@ func FindMarkets(
 		var secondaryMarkets []api.Market
 		var errPrimary error
 
-		// If the user didn't request a specific timeframe, or if they requested 15m/5m,
-		// we fetch the other one to provide maximum coverage for copytrading.
+		// Only copytrade needs cross-timeframe discovery coverage. Normal trading
+		// should stick to the requested bucket so 5m rounds do not keep scanning
+		// 15m markets as well.
 		secondaryTimeframe := ""
-		if timeframe == "15m" {
-			secondaryTimeframe = "5m"
-		} else if timeframe == "5m" {
-			secondaryTimeframe = "15m"
+		if strings.EqualFold(strings.TrimSpace(cfg.PaperArbMode), "copytrade") {
+			if timeframe == "15m" {
+				secondaryTimeframe = "5m"
+			} else if timeframe == "5m" {
+				secondaryTimeframe = "15m"
+			}
 		}
 
 		var errSecondary error
