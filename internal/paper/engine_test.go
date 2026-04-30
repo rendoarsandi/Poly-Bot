@@ -1041,17 +1041,48 @@ func TestEngine_BuySellWithExplicitFeeRateKeepsRealizedAlignedWithEquity(t *test
 	}
 }
 
-func TestEngine_SyncBalanceNeutralDoesNotRebaseFlatCashTransfers(t *testing.T) {
+func TestEngine_SyncBalanceNeutralBooksFlatCashDriftAsRealizedPnL(t *testing.T) {
 	engine := NewEngine(100.0)
 
 	neutralized := engine.SyncBalanceNeutral(130.0)
 	if absFloat(neutralized) > 0.0001 {
-		t.Fatalf("expected flat deposit not to be auto-neutralized, got %.4f", neutralized)
+		t.Fatalf("expected flat drift not to be auto-neutralized, got %.4f", neutralized)
 	}
 
 	stats := engine.GetStats()
 	if absFloat(stats.StartingBalance-100.0) > 0.0001 {
 		t.Fatalf("expected flat sync to keep baseline at 100.00, got %.4f", stats.StartingBalance)
+	}
+	if absFloat(stats.RealizedPnL-30.0) > 0.0001 {
+		t.Fatalf("expected flat sync drift to be realized as +30.00, got %.4f", stats.RealizedPnL)
+	}
+	if absFloat(engine.GetBookEquity()-130.0) > 0.0001 {
+		t.Fatalf("expected book equity to follow synced cash 130.00, got %.4f", engine.GetBookEquity())
+	}
+}
+
+func TestEngine_SyncBalanceNeutralDetailedReportsAccountingPath(t *testing.T) {
+	engine := NewEngine(100.0)
+
+	result := engine.SyncBalanceNeutralDetailed(99.25)
+
+	if absFloat(result.Delta+0.75) > 0.0001 {
+		t.Fatalf("expected raw delta -0.75, got %.4f", result.Delta)
+	}
+	if result.ShouldNeutralize {
+		t.Fatal("expected flat balance drift to use realized path")
+	}
+	if absFloat(result.RealizedDelta+0.75) > 0.0001 {
+		t.Fatalf("expected realized delta -0.75, got %.4f", result.RealizedDelta)
+	}
+	if absFloat(result.NeutralizedDelta) > 0.0001 {
+		t.Fatalf("expected no neutralized delta, got %.4f", result.NeutralizedDelta)
+	}
+	if absFloat(result.BookEquity-99.25) > 0.0001 {
+		t.Fatalf("expected result book equity 99.25, got %.4f", result.BookEquity)
+	}
+	if absFloat(result.RealizedPnL+0.75) > 0.0001 {
+		t.Fatalf("expected result realized pnl -0.75, got %.4f", result.RealizedPnL)
 	}
 }
 

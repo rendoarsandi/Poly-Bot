@@ -220,6 +220,7 @@ func realbotUpsertMakerQuote(ctx context.Context, marketID string, trader *tradi
 		res *trading.TradeResult
 		err error
 	)
+	realbotRecordOrderSubmissions(1)
 	if side == api.SideBuy {
 		res, err = trader.Buy(ctx, tokenID, outcome, price, qty, api.OrderTypeLimit, api.TIFGoodTilCancelled, feeRateBps)
 	} else {

@@ -363,8 +363,7 @@ func realbotExecuteAggressiveEntry(
 				tui.LogEvent("[%s] 🔄 Ladder late fill recovered via %s: %s %s", id, recoveredLateLadderSource, outcomes[0], formatShareQty(filled1))
 			}
 			if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-				engine.SyncBalanceNeutral(newBal)
-				engine.RecalculateDrawdown()
+				realbotApplyRuntimeBalanceSync(engine, tui, newBal)
 				realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 			}
 			refreshWalletTruth(5 * time.Second)
@@ -384,8 +383,7 @@ func realbotExecuteAggressiveEntry(
 				tui.LogEvent("[%s] 🔄 Ladder late fill recovered via %s: %s %s", id, recoveredLateLadderSource, outcomes[1], formatShareQty(filled2))
 			}
 			if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-				engine.SyncBalanceNeutral(newBal)
-				engine.RecalculateDrawdown()
+				realbotApplyRuntimeBalanceSync(engine, tui, newBal)
 				realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 			}
 			refreshWalletTruth(5 * time.Second)
@@ -411,8 +409,7 @@ func realbotExecuteAggressiveEntry(
 		}
 
 		if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-			engine.SyncBalanceNeutral(newBal)
-			engine.RecalculateDrawdown()
+			realbotApplyRuntimeBalanceSync(engine, tui, newBal)
 			realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 		}
 		refreshWalletTruth(5 * time.Second)
@@ -550,8 +547,7 @@ func realbotExecuteAggressiveEntry(
 	}
 
 	if newBal, err := trader.ForceRefreshBalance(ctx); err == nil {
-		engine.SyncBalanceNeutral(newBal)
-		engine.RecalculateDrawdown()
+		realbotApplyRuntimeBalanceSync(engine, tui, newBal)
 		realbotRefreshWalletCashDisplay(ctx, trader, tui, 8*time.Second)
 	}
 	refreshWalletTruth(5 * time.Second)

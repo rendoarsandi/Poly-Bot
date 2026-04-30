@@ -47,6 +47,17 @@ type Stats struct {
 	StartingBalance   float64
 }
 
+type BalanceSyncResult struct {
+	PreviousBalance  float64
+	NewBalance       float64
+	Delta            float64
+	NeutralizedDelta float64
+	RealizedDelta    float64
+	ShouldNeutralize bool
+	BookEquity       float64
+	RealizedPnL      float64
+}
+
 // Engine is the paper trading engine
 type Engine struct {
 	mu sync.RWMutex
@@ -1536,8 +1547,13 @@ func (e *Engine) ForceResetPaperSession(balance float64) {
 // SyncBalanceNeutral updates wallet cash from an external source. If unresolved
 // inventory is still open, the balance change is treated as a neutral sync
 // event rather than session PnL, and the returned delta should be excluded from
-// round PnL attribution.
+// round PnL attribution. If the engine is flat, unexplained cash drift is booked
+// as realized PnL; explicit deposits/withdrawals should use RebaseBalance.
 func (e *Engine) SyncBalanceNeutral(balance float64) float64 {
+	return e.SyncBalanceNeutralDetailed(balance).NeutralizedDelta
+}
+
+func (e *Engine) SyncBalanceNeutralDetailed(balance float64) BalanceSyncResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1550,13 +1566,20 @@ func (e *Engine) RebaseBalance(balance float64) float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.syncBalanceNeutralLocked(balance, true)
+	return e.syncBalanceNeutralLocked(balance, true).NeutralizedDelta
 }
 
-func (e *Engine) syncBalanceNeutralLocked(balance float64, forceNeutral bool) float64 {
+func (e *Engine) syncBalanceNeutralLocked(balance float64, forceNeutral bool) BalanceSyncResult {
 
+	previousBalance := e.currentBalance
 	delta := balance - e.currentBalance
 	shouldNeutralize := forceNeutral || e.hasNeutralUnsettledInventoryLocked()
+	result := BalanceSyncResult{
+		PreviousBalance:  previousBalance,
+		NewBalance:       balance,
+		Delta:            delta,
+		ShouldNeutralize: shouldNeutralize,
+	}
 
 	if delta > 0.01 && len(e.pendingRedemptions) > 0 {
 		remainingDelta := delta
@@ -1577,7 +1600,6 @@ func (e *Engine) syncBalanceNeutralLocked(balance float64, forceNeutral bool) fl
 
 	e.currentBalance = balance
 
-	neutralized := 0.0
 	if math.Abs(delta) >= 0.000001 && shouldNeutralize {
 		e.pnlBaseline += delta
 		if delta > 0 {
@@ -1586,11 +1608,16 @@ func (e *Engine) syncBalanceNeutralLocked(balance float64, forceNeutral bool) fl
 		} else {
 			e.refreshCompoundStateLocked(0)
 		}
-		neutralized = delta
+		result.NeutralizedDelta = delta
+	} else if math.Abs(delta) >= 0.000001 {
+		e.trackRealizedPnL(delta)
+		result.RealizedDelta = delta
 	}
 
 	e.recalculateDrawdown()
-	return neutralized
+	result.BookEquity = e.getBookEquity()
+	result.RealizedPnL = e.realizedPnL
+	return result
 }
 
 func (e *Engine) refreshCompoundStateLocked(candidateSizingBalance float64) {

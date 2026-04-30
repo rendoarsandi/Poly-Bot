@@ -340,9 +340,8 @@ func launchRealbotRedeemRetryLoop(ctx context.Context, marketID, conditionID, wi
 				if newBal > highestObservedBalance {
 					highestObservedBalance = newBal
 				}
-				engine.SyncBalanceNeutral(newBal)
+				realbotApplyRuntimeBalanceSync(engine, tui, newBal)
 				realbotApplyRedeemCashCorrection(engine, tui, marketID, redeemStartBalance, expectedRedeemPayout, highestObservedBalance, &appliedCashCorrection)
-				engine.RecalculateDrawdown()
 				if walletCash, cashErr := trader.ForceRefreshOnChainUSDCBalance(balanceCtx); cashErr == nil {
 					tui.SetWalletCash(walletCash)
 				}

@@ -38,3 +38,38 @@ func TestRealbotSwitchExecutionBackendAllowsLiveToPaperWithOpenEngine(t *testing
 		t.Fatalf("expected paper cash to rebase to 55.50, got %.2f", engine.GetBalance())
 	}
 }
+
+func TestRealbotApplyRuntimeBalanceSyncBooksFlatDriftAsRealizedPnL(t *testing.T) {
+	engine := paper.NewEngine(100)
+
+	result := realbotApplyRuntimeBalanceSync(engine, nil, 99.40)
+
+	if math.Abs(result.RealizedDelta+0.60) > 0.000001 {
+		t.Fatalf("expected flat drift to be realized as -0.60, got %.4f", result.RealizedDelta)
+	}
+	if math.Abs(result.NeutralizedDelta) > 0.000001 {
+		t.Fatalf("expected flat drift not to be neutralized, got %.4f", result.NeutralizedDelta)
+	}
+	if got := engine.GetStats().RealizedPnL; math.Abs(got+0.60) > 0.000001 {
+		t.Fatalf("expected engine realized pnl -0.60, got %.4f", got)
+	}
+}
+
+func TestRealbotApplyRuntimeBalanceSyncNeutralizesOpenInventoryDrift(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.50, 10); err != nil {
+		t.Fatalf("failed to seed open inventory: %v", err)
+	}
+
+	result := realbotApplyRuntimeBalanceSync(engine, nil, engine.GetBalance()-0.75)
+
+	if math.Abs(result.NeutralizedDelta+0.75) > 0.000001 {
+		t.Fatalf("expected open-inventory drift to be neutralized as -0.75, got %.4f", result.NeutralizedDelta)
+	}
+	if math.Abs(result.RealizedDelta) > 0.000001 {
+		t.Fatalf("expected open-inventory drift not to be realized, got %.4f", result.RealizedDelta)
+	}
+	if got := engine.GetStats().RealizedPnL; math.Abs(got) > 0.000001 {
+		t.Fatalf("expected realized pnl to remain neutral while inventory is open, got %.4f", got)
+	}
+}

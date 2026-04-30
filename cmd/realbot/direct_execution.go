@@ -487,6 +487,7 @@ func executeMarketOrderBatchWithSignals(ctx context.Context, trader *trading.Rea
 		batchReqs[i] = buildDirectMarketOrderRequest(req)
 	}
 
+	realbotRecordOrderSubmissions(len(batchReqs))
 	results, err := trader.ExecuteBatch(ctx, batchReqs)
 	execs := make([]directMarketExecution, len(reqs))
 	var wg sync.WaitGroup
@@ -533,6 +534,7 @@ func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, si
 	primeRealbotOrderPath(ctx, trader)
 
 	submitWithFeeRate := func(rate int) (*trading.TradeResult, error) {
+		realbotRecordOrderSubmissions(1)
 		if side == api.SideSell {
 			return trader.Sell(ctx, tokenID, outcome, price, size, api.OrderTypeLimit, api.TIFFillAndKill, rate)
 		}

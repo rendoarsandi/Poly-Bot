@@ -52,6 +52,7 @@ type realbotMarketQuoteRuntime struct {
 	restFallbackActive   *bool
 	restRecoveryLogged   *bool
 	wsChannelClosed      *bool
+	metrics              *realbotRuntimeMetrics
 }
 
 func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastPairUpdate *time.Time) bool {
@@ -350,6 +351,9 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 			return true
 		}
 	}
+	if runtime.metrics != nil {
+		runtime.metrics.observeWSMessages(wsMessagesProcessed, len(args.wsMsgChan))
+	}
 
 	for _, outcome := range args.outcomes {
 		if args.tokenBids[outcome] > 0 && args.tokenAsks[outcome] > 0 && !realbotHasSaneTopOfBook(args.tokenBids[outcome], args.tokenAsks[outcome]) {
@@ -393,6 +397,9 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	shouldRestFallback := realbotShouldPollRestFallback(*runtime.lastPairUpdate, *runtime.lastRestFallbackPoll, now, args.restFallbackQuoteAge, args.restFallbackPollPeriod, terminalBookState)
 
 	if shouldRestFallback {
+		if runtime.metrics != nil {
+			runtime.metrics.observeRestFallback()
+		}
 		wasFallbackActive := *runtime.restFallbackActive
 		*runtime.restFallbackActive = true
 		recovered, fallbackDepthDirty := handleRestFallbackWithDepth(args.ctx, args.marketID, pairQuoteAge, args.tokenMap, args.tokenBids, args.tokenAsks, args.displayBids, args.displayAsks, args.tokenFullBids, args.tokenFullAsks, args.quoteState, runtime.lastPairUpdate, args.polySignalTracker, args.engine, args.restClient, args.tui, wasFallbackActive && !*runtime.restRecoveryLogged)
@@ -432,6 +439,9 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	if quotesChanged || freshnessAdvanced {
 		args.tui.UpdateMarketPricesWithSourceAt(args.marketID, args.displayBids, args.displayAsks, realbotNormalizeDisplaySource(latestQuoteSource), latestQuoteAt)
 		realbotStorePublishedQuotes(args.outcomes, args.displayBids, args.displayAsks, args.publishedBids, args.publishedAsks)
+		if runtime.metrics != nil {
+			runtime.metrics.observeQuoteUpdate()
+		}
 		if freshnessAdvanced {
 			*runtime.lastPublishedQuoteAt = latestQuoteAt
 		}

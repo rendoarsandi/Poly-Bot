@@ -319,8 +319,7 @@ func realbotHandleLiveRecovery(args realbotLiveRecoveryArgs, state *realbotLiveR
 			if state.currentBalance != nil {
 				*state.currentBalance = newBal
 			}
-			args.engine.SyncBalanceNeutral(newBal)
-			args.engine.RecalculateDrawdown()
+			realbotApplyRuntimeBalanceSync(args.engine, args.tui, newBal)
 			realbotRefreshWalletCashDisplay(args.ctx, args.trader, args.tui, 8*time.Second)
 		}
 		switch {

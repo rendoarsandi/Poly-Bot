@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,10 +225,35 @@ func realbotSyncRuntimeBalance(ctx context.Context, trader *trading.RealTrader, 
 		return 0, 0, err
 	}
 
-	delta := engine.SyncBalanceNeutral(newBal)
-	engine.RecalculateDrawdown()
+	syncResult := realbotApplyRuntimeBalanceSync(engine, tui, newBal)
 	realbotRefreshWalletCashDisplay(ctx, trader, tui, timeout)
-	return newBal, delta, nil
+	return newBal, syncResult.NeutralizedDelta, nil
+}
+
+func realbotApplyRuntimeBalanceSync(engine *paper.Engine, tui *paper.TUI, balance float64) paper.BalanceSyncResult {
+	if engine == nil {
+		return paper.BalanceSyncResult{}
+	}
+	syncResult := engine.SyncBalanceNeutralDetailed(balance)
+	engine.RecalculateDrawdown()
+	realbotLogBalanceSyncResult(tui, syncResult)
+	return syncResult
+}
+
+func realbotLogBalanceSyncResult(tui *paper.TUI, syncResult paper.BalanceSyncResult) {
+	if tui == nil || math.Abs(syncResult.Delta) < 0.005 {
+		return
+	}
+	switch {
+	case math.Abs(syncResult.NeutralizedDelta) >= 0.005:
+		tui.LogEventDedup("balance-sync:neutralized", 15*time.Second,
+			"🧮 Balance sync neutralized cash Δ%+.2f (raw Δ%+.2f, book $%.2f, realized %+.2f)",
+			syncResult.NeutralizedDelta, syncResult.Delta, syncResult.BookEquity, syncResult.RealizedPnL)
+	case math.Abs(syncResult.RealizedDelta) >= 0.005:
+		tui.LogEventDedup("balance-sync:realized", 15*time.Second,
+			"🧾 Balance sync booked external cash drift Δ%+.2f as realized PnL (book $%.2f, realized %+.2f)",
+			syncResult.RealizedDelta, syncResult.BookEquity, syncResult.RealizedPnL)
+	}
 }
 
 func realbotSyncRuntimePositions(ctx context.Context, trader *trading.RealTrader, timeout time.Duration) ([]trading.PositionInfo, error) {
