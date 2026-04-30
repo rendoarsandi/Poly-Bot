@@ -215,14 +215,14 @@ func realbotLadderedLeaderSide(ask0, ask1 float64) int {
 	}
 }
 
-// ladderedTakerBaseRungPrice anchors the ladder rung-zero price at $0.50 for
-// BOTH outcomes (Down and Up), independent of the operator's MinAskPrice
-// setting. This means rung 0 fires whenever the ask is at or below $0.50,
-// and each subsequent rung is one re-entry move above that anchor.
-const ladderedTakerBaseRungPrice = 0.50
-
-func realbotLadderedBasePrice(_ float64) float64 {
-	return ladderedTakerBaseRungPrice
+func realbotLadderedBasePrice(basePrice float64) float64 {
+	if basePrice <= 0 || basePrice < ladderedTakerMinAsk {
+		return ladderedTakerMinAsk
+	}
+	if basePrice > ladderedTakerMaxAsk {
+		return ladderedTakerMaxAsk
+	}
+	return basePrice
 }
 
 func realbotLadderedRungIndex(ask, basePrice, moveCents float64) int {
@@ -512,8 +512,7 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 
 	realbotCfg := args.tui.GetSettings()
 	rMinAsk, rMaxAsk := ladderedTakerAskBounds(realbotCfg.MinAskPrice, realbotCfg.MaxAskPrice)
-	// Anchor the ladder rung-zero price at $0.50 for both sides.
-	ladderBasePrice := ladderedTakerBaseRungPrice
+	ladderBasePrice := rMinAsk
 	moveCents := realbotCfg.LadderedTakerReentryMoveCents
 
 	if ask1 <= bid1 || ask2 <= bid2 {
