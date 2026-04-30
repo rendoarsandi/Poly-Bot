@@ -509,11 +509,15 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 
 	results := make(chan timeframeResult, len(tasks))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4) // Limit to 4 concurrent requests to save CPU on small instances
 	for _, task := range tasks {
 		task := task
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			
 			var market *Market
 			var err error
 			for _, slug := range task.slugs {
