@@ -67,6 +67,7 @@ type realbotPostQuoteIterationState struct {
 	lastTakerCloseLog          *time.Time
 	lastTakerCloseLogKey       *string
 	lastTakerCloseQuoteRefresh *time.Time
+	lastReconnectTime          *time.Time
 	lastForceReconnect         *time.Time
 	lastTrade                  *time.Time
 	lastBinanceLog             *time.Time
@@ -85,6 +86,17 @@ type realbotPostQuoteIterationState struct {
 }
 
 func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *realbotPostQuoteIterationState) bool {
+	if state.lastReconnectTime != nil && !state.lastReconnectTime.IsZero() {
+		if elapsed := time.Since(*state.lastReconnectTime); elapsed < 2*time.Second {
+			if args.tui != nil {
+				args.tui.LogEventDedup("ws-warmup:"+args.marketID, 1*time.Second,
+					"[%s] ⏳ Waiting %dms for WS stream to stabilize after reconnect...",
+					args.marketID, (2*time.Second-elapsed).Milliseconds())
+			}
+			return true // Skip trading during warmup, let the book rebuild
+		}
+	}
+
 	blockNewEntriesReason, blockNewEntries := realbotEntryBlockReason(args.ladderCloseState, args.marketID, args.engine, args.splitInventory, args.preQuoteLiveCfg)
 	realbotHandleEntryBlockNotice(args.marketID, blockNewEntries, blockNewEntriesReason, args.tui, state.lastEntryBlockReason)
 

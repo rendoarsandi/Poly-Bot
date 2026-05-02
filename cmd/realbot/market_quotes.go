@@ -45,6 +45,7 @@ type realbotMarketQuoteRuntime struct {
 	lastPairUpdate       *time.Time
 	lastPublishedQuoteAt *time.Time
 	lastReconnectCount   *int32
+	lastReconnectTime    *time.Time
 	lastWsWarnTime       *time.Time
 	lastForceReconnect   *time.Time
 	lastRestFallbackPoll *time.Time
@@ -301,6 +302,7 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 	if reconnects > *runtime.lastReconnectCount {
 		args.tui.LogEvent("[%s] 🔄 WebSocket reconnected (attempt #%d)", args.marketID, reconnects)
 		*runtime.lastReconnectCount = reconnects
+		*runtime.lastReconnectTime = time.Now()
 		*runtime.wsChannelClosed = false
 
 		for _, outcome := range args.outcomes {

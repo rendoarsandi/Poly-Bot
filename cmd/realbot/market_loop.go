@@ -120,6 +120,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 	copytradeState := runtimeState.copytradeState
 
 	lastReconnectCount := int32(0)
+	lastReconnectTime := time.Time{}
 	lastWsWarnTime := time.Time{}
 	lastForceReconnect := time.Time{}
 	lastRestFallbackPoll := time.Time{}
@@ -244,6 +245,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			lastPairUpdate:       &lastPairUpdate,
 			lastPublishedQuoteAt: &lastPublishedQuoteAt,
 			lastReconnectCount:   &lastReconnectCount,
+			lastReconnectTime:    &lastReconnectTime,
 			lastWsWarnTime:       &lastWsWarnTime,
 			lastForceReconnect:   &lastForceReconnect,
 			lastRestFallbackPoll: &lastRestFallbackPoll,
@@ -329,6 +331,7 @@ func tradeMarket(globalCtx context.Context, ctx context.Context, id string, mark
 			lastTakerCloseLog:          &lastTakerCloseLog,
 			lastTakerCloseLogKey:       &lastTakerCloseLogKey,
 			lastTakerCloseQuoteRefresh: &lastTakerCloseQuoteRefresh,
+			lastReconnectTime:          &lastReconnectTime,
 			lastForceReconnect:         &lastForceReconnect,
 			lastTrade:                  &lastTrade,
 			lastBinanceLog:             &lastBinanceLog,
