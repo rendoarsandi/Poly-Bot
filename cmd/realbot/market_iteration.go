@@ -87,11 +87,11 @@ type realbotPostQuoteIterationState struct {
 
 func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *realbotPostQuoteIterationState) bool {
 	if state.lastReconnectTime != nil && !state.lastReconnectTime.IsZero() {
-		if elapsed := time.Since(*state.lastReconnectTime); elapsed < 2*time.Second {
+		if elapsed := time.Since(*state.lastReconnectTime); elapsed < 500*time.Millisecond {
 			if args.tui != nil {
 				args.tui.LogEventDedup("ws-warmup:"+args.marketID, 1*time.Second,
 					"[%s] ⏳ Waiting %dms for WS stream to stabilize after reconnect...",
-					args.marketID, (2*time.Second-elapsed).Milliseconds())
+					args.marketID, (500*time.Millisecond-elapsed).Milliseconds())
 			}
 			return true // Skip trading during warmup, let the book rebuild
 		}
