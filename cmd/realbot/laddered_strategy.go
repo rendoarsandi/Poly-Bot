@@ -497,6 +497,54 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 	)
 }
 
+func realbotLadderedClampQtyForGuard(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64, guardMode string, configuredWorstPnLFloor, configuredMaxProfitPnL float64) float64 {
+	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 || price <= 0 {
+		return requestedQty
+	}
+	if !strings.EqualFold(strings.TrimSpace(guardMode), core.LadderedTakerPnLGuardMaxProfit) {
+		return requestedQty
+	}
+	maxProfitCap := realbotLadderedMaxProfitPnLCap(configuredMaxProfitPnL)
+	if maxProfitCap <= 0 {
+		return requestedQty
+	}
+
+	positions := engine.GetPositions()
+	qtyByOutcome := map[string]float64{
+		outcomes[0]: 0,
+		outcomes[1]: 0,
+	}
+	costByOutcome := map[string]float64{
+		outcomes[0]: 0,
+		outcomes[1]: 0,
+	}
+	for _, pos := range positions {
+		if pos.MarketID != marketID || pos.Quantity <= 0 {
+			continue
+		}
+		if _, ok := qtyByOutcome[pos.Outcome]; !ok {
+			continue
+		}
+		qtyByOutcome[pos.Outcome] += pos.Quantity
+		costByOutcome[pos.Outcome] += pos.TotalCost
+	}
+
+	activeOutcome := outcomes[side]
+	totalCost := costByOutcome[outcomes[0]] + costByOutcome[outcomes[1]]
+	currentResolvePnL := qtyByOutcome[activeOutcome] - totalCost
+
+	room := maxProfitCap - currentResolvePnL
+	if room <= 0 {
+		return 0 // No room left
+	}
+	// We want: currentResolvePnL + qty * (1 - price) <= maxProfitCap
+	allowedQty := room / (1.0 - price)
+	if allowedQty < requestedQty {
+		return allowedQty
+	}
+	return requestedQty
+}
+
 // realbotHandleLadderedStrategy executes the laddered taker entry path. It is
 // intentionally separate from realbotHandlePanicBuyStrategy so the two
 // strategies do not share branching logic and can evolve independently.
@@ -633,6 +681,19 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		activeSize = requestSize2
 		activePrice = limitPrice2
 	}
+
+	activeSize = realbotLadderedClampQtyForGuard(
+		args.engine,
+		args.marketID,
+		args.outcomes,
+		ladderedDirection,
+		activeSize,
+		activePrice,
+		realbotCfg.LadderedTakerPnLGuardMode,
+		realbotCfg.LadderedTakerWorstPnLFloor,
+		realbotCfg.LadderedTakerMaxProfitPnL,
+	)
+
 	if activeSize < minEntryShares {
 		args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
 		return true
