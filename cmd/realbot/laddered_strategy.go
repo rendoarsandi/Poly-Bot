@@ -695,7 +695,10 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 	)
 
 	if activeSize < minEntryShares {
-		args.tui.LogEvent("[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
+		if activeSize > 0 {
+			args.tui.LogEventDedup("ladder-min-size:"+args.marketID, 60*time.Second,
+				"[%s] ⚠️ Actionable laddered leg below %.2f share minimum: %s", args.marketID, minEntryShares, formatShareQty(activeSize))
+		}
 		return true
 	}
 

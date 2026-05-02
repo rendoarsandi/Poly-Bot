@@ -302,6 +302,15 @@ func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMark
 		args.tui.LogEvent("[%s] 🔄 WebSocket reconnected (attempt #%d)", args.marketID, reconnects)
 		*runtime.lastReconnectCount = reconnects
 		*runtime.wsChannelClosed = false
+
+		for _, outcome := range args.outcomes {
+			args.tokenBids[outcome] = 0
+			args.tokenAsks[outcome] = 0
+			args.tokenFullBids[outcome] = nil
+			args.tokenFullAsks[outcome] = nil
+			delete(args.quoteState, outcome)
+		}
+		realbotClearEngineMarketQuotes(args.engine, args.marketID, args.outcomes)
 	}
 
 	drained := false
