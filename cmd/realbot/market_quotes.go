@@ -165,11 +165,17 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 			}
 
 			top := explicitTopByOutcome[outcome]
-			if bestBid, ok := parseWSQuotedPrice(pc.BestBid); ok {
+			if strings.TrimSpace(pc.BestBid) == "" {
+				top.bid = 0
+				top.hasBid = true
+			} else if bestBid, ok := parseWSQuotedPrice(pc.BestBid); ok {
 				top.bid = bestBid
 				top.hasBid = true
 			}
-			if bestAsk, ok := parseWSQuotedPrice(pc.BestAsk); ok {
+			if strings.TrimSpace(pc.BestAsk) == "" {
+				top.ask = 0
+				top.hasAsk = true
+			} else if bestAsk, ok := parseWSQuotedPrice(pc.BestAsk); ok {
 				top.ask = bestAsk
 				top.hasAsk = true
 			}
@@ -228,9 +234,13 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 		}
 		if bestBid, ok := parseWSQuotedPrice(bbo.BestBid); ok {
 			args.tokenBids[outcome] = bestBid
+		} else {
+			args.tokenBids[outcome] = 0
 		}
 		if bestAsk, ok := parseWSQuotedPrice(bbo.BestAsk); ok {
 			args.tokenAsks[outcome] = bestAsk
+		} else {
+			args.tokenAsks[outcome] = 0
 		}
 		if args.tokenBids[outcome] > 0 && args.tokenAsks[outcome] > 0 && !realbotHasSaneTopOfBook(args.tokenBids[outcome], args.tokenAsks[outcome]) {
 			args.tokenBids[outcome] = 0
@@ -276,12 +286,8 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 		if realbotShouldSkipStaleQuoteUpdate(args.quoteState, outcome, updatedAt, args.tokenBids[outcome], args.tokenAsks[outcome]) {
 			return false
 		}
-		if bid > 0 {
-			args.tokenBids[outcome] = bid
-		}
-		if ask > 0 {
-			args.tokenAsks[outcome] = ask
-		}
+		args.tokenBids[outcome] = bid
+		args.tokenAsks[outcome] = ask
 		if bid > 0 && ask > 0 {
 			mid := (bid + ask) / 2
 			args.engine.UpdateMarketData(args.marketID, outcome, mid, bid, ask)

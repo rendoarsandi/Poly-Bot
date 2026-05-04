@@ -204,6 +204,30 @@ func ladderedTakerEntryEligible(ask0, ask1 float64) bool {
 	return true
 }
 
+func realbotLadderedTerminalEntryBlockReason(outcomes []string, tokenBids, tokenAsks map[string]float64) string {
+	for _, outcome := range outcomes {
+		bid := tokenBids[outcome]
+		ask := tokenAsks[outcome]
+		switch {
+		case bid >= terminalBidFloor:
+			return fmt.Sprintf("%s bid %.3f is terminal-high", outcome, bid)
+		case ask >= terminalBidFloor:
+			return fmt.Sprintf("%s ask %.3f is terminal-high", outcome, ask)
+		case ask > 0 && ask <= terminalAskCeil:
+			return fmt.Sprintf("%s ask %.3f is terminal-low", outcome, ask)
+		}
+	}
+	return ""
+}
+
+func realbotLogLadderedTerminalEntryBlock(args realbotPanicBuyStrategyArgs, reason string) {
+	if args.tui == nil || strings.TrimSpace(reason) == "" {
+		return
+	}
+	args.tui.LogEventDedup("ladder-terminal-entry:"+args.marketID, 10*time.Second,
+		"[%s] ⛔ Skipping ladder buy: terminal-looking book (%s)", args.marketID, reason)
+}
+
 func realbotLadderedLeaderSide(ask0, ask1 float64) int {
 	switch {
 	case ask0 > ask1+1e-9:
@@ -557,6 +581,11 @@ func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state
 		maxAge := realbotExecutionQuoteGuardAge(args.executionQuoteMaxAge)
 		fresh, _, reason := realbotCanUseLocalBuyQuote(time.Now(), args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
 		if fresh {
+			if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
+				realbotLogLadderedTerminalEntryBlock(args, terminalReason)
+				setCooldown(500 * time.Millisecond)
+				return false
+			}
 			return true
 		}
 		if args.tui != nil {
@@ -590,6 +619,11 @@ func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state
 		setCooldown(500 * time.Millisecond)
 		return false
 	}
+	if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
+		realbotLogLadderedTerminalEntryBlock(args, terminalReason)
+		setCooldown(500 * time.Millisecond)
+		return false
+	}
 	return true
 }
 
@@ -611,10 +645,6 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 	ladderBasePrice := rMinAsk
 	moveCents := realbotCfg.LadderedTakerReentryMoveCents
 
-	if ask1 <= bid1 || ask2 <= bid2 {
-		return true
-	}
-
 	setEntryCooldown := func(d time.Duration) {
 		if state == nil || state.panicBuyCooldown == nil {
 			return
@@ -623,6 +653,17 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 
 	if state != nil && state.panicBuyCooldown != nil && time.Now().Before(*state.panicBuyCooldown) {
+		return true
+	}
+
+	if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
+		realbotLogLadderedTerminalEntryBlock(args, terminalReason)
+		realbotResetLadderedStartupStability(state)
+		setEntryCooldown(500 * time.Millisecond)
+		return true
+	}
+
+	if ask1 <= bid1 || ask2 <= bid2 {
 		return true
 	}
 
@@ -670,6 +711,12 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 	ask2 = args.tokenAsks[args.outcomes[1]]
 	bid1 = args.tokenBids[args.outcomes[0]]
 	bid2 = args.tokenBids[args.outcomes[1]]
+	if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
+		realbotLogLadderedTerminalEntryBlock(args, terminalReason)
+		realbotResetLadderedStartupStability(state)
+		setEntryCooldown(500 * time.Millisecond)
+		return true
+	}
 	if ask1 <= bid1 || ask2 <= bid2 {
 		setEntryCooldown(500 * time.Millisecond)
 		return true

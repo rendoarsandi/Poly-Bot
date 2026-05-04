@@ -394,10 +394,10 @@ func looksTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
 		if bid > 0 && bid < terminalBidFloor {
 			return false
 		}
-		if ask > 0 && ask > terminalAskCeil {
+		if ask > 0 && ask < terminalBidFloor && ask > terminalAskCeil {
 			return false
 		}
-		if bid >= terminalBidFloor || (ask > 0 && ask <= terminalAskCeil) {
+		if bid >= terminalBidFloor || ask >= terminalBidFloor || (ask > 0 && ask <= terminalAskCeil) {
 			sawExtreme = true
 		}
 	}

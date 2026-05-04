@@ -103,6 +103,26 @@ func TestLadderedTakerEntryEligibleRequiresSumAndSkew(t *testing.T) {
 	}
 }
 
+func TestRealbotLadderedTerminalEntryBlockReasonBlocksHybridTerminalBook(t *testing.T) {
+	reason := realbotLadderedTerminalEntryBlockReason(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.99, "Up": 0.34},
+		map[string]float64{"Down": 0.90, "Up": 0.56},
+	)
+	if reason == "" || !strings.Contains(reason, "Down bid") {
+		t.Fatalf("expected high terminal bid to block ladder entry, got %q", reason)
+	}
+
+	reason = realbotLadderedTerminalEntryBlockReason(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.46, "Up": 0.53},
+		map[string]float64{"Down": 0.47, "Up": 0.54},
+	)
+	if reason != "" {
+		t.Fatalf("expected ordinary book to remain tradable, got %q", reason)
+	}
+}
+
 func TestRealbotBinanceGapBuyLimitPriceUsesFixedOneCentCap(t *testing.T) {
 	if got := realbotBinanceGapBuyLimitPrice(0.54, 0.90); math.Abs(got-0.55) > 0.000001 {
 		t.Fatalf("expected fixed 1c cap for binance-gap, got %.3f", got)
@@ -2043,6 +2063,17 @@ func TestRealbotLooksLikeTerminalBookRecognizesRoundedPinnedEndState(t *testing.
 	}
 }
 
+func TestRealbotLooksLikeTerminalBookRecognizesOneSidedHighAskEndState(t *testing.T) {
+	terminal := realbotLooksLikeTerminalBook(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0, "Up": 0},
+		map[string]float64{"Down": 1.00, "Up": 0.01},
+	)
+	if !terminal {
+		t.Fatal("expected high-ask/low-ask terminal book to bypass stale WS recovery")
+	}
+}
+
 func TestRealbotLooksLikeTerminalBookRejectsNormalOneSidedBook(t *testing.T) {
 	terminal := realbotLooksLikeTerminalBook(
 		[]string{"Down", "Up"},
@@ -2679,6 +2710,57 @@ func TestRealbotHandlePanicBuyStrategySkipsLadderedEntryDuringCooldown(t *testin
 	}
 }
 
+func TestRealbotHandleLadderedStrategyBlocksTerminalHighBidEntry(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{
+		PaperArbMode:                  paperArbModeLaddered,
+		LadderedTakerReentryMoveCents: 5.0,
+		MinAskPrice:                   0.01,
+		MaxAskPrice:                   0.99,
+	}, nil)
+
+	entryExecutionInFlight := false
+	panicBuyCooldown := time.Time{}
+	lastPairUpdate := time.Now()
+	lastTrade := time.Time{}
+	lastDustRecoveryNotice := time.Time{}
+	ladderedEntries := []realbotLadderedEntry{{seq: 1, ask0: 0.54, ask1: 0.56, side: 1, rung: 1}}
+	nextLadderedEntrySeq := uint64(1)
+
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Down", "Up"},
+		tokenToOutcome: map[string]string{"down-token": "Down", "up-token": "Up"},
+		tokenBids:      map[string]float64{"Down": 0.99, "Up": 0.34},
+		tokenAsks:      map[string]float64{"Down": 0.90, "Up": 0.56},
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &ladderedEntries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+	if !handled {
+		t.Fatal("expected terminal ladder quote to be handled")
+	}
+	if entryExecutionInFlight {
+		t.Fatal("expected terminal ladder quote to avoid launching entry execution")
+	}
+	if nextLadderedEntrySeq != 1 || len(ladderedEntries) != 1 {
+		t.Fatal("expected terminal ladder quote to leave ladder state unchanged")
+	}
+	if panicBuyCooldown.IsZero() {
+		t.Fatal("expected terminal ladder block to apply a short cooldown")
+	}
+}
+
 func TestRealbotHandlePanicBuyStrategySyncsHiddenSharesBeforeInventoryCheck(t *testing.T) {
 	engine := paper.NewEngine(100)
 	tui := paper.NewTUI(engine, nil)
@@ -2765,9 +2847,9 @@ func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.
 		ts := time.Now().UTC().Format(time.RFC3339Nano)
 		switch r.URL.Query().Get("token_id") {
 		case "down-token":
-			_, _ = w.Write([]byte("{\"asset_id\":\"down-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.98\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.99\",\"size\":\"9\"}]}"))
+			_, _ = w.Write([]byte("{\"asset_id\":\"down-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.33\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.34\",\"size\":\"9\"}]}"))
 		case "up-token":
-			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.001\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.01\",\"size\":\"10\"}]}"))
+			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.64\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.65\",\"size\":\"10\"}]}"))
 		default:
 			http.Error(w, "unexpected token: "+r.URL.String(), http.StatusNotFound)
 		}
@@ -2778,8 +2860,8 @@ func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.
 	client.BaseURL = server.URL
 	lastPairUpdate := time.Now()
 	cooldown := time.Time{}
-	tokenBids := map[string]float64{"Down": 0.001, "Up": 0.98}
-	tokenAsks := map[string]float64{"Down": 0.01, "Up": 0.99}
+	tokenBids := map[string]float64{"Down": 0.64, "Up": 0.33}
+	tokenAsks := map[string]float64{"Down": 0.65, "Up": 0.34}
 	tokenFullBids := map[string][]paper.MarketLevel{}
 	tokenFullAsks := map[string][]paper.MarketLevel{}
 	quoteState := map[string]realbotQuoteState{
@@ -2810,11 +2892,72 @@ func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.
 	if !cooldown.IsZero() {
 		t.Fatalf("expected successful confirmation not to set cooldown, got %v", cooldown)
 	}
-	if math.Abs(tokenAsks["Down"]-0.99) > 0.000001 || math.Abs(tokenAsks["Up"]-0.01) > 0.000001 {
+	if math.Abs(tokenAsks["Down"]-0.34) > 0.000001 || math.Abs(tokenAsks["Up"]-0.65) > 0.000001 {
 		t.Fatalf("expected REST asks to replace swapped WS asks, got Down=%.3f Up=%.3f", tokenAsks["Down"], tokenAsks["Up"])
 	}
 	if quoteState["Down"].Source != "rest-exec" || quoteState["Up"].Source != "rest-exec" {
 		t.Fatalf("expected REST quote state, got Down=%q Up=%q", quoteState["Down"].Source, quoteState["Up"].Source)
+	}
+}
+
+func TestRealbotRefreshLadderedPreTradeQuoteBlocksTerminalRestBook(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/book" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ts := time.Now().UTC().Format(time.RFC3339Nano)
+		switch r.URL.Query().Get("token_id") {
+		case "down-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"down-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.99\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.999\",\"size\":\"9\"}]}"))
+		case "up-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.55\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.56\",\"size\":\"10\"}]}"))
+		default:
+			http.Error(w, "unexpected token: "+r.URL.String(), http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	lastPairUpdate := time.Now()
+	cooldown := time.Time{}
+	tokenBids := map[string]float64{"Down": 0.41, "Up": 0.57}
+	tokenAsks := map[string]float64{"Down": 0.42, "Up": 0.58}
+	tokenFullBids := map[string][]paper.MarketLevel{}
+	tokenFullAsks := map[string][]paper.MarketLevel{}
+	quoteState := map[string]realbotQuoteState{
+		"Down": {UpdatedAt: time.Now(), Source: "ws"},
+		"Up":   {UpdatedAt: time.Now(), Source: "ws"},
+	}
+
+	ok := realbotRefreshLadderedPreTradeQuote(realbotPanicBuyStrategyArgs{
+		ctx:           context.Background(),
+		marketID:      "BTC",
+		market:        &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}},
+		outcomes:      []string{"Down", "Up"},
+		tokenBids:     tokenBids,
+		tokenAsks:     tokenAsks,
+		tokenFullBids: tokenFullBids,
+		tokenFullAsks: tokenFullAsks,
+		quoteState:    quoteState,
+		restClient:    client,
+		tui:           paper.NewTUI(paper.NewEngine(100), nil),
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate: &lastPairUpdate,
+	}, func(d time.Duration) {
+		cooldown = time.Now().Add(d)
+	})
+
+	if ok {
+		t.Fatal("expected terminal REST ladder quote confirmation to block entry")
+	}
+	if cooldown.IsZero() {
+		t.Fatal("expected terminal REST ladder block to set cooldown")
+	}
+	if math.Abs(tokenBids["Down"]-0.99) > 0.000001 {
+		t.Fatalf("expected REST terminal bid to be observed before block, got %.3f", tokenBids["Down"])
 	}
 }
 
