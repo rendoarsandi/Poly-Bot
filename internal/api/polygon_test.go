@@ -139,6 +139,8 @@ func TestPolymarketV2ContractAddresses(t *testing.T) {
 		{"CTFExchange", CTFExchange, "0xE111180000d2663C0091e4f400237545B87B996B"},
 		{"NegRiskExchange", NegRiskExchange, "0xe2222d279d744050d28e00520010520000310F59"},
 		{"NegRiskAdapter", NegRiskAdapter, "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"},
+		{"CtfCollateralAdapter", CtfCollateralAdapter, "0xAdA100Db00Ca00073811820692005400218FcE1f"},
+		{"NegRiskCtfCollateralAdapter", NegRiskCtfCollateralAdapter, "0xadA2005600Dec949baf300f4C6120000bDB6eAab"},
 	}
 
 	for _, tc := range tests {

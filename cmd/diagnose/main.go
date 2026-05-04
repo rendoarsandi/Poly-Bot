@@ -101,6 +101,8 @@ func main() {
 	printPerms("CTF Contract", api.CTFContract)
 	printPerms("Exchange", api.CTFExchange)
 	printPerms("NegRisk Exchange", api.NegRiskExchange)
+	printPerms("CTF Adapter", api.CtfCollateralAdapter)
+	printPerms("NegRisk CTF Adapter", api.NegRiskCtfCollateralAdapter)
 
 	// 3. Smart Scan for Tokens
 	fmt.Println("\n🔍 Scanning for tokens in recent 15m markets...")

@@ -41,6 +41,12 @@ const NegRiskExchange = "0xe2222d279d744050d28e00520010520000310F59"
 // Polygon Negative Risk Adapter contract address.
 const NegRiskAdapter = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 
+// Polygon CTF collateral adapter for pUSD-native split/merge/redeem flows.
+const CtfCollateralAdapter = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+
+// Polygon negative-risk CTF collateral adapter for pUSD-native split/merge/redeem flows.
+const NegRiskCtfCollateralAdapter = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
+
 const (
 	polygonInitialReceiptPollInterval    = 2 * time.Second
 	polygonMaxReceiptPollInterval        = 5 * time.Second
@@ -55,6 +61,7 @@ const (
 	polygonUrgentGasPriceBumpDenominator = 10
 	polygonUrgentBaseFeeMultiplier       = 3
 	polygonRedeemGasLimit                = 500000
+	polygonCTFAdapterGasLimit            = 500000
 	payoutDenominatorSelector            = "0xdd34de67"
 	payoutNumeratorsSelector             = "0x0504c814"
 )
@@ -190,121 +197,116 @@ func generateIndexSetsHex(numOutcomes int) string {
 	return data
 }
 
-// RedeemPositions sends the on-chain transaction to redeem winning tokens (PAID WRITE)
-func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
-	// Function selector for redeemPositions(address,bytes32,bytes32,uint256[]): 0x01b7037c
-	// Parameters:
-	// 1. collateralToken (pUSD): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
-	// 2. parentCollectionId: 0x0000000000000000000000000000000000000000000000000000000000000000
-	// 3. conditionId: (provided)
-	// 4. indexSets: dynamic array of index sets (only winner pays out)
+func normalizeCTFAdapter(adapter string) string {
+	adapter = strings.TrimSpace(adapter)
+	if adapter == "" {
+		return CtfCollateralAdapter
+	}
+	return adapter
+}
 
+func encodeRedeemPositionsData(conditionID string, numOutcomes int) string {
 	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
 	parent := "0000000000000000000000000000000000000000000000000000000000000000"
 	cond := strings.TrimPrefix(conditionID, "0x")
-
-	// ABI encoding for indexSets (Dynamic array)
-	// Offset to array (128 bytes = 4 * 32)
 	offset := "0000000000000000000000000000000000000000000000000000000000000080"
 	indexSetsData := generateIndexSetsHex(numOutcomes)
 
-	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), polygonRedeemGasLimit, data)
+	return "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
+}
+
+func encodePositionAmountData(selector, conditionID string, amount *big.Int, numOutcomes int) string {
+	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
+	parent := "0000000000000000000000000000000000000000000000000000000000000000"
+	cond := strings.TrimPrefix(conditionID, "0x")
+	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
+	amtHex := fmt.Sprintf("%064x", amount)
+	indexSetsData := generateIndexSetsHex(numOutcomes)
+
+	return selector + collateral + parent + cond + offset + amtHex + indexSetsData
+}
+
+func (c *PolygonClient) sendCTFAdapterRedeem(ctx context.Context, signer *Signer, adapter, conditionID string, numOutcomes int, gasMode string) (string, error) {
+	data := encodeRedeemPositionsData(conditionID, numOutcomes)
+	target := normalizeCTFAdapter(adapter)
+
+	switch strings.ToLower(strings.TrimSpace(gasMode)) {
+	case core.RedeemGasModeFast:
+		return c.signAndSendFastWriteTransaction(ctx, signer, target, big.NewInt(0), polygonRedeemGasLimit, data)
+	case core.RedeemGasModeUrgent:
+		return c.signAndSendUrgentWriteTransaction(ctx, signer, target, big.NewInt(0), polygonRedeemGasLimit, data)
+	default:
+		return c.signAndSendWriteTransaction(ctx, signer, target, big.NewInt(0), polygonRedeemGasLimit, data)
+	}
+}
+
+// RedeemPositions sends the on-chain transaction to redeem winning tokens through the pUSD CTF adapter.
+func (c *PolygonClient) RedeemPositions(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
+	return c.RedeemPositionsWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, numOutcomes)
+}
+
+// RedeemPositionsWithAdapter sends redeemPositions through the provided pUSD collateral adapter.
+func (c *PolygonClient) RedeemPositionsWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, numOutcomes int) (string, error) {
+	return c.sendCTFAdapterRedeem(ctx, signer, adapter, conditionID, numOutcomes, core.RedeemGasModeNormal)
 }
 
 // RedeemPositionsFast submits redeemPositions with a moderate gas profile.
 func (c *PolygonClient) RedeemPositionsFast(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
-	parent := "0000000000000000000000000000000000000000000000000000000000000000"
-	cond := strings.TrimPrefix(conditionID, "0x")
-	offset := "0000000000000000000000000000000000000000000000000000000000000080"
-	indexSetsData := generateIndexSetsHex(numOutcomes)
+	return c.RedeemPositionsFastWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, numOutcomes)
+}
 
-	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-	return c.signAndSendFastWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), polygonRedeemGasLimit, data)
+// RedeemPositionsFastWithAdapter submits adapter redeemPositions with a moderate gas profile.
+func (c *PolygonClient) RedeemPositionsFastWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, numOutcomes int) (string, error) {
+	return c.sendCTFAdapterRedeem(ctx, signer, adapter, conditionID, numOutcomes, core.RedeemGasModeFast)
 }
 
 // RedeemPositionsUrgent submits the same redeem call with a more aggressive
 // gas policy so resolved-market payouts clear faster.
 func (c *PolygonClient) RedeemPositionsUrgent(ctx context.Context, signer *Signer, conditionID string, numOutcomes int) (string, error) {
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
-	parent := "0000000000000000000000000000000000000000000000000000000000000000"
-	cond := strings.TrimPrefix(conditionID, "0x")
-	offset := "0000000000000000000000000000000000000000000000000000000000000080"
-	indexSetsData := generateIndexSetsHex(numOutcomes)
+	return c.RedeemPositionsUrgentWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, numOutcomes)
+}
 
-	data := "0x01b7037c" + collateral + parent + cond + offset + indexSetsData
-	return c.signAndSendUrgentWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), polygonRedeemGasLimit, data)
+// RedeemPositionsUrgentWithAdapter submits adapter redeemPositions with the urgent gas profile.
+func (c *PolygonClient) RedeemPositionsUrgentWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, numOutcomes int) (string, error) {
+	return c.sendCTFAdapterRedeem(ctx, signer, adapter, conditionID, numOutcomes, core.RedeemGasModeUrgent)
 }
 
 // RedeemPositionsWithGasMode submits redeemPositions using normal, fast, or
 // urgent gas settings.
 func (c *PolygonClient) RedeemPositionsWithGasMode(ctx context.Context, signer *Signer, conditionID string, numOutcomes int, gasMode string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(gasMode)) {
-	case core.RedeemGasModeNormal:
-		return c.RedeemPositions(ctx, signer, conditionID, numOutcomes)
-	case core.RedeemGasModeUrgent:
-		return c.RedeemPositionsUrgent(ctx, signer, conditionID, numOutcomes)
-	default:
-		return c.RedeemPositionsFast(ctx, signer, conditionID, numOutcomes)
-	}
+	return c.RedeemPositionsWithGasModeAndAdapter(ctx, signer, CtfCollateralAdapter, conditionID, numOutcomes, gasMode)
 }
 
-// SplitPositions converts pUSD into YES+NO tokens via CTF contract (PAID WRITE)
+// RedeemPositionsWithGasModeAndAdapter submits adapter redeemPositions using normal, fast, or urgent gas settings.
+func (c *PolygonClient) RedeemPositionsWithGasModeAndAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, numOutcomes int, gasMode string) (string, error) {
+	return c.sendCTFAdapterRedeem(ctx, signer, adapter, conditionID, numOutcomes, gasMode)
+}
+
+// SplitPositions converts pUSD into YES+NO tokens through the pUSD CTF adapter (PAID WRITE)
 // This is the inverse of MergePositions - use to create inventory for panic selling.
 // 1 pUSD → 1 YES token + 1 NO token
 // Use this to build inventory, then sell when bid_sum > $1.03 for profit.
 func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
-	// Function selector for splitPosition(address,bytes32,bytes32,uint256[],uint256): 0x72ce4275
-	// Parameters:
-	// 1. collateralToken (pUSD): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
-	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
-	// 3. conditionId: (provided)
-	// 4. partition: dynamic array of index sets
-	// 5. amount: pUSD amount to split (returns this many token pairs)
+	return c.SplitPositionsWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, amount, numOutcomes)
+}
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
-	parent := "0000000000000000000000000000000000000000000000000000000000000000"
-	cond := strings.TrimPrefix(conditionID, "0x")
-
-	// ABI encoding for partition (Dynamic array)
-	// Offset to array data (160 bytes = 5 * 32, since amount is 5th param)
-	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
-	// Amount (5th param) - pad to 32 bytes
-	amtHex := fmt.Sprintf("%064x", amount)
-
-	indexSetsData := generateIndexSetsHex(numOutcomes)
-
-	data := "0x72ce4275" + collateral + parent + cond + offset + amtHex + indexSetsData
-	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 200000, data)
+// SplitPositionsWithAdapter converts pUSD into YES+NO tokens through a specific pUSD CTF adapter.
+func (c *PolygonClient) SplitPositionsWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
+	data := encodePositionAmountData("0x72ce4275", conditionID, amount, numOutcomes)
+	return c.signAndSendWriteTransaction(ctx, signer, normalizeCTFAdapter(adapter), big.NewInt(0), polygonCTFAdapterGasLimit, data)
 }
 
 // MergePositions burns equal YES+NO tokens to get pUSD back instantly (PAID WRITE)
 // Unlike RedeemPositions, this works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides to capture arbitrage profit instantly.
 func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
-	// Function selector for mergePositions(address,bytes32,bytes32,uint256[],uint256): 0x9e7212ad
-	// Parameters:
-	// 1. collateralToken (pUSD): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
-	// 2. parentCollectionId: 0x00...00 (null for Polymarket)
-	// 3. conditionId: (provided)
-	// 4. partition: dynamic array of index sets
-	// 5. amount: number of full sets to merge (returns this much pUSD)
+	return c.MergePositionsWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, amount, numOutcomes)
+}
 
-	collateral := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(PUSDContract), "0x")
-	parent := "0000000000000000000000000000000000000000000000000000000000000000"
-	cond := strings.TrimPrefix(conditionID, "0x")
-
-	// ABI encoding for partition (Dynamic array)
-	// Offset to array data (160 bytes = 5 * 32, pointing past the 5 fixed params)
-	offset := "00000000000000000000000000000000000000000000000000000000000000a0"
-	// Amount (5th param) - pad to 32 bytes
-	amtHex := fmt.Sprintf("%064x", amount)
-
-	indexSetsData := generateIndexSetsHex(numOutcomes)
-
-	data := "0x9e7212ad" + collateral + parent + cond + offset + amtHex + indexSetsData
-	return c.signAndSendWriteTransaction(ctx, signer, CTFContract, big.NewInt(0), 200000, data)
+// MergePositionsWithAdapter burns equal YES+NO tokens through a specific pUSD CTF adapter.
+func (c *PolygonClient) MergePositionsWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
+	data := encodePositionAmountData("0x9e7212ad", conditionID, amount, numOutcomes)
+	return c.signAndSendWriteTransaction(ctx, signer, normalizeCTFAdapter(adapter), big.NewInt(0), polygonCTFAdapterGasLimit, data)
 }
 
 func (c *PolygonClient) GetNonce(ctx context.Context, address string) (uint64, error) {

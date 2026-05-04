@@ -98,6 +98,11 @@ func realbotLoadMarketFeeRates(ctx context.Context, marketID string, market *api
 	}
 	if market != nil && market.ConditionID != "" {
 		info, err := restClient.GetClobMarketInfo(ctx, market.ConditionID)
+		if err == nil && info != nil {
+			if trader != nil {
+				trader.SetConditionNegRisk(market.ConditionID, info.NegRisk)
+			}
+		}
 		if err == nil && info != nil && info.FeeDetails != nil {
 			rate := realbotNormalizeFeeRateBps(info.FeeDetails.Rate)
 			for _, outcome := range tokenMap {

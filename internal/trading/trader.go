@@ -281,6 +281,12 @@ type RealTrader struct {
 	paperEngine             *paper.Engine
 	paperTokenMeta          map[string]paperTokenMeta
 	posMu                   sync.Mutex
+	conditionNegRisk        map[string]bool
+	conditionNegRiskMu      sync.RWMutex
+}
+
+type clobMarketInfoResolver interface {
+	GetClobMarketInfo(ctx context.Context, conditionID string) (*api.ClobMarketInfo, error)
 }
 
 type paperTokenMeta struct {
@@ -340,6 +346,7 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		confirmedOrderFills:     make(map[string]float64),
 		positionLedgerQty:       make(map[string]float64),
 		positionLedgerTotalCost: make(map[string]float64),
+		conditionNegRisk:        make(map[string]bool),
 	}
 
 	// Initialize User WebSocket for real-time fills
@@ -373,6 +380,7 @@ func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTra
 		positionLedgerTotalCost: make(map[string]float64),
 		paperEngine:             engine,
 		paperTokenMeta:          make(map[string]paperTokenMeta),
+		conditionNegRisk:        make(map[string]bool),
 	}
 }
 
@@ -1537,6 +1545,61 @@ func (t *RealTrader) GetOnChainTxState(ctx context.Context, txHash string) (stri
 	return "pending", nil
 }
 
+// SetConditionNegRisk caches whether a condition should use the NegRisk pUSD
+// collateral adapter for split/merge/redeem.
+func (t *RealTrader) SetConditionNegRisk(conditionID string, negRisk bool) {
+	if t == nil {
+		return
+	}
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return
+	}
+	t.conditionNegRiskMu.Lock()
+	defer t.conditionNegRiskMu.Unlock()
+	if t.conditionNegRisk == nil {
+		t.conditionNegRisk = make(map[string]bool)
+	}
+	t.conditionNegRisk[conditionID] = negRisk
+}
+
+func (t *RealTrader) conditionUsesNegRisk(ctx context.Context, conditionID string) bool {
+	if t == nil {
+		return false
+	}
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return false
+	}
+
+	t.conditionNegRiskMu.RLock()
+	if t.conditionNegRisk != nil {
+		if negRisk, ok := t.conditionNegRisk[conditionID]; ok {
+			t.conditionNegRiskMu.RUnlock()
+			return negRisk
+		}
+	}
+	t.conditionNegRiskMu.RUnlock()
+
+	resolver, ok := t.client.(clobMarketInfoResolver)
+	if !ok || resolver == nil {
+		return false
+	}
+	info, err := resolver.GetClobMarketInfo(ctx, conditionID)
+	if err != nil || info == nil {
+		return false
+	}
+	t.SetConditionNegRisk(conditionID, info.NegRisk)
+	return info.NegRisk
+}
+
+func (t *RealTrader) ctfCollateralAdapterForCondition(ctx context.Context, conditionID string) string {
+	if t.conditionUsesNegRisk(ctx, conditionID) {
+		return api.NegRiskCtfCollateralAdapter
+	}
+	return api.CtfCollateralAdapter
+}
+
 // RedeemOnChain performs the on-chain redemption of winning tokens
 func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numOutcomes int) (string, error) {
 	if t.config.Exchange == "kalshi" {
@@ -1553,8 +1616,9 @@ func (t *RealTrader) RedeemOnChain(ctx context.Context, conditionID string, numO
 		return "", fmt.Errorf("market not yet resolved on-chain (payouts not reported)")
 	}
 
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	txHash, err := t.retryOnChainTx(ctx, "redeem", func() (string, error) {
-		return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+		return t.polygon.RedeemPositionsWithAdapter(ctx, t.client.GetSigner(), adapter, conditionID, numOutcomes)
 	})
 	if err != nil {
 		return txHash, err
@@ -1571,8 +1635,9 @@ func (t *RealTrader) RedeemOnChainForce(ctx context.Context, conditionID string,
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("redeem not supported/needed on kalshi")
 	}
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	txHash, err := t.retryOnChainTx(ctx, "redeem", func() (string, error) {
-		return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+		return t.polygon.RedeemPositionsWithAdapter(ctx, t.client.GetSigner(), adapter, conditionID, numOutcomes)
 	})
 	if err != nil {
 		return txHash, err
@@ -1589,8 +1654,9 @@ func (t *RealTrader) SubmitRedeemOnChainForce(ctx context.Context, conditionID s
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("redeem not supported/needed on kalshi")
 	}
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
-		return t.polygon.RedeemPositions(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+		return t.polygon.RedeemPositionsWithAdapter(ctx, t.client.GetSigner(), adapter, conditionID, numOutcomes)
 	})
 }
 
@@ -1600,8 +1666,9 @@ func (t *RealTrader) SubmitRedeemOnChainForceWithGasMode(ctx context.Context, co
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("redeem not supported/needed on kalshi")
 	}
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
-		return t.polygon.RedeemPositionsWithGasMode(ctx, t.client.GetSigner(), conditionID, numOutcomes, gasMode)
+		return t.polygon.RedeemPositionsWithGasModeAndAdapter(ctx, t.client.GetSigner(), adapter, conditionID, numOutcomes, gasMode)
 	})
 }
 
@@ -1611,8 +1678,9 @@ func (t *RealTrader) SubmitRedeemOnChainUrgentForce(ctx context.Context, conditi
 	if t.config.Exchange == "kalshi" {
 		return "", fmt.Errorf("redeem not supported/needed on kalshi")
 	}
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	return t.submitOnChainTx(ctx, "redeem", func() (string, error) {
-		return t.polygon.RedeemPositionsUrgent(ctx, t.client.GetSigner(), conditionID, numOutcomes)
+		return t.polygon.RedeemPositionsUrgentWithAdapter(ctx, t.client.GetSigner(), adapter, conditionID, numOutcomes)
 	})
 }
 
@@ -1698,7 +1766,7 @@ func (t *RealTrader) submitOnChainTx(ctx context.Context, txName string, txFunc 
 	return txHash, lastErr
 }
 
-// MergeOnChain burns equal YES+NO tokens to reclaim USDC immediately
+// MergeOnChain burns equal YES+NO tokens to reclaim pUSD immediately
 // This works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides of an arb to capture profit instantly.
 // Returns txHash only after transaction is confirmed on-chain.
@@ -1718,8 +1786,9 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	amountFloat := shares * 1e6
 	amount.SetInt64(int64(math.Round(amountFloat)))
 
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	txHash, err := t.retryOnChainTx(ctx, "merge", func() (string, error) {
-		return t.polygon.MergePositions(ctx, t.client.GetSigner(), conditionID, amount, numOutcomes)
+		return t.polygon.MergePositionsWithAdapter(ctx, t.client.GetSigner(), adapter, conditionID, amount, numOutcomes)
 	})
 	if err != nil {
 		return txHash, err
@@ -1728,9 +1797,9 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 	return txHash, nil
 }
 
-// SplitOnChain converts USDC into YES+NO token pairs
+// SplitOnChain converts pUSD into YES+NO token pairs
 // This is the inverse of MergeOnChain - use to create inventory for panic selling.
-// 1 USDC → 1 YES token + 1 NO token
+// 1 pUSD → 1 YES token + 1 NO token
 // Use this to build inventory, then sell when bid_sum > $1.03 for profit.
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
@@ -1747,8 +1816,9 @@ func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcA
 	amountFloat := usdcAmount * 1e6
 	amount.SetInt64(int64(math.Round(amountFloat)))
 
+	adapter := t.ctfCollateralAdapterForCondition(ctx, conditionID)
 	txHash, err := t.retryOnChainTx(ctx, "split", func() (string, error) {
-		return t.polygon.SplitPositions(ctx, t.client.GetSigner(), conditionID, amount, numOutcomes)
+		return t.polygon.SplitPositionsWithAdapter(ctx, t.client.GetSigner(), adapter, conditionID, amount, numOutcomes)
 	})
 	if err != nil {
 		return txHash, err
@@ -1884,6 +1954,83 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 		tx, err := t.polygon.ApproveCTF(ctx, signer, api.NegRiskExchange, true)
 		if err != nil {
 			return false, fmt.Errorf("failed to approve NegRisk CTF operator: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+	}
+
+	// 5. Approve pUSD for pUSD-native CTF adapter split flows.
+	allowanceCTFAdapter, err := checkAllowance(api.CtfCollateralAdapter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check CTF adapter allowance: %w", err)
+	}
+	if allowanceCTFAdapter.Cmp(minAllowance) < 0 {
+		fmt.Println("🔓 Approving pUSD for CTF Collateral Adapter...")
+		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
+		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.CtfCollateralAdapter, maxUint256)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve CTF collateral adapter: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+		time.Sleep(2 * time.Second)
+	}
+
+	// 6. Approve CTF tokens for pUSD-native adapter merge/redeem flows.
+	isApprovedCTFAdapter, err := checkApproval(api.CtfCollateralAdapter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check CTF adapter token approval: %w", err)
+	}
+	if !isApprovedCTFAdapter {
+		fmt.Println("🔓 Approving CTF Operator for CTF Collateral Adapter...")
+		tx, err := t.polygon.ApproveCTF(ctx, signer, api.CtfCollateralAdapter, true)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve CTF collateral adapter operator: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+		time.Sleep(2 * time.Second)
+	}
+
+	// 7. Approve pUSD for neg-risk CTF adapter split flows.
+	allowanceNegRiskCTFAdapter, err := checkAllowance(api.NegRiskCtfCollateralAdapter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check NegRisk CTF adapter allowance: %w", err)
+	}
+	if allowanceNegRiskCTFAdapter.Cmp(minAllowance) < 0 {
+		fmt.Println("🔓 Approving pUSD for NegRisk CTF Collateral Adapter...")
+		maxUint256 := new(big.Int).Sub(new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil), big.NewInt(1))
+		tx, err := t.polygon.ApproveUSDC(ctx, signer, api.NegRiskCtfCollateralAdapter, maxUint256)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve NegRisk CTF collateral adapter: %w", err)
+		}
+		fmt.Printf("   Tx sent: %s\n", tx)
+		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {
+			return false, fmt.Errorf("approval tx failed: %w", err)
+		}
+		sentTx = true
+		time.Sleep(2 * time.Second)
+	}
+
+	// 8. Approve CTF tokens for neg-risk adapter merge/redeem flows.
+	isApprovedNegRiskCTFAdapter, err := checkApproval(api.NegRiskCtfCollateralAdapter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check NegRisk CTF adapter token approval: %w", err)
+	}
+	if !isApprovedNegRiskCTFAdapter {
+		fmt.Println("🔓 Approving CTF Operator for NegRisk CTF Collateral Adapter...")
+		tx, err := t.polygon.ApproveCTF(ctx, signer, api.NegRiskCtfCollateralAdapter, true)
+		if err != nil {
+			return false, fmt.Errorf("failed to approve NegRisk CTF collateral adapter operator: %w", err)
 		}
 		fmt.Printf("   Tx sent: %s\n", tx)
 		if _, err := t.polygon.WaitForTransaction(ctx, tx); err != nil {

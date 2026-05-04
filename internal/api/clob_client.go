@@ -1203,6 +1203,34 @@ func (c *CLOBClient) getNegRisk(ctx context.Context, tokenID string) (bool, erro
 	return result.NegRisk, nil
 }
 
+// GetClobMarketInfo fetches CLOB-level market metadata, including V2 neg-risk routing.
+func (c *CLOBClient) GetClobMarketInfo(ctx context.Context, conditionID string) (*ClobMarketInfo, error) {
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return nil, fmt.Errorf("condition ID is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/clob-markets/"+url.PathEscape(conditionID), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch clob market info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+		return nil, fmt.Errorf("failed to fetch clob market info: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var info ClobMarketInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&info); err != nil {
+		return nil, fmt.Errorf("failed to decode clob market info: %w", err)
+	}
+	return &info, nil
+}
+
 // GetMarketInfo retrieves market info including resolution status
 func (c *CLOBClient) GetMarketInfo(ctx context.Context, conditionID string) (*MarketInfo, error) {
 	path := "/markets/" + conditionID
