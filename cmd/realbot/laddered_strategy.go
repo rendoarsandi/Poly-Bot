@@ -545,6 +545,54 @@ func realbotLadderedClampQtyForGuard(engine *paper.Engine, marketID string, outc
 	return requestedQty
 }
 
+func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state *realbotPanicBuyStrategyState, setCooldown func(time.Duration)) bool {
+	pairUpdatePtr := (*time.Time)(nil)
+	lastPairUpdate := time.Time{}
+	if state != nil && state.lastPairUpdate != nil {
+		pairUpdatePtr = state.lastPairUpdate
+		lastPairUpdate = *state.lastPairUpdate
+	}
+
+	if args.restClient == nil || args.market == nil {
+		maxAge := realbotExecutionQuoteGuardAge(args.executionQuoteMaxAge)
+		fresh, _, reason := realbotCanUseLocalBuyQuote(time.Now(), args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
+		if fresh {
+			return true
+		}
+		if args.tui != nil {
+			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: fresh execution quote unavailable (%s)", args.marketID, reason)
+		}
+		setCooldown(500 * time.Millisecond)
+		return false
+	}
+
+	ctx := args.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	quoteCtx, cancelQuote := context.WithTimeout(ctx, realbotExecQuoteTimeout)
+	defer cancelQuote()
+	if _, err := realbotRefreshExecutionBooks(
+		quoteCtx,
+		args.restClient,
+		args.market,
+		args.outcomes,
+		args.tokenBids,
+		args.tokenAsks,
+		args.tokenFullBids,
+		args.tokenFullAsks,
+		args.quoteState,
+		pairUpdatePtr,
+	); err != nil {
+		if args.tui != nil {
+			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: REST quote confirmation failed (%v)", args.marketID, err)
+		}
+		setCooldown(500 * time.Millisecond)
+		return false
+	}
+	return true
+}
+
 // realbotHandleLadderedStrategy executes the laddered taker entry path. It is
 // intentionally separate from realbotHandlePanicBuyStrategy so the two
 // strategies do not share branching logic and can evolve independently.
@@ -613,9 +661,19 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 
-	// Re-read live quotes in case any blocking work above let them drift.
+	if !realbotRefreshLadderedPreTradeQuote(args, state, setEntryCooldown) {
+		return true
+	}
+
+	// Re-read confirmed quotes in case any blocking work above let them drift.
 	ask1 = args.tokenAsks[args.outcomes[0]]
 	ask2 = args.tokenAsks[args.outcomes[1]]
+	bid1 = args.tokenBids[args.outcomes[0]]
+	bid2 = args.tokenBids[args.outcomes[1]]
+	if ask1 <= bid1 || ask2 <= bid2 {
+		setEntryCooldown(500 * time.Millisecond)
+		return true
+	}
 	if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
 		setEntryCooldown(500 * time.Millisecond)
 		return true

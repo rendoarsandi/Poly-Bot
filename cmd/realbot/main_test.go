@@ -2755,6 +2755,69 @@ func TestRealbotHandlePanicBuyStrategySyncsHiddenSharesBeforeInventoryCheck(t *t
 	}
 }
 
+func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/book" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ts := time.Now().UTC().Format(time.RFC3339Nano)
+		switch r.URL.Query().Get("token_id") {
+		case "down-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"down-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.98\",\"size\":\"7\"}],\"asks\":[{\"price\":\"0.99\",\"size\":\"9\"}]}"))
+		case "up-token":
+			_, _ = w.Write([]byte("{\"asset_id\":\"up-token\",\"timestamp\":\"" + ts + "\",\"bids\":[{\"price\":\"0.001\",\"size\":\"8\"}],\"asks\":[{\"price\":\"0.01\",\"size\":\"10\"}]}"))
+		default:
+			http.Error(w, "unexpected token: "+r.URL.String(), http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	lastPairUpdate := time.Now()
+	cooldown := time.Time{}
+	tokenBids := map[string]float64{"Down": 0.001, "Up": 0.98}
+	tokenAsks := map[string]float64{"Down": 0.01, "Up": 0.99}
+	tokenFullBids := map[string][]paper.MarketLevel{}
+	tokenFullAsks := map[string][]paper.MarketLevel{}
+	quoteState := map[string]realbotQuoteState{
+		"Down": {UpdatedAt: time.Now(), Source: "ws"},
+		"Up":   {UpdatedAt: time.Now(), Source: "ws"},
+	}
+
+	ok := realbotRefreshLadderedPreTradeQuote(realbotPanicBuyStrategyArgs{
+		ctx:           context.Background(),
+		marketID:      "BTC",
+		market:        &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}},
+		outcomes:      []string{"Down", "Up"},
+		tokenBids:     tokenBids,
+		tokenAsks:     tokenAsks,
+		tokenFullBids: tokenFullBids,
+		tokenFullAsks: tokenFullAsks,
+		quoteState:    quoteState,
+		restClient:    client,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate: &lastPairUpdate,
+	}, func(d time.Duration) {
+		cooldown = time.Now().Add(d)
+	})
+
+	if !ok {
+		t.Fatal("expected REST ladder quote confirmation to succeed")
+	}
+	if !cooldown.IsZero() {
+		t.Fatalf("expected successful confirmation not to set cooldown, got %v", cooldown)
+	}
+	if math.Abs(tokenAsks["Down"]-0.99) > 0.000001 || math.Abs(tokenAsks["Up"]-0.01) > 0.000001 {
+		t.Fatalf("expected REST asks to replace swapped WS asks, got Down=%.3f Up=%.3f", tokenAsks["Down"], tokenAsks["Up"])
+	}
+	if quoteState["Down"].Source != "rest-exec" || quoteState["Up"].Source != "rest-exec" {
+		t.Fatalf("expected REST quote state, got Down=%q Up=%q", quoteState["Down"].Source, quoteState["Up"].Source)
+	}
+}
+
 func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	if got := normalizePaperArbMode(""); got != paperArbModeTaker {
 		t.Fatalf("expected empty mode to normalize to taker, got %q", got)
