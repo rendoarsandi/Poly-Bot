@@ -221,11 +221,12 @@ func realbotLadderedTerminalEntryBlockReason(outcomes []string, tokenBids, token
 }
 
 func realbotLogLadderedTerminalEntryBlock(args realbotPanicBuyStrategyArgs, reason string) {
-	if args.tui == nil || strings.TrimSpace(reason) == "" {
-		return
-	}
-	args.tui.LogEventDedup("ladder-terminal-entry:"+args.marketID, 10*time.Second,
-		"[%s] ⛔ Skipping ladder buy: terminal-looking book (%s)", args.marketID, reason)
+	// Silenced: noisy log
+	// if args.tui == nil || strings.TrimSpace(reason) == "" {
+	// 	return
+	// }
+	// args.tui.LogEventDedup("ladder-terminal-entry:"+args.marketID, 10*time.Second,
+	// 	"[%s] ⛔ Skipping ladder buy: terminal-looking book (%s)", args.marketID, reason)
 }
 
 func realbotLadderedLeaderSide(ask0, ask1 float64) int {
