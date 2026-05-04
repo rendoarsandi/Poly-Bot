@@ -1983,6 +1983,17 @@ func usdcMicroAmountFromFloat(amount float64) (*big.Int, error) {
 	return asInt, nil
 }
 
+func (t *RealTrader) waitForOnChainSuccess(ctx context.Context, txHash, label string) error {
+	success, err := t.polygon.WaitForTransaction(ctx, txHash)
+	if err != nil {
+		return fmt.Errorf("%s confirmation: %w", label, err)
+	}
+	if !success {
+		return fmt.Errorf("%s transaction was not successful: %s", label, txHash)
+	}
+	return nil
+}
+
 // WrapUSDCeToPUSD ensures USDC.e is approved for the Collateral Onramp, then wraps the
 // requested amount of USDC.e into pUSD held by the trader's wallet. Returns the wrap tx hash.
 func (t *RealTrader) WrapUSDCeToPUSD(ctx context.Context, amount float64) (string, error) {
@@ -2011,14 +2022,21 @@ func (t *RealTrader) WrapUSDCeToPUSD(ctx context.Context, amount float64) (strin
 	}
 	if allowance == nil || allowance.Cmp(micro) < 0 {
 		maxApprove := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-		if _, err := t.polygon.ApproveUSDCe(ctx, signer, api.CollateralOnrampContract, maxApprove); err != nil {
+		approvalTx, err := t.polygon.ApproveUSDCe(ctx, signer, api.CollateralOnrampContract, maxApprove)
+		if err != nil {
 			return "", fmt.Errorf("approve USDC.e for onramp: %w", err)
+		}
+		if err := t.waitForOnChainSuccess(ctx, approvalTx, "approve USDC.e for onramp"); err != nil {
+			return "", err
 		}
 	}
 
 	tx, err := t.polygon.WrapUSDCe(ctx, signer, owner, micro)
 	if err != nil {
 		return "", fmt.Errorf("wrap USDC.e: %w", err)
+	}
+	if err := t.waitForOnChainSuccess(ctx, tx, "wrap USDC.e"); err != nil {
+		return "", err
 	}
 	t.invalidateOnChainBalanceCache()
 	return tx, nil
@@ -2052,14 +2070,21 @@ func (t *RealTrader) UnwrapPUSDToUSDCe(ctx context.Context, amount float64) (str
 	}
 	if allowance == nil || allowance.Cmp(micro) < 0 {
 		maxApprove := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-		if _, err := t.polygon.ApproveCollateral(ctx, signer, api.CollateralOfframpContract, maxApprove); err != nil {
+		approvalTx, err := t.polygon.ApproveCollateral(ctx, signer, api.CollateralOfframpContract, maxApprove)
+		if err != nil {
 			return "", fmt.Errorf("approve pUSD for offramp: %w", err)
+		}
+		if err := t.waitForOnChainSuccess(ctx, approvalTx, "approve pUSD for offramp"); err != nil {
+			return "", err
 		}
 	}
 
 	tx, err := t.polygon.UnwrapPUSD(ctx, signer, owner, micro)
 	if err != nil {
 		return "", fmt.Errorf("unwrap pUSD: %w", err)
+	}
+	if err := t.waitForOnChainSuccess(ctx, tx, "unwrap pUSD"); err != nil {
+		return "", err
 	}
 	t.invalidateOnChainBalanceCache()
 	return tx, nil

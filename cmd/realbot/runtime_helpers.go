@@ -105,7 +105,7 @@ func realbotBindCollateralWrapHandlers(ctx context.Context, trader *trading.Real
 			tui.LogEvent("⚠️ Wrap aborted: amount must be > 0")
 			return
 		}
-		txCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		txCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 		defer cancel()
 		tx, err := trader.WrapUSDCeToPUSD(txCtx, amount)
 		if err != nil {
@@ -120,7 +120,7 @@ func realbotBindCollateralWrapHandlers(ctx context.Context, trader *trading.Real
 			tui.LogEvent("⚠️ Unwrap aborted: amount must be > 0")
 			return
 		}
-		txCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		txCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 		defer cancel()
 		tx, err := trader.UnwrapPUSDToUSDCe(txCtx, amount)
 		if err != nil {

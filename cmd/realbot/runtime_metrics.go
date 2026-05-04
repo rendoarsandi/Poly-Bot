@@ -80,6 +80,9 @@ func (m *realbotRuntimeMetrics) maybeLog(tui *paper.TUI, marketID string, wsMgr 
 	if m == nil || tui == nil {
 		return
 	}
+	if realbotRuntimeMetricsLogInterval <= 0 {
+		return
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}

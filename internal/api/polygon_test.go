@@ -126,6 +126,30 @@ func TestRedeemPositions_CallDataEncoding(t *testing.T) {
 	}
 }
 
+func TestPolymarketV2ContractAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"USDCeContract", USDCeContract, "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"},
+		{"PUSDContract", PUSDContract, "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"},
+		{"CollateralOnrampContract", CollateralOnrampContract, "0x93070a847efEf7F70739046A929D47a521F5B8ee"},
+		{"CollateralOfframpContract", CollateralOfframpContract, "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"},
+		{"CTFExchange", CTFExchange, "0xE111180000d2663C0091e4f400237545B87B996B"},
+		{"NegRiskExchange", NegRiskExchange, "0xe2222d279d744050d28e00520010520000310F59"},
+		{"NegRiskAdapter", NegRiskAdapter, "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.EqualFold(tc.got, tc.want) {
+				t.Fatalf("%s = %s, want %s", tc.name, tc.got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFunctionSelectors verifies all function selectors match Gnosis CTF contract
 func TestFunctionSelectors(t *testing.T) {
 	tests := []struct {
@@ -136,6 +160,8 @@ func TestFunctionSelectors(t *testing.T) {
 		{"mergePositions", "0x9e7212ad", "mergePositions(address,bytes32,bytes32,uint256[],uint256)"},
 		{"splitPosition", "0x72ce4275", "splitPosition(address,bytes32,bytes32,uint256[],uint256)"},
 		{"redeemPositions", "0x01b7037c", "redeemPositions(address,bytes32,bytes32,uint256[])"},
+		{"collateralOnrampWrap", "0x62355638", "wrap(address,address,uint256)"},
+		{"collateralOfframpUnwrap", "0x8cc7104f", "unwrap(address,address,uint256)"},
 		{"payoutDenominator", payoutDenominatorSelector, "payoutDenominator(bytes32)"},
 		{"payoutNumerators", payoutNumeratorsSelector, "payoutNumerators(bytes32,uint256)"},
 	}

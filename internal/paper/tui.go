@@ -1714,6 +1714,11 @@ type tuiModel struct {
 	mainContentWidth    int
 	mainContentSettings bool
 	mainContentCached   string
+	// Wrap/Unwrap amount entry overlay state. Empty action means no amount prompt.
+	wrapAmountAction string // "wrap" or "unwrap"
+	wrapAmountInput  string
+	wrapAmountMax    float64
+	wrapAmountStatus string
 	// Wrap/Unwrap confirmation overlay state. Empty action means no overlay.
 	wrapConfirmAction string  // "wrap" or "unwrap"
 	wrapConfirmAmount float64 // amount that will be wrapped/unwrapped
@@ -2620,6 +2625,60 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		key := msg.String()
 
+		// -- Wrap/Unwrap amount entry overlay (highest priority) --------------
+		if m.wrapAmountAction != "" {
+			switch key {
+			case "enter":
+				amount, status := parseWrapAmountInput(m.wrapAmountInput, m.wrapAmountMax)
+				if status != "" {
+					m.wrapAmountStatus = status
+					return m, nil
+				}
+				m.wrapConfirmAction = m.wrapAmountAction
+				m.wrapConfirmAmount = amount
+				m.wrapConfirmStatus = ""
+				m.wrapAmountAction = ""
+				m.wrapAmountInput = ""
+				m.wrapAmountMax = 0
+				m.wrapAmountStatus = ""
+				return m, nil
+			case "esc", "n", "N":
+				m.wrapAmountAction = ""
+				m.wrapAmountInput = ""
+				m.wrapAmountMax = 0
+				m.wrapAmountStatus = ""
+				return m, nil
+			case "backspace", "ctrl+h":
+				if len(m.wrapAmountInput) > 0 {
+					runes := []rune(m.wrapAmountInput)
+					m.wrapAmountInput = string(runes[:len(runes)-1])
+				}
+				m.wrapAmountStatus = ""
+				return m, nil
+			case "delete", "ctrl+u":
+				m.wrapAmountInput = ""
+				m.wrapAmountStatus = ""
+				return m, nil
+			case "a", "A", "tab":
+				m.wrapAmountInput = formatWrapAmountInput(m.wrapAmountMax)
+				m.wrapAmountStatus = ""
+				return m, nil
+			}
+			for _, r := range msg.Runes {
+				switch {
+				case r >= '0' && r <= '9':
+					m.wrapAmountInput += string(r)
+					m.wrapAmountStatus = ""
+				case r == '.' || r == ',':
+					if !strings.Contains(m.wrapAmountInput, ".") {
+						m.wrapAmountInput += "."
+						m.wrapAmountStatus = ""
+					}
+				}
+			}
+			return m, nil
+		}
+
 		// ── Wrap/Unwrap confirmation overlay (highest priority) ──────────────
 		if m.wrapConfirmAction != "" {
 			switch key {
@@ -3460,7 +3519,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tui.mu.Unlock()
 			return m, nil
 		case "w", "W":
-			// Wrap full USDC.e -> pUSD (only meaningful in real mode).
+			// Wrap USDC.e -> pUSD (only meaningful in real mode).
 			m.tui.mu.Lock()
 			amount := m.tui.walletUSDCe
 			has := m.tui.hasWalletUSDCe
@@ -3474,12 +3533,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.LogEvent("⚠️ No USDC.e balance to wrap")
 				return m, nil
 			}
-			m.wrapConfirmAction = "wrap"
-			m.wrapConfirmAmount = amount
-			m.wrapConfirmStatus = ""
+			m.wrapAmountAction = "wrap"
+			m.wrapAmountInput = formatWrapAmountInput(amount)
+			m.wrapAmountMax = amount
+			m.wrapAmountStatus = ""
 			return m, nil
 		case "u", "U":
-			// Unwrap full pUSD -> USDC.e (only meaningful in real mode).
+			// Unwrap pUSD -> USDC.e (only meaningful in real mode).
 			m.tui.mu.Lock()
 			amount := m.tui.walletCash
 			has := m.tui.hasWalletCash
@@ -3493,9 +3553,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.LogEvent("⚠️ No pUSD balance to unwrap")
 				return m, nil
 			}
-			m.wrapConfirmAction = "unwrap"
-			m.wrapConfirmAmount = amount
-			m.wrapConfirmStatus = ""
+			m.wrapAmountAction = "unwrap"
+			m.wrapAmountInput = formatWrapAmountInput(amount)
+			m.wrapAmountMax = amount
+			m.wrapAmountStatus = ""
 			return m, nil
 		case "q", "Q", "ctrl+c":
 			// Call the parent cancel func FIRST so the trading loop shuts down
@@ -3530,6 +3591,10 @@ func (m tuiModel) View() string {
 	if m.showSettings {
 		return m.renderSettings(w)
 	}
+	// Wrap/Unwrap amount overlay: replace entire view while open.
+	if m.wrapAmountAction != "" {
+		return m.renderWrapAmountOverlay(w)
+	}
 	// Wrap/Unwrap confirmation overlay: replace entire view while open.
 	if m.wrapConfirmAction != "" {
 		return m.renderWrapConfirmOverlay(w)
@@ -3540,6 +3605,93 @@ func (m tuiModel) View() string {
 	visibleLines, effectiveOffset, maxOffset := viewportLines(lines, m.scrollOffset, visibleHeight)
 	footer := m.renderFooter(w, effectiveOffset, maxOffset)
 	return strings.Join(append(visibleLines, footer), "\n")
+}
+
+func formatWrapAmountInput(amount float64) string {
+	if amount <= 0 {
+		return ""
+	}
+	floored := math.Floor(amount*1e6) / 1e6
+	text := strconv.FormatFloat(floored, 'f', 6, 64)
+	text = strings.TrimRight(strings.TrimRight(text, "0"), ".")
+	if text == "" {
+		return "0"
+	}
+	return text
+}
+
+func parseWrapAmountInput(input string, maxAmount float64) (float64, string) {
+	input = strings.TrimSpace(strings.ReplaceAll(input, ",", "."))
+	if input == "" {
+		return 0, "Enter an amount."
+	}
+	if wrapInputDecimalPlaces(input) > 6 {
+		return 0, "Use at most 6 decimal places."
+	}
+	amount, err := strconv.ParseFloat(input, 64)
+	if err != nil || math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return 0, "Enter a valid number."
+	}
+	if amount <= 0 {
+		return 0, "Amount must be greater than 0."
+	}
+	if maxAmount > 0 && amount > maxAmount+0.0000005 {
+		return 0, fmt.Sprintf("Amount exceeds available %s.", formatWrapAmountInput(maxAmount))
+	}
+	return amount, ""
+}
+
+func wrapInputDecimalPlaces(input string) int {
+	if dot := strings.Index(input, "."); dot >= 0 {
+		return len(input) - dot - 1
+	}
+	return 0
+}
+
+// renderWrapAmountOverlay paints an amount entry prompt before the final Y/N confirmation.
+func (m tuiModel) renderWrapAmountOverlay(w int) string {
+	if w < 40 {
+		w = 40
+	}
+	var title, unit, action string
+	switch m.wrapAmountAction {
+	case "wrap":
+		title = "  Wrap Amount (USDC.e -> pUSD)  "
+		unit = "USDC.e"
+		action = "wrap"
+	case "unwrap":
+		title = "  Unwrap Amount (pUSD -> USDC.e)  "
+		unit = "pUSD"
+		action = "unwrap"
+	default:
+		title = "  Amount  "
+		unit = "units"
+		action = "submit"
+	}
+
+	bar := strings.Repeat("─", w)
+	pad := func(s string) string {
+		if len(s) >= w {
+			return s[:w]
+		}
+		return s + strings.Repeat(" ", w-len(s))
+	}
+	status := m.wrapAmountStatus
+	if status == "" {
+		status = fmt.Sprintf("Available: %s %s", formatWrapAmountInput(m.wrapAmountMax), unit)
+	}
+	out := []string{
+		bar,
+		pad(title),
+		bar,
+		pad(""),
+		pad(fmt.Sprintf("  Amount to %s: %s %s", action, m.wrapAmountInput, unit)),
+		pad("  " + status),
+		pad(""),
+		pad("  Press [Enter] to continue, [A] max, [Esc] to cancel."),
+		bar,
+	}
+	return strings.Join(out, "\n")
 }
 
 // renderWrapConfirmOverlay paints a centered Y/N confirmation prompt for wrap/unwrap actions.

@@ -9,10 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestTUIWrapKeyOpensConfirmAndYConfirms verifies that pressing W with a non-zero
-// USDC.e balance opens the confirmation overlay and pressing Y dispatches the
-// wrap callback with the full balance.
-func TestTUIWrapKeyOpensConfirmAndYConfirms(t *testing.T) {
+// TestTUIWrapKeyPromptsAmountThenYConfirms verifies that pressing W with a
+// non-zero USDC.e balance opens an amount prompt before the confirmation
+// overlay and callback dispatch.
+func TestTUIWrapKeyPromptsAmountThenYConfirms(t *testing.T) {
 	engine := NewEngine(1000.0)
 	tui := NewTUI(engine, NewOrderBook())
 
@@ -28,6 +28,15 @@ func TestTUIWrapKeyOpensConfirmAndYConfirms(t *testing.T) {
 	m := tuiModel{tui: tui}
 
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = out.(tuiModel)
+	if m.wrapAmountAction != "wrap" {
+		t.Fatalf("expected wrapAmountAction=wrap, got %q", m.wrapAmountAction)
+	}
+	if m.wrapAmountInput != "42.5" {
+		t.Fatalf("expected default amount input 42.5, got %q", m.wrapAmountInput)
+	}
+
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = out.(tuiModel)
 	if m.wrapConfirmAction != "wrap" {
 		t.Fatalf("expected wrapConfirmAction=wrap, got %q", m.wrapConfirmAction)
@@ -55,7 +64,7 @@ func TestTUIWrapKeyOpensConfirmAndYConfirms(t *testing.T) {
 	}
 }
 
-// TestTUIWrapKeyCancelsOnN ensures pressing N closes the overlay without dispatching.
+// TestTUIWrapKeyCancelsOnN ensures pressing N closes the amount prompt without dispatching.
 func TestTUIWrapKeyCancelsOnN(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.SetWalletUSDCe(10.0)
@@ -68,13 +77,13 @@ func TestTUIWrapKeyCancelsOnN(t *testing.T) {
 	m := tuiModel{tui: tui}
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 	m = out.(tuiModel)
-	if m.wrapConfirmAction == "" {
-		t.Fatalf("expected confirm overlay to open on W")
+	if m.wrapAmountAction == "" {
+		t.Fatalf("expected amount prompt to open on W")
 	}
 	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = out.(tuiModel)
-	if m.wrapConfirmAction != "" {
-		t.Fatalf("expected overlay cleared on N, got %q", m.wrapConfirmAction)
+	if m.wrapAmountAction != "" || m.wrapConfirmAction != "" {
+		t.Fatalf("expected overlays cleared on N, amount=%q confirm=%q", m.wrapAmountAction, m.wrapConfirmAction)
 	}
 	if called.Load() != 0 {
 		t.Fatalf("expected wrap callback NOT to fire on cancel, got %d invocations", called.Load())
@@ -90,13 +99,13 @@ func TestTUIWrapKeyNoBalance(t *testing.T) {
 	m := tuiModel{tui: tui}
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 	m = out.(tuiModel)
-	if m.wrapConfirmAction != "" {
-		t.Fatalf("expected no overlay when USDC.e balance is zero, got %q", m.wrapConfirmAction)
+	if m.wrapAmountAction != "" || m.wrapConfirmAction != "" {
+		t.Fatalf("expected no overlay when USDC.e balance is zero, amount=%q confirm=%q", m.wrapAmountAction, m.wrapConfirmAction)
 	}
 }
 
-// TestTUIUnwrapKeyOpensConfirmAndYConfirms mirrors the wrap test for U → unwrap.
-func TestTUIUnwrapKeyOpensConfirmAndYConfirms(t *testing.T) {
+// TestTUIUnwrapKeyPromptsAmountThenYConfirms mirrors the wrap test for U -> unwrap.
+func TestTUIUnwrapKeyPromptsAmountThenYConfirms(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.SetWalletCash(7.25)
 
@@ -107,6 +116,11 @@ func TestTUIUnwrapKeyOpensConfirmAndYConfirms(t *testing.T) {
 
 	m := tuiModel{tui: tui}
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	m = out.(tuiModel)
+	if m.wrapAmountAction != "unwrap" {
+		t.Fatalf("expected wrapAmountAction=unwrap, got %q", m.wrapAmountAction)
+	}
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = out.(tuiModel)
 	if m.wrapConfirmAction != "unwrap" {
 		t.Fatalf("expected wrapConfirmAction=unwrap, got %q", m.wrapConfirmAction)
@@ -149,6 +163,69 @@ func TestTUIWrapCancelOnNDoesNotFireGoroutine(t *testing.T) {
 	}
 }
 
+func TestTUIWrapKeyAllowsCustomAmount(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetWalletUSDCe(42.50)
+
+	gotAmount := make(chan float64, 1)
+	tui.SetCollateralWrapHandlers(func(amount float64) {
+		gotAmount <- amount
+	}, nil)
+
+	m := tuiModel{tui: tui}
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = out.(tuiModel)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = out.(tuiModel)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("12.34")})
+	m = out.(tuiModel)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(tuiModel)
+	if m.wrapConfirmAction != "wrap" {
+		t.Fatalf("expected confirm overlay after custom amount, got %q", m.wrapConfirmAction)
+	}
+	if m.wrapConfirmAmount != 12.34 {
+		t.Fatalf("expected custom confirm amount 12.34, got %v", m.wrapConfirmAmount)
+	}
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = out.(tuiModel)
+
+	select {
+	case amt := <-gotAmount:
+		if amt != 12.34 {
+			t.Fatalf("expected callback amount 12.34, got %v", amt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("wrap callback was not invoked within timeout")
+	}
+}
+
+func TestTUIWrapAmountRejectsMoreThanAvailable(t *testing.T) {
+	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
+	tui.SetWalletUSDCe(10.0)
+	tui.SetCollateralWrapHandlers(func(amount float64) {}, nil)
+
+	m := tuiModel{tui: tui}
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = out.(tuiModel)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = out.(tuiModel)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("10.01")})
+	m = out.(tuiModel)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(tuiModel)
+
+	if m.wrapAmountAction != "wrap" {
+		t.Fatalf("expected amount prompt to remain open, got %q", m.wrapAmountAction)
+	}
+	if m.wrapConfirmAction != "" {
+		t.Fatalf("expected confirm overlay not to open, got %q", m.wrapConfirmAction)
+	}
+	if !strings.Contains(m.wrapAmountStatus, "exceeds available") {
+		t.Fatalf("expected available-balance validation, got %q", m.wrapAmountStatus)
+	}
+}
+
 // TestRenderWrapConfirmOverlay verifies the overlay renders the action, amount,
 // and the [Y]/[N] prompt.
 func TestRenderWrapConfirmOverlay(t *testing.T) {
@@ -163,6 +240,16 @@ func TestRenderWrapConfirmOverlay(t *testing.T) {
 	m = tuiModel{wrapConfirmAction: "unwrap", wrapConfirmAmount: 99.99}
 	out = m.renderWrapConfirmOverlay(80)
 	for _, want := range []string{"Confirm Unwrap", "99.99 pUSD", "[Y]", "[N]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected overlay to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderWrapAmountOverlay(t *testing.T) {
+	m := tuiModel{wrapAmountAction: "wrap", wrapAmountInput: "12.34", wrapAmountMax: 42.5}
+	out := m.renderWrapAmountOverlay(80)
+	for _, want := range []string{"Wrap Amount", "12.34 USDC.e", "Available: 42.5 USDC.e", "[Enter]", "[A]"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected overlay to contain %q, got:\n%s", want, out)
 		}
