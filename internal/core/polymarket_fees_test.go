@@ -11,25 +11,25 @@ func TestPolymarketTakerFeeUSDC(t *testing.T) {
 		want       float64
 	}{
 		{
-			name:       "Standard 300bps Sports Fee at 0.50",
+			name:       "Standard 3bps Sports Fee at 0.50",
 			shares:     100,
 			price:      0.5,
-			feeRateBps: 300,
-			want:       0.75, // 100 * 0.03 * 0.5 * 0.5 = 0.75
+			feeRateBps: 3,
+			want:       0.00750, // 100 * 0.0003 * 0.5 * 0.5 = 0.0075
 		},
 		{
-			name:       "Standard 720bps Crypto Fee at 0.50",
+			name:       "Standard 7.2bps Crypto Fee at 0.50",
 			shares:     100,
 			price:      0.5,
-			feeRateBps: 720,
-			want:       1.80, // 100 * 0.072 * 0.5 * 0.5 = 1.80
+			feeRateBps: 7, // Rounded to 7 for bps int
+			want:       0.01750, // 100 * 0.0007 * 0.5 * 0.5 = 0.0175
 		},
 		{
 			name:       "Rounding to 5 decimal places",
-			shares:     1,
+			shares:     100,
 			price:      0.3333,
-			feeRateBps: 720,
-			want:       0.01600, // 1 * 0.072 * 0.3333 * 0.6667 = 0.015998 -> 0.01600
+			feeRateBps: 7,
+			want:       0.01555, // 100 * 0.0007 * 0.3333 * 0.6667 = 0.015554 -> 0.01555
 		},
 		{
 			name:       "Fees < 0.00001 round down to zero",

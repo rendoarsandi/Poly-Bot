@@ -974,9 +974,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 	totalCost := 0.0
 	for _, req := range reqs {
 		if req.Side == api.SideBuy {
-			cost := req.Price * req.Size
-			fee := core.PolymarketTakerFeeUSDC(req.Size, req.Price, req.FeeRateBps)
-			totalCost += (cost + fee)
+			totalCost += (req.Price * req.Size)
 		}
 	}
 
@@ -1016,10 +1014,6 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 				message = "empty batch response from exchange"
 			}
 		}
-		fee := 0.0
-		if reqs[i].FeeRateBps > 0 {
-			fee = core.PolymarketTakerFeeUSDC(reqs[i].Size, reqs[i].Price, reqs[i].FeeRateBps)
-		}
 
 		results[i] = &TradeResult{
 			Success:            success,
@@ -1030,7 +1024,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			Size:               reqs[i].Size,
 			Side:               string(reqs[i].Side),
 			TokenID:            reqs[i].TokenID,
-			Fee:                fee,
+			Fee:                0, // V2 fees are handled on-chain
 			MakingAmount:       resp.MakingAmount,
 			TakingAmount:       resp.TakingAmount,
 			TransactionsHashes: append([]string(nil), resp.TransactionsHashes...),
@@ -1056,10 +1050,8 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 	}
 	// Check safety limits
 	cost := price * size
-	// Add estimated fee to cost check
-	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 
-	if err := t.checkSafetyLimits(cost + fee); err != nil {
+	if err := t.checkSafetyLimits(cost); err != nil {
 		return &TradeResult{
 			Success: false,
 			Message: err.Error(),
@@ -1087,9 +1079,8 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		t.mu.Lock()
 		// Optimistically update cached balance but mark it stale so the
 		// background ticker refreshes it with the actual on-chain value.
-		// This prevents over-spending on the next order if partial fill occurred.
 		if t.cachedBalance > 0 {
-			t.cachedBalance -= (cost + fee)
+			t.cachedBalance -= cost
 			if t.cachedBalance < 0 {
 				t.cachedBalance = 0
 			}
@@ -1113,7 +1104,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		Success:              resp.Success,
 		Price:                price,
 		Size:                 size,
-		Fee:                  fee,
+		Fee:                  0, // V2 fees are handled on-chain
 		FeeRateBps:           feeRateBps,
 		Side:                 "BUY",
 		TokenID:              tokenID,
@@ -1159,13 +1150,11 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
-	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
-
 	if resp.Success {
 		t.mu.Lock()
 		// Optimistically update cached balance but mark stale for refresh
 		if t.cachedBalance > 0 {
-			t.cachedBalance += (proceeds - fee)
+			t.cachedBalance += proceeds
 		}
 		t.lastBalanceUpdate = time.Time{} // Mark stale for next GetBalance
 		t.mu.Unlock()
@@ -1186,7 +1175,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		Success:              resp.Success,
 		Price:                price,
 		Size:                 size,
-		Fee:                  fee,
+		Fee:                  0, // V2 fees are handled on-chain
 		FeeRateBps:           feeRateBps,
 		Side:                 "SELL",
 		TokenID:              tokenID,
