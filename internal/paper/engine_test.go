@@ -1017,14 +1017,23 @@ func TestEngine_GetStatsRealizedPnLIgnoresBalanceSyncWhileFlat(t *testing.T) {
 func TestEngine_BuySellWithExplicitFeeRateKeepsRealizedAlignedWithEquity(t *testing.T) {
 	engine := NewEngine(30.0)
 
+	// Buy 10 shares at 0.50 with 100 bps fee (1.0%)
+	// fee = 10 * 0.01 * 0.5 * 0.5 = 0.025
+	// total cost = 5.0 + 0.025 = 5.025
 	buy, err := engine.BuyForMarketWithFeeRate("m1", "Up", 0.50, 10.0, 100)
 	if err != nil {
 		t.Fatalf("buy failed: %v", err)
 	}
-	if buy.Quantity >= 10.0 {
-		t.Fatalf("expected buy quantity to be reduced by fee, got %.6f", buy.Quantity)
+	if buy.Quantity != 10.0 {
+		t.Fatalf("expected buy quantity to be exactly 10.0, got %.6f", buy.Quantity)
+	}
+	if absFloat(engine.GetBalance()-24.975) > 0.000001 {
+		t.Fatalf("expected balance after buy to be 24.975, got %.6f", engine.GetBalance())
 	}
 
+	// Sell 10 shares at 0.60 with 100 bps fee
+	// fee = 10 * 0.01 * 0.6 * 0.4 = 0.024
+	// proceeds = 6.0 - 0.024 = 5.976
 	sell, err := engine.SellForMarketWithFeeRate("m1", "Up", 0.60, buy.Quantity, 100)
 	if err != nil {
 		t.Fatalf("sell failed: %v", err)
@@ -1033,10 +1042,14 @@ func TestEngine_BuySellWithExplicitFeeRateKeepsRealizedAlignedWithEquity(t *test
 	stats := engine.GetStats()
 	equity := engine.GetBookEquity()
 	netChange := equity - stats.StartingBalance
+	// Realized PnL = proceeds (5.976) - costBasis (5.025) = 0.951
+	if absFloat(stats.RealizedPnL-0.951) > 0.000001 {
+		t.Fatalf("expected realized pnl 0.951, got %.6f", stats.RealizedPnL)
+	}
 	if absFloat(stats.RealizedPnL-netChange) > 0.000001 {
 		t.Fatalf("expected realized pnl %.6f to match net change %.6f after fee-aware round-trip", stats.RealizedPnL, netChange)
 	}
-	if absFloat(sell.Value-(engine.GetBalance()-25.0)) > 0.000001 {
+	if absFloat(sell.Value-(engine.GetBalance()-24.975)) > 0.000001 {
 		t.Fatalf("expected sell proceeds %.6f to reconcile with ending cash %.6f", sell.Value, engine.GetBalance())
 	}
 }

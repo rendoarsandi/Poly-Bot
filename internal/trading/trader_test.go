@@ -161,8 +161,8 @@ func TestPaperTrader_FeeCalculation(t *testing.T) {
 	if !ok {
 		t.Fatal("expected fee-aware paper buy to create an Up position")
 	}
-	if pos.Quantity >= 100.0 {
-		t.Fatalf("expected fee-aware paper buy quantity below 100 shares, got %.6f", pos.Quantity)
+	if pos.Quantity != 100.0 {
+		t.Fatalf("expected fee-aware paper buy quantity to be exactly 100 shares, got %.6f", pos.Quantity)
 	}
 }
 
@@ -278,11 +278,11 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	if math.Abs(buy.Price-0.55) > 1e-9 {
 		t.Fatalf("expected embedded paper buy to use live ask 0.55, got %.4f", buy.Price)
 	}
-	if buy.AcknowledgedQty <= 0 || buy.AcknowledgedQty >= 3 {
-		t.Fatalf("expected fee-adjusted acknowledged qty below 3, got %.4f", buy.AcknowledgedQty)
+	if buy.AcknowledgedQty != 3 {
+		t.Fatalf("expected full acknowledged qty 3, got %.4f", buy.AcknowledgedQty)
 	}
-	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-buy.AcknowledgedQty) > 1e-9 {
-		t.Fatalf("expected live position to match acknowledged qty %.4f, got %.4f", buy.AcknowledgedQty, got)
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-3) > 1e-9 {
+		t.Fatalf("expected live position to be 3.0, got %.4f", got)
 	}
 	if filled, err := trader.WaitForFill(context.Background(), buy.OrderID, time.Second); err != nil || !filled {
 		t.Fatalf("expected embedded paper order to confirm immediately, filled=%v err=%v", filled, err)

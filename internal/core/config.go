@@ -272,7 +272,12 @@ func LoadConfig() (*Config, error) {
 		TradeSizingMode:  normalizeTradeSizingMode(parseEnvString("TRADE_SIZING_MODE", TradeSizingModePercent)),
 		TradeSizeUSDC:    normalizeFixedTradeSizeUSDC(parseEnvFloat("TRADE_SIZE_USDC", 1.0)),
 		// Fee settings (paper trading)
-		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 312), // Calibrated: ~1.6% effective at p=0.50
+		// Official Polymarket taker fee rates:
+		// Sports: 0.03 (300 bps)
+		// Crypto: 0.072 (720 bps)
+		// Politics: 0.04 (400 bps)
+		// Geopolitical: 0.0 (0 bps)
+		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 300), // Default to Sports rate (3.0%)
 		// Safety settings
 		MaxTradeSize:                parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
 		MaxDailyLoss:                parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)

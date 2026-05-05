@@ -157,8 +157,10 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
-	// The engine handles fee deduction internally (reducing net shares on buy, reducing proceeds on sell)
-	// We do not deduct USDC fees here to avoid double-charging in the simulation.
+	// The engine handles fees internally:
+	// - For BUY: Fee is added to the USDC cost basis, and the full quantity is received.
+	// - For SELL: Fee is deducted from the USDC proceeds received.
+	// We do not deduct additional USDC fees here to avoid double-charging in the simulation.
 
 	return &TradeResult{
 		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
@@ -187,8 +189,10 @@ func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, 
 		}, nil
 	}
 
-	// The engine handles fee deduction internally (reducing net shares on buy, reducing proceeds on sell)
-	// We do not deduct USDC fees here to avoid double-charging in the simulation.
+	// The engine handles fees internally:
+	// - For BUY: Fee is added to the USDC cost basis, and the full quantity is received.
+	// - For SELL: Fee is deducted from the USDC proceeds received.
+	// We do not deduct additional USDC fees here to avoid double-charging in the simulation.
 
 	return &TradeResult{
 		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
@@ -644,7 +648,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		currentCost := t.positionLedgerTotalCost[tokenID]
 		t.setPositionLedgerLocked(tokenID, currentQty+trade.Quantity, currentCost+math.Max(0, trade.Value))
 		t.posMu.Unlock()
-		fee := math.Max(0, (size-trade.Quantity)*execPrice)
+		fee := math.Max(0, trade.Value-(trade.Quantity*trade.Price))
 		return &TradeResult{
 			OrderID:              orderID,
 			Status:               "FILLED",
@@ -707,7 +711,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			t.setPositionLedgerLocked(tokenID, remainingQty, remainingCost)
 		}
 		t.posMu.Unlock()
-		fee := math.Max(0, (execPrice*trade.Quantity)-trade.Value)
+		fee := math.Max(0, (trade.Quantity*trade.Price)-trade.Value)
 		return &TradeResult{
 			OrderID:              orderID,
 			Status:               "FILLED",

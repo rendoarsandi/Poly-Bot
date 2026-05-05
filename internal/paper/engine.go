@@ -477,23 +477,21 @@ func (e *Engine) MakerSellForMarket(marketID, outcome string, price, quantity fl
 
 // executeBuy is the internal implementation of a buy (must be called with lock)
 func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, isMaker bool, feeRateBps int) (*Trade, error) {
-	cost := price * quantity
-	if cost > e.currentBalance+1e-8 {
-		return nil, fmt.Errorf("insufficient balance: need %.4f, have %.4f", cost, e.currentBalance)
+	feeUsdc := 0.0
+	if !isMaker && feeRateBps > 0 {
+		feeUsdc = core.PolymarketTakerFeeUSDC(quantity, price, feeRateBps)
+	}
+	totalCost := (price * quantity) + feeUsdc
+
+	if totalCost > e.currentBalance+1e-8 {
+		return nil, fmt.Errorf("insufficient balance: need %.4f, have %.4f", totalCost, e.currentBalance)
 	}
 
 	// Deduct from balance
-	e.currentBalance -= cost
+	e.currentBalance -= totalCost
 	if e.currentBalance < 0 {
 		e.currentBalance = 0
 	}
-
-	// Calculate fee (collected in shares for BUY)
-	feeTokens := 0.0
-	if !isMaker && feeRateBps > 0 {
-		feeTokens = core.PolymarketBuyFeeShares(quantity, price, feeRateBps)
-	}
-	netQuantity := quantity - feeTokens
 
 	// Create position key that includes market ID
 	posKey := outcome
@@ -509,12 +507,12 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, i
 	}
 
 	// Calculate new average price
-	totalQty := pos.Quantity + netQuantity
-	if totalQty > 0 {
-		pos.AvgPrice = (pos.TotalCost + cost) / totalQty
+	newTotalQty := pos.Quantity + quantity
+	if newTotalQty > 0 {
+		pos.AvgPrice = (pos.TotalCost + totalCost) / newTotalQty
 	}
-	pos.Quantity = totalQty
-	pos.TotalCost += cost
+	pos.Quantity = newTotalQty
+	pos.TotalCost += totalCost
 
 	// Record trade
 	e.totalTrades++
@@ -524,8 +522,8 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, i
 		Side:      "buy",
 		Outcome:   outcome,
 		Price:     price,
-		Quantity:  netQuantity,
-		Value:     cost,
+		Quantity:  quantity,
+		Value:     totalCost,
 	}
 	e.addTrade(trade)
 
