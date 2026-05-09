@@ -251,10 +251,20 @@ func ackNotionalMatchesAttributedSell(exec directMarketExecution, attributedQty 
 	return diff <= math.Max(0.02, attributedQty*0.02)
 }
 
+func reportedDirectNotional(exec directMarketExecution, attributedQty float64) (float64, bool) {
+	if exec.AcknowledgedQty <= 0 || exec.AcknowledgedNotional <= 0 || attributedQty <= 0 {
+		return 0, false
+	}
+	return exec.AcknowledgedNotional * attributedQty / exec.AcknowledgedQty, true
+}
+
 func reportedBuyCost(exec directMarketExecution, observedPrice, attributedQty, requestedQty float64) float64 {
 	qty := clampRequestedExecutionQty(attributedQty, requestedQty)
 	if ackNotionalMatchesAttributedBuy(exec, qty) {
 		return exec.AcknowledgedNotional
+	}
+	if notional, ok := reportedDirectNotional(exec, qty); ok {
+		return notional
 	}
 	return qty * observedPrice
 }
@@ -263,6 +273,9 @@ func reportedSellProceeds(exec directMarketExecution, observedPrice, attributedQ
 	qty := clampRequestedExecutionQty(attributedQty, requestedQty)
 	if ackNotionalMatchesAttributedSell(exec, qty) {
 		return exec.AcknowledgedNotional
+	}
+	if notional, ok := reportedDirectNotional(exec, qty); ok {
+		return notional
 	}
 	return qty * observedPrice
 }

@@ -4928,10 +4928,10 @@ func TestReportedSellProceedsUsesAcknowledgedNotionalWhenAttributedSizeMatches(t
 	}
 }
 
-func TestReportedSellProceedsUsesAttributedSizeWhenAcknowledgedSizeDrifts(t *testing.T) {
+func TestReportedSellProceedsUsesDirectNotionalWhenAcknowledgedSizeDrifts(t *testing.T) {
 	exec := directMarketExecution{AcknowledgedQty: 3.14, AcknowledgedNotional: 1.884}
 	got := reportedSellProceeds(exec, 0.58, 3.00, 3.14)
-	expected := 1.74
+	expected := 1.8
 	if math.Abs(got-expected) > 0.000001 {
 		t.Fatalf("expected attributed proceeds %.6f, got %.6f", expected, got)
 	}
