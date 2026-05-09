@@ -229,6 +229,15 @@ func realbotLogLadderedTerminalEntryBlock(args realbotPanicBuyStrategyArgs, reas
 	// 	"[%s] ⛔ Skipping ladder buy: terminal-looking book (%s)", args.marketID, reason)
 }
 
+const realbotLadderedReconnectConfirmWindow = 3 * time.Second
+
+func realbotLadderedWithinReconnectConfirmWindow(now time.Time, state *realbotPanicBuyStrategyState) bool {
+	if state == nil || state.lastReconnectTime == nil || state.lastReconnectTime.IsZero() {
+		return false
+	}
+	return now.Sub(*state.lastReconnectTime) <= realbotLadderedReconnectConfirmWindow
+}
+
 func realbotLadderedLeaderSide(ask0, ask1 float64) int {
 	switch {
 	case ask0 > ask1+1e-9:
@@ -578,19 +587,19 @@ func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state
 		lastPairUpdate = *state.lastPairUpdate
 	}
 
+	now := time.Now()
 	maxAge := realbotExecutionQuoteGuardAge(args.executionQuoteMaxAge)
-	fresh, _, reason := realbotCanUseLocalBuyQuote(time.Now(), args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
-	if fresh && (args.restClient == nil || args.market == nil) {
-		if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
-			realbotLogLadderedTerminalEntryBlock(args, terminalReason)
-			setCooldown(500 * time.Millisecond)
-			return false
-		}
+	fresh, _, reason := realbotCanUseLocalBuyQuote(now, args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
+	terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks)
+	requiresConfirmation := !fresh || terminalReason != "" || realbotLadderedWithinReconnectConfirmWindow(now, state)
+	if !requiresConfirmation {
 		return true
 	}
 
 	if args.restClient == nil || args.market == nil {
-		if args.tui != nil {
+		if terminalReason != "" {
+			realbotLogLadderedTerminalEntryBlock(args, terminalReason)
+		} else if args.tui != nil {
 			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: fresh execution quote unavailable (%s)", args.marketID, reason)
 		}
 		setCooldown(500 * time.Millisecond)
