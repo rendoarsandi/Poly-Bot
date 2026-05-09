@@ -600,7 +600,11 @@ func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state
 		if terminalReason != "" {
 			realbotLogLadderedTerminalEntryBlock(args, terminalReason)
 		} else if args.tui != nil {
-			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: fresh execution quote unavailable (%s)", args.marketID, reason)
+			blockReason := reason
+			if blockReason == "" {
+				blockReason = "within reconnect confirm window"
+			}
+			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: fresh execution quote unavailable (%s)", args.marketID, blockReason)
 		}
 		setCooldown(500 * time.Millisecond)
 		return false
