@@ -85,7 +85,7 @@ type realbotPostQuoteIterationState struct {
 	ladderedStartupRung        *int
 }
 
-const wsWarmupDuration = 500 * time.Millisecond
+const wsWarmupDuration = 150 * time.Millisecond
 
 func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *realbotPostQuoteIterationState) bool {
 	if state.lastReconnectTime != nil && !state.lastReconnectTime.IsZero() {
@@ -289,6 +289,7 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 		ladderedEntries:         state.ladderedEntries,
 		nextLadderedEntrySeq:    state.nextLadderedEntrySeq,
 		panicBuyCooldown:        state.panicBuyCooldown,
+		lastReconnectTime:       state.lastReconnectTime,
 		lastTrade:               state.lastTrade,
 		lastDustRecoveryNotice:  state.lastDustRecoveryNotice,
 		entryExecutionInFlight:  state.entryExecutionInFlight,

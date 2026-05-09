@@ -237,8 +237,9 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 	if result.Price != 0.45 {
 		t.Errorf("Expected price 0.45, got %.4f", result.Price)
 	}
-	if result.Size != 20 {
-		t.Errorf("Expected size 20, got %.2f", result.Size)
+	expectedSize := 20 - core.PolymarketBuyFeeShares(20, 0.45, 50)
+	if math.Abs(result.Size-expectedSize) > 1e-9 {
+		t.Errorf("Expected net size %.6f, got %.6f", expectedSize, result.Size)
 	}
 	if result.Side != "BUY" {
 		t.Errorf("Expected side BUY, got %s", result.Side)
@@ -429,7 +430,7 @@ func TestEmbeddedPaperRealTraderRejectsBuyAboveBalance(t *testing.T) {
 	}
 }
 
-func TestEmbeddedPaperRealTraderBuySafetyIncludesFees(t *testing.T) {
+func TestEmbeddedPaperRealTraderBuySafetyUsesGrossNotionalAndNetsShares(t *testing.T) {
 	engine := paper.NewEngine(10.0)
 	cfg := &core.Config{MaxTradeSize: 1.00, FeeRateBps: 1000}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
@@ -439,11 +440,15 @@ func TestEmbeddedPaperRealTraderBuySafetyIncludesFees(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded paper fee-aware buy returned unexpected error: %v", err)
 	}
-	if buy.Success {
-		t.Fatalf("expected fee-inclusive safety check to reject buy, got %+v", buy)
+	if !buy.Success {
+		t.Fatalf("expected buy whose gross notional is below max trade size to succeed, got %+v", buy)
 	}
-	if !strings.Contains(buy.Message, "exceeds max trade size") {
-		t.Fatalf("expected max trade size rejection, got %q", buy.Message)
+	expectedQty := 2.0 - core.PolymarketBuyFeeShares(2.0, buy.Price, buy.FeeRateBps)
+	if math.Abs(buy.Size-expectedQty) > 1e-9 || math.Abs(buy.AcknowledgedQty-expectedQty) > 1e-9 {
+		t.Fatalf("expected net shares %.6f in result, got size %.6f ack %.6f", expectedQty, buy.Size, buy.AcknowledgedQty)
+	}
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedQty) > 1e-9 {
+		t.Fatalf("expected live paper position %.6f, got %.6f", expectedQty, got)
 	}
 }
 

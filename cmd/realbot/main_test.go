@@ -2887,7 +2887,8 @@ func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.
 		quoteState:    quoteState,
 		restClient:    client,
 	}, &realbotPanicBuyStrategyState{
-		lastPairUpdate: &lastPairUpdate,
+		lastPairUpdate:    &lastPairUpdate,
+		lastReconnectTime: &lastPairUpdate,
 	}, func(d time.Duration) {
 		cooldown = time.Now().Add(d)
 	})
@@ -2903,6 +2904,56 @@ func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.
 	}
 	if quoteState["Down"].Source != "rest-exec" || quoteState["Up"].Source != "rest-exec" {
 		t.Fatalf("expected REST quote state, got Down=%q Up=%q", quoteState["Down"].Source, quoteState["Up"].Source)
+	}
+}
+
+func TestRealbotRefreshLadderedPreTradeQuoteUsesFreshLocalQuoteWithoutRest(t *testing.T) {
+	restCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		restCalls++
+		http.Error(w, "unexpected REST call", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := api.NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	lastPairUpdate := time.Now()
+	cooldown := time.Time{}
+	tokenBids := map[string]float64{"Down": 0.51, "Up": 0.46}
+	tokenAsks := map[string]float64{"Down": 0.52, "Up": 0.47}
+	tokenFullBids := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.51, Size: 7}},
+		"Up":   {{Price: 0.46, Size: 8}},
+	}
+	tokenFullAsks := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.52, Size: 9}},
+		"Up":   {{Price: 0.47, Size: 10}},
+	}
+
+	ok := realbotRefreshLadderedPreTradeQuote(realbotPanicBuyStrategyArgs{
+		ctx:           context.Background(),
+		marketID:      "BTC",
+		market:        &api.Market{Tokens: []api.Token{{TokenID: "down-token", Outcome: "Down"}, {TokenID: "up-token", Outcome: "Up"}}},
+		outcomes:      []string{"Down", "Up"},
+		tokenBids:     tokenBids,
+		tokenAsks:     tokenAsks,
+		tokenFullBids: tokenFullBids,
+		tokenFullAsks: tokenFullAsks,
+		restClient:    client,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate: &lastPairUpdate,
+	}, func(d time.Duration) {
+		cooldown = time.Now().Add(d)
+	})
+
+	if !ok {
+		t.Fatal("expected fresh local ladder quote to be accepted")
+	}
+	if restCalls != 0 {
+		t.Fatalf("expected no REST confirmation for normal fresh quote, got %d calls", restCalls)
+	}
+	if !cooldown.IsZero() {
+		t.Fatalf("expected fresh local quote not to set cooldown, got %v", cooldown)
 	}
 }
 
@@ -2951,7 +3002,8 @@ func TestRealbotRefreshLadderedPreTradeQuoteBlocksTerminalRestBook(t *testing.T)
 		restClient:    client,
 		tui:           paper.NewTUI(paper.NewEngine(100), nil),
 	}, &realbotPanicBuyStrategyState{
-		lastPairUpdate: &lastPairUpdate,
+		lastPairUpdate:    &lastPairUpdate,
+		lastReconnectTime: &lastPairUpdate,
 	}, func(d time.Duration) {
 		cooldown = time.Now().Add(d)
 	})

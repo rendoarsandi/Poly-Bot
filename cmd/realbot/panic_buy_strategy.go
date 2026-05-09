@@ -46,6 +46,7 @@ type realbotPanicBuyStrategyState struct {
 	ladderedEntries         *[]realbotLadderedEntry
 	nextLadderedEntrySeq    *uint64
 	panicBuyCooldown        *time.Time
+	lastReconnectTime       *time.Time
 	lastTrade               *time.Time
 	lastDustRecoveryNotice  *time.Time
 	entryExecutionInFlight  *bool

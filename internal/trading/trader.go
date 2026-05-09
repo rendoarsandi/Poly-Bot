@@ -163,8 +163,11 @@ func orderRequestPaperSize(req *api.OrderRequest) float64 {
 
 func paperOrderSafetyAmount(side api.Side, price, size float64, feeRateBps int) float64 {
 	amount := price * size
-	if side == api.SideBuy && feeRateBps > 0 {
-		amount += core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
+	if side == api.SideSell && feeRateBps > 0 {
+		amount -= core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
+		if amount < 0 {
+			return 0
+		}
 	}
 	return amount
 }
@@ -206,7 +209,7 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 	cost := price * size
 	fee := core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
 
-	_, err := t.engine.BuyWithFeeRate(outcome, price, size, feeRateBps)
+	trade, err := t.engine.BuyWithFeeRate(outcome, price, size, feeRateBps)
 	if err != nil {
 		return &TradeResult{
 			Success: false,
@@ -214,24 +217,21 @@ func (t *PaperTrader) Buy(ctx context.Context, tokenID, outcome string, price, s
 		}, nil
 	}
 
-	// The engine handles fees internally:
-	// - For BUY: Fee is added to the USDC cost basis, and the full quantity is received.
-	// - For SELL: Fee is deducted from the USDC proceeds received.
-	// We do not deduct additional USDC fees here to avoid double-charging in the simulation.
-
 	return &TradeResult{
-		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
-		Status:     "FILLED",
-		Success:    true,
-		Price:      price,
-		Size:       size,
-		Fee:        fee,
-		FeeRateBps: feeRateBps,
-		Side:       "BUY",
-		TokenID:    tokenID,
-		Outcome:    outcome,
-		Timestamp:  time.Now(),
-		Message:    fmt.Sprintf("Bought %.2f %s @ $%.4f (cost: $%.2f, fee: $%.4f)", size, outcome, price, cost, fee),
+		OrderID:              fmt.Sprintf("paper-%d", time.Now().UnixNano()),
+		Status:               "FILLED",
+		Success:              true,
+		Price:                price,
+		Size:                 trade.Quantity,
+		Fee:                  fee,
+		FeeRateBps:           feeRateBps,
+		Side:                 "BUY",
+		TokenID:              tokenID,
+		Outcome:              outcome,
+		AcknowledgedQty:      trade.Quantity,
+		AcknowledgedNotional: trade.Value,
+		Timestamp:            time.Now(),
+		Message:              fmt.Sprintf("Bought %.5f %s @ $%.4f (cost: $%.2f, fee: $%.5f)", trade.Quantity, outcome, price, cost, fee),
 	}, nil
 }
 
@@ -246,24 +246,21 @@ func (t *PaperTrader) Sell(ctx context.Context, tokenID, outcome string, price, 
 		}, nil
 	}
 
-	// The engine handles fees internally:
-	// - For BUY: Fee is added to the USDC cost basis, and the full quantity is received.
-	// - For SELL: Fee is deducted from the USDC proceeds received.
-	// We do not deduct additional USDC fees here to avoid double-charging in the simulation.
-
 	return &TradeResult{
-		OrderID:    fmt.Sprintf("paper-%d", time.Now().UnixNano()),
-		Status:     "FILLED",
-		Success:    true,
-		Price:      price,
-		Size:       size,
-		Fee:        fee,
-		FeeRateBps: feeRateBps,
-		Side:       "SELL",
-		TokenID:    tokenID,
-		Outcome:    outcome,
-		Timestamp:  time.Now(),
-		Message:    fmt.Sprintf("Sold %.2f %s @ $%.4f (fee: $%.4f)", size, outcome, price, fee),
+		OrderID:              fmt.Sprintf("paper-%d", time.Now().UnixNano()),
+		Status:               "FILLED",
+		Success:              true,
+		Price:                price,
+		Size:                 size,
+		Fee:                  fee,
+		FeeRateBps:           feeRateBps,
+		Side:                 "SELL",
+		TokenID:              tokenID,
+		Outcome:              outcome,
+		AcknowledgedQty:      size,
+		AcknowledgedNotional: (price * size) - fee,
+		Timestamp:            time.Now(),
+		Message:              fmt.Sprintf("Sold %.5f %s @ $%.4f (fee: $%.5f)", size, outcome, price, fee),
 	}, nil
 }
 
@@ -708,7 +705,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			Status:               "FILLED",
 			Success:              true,
 			Price:                execPrice,
-			Size:                 size,
+			Size:                 trade.Quantity,
 			Fee:                  fee,
 			FeeRateBps:           paperFeeRateBps,
 			Side:                 string(side),
