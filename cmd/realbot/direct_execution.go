@@ -75,6 +75,27 @@ func directOrderNotional(price, size float64) float64 {
 	return price * size
 }
 
+func directRequestedShareCap(req directMarketOrderSignalRequest) float64 {
+	if req.Side == api.SideBuy && !req.ExactShares {
+		if req.Price <= 0 {
+			return 0
+		}
+		return normalizeMarketBuyShares(req.Size / req.Price)
+	}
+	return req.Size
+}
+
+func directUSDCAmountForBuyShareCap(shares, limitPrice, maxBudget float64) float64 {
+	if shares <= 0 || limitPrice <= 0 {
+		return 0
+	}
+	amount := math.Floor((shares*limitPrice*100)+1e-9) / 100
+	if maxBudget > 0 && amount > maxBudget {
+		amount = maxBudget
+	}
+	return amount
+}
+
 func directSubmittedOrderValue(req directMarketOrderSignalRequest) float64 {
 	orderReq := buildDirectMarketOrderRequest(req)
 	amounts, err := api.ComputeOrderAmounts(orderReq)
@@ -106,6 +127,17 @@ func directSubmittedOrderSummary(req directMarketOrderSignalRequest) string {
 	if req.Side == api.SideSell {
 		submittedValue = float64(amounts.TakerMicro) / 1e6
 		valueLabel = "sell"
+	}
+	if req.Side == api.SideBuy && !req.ExactShares {
+		return fmt.Sprintf("$%.2f budget @ $%.3f cap => %sValue=$%.4f maxShares=%s maker=%s taker=%s",
+			req.Size,
+			req.Price,
+			valueLabel,
+			submittedValue,
+			formatShareQty(directRequestedShareCap(req)),
+			amounts.MakerAmount,
+			amounts.TakerAmount,
+		)
 	}
 	return fmt.Sprintf("%s shares @ $%.3f => %sValue=$%.4f maker=%s taker=%s",
 		formatShareQty(req.Size),
@@ -416,6 +448,7 @@ func finalizeDirectMarketExecutionWithSignals(ctx context.Context, trader *tradi
 	orderID := result.OrderID
 	acknowledgedQty := result.AcknowledgedQty
 	acknowledgedNotional := result.AcknowledgedNotional
+	requestedShareCap := directRequestedShareCap(req)
 
 	if shouldSkipImmediateExecutionConfirmation(result, err) {
 		return directMarketExecution{
@@ -432,7 +465,7 @@ func finalizeDirectMarketExecutionWithSignals(ctx context.Context, trader *tradi
 	if acknowledgedQty > executedQty {
 		executedQty = acknowledgedQty
 	}
-	executedQty = clampRequestedExecutionQty(executedQty, req.Size)
+	executedQty = clampRequestedExecutionQty(executedQty, requestedShareCap)
 	success := hasConfirmedExecutedQty(req.Side, executedQty) || orderConfirmed
 
 	if success {
@@ -510,7 +543,7 @@ func executeMarketOrderBatchWithSignals(ctx context.Context, trader *trading.Rea
 }
 
 func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
-	req := directMarketOrderSignalRequest{
+	return executeMarketOrderRequestWithSignals(ctx, trader, directMarketOrderSignalRequest{
 		Side:           side,
 		TokenID:        tokenID,
 		Outcome:        outcome,
@@ -519,15 +552,24 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 		FeeRateBps:     feeRateBps,
 		InitialBalance: initialBalance,
 		ExactShares:    side == api.SideBuy,
-	}
+	}, confirmTimeout)
+}
+
+func executeMarketOrderRequestWithSignals(ctx context.Context, trader *trading.RealTrader, req directMarketOrderSignalRequest, confirmTimeout time.Duration) directMarketExecution {
 	if req.Side == api.SideBuy && !hasActionableSubmittedDirectOrderValue(req) {
 		return directMarketExecution{
 			Result:  directRejectedMinSizeTradeResult(req),
 			Success: false,
 		}
 	}
-	result, err := submitDirectMarketOrder(ctx, trader, side, tokenID, outcome, price, size, feeRateBps)
-	return finalizeDirectMarketExecutionWithSignals(ctx, trader, req, confirmTimeout, result, err)
+	execs := executeMarketOrderBatchWithSignals(ctx, trader, []directMarketOrderSignalRequest{req}, confirmTimeout)
+	if len(execs) == 0 {
+		return directMarketExecution{
+			Result:  hydrateDirectMarketTradeResult(req, &trading.TradeResult{Success: false, Message: "missing execution result"}),
+			Success: false,
+		}
+	}
+	return execs[0]
 }
 
 func submitDirectMarketOrder(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int) (*trading.TradeResult, error) {

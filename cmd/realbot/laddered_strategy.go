@@ -578,17 +578,18 @@ func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state
 		lastPairUpdate = *state.lastPairUpdate
 	}
 
-	if args.restClient == nil || args.market == nil {
-		maxAge := realbotExecutionQuoteGuardAge(args.executionQuoteMaxAge)
-		fresh, _, reason := realbotCanUseLocalBuyQuote(time.Now(), args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
-		if fresh {
-			if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
-				realbotLogLadderedTerminalEntryBlock(args, terminalReason)
-				setCooldown(500 * time.Millisecond)
-				return false
-			}
-			return true
+	maxAge := realbotExecutionQuoteGuardAge(args.executionQuoteMaxAge)
+	fresh, _, reason := realbotCanUseLocalBuyQuote(time.Now(), args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
+	if fresh {
+		if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
+			realbotLogLadderedTerminalEntryBlock(args, terminalReason)
+			setCooldown(500 * time.Millisecond)
+			return false
 		}
+		return true
+	}
+
+	if args.restClient == nil || args.market == nil {
 		if args.tui != nil {
 			args.tui.LogEvent("[%s] ⚠️ Skipping ladder buy: fresh execution quote unavailable (%s)", args.marketID, reason)
 		}
@@ -847,8 +848,19 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 
 	side1Requested := ladderedDirection == 0
 	side2Requested := ladderedDirection == 1
+	ladderedUSDCBuy := strings.EqualFold(realbotCfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeUSDC)
+	ladderedUSDCBudget := 0.0
+	if ladderedUSDCBuy {
+		ladderedUSDCBudget = realbotNormalizedLadderedUSDCBudget(realbotCfg)
+	}
 	side1Req := directMarketOrderSignalRequest{Side: api.SideBuy, Outcome: args.outcomes[0], Price: limitPrice1, Size: requestSize1, ExactShares: true}
 	side2Req := directMarketOrderSignalRequest{Side: api.SideBuy, Outcome: args.outcomes[1], Price: limitPrice2, Size: requestSize2, ExactShares: true}
+	if ladderedUSDCBuy {
+		side1Req.Size = directUSDCAmountForBuyShareCap(requestSize1, limitPrice1, ladderedUSDCBudget)
+		side1Req.ExactShares = false
+		side2Req.Size = directUSDCAmountForBuyShareCap(requestSize2, limitPrice2, ladderedUSDCBudget)
+		side2Req.ExactShares = false
+	}
 	if side1Requested && !hasActionableSubmittedDirectOrderValue(side1Req) {
 		args.tui.LogEvent("[%s] ⚠️ Skipping buy: %s leg submitted size is below Polymarket $%.2f minimum (%s)",
 			args.marketID, args.outcomes[0], realbotMinDirectOrderValue, directSubmittedOrderSummary(side1Req))

@@ -5985,9 +5985,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		displayRealized = netChange
 	}
 	displayNetChange := netChange
-	if isRealMode && !paperExecutionMode {
-		displayNetChange = displayRealized
-	} else if totalExposure <= 0.0001 && len(positions) == 0 && !hasWalletTruthInventory && math.Abs(displayRealized-netChange) >= 0.005 {
+	if (!isRealMode || paperExecutionMode) && totalExposure <= 0.0001 && len(positions) == 0 && !hasWalletTruthInventory && math.Abs(displayRealized-netChange) >= 0.005 {
 		displayNetChange = displayRealized
 	}
 	changeSt := styleGreen

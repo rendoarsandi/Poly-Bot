@@ -33,7 +33,25 @@ func ComputeOrderAmounts(req *OrderRequest) (EncodedOrderAmounts, error) {
 
 	switch req.Side {
 	case SideBuy:
-		if usesMarketLikePrecision(req) {
+		if usesMarketLikePrecision(req) && !req.UseMarketBuyPrecision {
+			// Market-style BUY size is a USDC amount. Floor to cents so a fixed
+			// USDC budget never signs an order above the operator's configured cap.
+			makerMicro := (sizeMicro / 10000) * 10000
+			if makerMicro <= 0 {
+				return amounts, fmt.Errorf("buy amount rounds to zero at market precision")
+			}
+
+			sharesMicroBig := new(big.Int).Mul(big.NewInt(makerMicro), big.NewInt(1e6))
+			sharesMicroBig.Div(sharesMicroBig, big.NewInt(priceMicro))
+			takerMicro := sharesMicroBig.Int64()
+			takerMicro = (takerMicro / 100) * 100
+			if takerMicro <= 0 {
+				return amounts, fmt.Errorf("buy share amount rounds to zero at market precision")
+			}
+
+			amounts.MakerMicro = makerMicro
+			amounts.TakerMicro = takerMicro
+		} else if usesMarketLikePrecision(req) {
 			sizeMicro = (sizeMicro / 100) * 100
 			if sizeMicro <= 0 {
 				return amounts, fmt.Errorf("buy size rounds to zero at market precision")

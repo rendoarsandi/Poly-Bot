@@ -96,6 +96,9 @@ func realbotLoadMarketFeeRates(ctx context.Context, marketID string, market *api
 		tui.LogEvent("[%s] ℹ️ Paper backend using configured simulated fee: %.2f%% (%d bps)", marketID, float64(fallbackFeeRate)/100.0, fallbackFeeRate)
 		return tokenFeeRates
 	}
+	for _, outcome := range tokenMap {
+		tokenFeeRates[outcome] = 0
+	}
 	if market != nil && market.ConditionID != "" {
 		info, err := restClient.GetClobMarketInfo(ctx, market.ConditionID)
 		if err == nil && info != nil {
@@ -103,34 +106,9 @@ func realbotLoadMarketFeeRates(ctx context.Context, marketID string, market *api
 				trader.SetConditionNegRisk(market.ConditionID, info.NegRisk)
 			}
 		}
-		if err == nil && info != nil && info.FeeDetails != nil {
-			rate := realbotNormalizeFeeRateBps(info.FeeDetails.Rate)
-			for _, outcome := range tokenMap {
-				tokenFeeRates[outcome] = rate
-			}
-			tui.LogEvent("[%s] ℹ️ Fee rate from clob-market info: %.2f%% (%d bps)", marketID, float64(rate)/100.0, rate)
-			return tokenFeeRates
-		}
 	}
-	for tid, outcome := range tokenMap {
-		var rate int
-		var err error
-		for attempt := 1; attempt <= 3; attempt++ {
-			rate, err = restClient.GetFeeRate(ctx, tid)
-			if err == nil {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		if err == nil {
-			rate = realbotNormalizeFeeRateBps(rate)
-			tokenFeeRates[outcome] = rate
-			tui.LogEvent("[%s] ℹ️ Fee rate for %s: %.2f%% (%d bps)", marketID, outcome, float64(rate)/100.0, rate)
-		} else {
-			tokenFeeRates[outcome] = fallbackFeeRate
-			tui.LogEvent("[%s] ⚠️ Fee fetch failed, using configured fallback %d bps", marketID, fallbackFeeRate)
-		}
+	if tui != nil {
+		tui.LogEvent("[%s] ℹ️ Live backend using V2 match-time fees; not submitting manual fee bps", marketID)
 	}
 	return tokenFeeRates
 }

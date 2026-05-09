@@ -32,8 +32,6 @@ const (
 	realbotUIRefreshInterval         = 1000 * time.Millisecond
 	realbotMainLoopInterval          = 25 * time.Millisecond
 	realbotDecisionLoopInterval      = 60 * time.Millisecond
-	realbotMaxWSMessagesPerDrain     = 256
-	realbotWSBurstYield              = 5 * time.Millisecond
 	realbotRuntimeMetricsLogInterval = 0 * time.Second
 	realbotCopytradeLoopIntervalMin  = 100 * time.Millisecond
 	realbotCopytradeLoopIntervalMax  = 250 * time.Millisecond

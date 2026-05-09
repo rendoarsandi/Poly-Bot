@@ -75,10 +75,15 @@ func realbotExecuteAggressiveEntry(
 
 	rate1 := realbotResolveFeeRateBps(tokenFeeRates, outcomes[0], cfg)
 	rate2 := realbotResolveFeeRateBps(tokenFeeRates, outcomes[1], cfg)
+	ladderedUSDCBuy := ladderedMode && strings.EqualFold(realbotCfg.LadderedTakerSizingMode, core.LadderedTakerSizingModeUSDC)
+	ladderedUSDCBudget := 0.0
+	if ladderedUSDCBuy {
+		ladderedUSDCBudget = realbotNormalizedLadderedUSDCBudget(realbotCfg)
+	}
 
 	var requests []directMarketOrderSignalRequest
 	if side1Requested {
-		requests = append(requests, directMarketOrderSignalRequest{
+		req := directMarketOrderSignalRequest{
 			Side:           api.SideBuy,
 			TokenID:        token0,
 			Outcome:        outcomes[0],
@@ -87,10 +92,16 @@ func realbotExecuteAggressiveEntry(
 			FeeRateBps:     rate1,
 			InitialBalance: initialBal0,
 			ExactShares:    true,
-		})
+		}
+		if ladderedUSDCBuy {
+			req.Size = directUSDCAmountForBuyShareCap(requestSize1, limitPrice1, ladderedUSDCBudget)
+			req.ExactShares = false
+			requestSize1 = directRequestedShareCap(req)
+		}
+		requests = append(requests, req)
 	}
 	if side2Requested {
-		requests = append(requests, directMarketOrderSignalRequest{
+		req := directMarketOrderSignalRequest{
 			Side:           api.SideBuy,
 			TokenID:        token1,
 			Outcome:        outcomes[1],
@@ -99,7 +110,13 @@ func realbotExecuteAggressiveEntry(
 			FeeRateBps:     rate2,
 			InitialBalance: initialBal1,
 			ExactShares:    true,
-		})
+		}
+		if ladderedUSDCBuy {
+			req.Size = directUSDCAmountForBuyShareCap(requestSize2, limitPrice2, ladderedUSDCBudget)
+			req.ExactShares = false
+			requestSize2 = directRequestedShareCap(req)
+		}
+		requests = append(requests, req)
 	}
 
 	batchExecs := executeMarketOrderBatchWithSignals(ctx, trader, requests, realbotBatchBuyConfirmTimeout)
@@ -248,9 +265,9 @@ func realbotExecuteAggressiveEntry(
 				TokenID:     token0,
 				Outcome:     outcomes[0],
 				Price:       limitPrice1,
-				Size:        requestSize1,
+				Size:        func() float64 { if ladderedUSDCBuy { return directUSDCAmountForBuyShareCap(requestSize1, limitPrice1, ladderedUSDCBudget) }; return requestSize1 }(),
 				FeeRateBps:  rate1,
-				ExactShares: true,
+				ExactShares: !ladderedUSDCBuy,
 			}), rate1)
 		}
 		tui.RecordOrderWithMode(id, outcomes[0], "BUY", requestSize1, ask1, cost1, observedMargin, 0.0, executionMode, "FAILED")
@@ -278,9 +295,9 @@ func realbotExecuteAggressiveEntry(
 				TokenID:     token1,
 				Outcome:     outcomes[1],
 				Price:       limitPrice2,
-				Size:        requestSize2,
+				Size:        func() float64 { if ladderedUSDCBuy { return directUSDCAmountForBuyShareCap(requestSize2, limitPrice2, ladderedUSDCBudget) }; return requestSize2 }(),
 				FeeRateBps:  rate2,
-				ExactShares: true,
+				ExactShares: !ladderedUSDCBuy,
 			}), rate2)
 		}
 		tui.RecordOrderWithMode(id, outcomes[1], "BUY", requestSize2, ask2, cost2, observedMargin, 0.0, executionMode, "FAILED")

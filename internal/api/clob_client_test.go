@@ -687,7 +687,7 @@ func TestComputeOrderAmounts_LimitGTCBuyExactSharesUsesMarketPrecisionWhenReques
 	}
 }
 
-func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {
+func TestPlaceOrder_LimitFAKBuyTreatsSizeAsUSDCAmount(t *testing.T) {
 	var makerAmount, takerAmount string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -722,11 +722,11 @@ func TestPlaceOrder_LimitFAKBuyUsesMarketPrecision(t *testing.T) {
 		t.Fatalf("PlaceOrder failed: %v", err)
 	}
 
-	if takerAmount != "10123400" {
-		t.Fatalf("expected takerAmount (shares) 10123400, got %s", takerAmount)
+	if makerAmount != "10120000" {
+		t.Fatalf("expected makerAmount (USDC) 10120000, got %s", makerAmount)
 	}
-	if makerAmount != "5070000" {
-		t.Fatalf("expected makerAmount (USDC) 5070000, got %s", makerAmount)
+	if takerAmount != "20240000" {
+		t.Fatalf("expected takerAmount (shares) 20240000, got %s", takerAmount)
 	}
 }
 

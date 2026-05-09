@@ -45,7 +45,7 @@ func TestRealbotLoadMarketFeeRatesUsesConfiguredRateForEmbeddedPaper(t *testing.
 	}
 }
 
-func TestRealbotLoadMarketFeeRatesPrefersClobMarketInfo(t *testing.T) {
+func TestRealbotLoadMarketFeeRatesLiveSkipsManualFeeRates(t *testing.T) {
 	cfg := &core.Config{FeeRateBps: 111}
 	tui := paper.NewTUI(paper.NewEngine(100), nil)
 	restClient := api.NewRestClient("polymarket")
@@ -80,7 +80,7 @@ func TestRealbotLoadMarketFeeRatesPrefersClobMarketInfo(t *testing.T) {
 	if atomic.LoadInt32(&feeRateHits) != 0 {
 		t.Fatalf("expected fee-rate fallback to be skipped, got %d hits", feeRateHits)
 	}
-	if got["Up"] != 42 || got["Down"] != 42 {
-		t.Fatalf("expected clob-market fee rate for both outcomes, got %+v", got)
+	if got["Up"] != 0 || got["Down"] != 0 {
+		t.Fatalf("expected live V2 order fee bps to stay zero, got %+v", got)
 	}
 }

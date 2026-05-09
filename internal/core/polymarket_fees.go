@@ -29,3 +29,13 @@ func PolymarketTakerFeeUSDC(shares, price float64, feeRateBps int) float64 {
 	// Round to 5 decimal places as per official docs
 	return math.Round(fee*100000.0) / 100000.0
 }
+
+// PolymarketBuyFeeShares converts the taker fee to the share-denominated amount
+// collected on Polymarket buy orders.
+func PolymarketBuyFeeShares(shares, price float64, feeRateBps int) float64 {
+	if shares <= 0 || price <= 0 || price >= 1 || feeRateBps <= 0 {
+		return 0
+	}
+	// Fee in USDC / Price = Fee in Shares
+	return PolymarketTakerFeeUSDC(shares, price, feeRateBps) / price
+}

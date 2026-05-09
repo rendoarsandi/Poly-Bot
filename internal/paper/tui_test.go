@@ -3388,6 +3388,25 @@ func TestRenderAccountStatusDoesNotFallbackToNetChangeWhileWalletTruthInventoryO
 	}
 }
 
+func TestRenderAccountStatusLiveModeShowsBookEquityNetChange(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Real",
+			tradeFactor: 0.05,
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  96.75,
+		StartingBalance: 100,
+		RealizedPnL:     0,
+	}, 0, 0, 96.75, 96.75, 1.0, 100, 0, 0, 0, nil)
+
+	if !strings.Contains(rendered, "Equity") || !strings.Contains(rendered, "-$3.25") {
+		t.Fatalf("expected live account equity to show tx-derived net loss, got %q", rendered)
+	}
+}
+
 func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{

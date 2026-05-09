@@ -131,6 +131,45 @@ func deriveAcknowledgedExecution(resp *api.OrderResponse, side api.Side) (qty fl
 	return making, taking
 }
 
+func orderRequestIsMarketBuyAmount(req *api.OrderRequest) bool {
+	if req == nil || req.Side != api.SideBuy || req.UseMarketBuyPrecision {
+		return false
+	}
+	if req.OrderType == api.OrderTypeMarket {
+		return true
+	}
+	return req.TimeInForce == api.TIFFillAndKill || req.TimeInForce == api.TIFFillOrKill
+}
+
+func orderRequestBuyCost(req *api.OrderRequest) float64 {
+	if req == nil || req.Side != api.SideBuy {
+		return 0
+	}
+	if orderRequestIsMarketBuyAmount(req) {
+		return req.Size
+	}
+	return req.Price * req.Size
+}
+
+func orderRequestPaperSize(req *api.OrderRequest) float64 {
+	if req == nil {
+		return 0
+	}
+	if orderRequestIsMarketBuyAmount(req) && req.Price > 0 {
+		return req.Size / req.Price
+	}
+	return req.Size
+}
+
+func liveOrderRequest(req *api.OrderRequest) *api.OrderRequest {
+	if req == nil {
+		return nil
+	}
+	next := *req
+	next.FeeRateBps = 0
+	return &next
+}
+
 // PaperTrader implements Trader for paper trading
 type PaperTrader struct {
 	engine    *paper.Engine
@@ -592,9 +631,6 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		}, nil
 	}
 	safetyAmount := price * size
-	if side == api.SideBuy && paperFeeRateBps > 0 {
-		safetyAmount += core.PolymarketTakerFeeUSDC(size, price, paperFeeRateBps)
-	}
 	if err := t.checkSafetyLimits(safetyAmount); err != nil {
 		return &TradeResult{
 			Success: false,
@@ -944,12 +980,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			if req == nil || req.Side != api.SideBuy {
 				continue
 			}
-			cost := req.Price * req.Size
-			paperFeeRateBps := t.effectivePaperFeeRateBps(req.FeeRateBps)
-			if paperFeeRateBps > 0 {
-				cost += core.PolymarketTakerFeeUSDC(req.Size, req.Price, paperFeeRateBps)
-			}
-			totalCost += cost
+			totalCost += orderRequestBuyCost(req)
 		}
 		if totalCost > 0 {
 			if err := t.checkSafetyLimits(totalCost); err != nil {
@@ -962,7 +993,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 				results[i] = &TradeResult{Success: false, Message: "missing paper batch request"}
 				continue
 			}
-			result, err := t.simulatePaperOrder(req.Side, req.TokenID, req.Outcome, req.Price, req.Size, req.FeeRateBps)
+			result, err := t.simulatePaperOrder(req.Side, req.TokenID, req.Outcome, req.Price, orderRequestPaperSize(req), req.FeeRateBps)
 			if err != nil {
 				return nil, err
 			}
@@ -971,10 +1002,15 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 		return results, nil
 	}
 
+	liveReqs := make([]*api.OrderRequest, len(reqs))
+	for i, req := range reqs {
+		liveReqs[i] = liveOrderRequest(req)
+	}
+
 	totalCost := 0.0
-	for _, req := range reqs {
-		if req.Side == api.SideBuy {
-			totalCost += (req.Price * req.Size)
+	for _, req := range liveReqs {
+		if req != nil && req.Side == api.SideBuy {
+			totalCost += orderRequestBuyCost(req)
 		}
 	}
 
@@ -987,11 +1023,15 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 	resps := make([]*api.OrderResponse, len(reqs))
 	errs := make([]error, len(reqs))
 	var wg sync.WaitGroup
-	for i, req := range reqs {
+	for i, req := range liveReqs {
 		i, req := i, req
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if req == nil {
+				errs[i] = fmt.Errorf("missing batch request")
+				return
+			}
 			resps[i], errs[i] = t.client.PlaceOrder(ctx, req)
 		}()
 	}
@@ -1020,21 +1060,22 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			OrderID:            resp.OrderID,
 			Status:             status,
 			Message:            message,
-			Price:              reqs[i].Price,
-			Size:               reqs[i].Size,
-			Side:               string(reqs[i].Side),
-			TokenID:            reqs[i].TokenID,
+			Price:              liveReqs[i].Price,
+			Size:               liveReqs[i].Size,
+			Side:               string(liveReqs[i].Side),
+			TokenID:            liveReqs[i].TokenID,
 			Fee:                0, // V2 fees are handled on-chain
+			FeeRateBps:         0,
 			MakingAmount:       resp.MakingAmount,
 			TakingAmount:       resp.TakingAmount,
 			TransactionsHashes: append([]string(nil), resp.TransactionsHashes...),
 			TradeIDs:           append([]string(nil), resp.TradeIDs...),
 			Timestamp:          time.Now(),
 		}
-		results[i].AcknowledgedQty, results[i].AcknowledgedNotional = deriveAcknowledgedExecution(resp, reqs[i].Side)
+		results[i].AcknowledgedQty, results[i].AcknowledgedNotional = deriveAcknowledgedExecution(resp, liveReqs[i].Side)
 
 		// If any buy order was successful, optimistically mark balance as stale
-		if success && reqs[i].Side == api.SideBuy {
+		if success && liveReqs[i].Side == api.SideBuy {
 			t.mu.Lock()
 			t.lastBalanceUpdate = time.Time{}
 			t.mu.Unlock()
@@ -1066,7 +1107,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		Side:        api.SideBuy,
 		OrderType:   orderType,
 		TimeInForce: tif,
-		FeeRateBps:  feeRateBps,
+		FeeRateBps:  0,
 	})
 	if err != nil {
 		return &TradeResult{
@@ -1105,7 +1146,7 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 		Price:                price,
 		Size:                 size,
 		Fee:                  0, // V2 fees are handled on-chain
-		FeeRateBps:           feeRateBps,
+		FeeRateBps:           0,
 		Side:                 "BUY",
 		TokenID:              tokenID,
 		Outcome:              outcome,
@@ -1141,7 +1182,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		Side:        api.SideSell,
 		OrderType:   orderType,
 		TimeInForce: tif,
-		FeeRateBps:  feeRateBps,
+		FeeRateBps:  0,
 	})
 	if err != nil {
 		return &TradeResult{
@@ -1176,7 +1217,7 @@ func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, s
 		Price:                price,
 		Size:                 size,
 		Fee:                  0, // V2 fees are handled on-chain
-		FeeRateBps:           feeRateBps,
+		FeeRateBps:           0,
 		Side:                 "SELL",
 		TokenID:              tokenID,
 		Outcome:              outcome,

@@ -26,6 +26,23 @@ func realbotCopytradePollEvery(settings paper.TUISettings) time.Duration {
 	return pollEvery
 }
 
+func realbotNormalizedCopytradeUSDCBudget(liveCfg paper.TUISettings) float64 {
+	budget := math.Round(liveCfg.CopytradeSizeUSDC*100.0) / 100.0
+	if budget < realbotMinDirectOrderValue {
+		budget = realbotMinDirectOrderValue
+	}
+	if liveCfg.MaxTradeSize > 0 {
+		maxTradeSize := math.Round(liveCfg.MaxTradeSize*100.0) / 100.0
+		if maxTradeSize < realbotMinDirectOrderValue {
+			maxTradeSize = realbotMinDirectOrderValue
+		}
+		if budget > maxTradeSize {
+			budget = maxTradeSize
+		}
+	}
+	return budget
+}
+
 func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBids, tokenAsks map[string]float64, tokenFullBids map[string][]paper.MarketLevel, quoteState map[string]realbotQuoteState, maxAge time.Duration) (float64, string, bool) {
 	bid := tokenBids[outcome]
 	if bid <= 0 || bid >= 1.0 {
@@ -171,6 +188,21 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 
 			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
 			requestedQty := normalizeMarketBuyShares(budgetShares)
+			buyReq := directMarketOrderSignalRequest{
+				Side:           api.SideBuy,
+				TokenID:        tokenID,
+				Outcome:        outcome,
+				Price:          submitPrice,
+				Size:           requestedQty,
+				FeeRateBps:     feeRate,
+				InitialBalance: trader.GetLivePositionSize(tokenID),
+				ExactShares:    true,
+			}
+			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
+				buyReq.Size = realbotNormalizedCopytradeUSDCBudget(liveCfg)
+				buyReq.ExactShares = false
+				requestedQty = directRequestedShareCap(buyReq)
+			}
 			if requestedQty < minOnChainActionShares {
 				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: actionable size %s is below %.2f share at cap $%.3f", formatShareQty(requestedQty), minOnChainActionShares, submitPrice))
 				if entryGate != nil {
@@ -179,9 +211,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			initialPosition := trader.GetLivePositionSize(tokenID)
 			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
-			exec := executeMarketOrderWithSignals(tradeCtx, trader, api.SideBuy, tokenID, outcome, submitPrice, requestedQty, feeRate, initialPosition, 2500*time.Millisecond)
+			exec := executeMarketOrderRequestWithSignals(tradeCtx, trader, buyReq, 2500*time.Millisecond)
 			tradeCancel()
 			logDirectExecutionAudit(tui, marketID, "Copytrade BUY", requestedQty, submitPrice, exec)
 			if entryGate != nil {

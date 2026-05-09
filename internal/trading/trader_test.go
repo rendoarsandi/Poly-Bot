@@ -161,8 +161,8 @@ func TestPaperTrader_FeeCalculation(t *testing.T) {
 	if !ok {
 		t.Fatal("expected fee-aware paper buy to create an Up position")
 	}
-	if pos.Quantity != 100.0 {
-		t.Fatalf("expected fee-aware paper buy quantity to be exactly 100 shares, got %.6f", pos.Quantity)
+	if pos.Quantity >= 100.0 {
+		t.Fatalf("expected fee-aware paper buy quantity below 100 shares, got %.6f", pos.Quantity)
 	}
 }
 
