@@ -22,6 +22,8 @@ import (
 // HTTP/2 read-loop goroutine) into an ordinary JSON decode error.
 const maxResponseBodySize = 2 * 1024 * 1024 // 2 MB
 
+const restRequestAttempts = 3
+
 // httpClient is the shared HTTP client for all REST calls.
 //
 // HTTP/2 is enabled for connection multiplexing — all concurrent requests to
@@ -34,7 +36,7 @@ var httpClient = &http.Client{
 		MaxIdleConns:          500,
 		MaxIdleConnsPerHost:   500,
 		MaxConnsPerHost:       0,
-		IdleConnTimeout:       30 * time.Minute, // Extremely long idle timeout to prevent cold starts
+		IdleConnTimeout:       90 * time.Second,
 		DisableCompression:    true,
 		ForceAttemptHTTP2:     true,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -45,6 +47,87 @@ var httpClient = &http.Client{
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
 	},
+}
+
+func restRetryDelay(attempt int) time.Duration {
+	return time.Duration(75*(1<<attempt)) * time.Millisecond
+}
+
+func isTransientRESTStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTransientRESTError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "goaway") || strings.Contains(msg, "enhance_your_calm") {
+		return true
+	}
+	if strings.Contains(msg, "http2") && (strings.Contains(msg, "stream") || strings.Contains(msg, "connection")) {
+		return true
+	}
+	return strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "unexpected eof") || strings.Contains(msg, "server closed idle connection")
+}
+
+func waitRESTRetry(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(restRetryDelay(attempt))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func closeTransientResponseBody(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+}
+
+func doGETWithRetry(ctx context.Context, url string) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < restRequestAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if !isTransientRESTError(err) || attempt == restRequestAttempts-1 {
+				return nil, err
+			}
+			httpClient.CloseIdleConnections()
+			if waitErr := waitRESTRetry(ctx, attempt); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
+		}
+
+		if isTransientRESTStatus(resp.StatusCode) && attempt < restRequestAttempts-1 {
+			closeTransientResponseBody(resp)
+			httpClient.CloseIdleConnections()
+			if waitErr := waitRESTRetry(ctx, attempt); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
+		}
+
+		return resp, nil
+	}
+	return nil, lastErr
 }
 
 type Token struct {
@@ -828,12 +911,7 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 	}
 
 	url := fmt.Sprintf("%s/book?token_id=%s", c.BaseURL, tokenID)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := doGETWithRetry(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch order book: %w", err)
 	}

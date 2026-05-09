@@ -161,6 +161,24 @@ func orderRequestPaperSize(req *api.OrderRequest) float64 {
 	return req.Size
 }
 
+func paperOrderSafetyAmount(side api.Side, price, size float64, feeRateBps int) float64 {
+	amount := price * size
+	if side == api.SideBuy && feeRateBps > 0 {
+		amount += core.PolymarketTakerFeeUSDC(size, price, feeRateBps)
+	}
+	return amount
+}
+
+func paperRequestBuySafetyAmount(req *api.OrderRequest, feeRateBps int) float64 {
+	if req == nil || req.Side != api.SideBuy {
+		return 0
+	}
+	if req.Price <= 0 {
+		return orderRequestBuyCost(req)
+	}
+	return paperOrderSafetyAmount(api.SideBuy, req.Price, orderRequestPaperSize(req), feeRateBps)
+}
+
 func liveOrderRequest(req *api.OrderRequest) *api.OrderRequest {
 	if req == nil {
 		return nil
@@ -630,7 +648,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			Outcome: outcome,
 		}, nil
 	}
-	safetyAmount := price * size
+	safetyAmount := paperOrderSafetyAmount(side, price, size, paperFeeRateBps)
 	if err := t.checkSafetyLimits(safetyAmount); err != nil {
 		return &TradeResult{
 			Success: false,
@@ -980,7 +998,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			if req == nil || req.Side != api.SideBuy {
 				continue
 			}
-			totalCost += orderRequestBuyCost(req)
+			totalCost += paperRequestBuySafetyAmount(req, t.effectivePaperFeeRateBps(req.FeeRateBps))
 		}
 		if totalCost > 0 {
 			if err := t.checkSafetyLimits(totalCost); err != nil {

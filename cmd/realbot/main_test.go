@@ -2862,8 +2862,14 @@ func TestRealbotRefreshLadderedPreTradeQuoteOverridesSwappedWSQuotes(t *testing.
 	cooldown := time.Time{}
 	tokenBids := map[string]float64{"Down": 0.64, "Up": 0.33}
 	tokenAsks := map[string]float64{"Down": 0.65, "Up": 0.34}
-	tokenFullBids := map[string][]paper.MarketLevel{}
-	tokenFullAsks := map[string][]paper.MarketLevel{}
+	tokenFullBids := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.64, Size: 7}},
+		"Up":   {{Price: 0.33, Size: 8}},
+	}
+	tokenFullAsks := map[string][]paper.MarketLevel{
+		"Down": {{Price: 0.65, Size: 9}},
+		"Up":   {{Price: 0.34, Size: 10}},
+	}
 	quoteState := map[string]realbotQuoteState{
 		"Down": {UpdatedAt: time.Now(), Source: "ws"},
 		"Up":   {UpdatedAt: time.Now(), Source: "ws"},
@@ -4928,10 +4934,10 @@ func TestReportedSellProceedsUsesAcknowledgedNotionalWhenAttributedSizeMatches(t
 	}
 }
 
-func TestReportedSellProceedsUsesAttributedSizeWhenAcknowledgedSizeDrifts(t *testing.T) {
+func TestReportedSellProceedsUsesDirectNotionalWhenAcknowledgedSizeDrifts(t *testing.T) {
 	exec := directMarketExecution{AcknowledgedQty: 3.14, AcknowledgedNotional: 1.884}
 	got := reportedSellProceeds(exec, 0.58, 3.00, 3.14)
-	expected := 1.74
+	expected := 1.8
 	if math.Abs(got-expected) > 0.000001 {
 		t.Fatalf("expected attributed proceeds %.6f, got %.6f", expected, got)
 	}

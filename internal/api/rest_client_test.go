@@ -329,6 +329,39 @@ func TestOrderBookAgeAt(t *testing.T) {
 	}
 }
 
+func TestGetOrderBookRetriesTransientStatus(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		if r.URL.Path != "/book" {
+			t.Fatalf("expected /book path, got %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("token_id"); got != "up-token" {
+			t.Fatalf("expected token_id query, got %q", got)
+		}
+		if attempt == 1 {
+			http.Error(w, "slow down", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"asset_id":"up-token","bids":[{"price":"0.41","size":"10"}],"asks":[{"price":"0.43","size":"11"}],"timestamp":"1710000000123"}`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.BaseURL = server.URL
+	book, err := client.GetOrderBook(context.Background(), "up-token")
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if atomic.LoadInt32(&attempts) != 2 {
+		t.Fatalf("expected two attempts, got %d", atomic.LoadInt32(&attempts))
+	}
+	if len(book.Bids) != 1 || book.Bids[0].Price != "0.41" || len(book.Asks) != 1 || book.Asks[0].Price != "0.43" {
+		t.Fatalf("unexpected order book %+v", book)
+	}
+}
+
 func TestGetCLOBBidAskFetchesOrderBooksConcurrently(t *testing.T) {
 	var inflight int32
 	var maxInflight int32
