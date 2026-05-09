@@ -580,6 +580,15 @@ func realbotRefreshLadderedPreTradeQuote(args realbotPanicBuyStrategyArgs, state
 
 	maxAge := realbotExecutionQuoteGuardAge(args.executionQuoteMaxAge)
 	fresh, _, reason := realbotCanUseLocalBuyQuote(time.Now(), args.outcomes, args.tokenBids, args.tokenAsks, args.tokenFullAsks, lastPairUpdate, maxAge)
+	if fresh && args.restClient != nil && args.market != nil {
+		for _, out := range args.outcomes {
+			if len(args.tokenFullAsks[out]) == 0 {
+				fresh = false
+				reason = fmt.Sprintf("missing local ask depth for %s", out)
+				break
+			}
+		}
+	}
 	if fresh {
 		if terminalReason := realbotLadderedTerminalEntryBlockReason(args.outcomes, args.tokenBids, args.tokenAsks); terminalReason != "" {
 			realbotLogLadderedTerminalEntryBlock(args, terminalReason)

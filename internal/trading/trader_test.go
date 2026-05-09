@@ -278,11 +278,12 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	if math.Abs(buy.Price-0.55) > 1e-9 {
 		t.Fatalf("expected embedded paper buy to use live ask 0.55, got %.4f", buy.Price)
 	}
-	if buy.AcknowledgedQty != 3 {
-		t.Fatalf("expected full acknowledged qty 3, got %.4f", buy.AcknowledgedQty)
+	expectedBuyQty := 3 - core.PolymarketBuyFeeShares(3, 0.55, 1000)
+	if math.Abs(buy.AcknowledgedQty-expectedBuyQty) > 1e-9 {
+		t.Fatalf("expected fee-adjusted acknowledged qty %.4f, got %.4f", expectedBuyQty, buy.AcknowledgedQty)
 	}
-	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-3) > 1e-9 {
-		t.Fatalf("expected live position to be 3.0, got %.4f", got)
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedBuyQty) > 1e-9 {
+		t.Fatalf("expected live position to be %.4f, got %.4f", expectedBuyQty, got)
 	}
 	if filled, err := trader.WaitForFill(context.Background(), buy.OrderID, time.Second); err != nil || !filled {
 		t.Fatalf("expected embedded paper order to confirm immediately, filled=%v err=%v", filled, err)
