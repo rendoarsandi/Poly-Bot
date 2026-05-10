@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"Market-bot/internal/api"
@@ -88,14 +89,6 @@ func realbotSubscribeMarketBooks(ctx context.Context, marketID string, market *a
 
 func realbotLoadMarketFeeRates(ctx context.Context, marketID string, market *api.Market, restClient *api.RestClient, tokenMap map[string]string, cfg *core.Config, trader *trading.RealTrader, tui *paper.TUI) map[string]int {
 	tokenFeeRates := make(map[string]int, len(tokenMap))
-	fallbackFeeRate := 3 // Default paper fee rate
-	if trader != nil && trader.IsEmbeddedPaperMode() {
-		for _, outcome := range tokenMap {
-			tokenFeeRates[outcome] = fallbackFeeRate
-		}
-		tui.LogEvent("[%s] ℹ️ Paper backend using configured simulated fee: %.2f%% (%d bps)", marketID, float64(fallbackFeeRate)/100.0, fallbackFeeRate)
-		return tokenFeeRates
-	}
 	for _, outcome := range tokenMap {
 		tokenFeeRates[outcome] = 0
 	}
@@ -105,9 +98,28 @@ func realbotLoadMarketFeeRates(ctx context.Context, marketID string, market *api
 			if trader != nil {
 				trader.SetConditionNegRisk(market.ConditionID, info.NegRisk)
 			}
+			if info.FeeDetails != nil {
+				rateBps := int(math.Round(float64(info.FeeDetails.Rate) * 10000.0))
+				for _, token := range info.Tokens {
+					if outcome, ok := tokenMap[token.TokenID]; ok {
+						tokenFeeRates[outcome] = rateBps
+						if trader != nil && trader.IsEmbeddedPaperMode() {
+							trader.RegisterPaperTokenFeeCurve(token.TokenID, info.FeeDetails.Curve())
+						}
+					}
+				}
+			}
 		}
 	}
-	if tui != nil {
+	if tui != nil && trader != nil && trader.IsEmbeddedPaperMode() {
+		maxFeeRate := 0
+		for _, rate := range tokenFeeRates {
+			if rate > maxFeeRate {
+				maxFeeRate = rate
+			}
+		}
+		tui.LogEvent("[%s] ℹ️ Paper backend using Polymarket fee curve: %.2f%% coefficient (%d bps display)", marketID, float64(maxFeeRate)/100.0, maxFeeRate)
+	} else if tui != nil {
 		tui.LogEvent("[%s] ℹ️ Live backend using V2 match-time fees; not submitting manual fee bps", marketID)
 	}
 	return tokenFeeRates

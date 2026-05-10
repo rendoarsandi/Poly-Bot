@@ -117,7 +117,7 @@ func TestGetClobMarketInfo(t *testing.T) {
 			"t":[{"t":"token-yes","o":"Yes"},{"t":"token-no","o":"No"}],
 			"mts":0.01,
 			"nr":true,
-			"fd":{"r":35,"e":6}
+			"fd":{"r":0.05,"e":1}
 		}`))
 	}))
 	defer server.Close()
@@ -129,7 +129,7 @@ func TestGetClobMarketInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if info.ConditionID != "cond-1" || !info.NegRisk || info.FeeDetails == nil || info.FeeDetails.Rate != 35 {
+	if info.ConditionID != "cond-1" || !info.NegRisk || info.FeeDetails == nil || info.FeeDetails.Rate != 0.05 {
 		t.Fatalf("unexpected clob market info %+v", info)
 	}
 	if len(info.Tokens) != 2 || info.Tokens[0].TokenID != "token-yes" {

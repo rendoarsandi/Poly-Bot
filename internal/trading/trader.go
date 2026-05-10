@@ -338,6 +338,7 @@ type RealTrader struct {
 	positionLedgerTotalCost map[string]float64
 	paperEngine             *paper.Engine
 	paperTokenMeta          map[string]paperTokenMeta
+	paperFeeCurves          map[string]core.PolymarketFeeCurve
 	posMu                   sync.Mutex
 	conditionNegRisk        map[string]bool
 	conditionNegRiskMu      sync.RWMutex
@@ -359,11 +360,24 @@ func normalizeFeeRateBps(rate int) int {
 	return rate
 }
 
-func (t *RealTrader) effectivePaperFeeRateBps(_ int) int {
-	if t == nil || t.paperEngine == nil {
+func feeRateBpsFromCurve(curve core.PolymarketFeeCurve) int {
+	if curve.Rate <= 0 {
 		return 0
 	}
-	return 3 // Default paper simulation fee rate (0.03%)
+	return int(math.Round(curve.Rate * 10000.0))
+}
+
+func (t *RealTrader) effectivePaperFeeCurve(tokenID string, feeRateBps int) core.PolymarketFeeCurve {
+	if t == nil || t.paperEngine == nil {
+		return core.PolymarketFeeCurve{}
+	}
+	t.posMu.Lock()
+	if curve, ok := t.paperFeeCurves[tokenID]; ok {
+		t.posMu.Unlock()
+		return curve
+	}
+	t.posMu.Unlock()
+	return core.PolymarketFeeCurveFromBps(normalizeFeeRateBps(feeRateBps))
 }
 
 // NewRealTrader creates a new real trader
@@ -435,6 +449,7 @@ func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTra
 		positionLedgerTotalCost: make(map[string]float64),
 		paperEngine:             engine,
 		paperTokenMeta:          make(map[string]paperTokenMeta),
+		paperFeeCurves:          make(map[string]core.PolymarketFeeCurve),
 		conditionNegRisk:        make(map[string]bool),
 	}
 }
@@ -462,6 +477,18 @@ func (t *RealTrader) RegisterPaperToken(tokenID, marketID, outcome string) {
 	t.paperTokenMeta[tokenID] = paperTokenMeta{MarketID: marketID, Outcome: outcome}
 	t.livePositions[tokenID] = seed
 	t.setPositionLedgerLocked(tokenID, seed, seedCost)
+	t.posMu.Unlock()
+}
+
+func (t *RealTrader) RegisterPaperTokenFeeCurve(tokenID string, curve core.PolymarketFeeCurve) {
+	if t == nil || t.paperEngine == nil || tokenID == "" {
+		return
+	}
+	t.posMu.Lock()
+	if t.paperFeeCurves == nil {
+		t.paperFeeCurves = make(map[string]core.PolymarketFeeCurve)
+	}
+	t.paperFeeCurves[tokenID] = curve
 	t.posMu.Unlock()
 }
 
@@ -630,7 +657,8 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	if t.paperEngine == nil {
 		return nil, fmt.Errorf("paper engine not initialized")
 	}
-	paperFeeRateBps := t.effectivePaperFeeRateBps(feeRateBps)
+	paperFeeCurve := t.effectivePaperFeeCurve(tokenID, feeRateBps)
+	paperFeeRateBps := feeRateBpsFromCurve(paperFeeCurve)
 	if price <= 0 || price >= 1.0 || size <= 0 {
 		return &TradeResult{
 			Success: false,
@@ -677,7 +705,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 	orderID := fmt.Sprintf("paper-%d", time.Now().UnixNano())
 	t.posMu.Lock()
 	if side == api.SideBuy {
-		trade, err := t.paperEngine.BuyForMarketWithFeeRate(meta.MarketID, outcome, execPrice, size, paperFeeRateBps)
+		trade, err := t.paperEngine.BuyForMarketWithFeeCurve(meta.MarketID, outcome, execPrice, size, paperFeeCurve)
 		if err != nil {
 			t.posMu.Unlock()
 			return &TradeResult{
@@ -726,7 +754,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 				Outcome: outcome,
 			}, nil
 		}
-		trade, err := t.paperEngine.SellForMarketWithFeeRate(meta.MarketID, outcome, execPrice, size, paperFeeRateBps)
+		trade, err := t.paperEngine.SellForMarketWithFeeCurve(meta.MarketID, outcome, execPrice, size, paperFeeCurve)
 		if err != nil {
 			t.posMu.Unlock()
 			return &TradeResult{
@@ -992,7 +1020,7 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 			if req == nil || req.Side != api.SideBuy {
 				continue
 			}
-			totalCost += paperRequestBuySafetyAmount(req, t.effectivePaperFeeRateBps(req.FeeRateBps))
+			totalCost += paperRequestBuySafetyAmount(req, feeRateBpsFromCurve(t.effectivePaperFeeCurve(req.TokenID, req.FeeRateBps)))
 		}
 		if totalCost > 0 {
 			if err := t.checkSafetyLimits(totalCost); err != nil {

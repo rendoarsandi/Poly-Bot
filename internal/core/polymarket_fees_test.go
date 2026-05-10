@@ -21,7 +21,7 @@ func TestPolymarketTakerFeeUSDC(t *testing.T) {
 			name:       "Standard 7.2bps Crypto Fee at 0.50",
 			shares:     100,
 			price:      0.5,
-			feeRateBps: 7, // Rounded to 7 for bps int
+			feeRateBps: 7,       // Rounded to 7 for bps int
 			want:       0.01750, // 100 * 0.0007 * 0.5 * 0.5 = 0.0175
 		},
 		{
@@ -54,5 +54,12 @@ func TestPolymarketTakerFeeUSDC(t *testing.T) {
 				t.Errorf("PolymarketTakerFeeUSDC() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPolymarketTakerFeeUSDCForCurve(t *testing.T) {
+	got := PolymarketTakerFeeUSDCForCurve(100, 0.50, PolymarketFeeCurve{Rate: 0.05, Exponent: 1})
+	if got != 1.25 {
+		t.Fatalf("expected 100 shares at 50c with 5%% theta to cost $1.25, got %.5f", got)
 	}
 }

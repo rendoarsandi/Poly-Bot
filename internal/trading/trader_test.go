@@ -260,7 +260,7 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 
 func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	engine := paper.NewEngine(100.0)
-	cfg := &core.Config{MaxTradeSize: 10, FeeRateBps: 1000}
+	cfg := &core.Config{MaxTradeSize: 10}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
 	engine.UpdateMarketBidAsk("BTC", "Up", 0.54, 0.55)
@@ -337,11 +337,12 @@ func TestEmbeddedPaperRealTraderZeroFeeKeepsRequestedBuyQuantity(t *testing.T) {
 	}
 }
 
-func TestEmbeddedPaperRealTraderUsesConfiguredFeeInsteadOfSubmittedFeeCap(t *testing.T) {
+func TestEmbeddedPaperRealTraderUsesRegisteredFeeCurveInsteadOfSubmittedFeeCap(t *testing.T) {
 	engine := paper.NewEngine(100.0)
-	cfg := &core.Config{MaxTradeSize: 10, FeeRateBps: 0}
+	cfg := &core.Config{MaxTradeSize: 10}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	trader.RegisterPaperTokenFeeCurve("token-up", core.PolymarketFeeCurve{})
 	engine.UpdateMarketBidAsk("BTC", "Up", 0.43, 0.44)
 
 	const requestedQty = 2.0
@@ -381,7 +382,7 @@ func TestEmbeddedPaperRealTraderRejectsNonMarketableLimitAgainstLiveQuote(t *tes
 
 func TestEmbeddedPaperRealTraderRejectsOversell(t *testing.T) {
 	engine := paper.NewEngine(100.0)
-	cfg := &core.Config{MaxTradeSize: 10, FeeRateBps: 1000}
+	cfg := &core.Config{MaxTradeSize: 10}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
 
@@ -432,7 +433,7 @@ func TestEmbeddedPaperRealTraderRejectsBuyAboveBalance(t *testing.T) {
 
 func TestEmbeddedPaperRealTraderBuySafetyUsesGrossNotionalAndNetsShares(t *testing.T) {
 	engine := paper.NewEngine(10.0)
-	cfg := &core.Config{MaxTradeSize: 1.00, FeeRateBps: 1000}
+	cfg := &core.Config{MaxTradeSize: 1.00}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
 
@@ -471,11 +472,12 @@ func TestEmbeddedPaperExecuteBatchChecksAggregateBuySafety(t *testing.T) {
 	}
 }
 
-func TestEmbeddedPaperExecuteBatchUsesConfiguredFeeForSafety(t *testing.T) {
+func TestEmbeddedPaperExecuteBatchUsesRegisteredFeeCurveForSafety(t *testing.T) {
 	engine := paper.NewEngine(10.0)
-	cfg := &core.Config{MaxTradeSize: 1.00, FeeRateBps: 0}
+	cfg := &core.Config{MaxTradeSize: 1.00}
 	trader := NewEmbeddedPaperRealTrader(cfg, engine)
 	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	trader.RegisterPaperTokenFeeCurve("token-up", core.PolymarketFeeCurve{})
 	engine.UpdateMarketBidAsk("BTC", "Up", 0.49, 0.499)
 
 	results, err := trader.ExecuteBatch(context.Background(), []*api.OrderRequest{
@@ -489,6 +491,37 @@ func TestEmbeddedPaperExecuteBatchUsesConfiguredFeeForSafety(t *testing.T) {
 	}
 	if math.Abs(results[0].AcknowledgedQty-2.0) > 1e-9 {
 		t.Fatalf("expected batch acknowledged qty 2.0, got %.4f", results[0].AcknowledgedQty)
+	}
+}
+
+func TestEmbeddedPaperRealTraderUsesRegisteredPolymarketFeeCurve(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	cfg := &core.Config{MaxTradeSize: 10}
+	trader := NewEmbeddedPaperRealTrader(cfg, engine)
+	trader.RegisterPaperToken("token-up", "BTC", "Up")
+	trader.RegisterPaperTokenFeeCurve("token-up", core.PolymarketFeeCurve{Rate: 0.05, Exponent: 1})
+	engine.UpdateMarketBidAsk("BTC", "Up", 0.49, 0.50)
+
+	const requestedQty = 1.02
+	buy, err := trader.Buy(context.Background(), "token-up", "Up", 0.50, requestedQty, api.OrderTypeLimit, api.TIFGoodTilCancelled, 3)
+	if err != nil {
+		t.Fatalf("embedded paper buy failed: %v", err)
+	}
+	if !buy.Success {
+		t.Fatalf("embedded paper buy should succeed: %+v", buy)
+	}
+	expectedQty := requestedQty - core.PolymarketBuyFeeSharesForCurve(requestedQty, 0.50, core.PolymarketFeeCurve{Rate: 0.05, Exponent: 1})
+	if math.Abs(buy.AcknowledgedQty-expectedQty) > 1e-9 {
+		t.Fatalf("expected curve-fee acknowledged qty %.6f, got %.6f", expectedQty, buy.AcknowledgedQty)
+	}
+	if math.Abs(buy.AcknowledgedQty-1.01985) < 0.00001 {
+		t.Fatalf("paper fee still looks like legacy 3 bps fee: %.6f", buy.AcknowledgedQty)
+	}
+	if buy.AcknowledgedQty >= 1.0 {
+		t.Fatalf("expected 5%% theta curve to deduct realistic shares from 1.02 request, got %.6f", buy.AcknowledgedQty)
+	}
+	if buy.FeeRateBps != 500 {
+		t.Fatalf("expected displayed fee rate 500 bps from curve theta, got %d", buy.FeeRateBps)
 	}
 }
 

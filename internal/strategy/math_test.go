@@ -2,6 +2,8 @@ package strategy
 
 import (
 	"testing"
+
+	"Market-bot/internal/core"
 )
 
 func TestCalculateDiscountSum(t *testing.T) {
@@ -39,5 +41,15 @@ func TestCalculateDiscountSumError(t *testing.T) {
 	_, err = CalculateDiscountSum("0.48", "invalid")
 	if err == nil {
 		t.Error("Expected error for invalid No input, got nil")
+	}
+}
+
+func TestCalculateTradeMetricsFeeCurve(t *testing.T) {
+	got := CalculateTradeMetricsFeeCurve(100, 0.50, 0.50, core.PolymarketFeeCurve{Rate: 0.05, Exponent: 1})
+	if got.Overhead != 2.5 {
+		t.Fatalf("expected two 100-share 50c legs at 5%% theta to cost $2.50 in fees, got %.5f", got.Overhead)
+	}
+	if got.Net != -2.5 {
+		t.Fatalf("expected net -2.50, got %.5f", got.Net)
 	}
 }
