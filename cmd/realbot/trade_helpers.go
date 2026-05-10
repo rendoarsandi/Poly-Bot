@@ -499,18 +499,7 @@ func realbotClampSingleBuySharesToBudget(requestedShares, budget, limitPrice flo
 }
 
 func realbotVenueCompatibleBuyShareStep(limitPrice float64) float64 {
-	if limitPrice <= 0 || limitPrice >= 1.0 {
-		return 0.0001
-	}
-	priceCents := int64(math.Round(limitPrice * 100.0))
-	if priceCents <= 0 {
-		return 0.0001
-	}
-	stepUnits := int64(10000) / gcdInt64(priceCents, 10000)
-	if stepUnits <= 0 {
-		return 0.0001
-	}
-	return float64(stepUnits) / 10000.0
+	return 0.0001
 }
 
 func realbotFloorBuySharesToVenueStep(qty, limitPrice float64) float64 {

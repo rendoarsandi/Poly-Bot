@@ -424,13 +424,11 @@ func TestRealbotClampBuySharesToBudgetKeepsMarketLikeFractionalShares(t *testing
 }
 
 func TestRealbotClampSingleBuySharesToBudgetUsesVenueCompatibleShareStep(t *testing.T) {
-	// Strict venue-compatible step case (budget $2.10 -> 2.0 shares = $1.98 cost, >= $1.00)
 	shares := realbotClampSingleBuySharesToBudget(3.1153, 2.10, 0.99)
-	if math.Abs(shares-2.0) > 0.000001 {
-		t.Fatalf("expected 0.99-capped buy with $2.10 budget to floor to 2 whole shares, got %.4f", shares)
+	if math.Abs(shares-2.1212) > 0.000001 {
+		t.Fatalf("expected 0.99-capped buy with $2.10 budget to return 2.1212 shares, got %.4f", shares)
 	}
 
-	// Fallback case (budget $1.10 -> strict step 1.0 shares = $0.99 cost < $1.00 minimum, so it falls back to 1.1111 shares = $1.10 cost)
 	fallbackShares := realbotClampSingleBuySharesToBudget(2.1153, 1.10, 0.99)
 	if math.Abs(fallbackShares-1.1111) > 0.000001 {
 		t.Fatalf("expected 0.99-capped buy with $1.10 budget to fallback to 1.1111 shares to satisfy $1.00 minimum, got %.4f", fallbackShares)
