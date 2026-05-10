@@ -39,3 +39,6 @@ bot_activity.csv
 /measure_clob_ping
 codex_login*.log
 codex_login.pid
+
+# Config files
+config/*.json
