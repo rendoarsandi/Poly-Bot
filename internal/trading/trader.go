@@ -718,25 +718,27 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 				Outcome: outcome,
 			}, nil
 		}
-		t.livePositions[tokenID] += trade.Quantity
-		t.confirmedOrderFills[orderID] = trade.Quantity
+		netQuantity := trade.Quantity
+		grossQuantity := size
+		t.livePositions[tokenID] += netQuantity
+		t.confirmedOrderFills[orderID] = grossQuantity
 		currentQty := t.positionLedgerQty[tokenID]
 		currentCost := t.positionLedgerTotalCost[tokenID]
-		t.setPositionLedgerLocked(tokenID, currentQty+trade.Quantity, currentCost+math.Max(0, trade.Value))
+		t.setPositionLedgerLocked(tokenID, currentQty+netQuantity, currentCost+math.Max(0, trade.Value))
 		t.posMu.Unlock()
-		fee := math.Max(0, trade.Value-(trade.Quantity*trade.Price))
+		fee := core.PolymarketTakerFeeUSDCForCurve(grossQuantity, execPrice, paperFeeCurve)
 		return &TradeResult{
 			OrderID:              orderID,
 			Status:               "FILLED",
 			Success:              true,
 			Price:                execPrice,
-			Size:                 trade.Quantity,
+			Size:                 grossQuantity,
 			Fee:                  fee,
 			FeeRateBps:           paperFeeRateBps,
 			Side:                 string(side),
 			TokenID:              tokenID,
 			Outcome:              outcome,
-			AcknowledgedQty:      trade.Quantity,
+			AcknowledgedQty:      grossQuantity,
 			AcknowledgedNotional: trade.Value,
 			Timestamp:            time.Now(),
 		}, nil

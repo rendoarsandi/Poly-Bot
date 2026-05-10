@@ -23,9 +23,19 @@ type stubExchangeClient struct {
 	address          string
 	positions        []api.Position
 	positionsErr     error
+	lastOrderRequest *api.OrderRequest
+	orderResponse    *api.OrderResponse
 }
 
 func (s *stubExchangeClient) PlaceOrder(ctx context.Context, req *api.OrderRequest) (*api.OrderResponse, error) {
+	if req != nil {
+		copied := *req
+		s.lastOrderRequest = &copied
+	}
+	if s.orderResponse != nil {
+		resp := *s.orderResponse
+		return &resp, nil
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -258,6 +268,39 @@ func TestTradeResult_FieldPopulation(t *testing.T) {
 	}
 }
 
+func TestRealTraderLiveBuyClearsV2FeeRate(t *testing.T) {
+	client := &stubExchangeClient{
+		orderResponse: &api.OrderResponse{Success: true, OrderID: "ord-1", Status: "live"},
+	}
+	trader := &RealTrader{
+		client:              client,
+		config:              &core.Config{MaxTradeSize: 10},
+		startOfDay:          time.Now().Truncate(24 * time.Hour),
+		livePositions:       make(map[string]float64),
+		confirmedOrderFills: make(map[string]float64),
+	}
+
+	result, err := trader.Buy(context.Background(), "token-up", "Up", 0.50, 1.02, api.OrderTypeLimit, api.TIFGoodTilCancelled, 500)
+	if err != nil {
+		t.Fatalf("live buy failed: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected live buy success, got %+v", result)
+	}
+	if client.lastOrderRequest == nil {
+		t.Fatal("expected live order request to be captured")
+	}
+	if client.lastOrderRequest.Size != 1.02 {
+		t.Fatalf("expected live V2 order to submit requested 1.02 shares, got %.6f", client.lastOrderRequest.Size)
+	}
+	if client.lastOrderRequest.FeeRateBps != 0 {
+		t.Fatalf("expected live V2 order to clear manual fee bps, got %d", client.lastOrderRequest.FeeRateBps)
+	}
+	if result.FeeRateBps != 0 || result.Fee != 0 {
+		t.Fatalf("expected live V2 trade result to report no submitted manual fee, got feeRate=%d fee=%.6f", result.FeeRateBps, result.Fee)
+	}
+}
+
 func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	cfg := &core.Config{MaxTradeSize: 10}
@@ -280,8 +323,11 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 		t.Fatalf("expected embedded paper buy to use live ask 0.55, got %.4f", buy.Price)
 	}
 	expectedBuyQty := 3 - core.PolymarketBuyFeeShares(3, 0.55, 1000)
-	if math.Abs(buy.AcknowledgedQty-expectedBuyQty) > 1e-9 {
-		t.Fatalf("expected fee-adjusted acknowledged qty %.4f, got %.4f", expectedBuyQty, buy.AcknowledgedQty)
+	if math.Abs(buy.AcknowledgedQty-3) > 1e-9 {
+		t.Fatalf("expected gross acknowledged qty %.4f, got %.4f", 3.0, buy.AcknowledgedQty)
+	}
+	if math.Abs(buy.Size-3) > 1e-9 {
+		t.Fatalf("expected gross result size %.4f, got %.4f", 3.0, buy.Size)
 	}
 	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedBuyQty) > 1e-9 {
 		t.Fatalf("expected live position to be %.4f, got %.4f", expectedBuyQty, got)
@@ -294,7 +340,7 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded paper ForceRefreshPositions failed: %v", err)
 	}
-	if len(positions) != 1 || positions[0].TokenID != "token-up" || math.Abs(positions[0].Size-buy.AcknowledgedQty) > 1e-9 {
+	if len(positions) != 1 || positions[0].TokenID != "token-up" || math.Abs(positions[0].Size-expectedBuyQty) > 1e-9 {
 		t.Fatalf("unexpected embedded paper positions snapshot: %+v", positions)
 	}
 
@@ -308,7 +354,7 @@ func TestEmbeddedPaperRealTraderSimulatesDirectFills(t *testing.T) {
 	if math.Abs(sell.Price-0.54) > 1e-9 {
 		t.Fatalf("expected embedded paper sell to use live bid 0.54, got %.4f", sell.Price)
 	}
-	expectedRemaining := buy.AcknowledgedQty - 1.5
+	expectedRemaining := expectedBuyQty - 1.5
 	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedRemaining) > 1e-9 {
 		t.Fatalf("expected live position to drop to %.4f, got %.4f", expectedRemaining, got)
 	}
@@ -393,7 +439,7 @@ func TestEmbeddedPaperRealTraderRejectsOversell(t *testing.T) {
 	if !buy.Success {
 		t.Fatalf("embedded paper buy should succeed: %+v", buy)
 	}
-	expectedRemaining := buy.AcknowledgedQty
+	expectedRemaining := trader.GetLivePositionSize("token-up")
 
 	sell, err := trader.Sell(context.Background(), "token-up", "Up", 0.60, 2.0, api.OrderTypeLimit, api.TIFFillAndKill, 1000)
 	if err != nil {
@@ -445,8 +491,8 @@ func TestEmbeddedPaperRealTraderBuySafetyUsesGrossNotionalAndNetsShares(t *testi
 		t.Fatalf("expected buy whose gross notional is below max trade size to succeed, got %+v", buy)
 	}
 	expectedQty := 2.0 - core.PolymarketBuyFeeShares(2.0, buy.Price, buy.FeeRateBps)
-	if math.Abs(buy.Size-expectedQty) > 1e-9 || math.Abs(buy.AcknowledgedQty-expectedQty) > 1e-9 {
-		t.Fatalf("expected net shares %.6f in result, got size %.6f ack %.6f", expectedQty, buy.Size, buy.AcknowledgedQty)
+	if math.Abs(buy.Size-2.0) > 1e-9 || math.Abs(buy.AcknowledgedQty-2.0) > 1e-9 {
+		t.Fatalf("expected gross shares in result, got size %.6f ack %.6f", buy.Size, buy.AcknowledgedQty)
 	}
 	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedQty) > 1e-9 {
 		t.Fatalf("expected live paper position %.6f, got %.6f", expectedQty, got)
@@ -511,14 +557,14 @@ func TestEmbeddedPaperRealTraderUsesRegisteredPolymarketFeeCurve(t *testing.T) {
 		t.Fatalf("embedded paper buy should succeed: %+v", buy)
 	}
 	expectedQty := requestedQty - core.PolymarketBuyFeeSharesForCurve(requestedQty, 0.50, core.PolymarketFeeCurve{Rate: 0.05, Exponent: 1})
-	if math.Abs(buy.AcknowledgedQty-expectedQty) > 1e-9 {
-		t.Fatalf("expected curve-fee acknowledged qty %.6f, got %.6f", expectedQty, buy.AcknowledgedQty)
+	if math.Abs(buy.AcknowledgedQty-requestedQty) > 1e-9 {
+		t.Fatalf("expected gross acknowledged qty %.6f, got %.6f", requestedQty, buy.AcknowledgedQty)
 	}
-	if math.Abs(buy.AcknowledgedQty-1.01985) < 0.00001 {
-		t.Fatalf("paper fee still looks like legacy 3 bps fee: %.6f", buy.AcknowledgedQty)
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedQty) > 1e-9 {
+		t.Fatalf("expected fee-adjusted paper inventory %.6f, got %.6f", expectedQty, got)
 	}
-	if buy.AcknowledgedQty >= 1.0 {
-		t.Fatalf("expected 5%% theta curve to deduct realistic shares from 1.02 request, got %.6f", buy.AcknowledgedQty)
+	if math.Abs(trader.GetConfirmedFillSize(buy.OrderID)-requestedQty) > 1e-9 {
+		t.Fatalf("expected gross confirmed fill %.6f, got %.6f", requestedQty, trader.GetConfirmedFillSize(buy.OrderID))
 	}
 	if buy.FeeRateBps != 500 {
 		t.Fatalf("expected displayed fee rate 500 bps from curve theta, got %d", buy.FeeRateBps)
