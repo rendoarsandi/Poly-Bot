@@ -87,7 +87,10 @@ func EnsureRealTradingSetup(ctx context.Context, cfg *core.Config) (*trading.Rea
 	// It only executes transactions if permissions are missing
 	_, err = trader.ApproveTrading(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to auto-approve trading allowances: %w", err)
+		fmt.Printf("⚠️  Warning: failed to auto-approve trading allowances: %v\n", err)
+		fmt.Println("⚠️  Live trading may fail. You can switch to paper mode in the UI or fund your wallet with MATIC for gas.")
+	} else {
+		fmt.Println("✅ On-chain allowances are approved.")
 	}
 
 	return trader, nil
