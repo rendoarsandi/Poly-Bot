@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -53,8 +54,12 @@ func TestRealbotLoadMarketFeeRatesUsesClobFeeCurveForEmbeddedPaper(t *testing.T)
 	if !buy.Success {
 		t.Fatalf("embedded paper buy should succeed: %+v", buy)
 	}
-	if buy.AcknowledgedQty >= 1.0 {
-		t.Fatalf("expected registered 5%% theta curve to deduct realistic shares, got %.6f", buy.AcknowledgedQty)
+	if math.Abs(buy.AcknowledgedQty-1.02) > 1e-9 {
+		t.Fatalf("expected paper acknowledgement to preserve requested shares, got %.6f", buy.AcknowledgedQty)
+	}
+	expectedInventory := 1.02 - core.PolymarketBuyFeeSharesForCurve(1.02, 0.50, core.PolymarketFeeCurve{Rate: 0.05, Exponent: 1})
+	if got := trader.GetLivePositionSize("token-up"); math.Abs(got-expectedInventory) > 1e-9 {
+		t.Fatalf("expected registered 5%% theta curve to net inventory %.6f, got %.6f", expectedInventory, got)
 	}
 }
 

@@ -102,6 +102,13 @@ func TestDirectExecutionHasSizingDriftIgnoresTinyRoundingNoise(t *testing.T) {
 	}
 }
 
+func TestDirectExecutionHasSizingDriftIgnoresPaperFeeNetInventory(t *testing.T) {
+	exec := directMarketExecution{AcknowledgedQty: 1.02, AcknowledgedNotional: 0.5049}
+	if directExecutionHasSizingDrift(exec, 1.02) {
+		t.Fatal("expected gross paper acknowledgement to avoid sizing drift")
+	}
+}
+
 func TestBuildDirectMarketOrderRequestBuyExactSharesUsesGTC(t *testing.T) {
 	req := buildDirectMarketOrderRequest(directMarketOrderSignalRequest{
 		Side:        api.SideBuy,
