@@ -10,7 +10,6 @@
   "tradeScaleFactor": 0.05,
   "tradeSizingMode": "percent",
   "tradeSizeUsdc": 1,
-  "feeRateBps": 0,
   "maxTradeSize": 10,
   "maxDailyLoss": 0,
   "requireConfirm": false,

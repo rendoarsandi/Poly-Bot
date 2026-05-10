@@ -363,10 +363,7 @@ func (t *RealTrader) effectivePaperFeeRateBps(_ int) int {
 	if t == nil || t.paperEngine == nil {
 		return 0
 	}
-	if t.config == nil {
-		return 0
-	}
-	return normalizeFeeRateBps(t.config.FeeRateBps)
+	return 3 // Default paper simulation fee rate (0.03%)
 }
 
 // NewRealTrader creates a new real trader

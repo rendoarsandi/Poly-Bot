@@ -84,20 +84,13 @@ func realbotNormalizeFeeRateBps(rate int) int {
 	return rate
 }
 
-func realbotConfigFeeRateBps(cfg *core.Config) int {
-	if cfg == nil {
-		return 0
-	}
-	return realbotNormalizeFeeRateBps(cfg.FeeRateBps)
-}
-
 func realbotResolveFeeRateBps(tokenFeeRates map[string]int, outcome string, cfg *core.Config) int {
 	if tokenFeeRates != nil {
 		if rate, ok := tokenFeeRates[outcome]; ok {
 			return realbotNormalizeFeeRateBps(rate)
 		}
 	}
-	return realbotConfigFeeRateBps(cfg)
+	return 3 // Default back to standard Polymarket fee rate when unknown
 }
 
 func realbotNewEntryBlockReason(ladderCloseState *realbotLadderCloseState, currentMarketID string, engine *paper.Engine, splitInventory *paper.SplitInventory, liveCfg paper.TUISettings) (string, bool) {

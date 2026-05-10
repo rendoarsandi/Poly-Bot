@@ -88,7 +88,7 @@ func realbotSubscribeMarketBooks(ctx context.Context, marketID string, market *a
 
 func realbotLoadMarketFeeRates(ctx context.Context, marketID string, market *api.Market, restClient *api.RestClient, tokenMap map[string]string, cfg *core.Config, trader *trading.RealTrader, tui *paper.TUI) map[string]int {
 	tokenFeeRates := make(map[string]int, len(tokenMap))
-	fallbackFeeRate := realbotConfigFeeRateBps(cfg)
+	fallbackFeeRate := 3 // Default paper fee rate
 	if trader != nil && trader.IsEmbeddedPaperMode() {
 		for _, outcome := range tokenMap {
 			tokenFeeRates[outcome] = fallbackFeeRate

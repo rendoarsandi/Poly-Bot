@@ -79,11 +79,6 @@ type Config struct {
 	TradeSizingMode  string  // "percent" or "usdc"
 	TradeSizeUSDC    float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 
-	// Fee settings (for paper trading simulation)
-	// Polymarket taker fees follow the official docs:
-	// fee_usdc = shares * (feeRateBps/10000) * price * (1-price)
-	FeeRateBps int // Taker fee rate in basis points
-
 	// Safety settings for real trading
 	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
 	MaxDailyLoss   float64 // Maximum daily loss before stopping
@@ -183,7 +178,6 @@ type RuntimeSettings struct {
 	TradeScaleFactor                   float64 `json:"tradeScaleFactor"`
 	TradeSizingMode                    string  `json:"tradeSizingMode"`
 	TradeSizeUSDC                      float64 `json:"tradeSizeUsdc"`
-	FeeRateBps                         int     `json:"feeRateBps"`
 	MaxTradeSize                       float64 `json:"maxTradeSize"`
 	MaxDailyLoss                       float64 `json:"maxDailyLoss"`
 	RequireConfirm                     bool    `json:"requireConfirm"`
@@ -271,13 +265,6 @@ func LoadConfig() (*Config, error) {
 		TradeScaleFactor: parseEnvFloat("TRADE_SCALE_FACTOR", 0.05), // 5% of balance
 		TradeSizingMode:  normalizeTradeSizingMode(parseEnvString("TRADE_SIZING_MODE", TradeSizingModePercent)),
 		TradeSizeUSDC:    normalizeFixedTradeSizeUSDC(parseEnvFloat("TRADE_SIZE_USDC", 1.0)),
-		// Fee settings (paper trading)
-		// Official Polymarket taker fee rates:
-		// Sports: 0.03% (3 bps)
-		// Crypto: 0.072% (7.2 bps)
-		// Politics: 0.04% (4 bps)
-		// Geopolitical: 0.0% (0 bps)
-		FeeRateBps: parseEnvInt("FEE_RATE_BPS", 3), // Default to Sports rate (0.03% or 3 bps)
 		// Safety settings
 		MaxTradeSize:                parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
 		MaxDailyLoss:                parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
@@ -811,7 +798,6 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TradeScaleFactor:                   c.TradeScaleFactor,
 		TradeSizingMode:                    normalizeTradeSizingMode(c.TradeSizingMode),
 		TradeSizeUSDC:                      normalizeFixedTradeSizeUSDC(c.TradeSizeUSDC),
-		FeeRateBps:                         c.FeeRateBps,
 		MaxTradeSize:                       c.MaxTradeSize,
 		MaxDailyLoss:                       c.MaxDailyLoss,
 		RequireConfirm:                     c.RequireConfirm,
@@ -891,7 +877,6 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TradeScaleFactor = s.TradeScaleFactor
 	c.TradeSizingMode = normalizeTradeSizingMode(s.TradeSizingMode)
 	c.TradeSizeUSDC = normalizeFixedTradeSizeUSDC(s.TradeSizeUSDC)
-	c.FeeRateBps = s.FeeRateBps
 	c.MaxTradeSize = s.MaxTradeSize
 	c.MaxDailyLoss = s.MaxDailyLoss
 	c.RequireConfirm = s.RequireConfirm
