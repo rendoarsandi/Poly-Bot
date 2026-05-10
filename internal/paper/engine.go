@@ -113,7 +113,7 @@ type Engine struct {
 	marketBids map[string]float64
 	marketAsks map[string]float64
 
-	feeRateBps int // Fee configuration
+	feeCurve core.PolymarketFeeCurve
 }
 
 var ErrPaperSessionNotFlat = errors.New("paper session balance can only be reset while flat")
@@ -145,13 +145,19 @@ func NewEngine(startingBalance float64) *Engine {
 func (e *Engine) SetFeeRateBps(rate int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.feeRateBps = rate
+	e.feeCurve = core.PolymarketFeeCurveFromBps(rate)
 }
 
-func (e *Engine) defaultFeeRateBps() int {
+func (e *Engine) SetFeeCurve(curve core.PolymarketFeeCurve) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.feeCurve = curve
+}
+
+func (e *Engine) defaultFeeCurve() core.PolymarketFeeCurve {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.feeRateBps
+	return e.feeCurve
 }
 
 // UpdatePrice updates current market price for an outcome and recalculates drawdown
@@ -270,7 +276,7 @@ func (e *Engine) GetMarketBidAsk(marketID, outcome string) (bid, ask float64) {
 
 // Buy executes a simulated buy order
 func (e *Engine) Buy(outcome string, price, quantity float64) (*Trade, error) {
-	return e.BuyForMarketWithFeeRate("", outcome, price, quantity, e.defaultFeeRateBps())
+	return e.BuyForMarketWithFeeCurve("", outcome, price, quantity, e.defaultFeeCurve())
 }
 
 // BuyWithFeeRate executes a simulated buy order with an explicit fee rate.
@@ -280,16 +286,20 @@ func (e *Engine) BuyWithFeeRate(outcome string, price, quantity float64, feeRate
 
 // BuyForMarket executes a simulated buy order for a specific market
 func (e *Engine) BuyForMarket(marketID, outcome string, price, quantity float64) (*Trade, error) {
-	return e.BuyForMarketWithFeeRate(marketID, outcome, price, quantity, e.defaultFeeRateBps())
+	return e.BuyForMarketWithFeeCurve(marketID, outcome, price, quantity, e.defaultFeeCurve())
 }
 
 // BuyForMarketWithFeeRate executes a simulated buy order for a specific
 // market using the provided fee rate instead of the engine default.
 func (e *Engine) BuyForMarketWithFeeRate(marketID, outcome string, price, quantity float64, feeRateBps int) (*Trade, error) {
+	return e.BuyForMarketWithFeeCurve(marketID, outcome, price, quantity, core.PolymarketFeeCurveFromBps(feeRateBps))
+}
+
+func (e *Engine) BuyForMarketWithFeeCurve(marketID, outcome string, price, quantity float64, curve core.PolymarketFeeCurve) (*Trade, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.executeBuy(marketID, outcome, price, quantity, false, feeRateBps)
+	return e.executeBuy(marketID, outcome, price, quantity, false, curve)
 }
 
 // BuyFilledForMarket records an externally confirmed buy using exact net
@@ -303,7 +313,7 @@ func (e *Engine) BuyFilledForMarket(marketID, outcome string, totalCost, quantit
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.executeBuy(marketID, outcome, price, quantity, true, 0)
+	return e.executeBuy(marketID, outcome, price, quantity, true, core.PolymarketFeeCurve{})
 }
 
 // MarketBuy executes a market order by consuming liquidity from provided levels
@@ -342,7 +352,7 @@ func (e *Engine) MarketBuy(marketID, outcome string, quantity float64, levels []
 	}
 
 	avgPrice := totalCost / filledQty
-	trade, err := e.executeBuy(marketID, outcome, avgPrice, filledQty, false, e.feeRateBps)
+	trade, err := e.executeBuy(marketID, outcome, avgPrice, filledQty, false, e.feeCurve)
 	return trade, avgPrice, err
 }
 
@@ -442,12 +452,12 @@ func (e *Engine) MarketBuyArb(marketID, outcome1, outcome2 string, quantity floa
 	}
 
 	// 5. Execute both buys (guaranteed to succeed since we hold the lock and checked balance)
-	trade1, err1 := e.executeBuy(marketID, outcome1, avgPrice1, minFilled, false, e.feeRateBps)
+	trade1, err1 := e.executeBuy(marketID, outcome1, avgPrice1, minFilled, false, e.feeCurve)
 	if err1 != nil {
 		return nil, nil, 0, 0, err1
 	}
 
-	trade2, err2 := e.executeBuy(marketID, outcome2, avgPrice2, minFilled, false, e.feeRateBps)
+	trade2, err2 := e.executeBuy(marketID, outcome2, avgPrice2, minFilled, false, e.feeCurve)
 	if err2 != nil {
 		return nil, nil, 0, 0, err2
 	}
@@ -460,7 +470,7 @@ func (e *Engine) MakerBuyForMarket(marketID, outcome string, price, quantity flo
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.executeBuy(marketID, outcome, price, quantity, true, 0)
+	return e.executeBuy(marketID, outcome, price, quantity, true, core.PolymarketFeeCurve{})
 }
 
 // MakerSellForMarket executes a simulated maker sell order for a market-specific position (zero fees).
@@ -472,11 +482,11 @@ func (e *Engine) MakerSellForMarket(marketID, outcome string, price, quantity fl
 	if marketID != "" {
 		posKey = marketID + ":" + outcome
 	}
-	return e.executeSell(posKey, outcome, price, quantity, true, 0)
+	return e.executeSell(posKey, outcome, price, quantity, true, core.PolymarketFeeCurve{})
 }
 
 // executeBuy is the internal implementation of a buy (must be called with lock)
-func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, isMaker bool, feeRateBps int) (*Trade, error) {
+func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, isMaker bool, curve core.PolymarketFeeCurve) (*Trade, error) {
 	cost := price * quantity
 	if cost > e.currentBalance+1e-8 {
 		return nil, fmt.Errorf("insufficient balance: need %.4f, have %.4f", cost, e.currentBalance)
@@ -490,8 +500,8 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, i
 
 	// Calculate fee (collected in shares for BUY)
 	feeShares := 0.0
-	if !isMaker && feeRateBps > 0 {
-		feeShares = core.PolymarketBuyFeeShares(quantity, price, feeRateBps)
+	if !isMaker {
+		feeShares = core.PolymarketBuyFeeSharesForCurve(quantity, price, curve)
 	}
 	netQuantity := quantity - feeShares
 
@@ -534,7 +544,7 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, i
 
 // Sell executes a simulated sell order
 func (e *Engine) Sell(outcome string, price, quantity float64) (*Trade, error) {
-	return e.SellForMarketWithFeeRate("", outcome, price, quantity, e.defaultFeeRateBps())
+	return e.SellForMarketWithFeeCurve("", outcome, price, quantity, e.defaultFeeCurve())
 }
 
 // SellWithFeeRate executes a simulated sell order with an explicit fee rate.
@@ -544,12 +554,16 @@ func (e *Engine) SellWithFeeRate(outcome string, price, quantity float64, feeRat
 
 // SellForMarket executes a simulated sell order for a market-specific position.
 func (e *Engine) SellForMarket(marketID, outcome string, price, quantity float64) (*Trade, error) {
-	return e.SellForMarketWithFeeRate(marketID, outcome, price, quantity, e.defaultFeeRateBps())
+	return e.SellForMarketWithFeeCurve(marketID, outcome, price, quantity, e.defaultFeeCurve())
 }
 
 // SellForMarketWithFeeRate executes a simulated sell order for a market-specific
 // position using the provided fee rate instead of the engine default.
 func (e *Engine) SellForMarketWithFeeRate(marketID, outcome string, price, quantity float64, feeRateBps int) (*Trade, error) {
+	return e.SellForMarketWithFeeCurve(marketID, outcome, price, quantity, core.PolymarketFeeCurveFromBps(feeRateBps))
+}
+
+func (e *Engine) SellForMarketWithFeeCurve(marketID, outcome string, price, quantity float64, curve core.PolymarketFeeCurve) (*Trade, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -557,7 +571,7 @@ func (e *Engine) SellForMarketWithFeeRate(marketID, outcome string, price, quant
 	if marketID != "" {
 		posKey = marketID + ":" + outcome
 	}
-	return e.executeSell(posKey, outcome, price, quantity, false, feeRateBps)
+	return e.executeSell(posKey, outcome, price, quantity, false, curve)
 }
 
 // SellFilledForMarket records an externally confirmed sell using exact shares
@@ -575,10 +589,10 @@ func (e *Engine) SellFilledForMarket(marketID, outcome string, proceeds, quantit
 	if marketID != "" {
 		posKey = marketID + ":" + outcome
 	}
-	return e.executeSell(posKey, outcome, price, quantity, true, 0)
+	return e.executeSell(posKey, outcome, price, quantity, true, core.PolymarketFeeCurve{})
 }
 
-func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, isMaker bool, feeRateBps int) (*Trade, error) {
+func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, isMaker bool, curve core.PolymarketFeeCurve) (*Trade, error) {
 
 	pos, exists := e.positions[posKey]
 	if !exists || pos.Quantity < quantity {
@@ -591,8 +605,8 @@ func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, is
 
 	// Calculate fee (collected in USDC for SELL)
 	feeUsdc := 0.0
-	if !isMaker && feeRateBps > 0 {
-		feeUsdc = core.PolymarketTakerFeeUSDC(quantity, price, feeRateBps)
+	if !isMaker {
+		feeUsdc = core.PolymarketTakerFeeUSDCForCurve(quantity, price, curve)
 	}
 
 	// Calculate PnL for this sale
@@ -926,11 +940,7 @@ func (e *Engine) LiquidateAll() float64 {
 			price = p * 0.98
 		}
 
-		// Calculate fee (collected in USDC for SELL)
-		feeUsdc := 0.0
-		if e.feeRateBps > 0 {
-			feeUsdc = core.PolymarketTakerFeeUSDC(pos.Quantity, price, e.feeRateBps)
-		}
+		feeUsdc := core.PolymarketTakerFeeUSDCForCurve(pos.Quantity, price, e.feeCurve)
 
 		proceeds := (pos.Quantity * price) - feeUsdc
 		pnl := proceeds - pos.TotalCost

@@ -33,12 +33,16 @@ type TradeMetrics struct {
 // CalculateTradeMetricsCurve computes trade metrics using Polymarket's documented
 // taker fee formula across both legs.
 func CalculateTradeMetricsCurve(shares, price1, price2 float64, feeRateBps int) TradeMetrics {
+	return CalculateTradeMetricsFeeCurve(shares, price1, price2, core.PolymarketFeeCurveFromBps(feeRateBps))
+}
+
+func CalculateTradeMetricsFeeCurve(shares, price1, price2 float64, feeCurve core.PolymarketFeeCurve) TradeMetrics {
 	sum := price1 + price2
 	cost := shares * sum
 	gross := shares * (1.0 - sum)
 
-	overhead := core.PolymarketTakerFeeUSDC(shares, price1, feeRateBps) +
-		core.PolymarketTakerFeeUSDC(shares, price2, feeRateBps)
+	overhead := core.PolymarketTakerFeeUSDCForCurve(shares, price1, feeCurve) +
+		core.PolymarketTakerFeeUSDCForCurve(shares, price2, feeCurve)
 
 	return TradeMetrics{
 		Cost:     cost,

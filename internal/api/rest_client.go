@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -155,9 +156,42 @@ type ClobMarketToken struct {
 	Outcome string `json:"o"`
 }
 
+type PolymarketFloat float64
+
+func (f *PolymarketFloat) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) || len(data) == 0 {
+		*f = 0
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = PolymarketFloat(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return err
+	}
+	*f = PolymarketFloat(n)
+	return nil
+}
+
 type ClobMarketFeeDetails struct {
-	Rate     int `json:"r"`
-	Exponent int `json:"e"`
+	Rate      PolymarketFloat `json:"r"`
+	Exponent  PolymarketFloat `json:"e"`
+	TakerOnly bool            `json:"to,omitempty"`
+}
+
+func (d *ClobMarketFeeDetails) Curve() core.PolymarketFeeCurve {
+	if d == nil {
+		return core.PolymarketFeeCurve{}
+	}
+	return core.PolymarketFeeCurve{Rate: float64(d.Rate), Exponent: float64(d.Exponent)}
 }
 
 type ClobMarketInfo struct {
