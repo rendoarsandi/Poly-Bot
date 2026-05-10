@@ -7263,7 +7263,7 @@ func (m tuiModel) renderOrderHistory(w int, maxItems int) string {
 
 		aStyle := getAssetStyle(o.MarketID)
 		marketSlug := resolveOrderHistoryMarketSlug(o, s.markets)
-		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.2f  $%-7.4f  $%-7.2f  %s  %s\n",
+		sb.WriteString(fmt.Sprintf("  %s  %s  %-6s  %-5s  %7.4f  $%-7.4f  $%-7.2f  %s  %s\n",
 			styleDimmed.Render(o.Timestamp.Format("15:04:05")),
 			aStyle.Render(fmt.Sprintf("%-21s", truncateText(orderHistoryMarketLabel(o.MarketID, marketSlug), 21))),
 			core.SanitizeString(o.Outcome),
