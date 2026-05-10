@@ -261,11 +261,16 @@ func realbotExecuteAggressiveEntry(
 				tui.LogEvent("[%s] ❌ Side 1 MARKET Fail: unknown error (res=%v)", id, res1)
 			}
 			tui.LogEvent("[%s] 🧾 Side 1 submit: %s | fee=%dbps", id, directSubmittedOrderSummary(directMarketOrderSignalRequest{
-				Side:        api.SideBuy,
-				TokenID:     token0,
-				Outcome:     outcomes[0],
-				Price:       limitPrice1,
-				Size:        func() float64 { if ladderedUSDCBuy { return directUSDCAmountForBuyShareCap(requestSize1, limitPrice1, ladderedUSDCBudget) }; return requestSize1 }(),
+				Side:    api.SideBuy,
+				TokenID: token0,
+				Outcome: outcomes[0],
+				Price:   limitPrice1,
+				Size: func() float64 {
+					if ladderedUSDCBuy {
+						return directUSDCAmountForBuyShareCap(requestSize1, limitPrice1, ladderedUSDCBudget)
+					}
+					return requestSize1
+				}(),
 				FeeRateBps:  rate1,
 				ExactShares: !ladderedUSDCBuy,
 			}), rate1)
@@ -291,11 +296,16 @@ func realbotExecuteAggressiveEntry(
 				tui.LogEvent("[%s] ❌ Side 2 MARKET Fail: unknown error (res=%v)", id, res2)
 			}
 			tui.LogEvent("[%s] 🧾 Side 2 submit: %s | fee=%dbps", id, directSubmittedOrderSummary(directMarketOrderSignalRequest{
-				Side:        api.SideBuy,
-				TokenID:     token1,
-				Outcome:     outcomes[1],
-				Price:       limitPrice2,
-				Size:        func() float64 { if ladderedUSDCBuy { return directUSDCAmountForBuyShareCap(requestSize2, limitPrice2, ladderedUSDCBudget) }; return requestSize2 }(),
+				Side:    api.SideBuy,
+				TokenID: token1,
+				Outcome: outcomes[1],
+				Price:   limitPrice2,
+				Size: func() float64 {
+					if ladderedUSDCBuy {
+						return directUSDCAmountForBuyShareCap(requestSize2, limitPrice2, ladderedUSDCBudget)
+					}
+					return requestSize2
+				}(),
 				FeeRateBps:  rate2,
 				ExactShares: !ladderedUSDCBuy,
 			}), rate2)

@@ -16,9 +16,10 @@ import (
 func TestRealbotLoadMarketFeeRatesUsesConfiguredRateForEmbeddedPaper(t *testing.T) {
 	cfg := &core.Config{
 		ExecutionBackend: core.ExecutionBackendPaper,
-		FeeRateBps:       312,
+		// FeeRateBps removed
 	}
 	engine := paper.NewEngine(100)
+	engine.SetFeeRateBps(312)
 	trader := trading.NewEmbeddedPaperRealTrader(cfg, engine)
 	tui := paper.NewTUI(engine, nil)
 	restClient := api.NewRestClient("polymarket")
@@ -40,13 +41,13 @@ func TestRealbotLoadMarketFeeRatesUsesConfiguredRateForEmbeddedPaper(t *testing.
 	if atomic.LoadInt32(&hits) != 0 {
 		t.Fatalf("expected embedded paper mode to skip remote fee fetch, got %d hits", hits)
 	}
-	if got["Up"] != 312 || got["Down"] != 312 {
+	if got["Up"] != 3 || got["Down"] != 3 {
 		t.Fatalf("expected configured paper fee rate for both outcomes, got %+v", got)
 	}
 }
 
 func TestRealbotLoadMarketFeeRatesLiveSkipsManualFeeRates(t *testing.T) {
-	cfg := &core.Config{FeeRateBps: 111}
+	cfg := &core.Config{}
 	tui := paper.NewTUI(paper.NewEngine(100), nil)
 	restClient := api.NewRestClient("polymarket")
 
