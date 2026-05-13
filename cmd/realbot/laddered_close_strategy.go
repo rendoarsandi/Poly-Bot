@@ -19,6 +19,7 @@ const (
 	realbotLadderedOneHourCloseTriggerPrice = 0.985
 	realbotLadderedOneHourCloseMonitorTTL   = 5 * time.Hour
 	realbotLadderedOneHourClosePollInterval = 2 * time.Second
+	realbotLadderedOneHourWaitFallbackTime  = 20 * time.Minute
 )
 
 type realbotPendingLadderCloseOrder struct {
@@ -149,6 +150,15 @@ func realbotShouldUseLadderedOneHourClose(marketID string, liveCfg paper.TUISett
 		return false
 	}
 	return realbotLadderedOneHourExitMode(liveCfg) != core.OneHourCryptoExitWaitResolve
+}
+
+func realbotShouldUseLadderedOneHourCloseNow(marketID string, liveCfg paper.TUISettings, timeToExpiry time.Duration) bool {
+	if realbotShouldUseLadderedOneHourClose(marketID, liveCfg) {
+		return true
+	}
+	return realbotLadderedOneHourExitMode(liveCfg) == core.OneHourCryptoExitWaitResolve &&
+		timeToExpiry > 0 &&
+		timeToExpiry <= realbotLadderedOneHourWaitFallbackTime
 }
 
 func realbotLadderedOneHourCloseWindow(liveCfg paper.TUISettings) time.Duration {
@@ -453,10 +463,12 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		return false
 	}
 	closeWindow := realbotLadderedOneHourCloseWindow(liveCfg)
-	if timeToExpiry <= 0 || timeToExpiry > closeWindow {
+	allowWaitFallbackSell := !realbotShouldUseLadderedOneHourClose(marketID, liveCfg) &&
+		realbotShouldUseLadderedOneHourCloseNow(marketID, liveCfg, timeToExpiry)
+	if timeToExpiry <= 0 || (timeToExpiry > closeWindow && !allowWaitFallbackSell) {
 		return false
 	}
-	if !realbotShouldUseLadderedOneHourClose(marketID, liveCfg) {
+	if !realbotShouldUseLadderedOneHourCloseNow(marketID, liveCfg, timeToExpiry) {
 		if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			if ladderState != nil {
 				ladderState.clear(marketID)
@@ -468,6 +480,9 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 			return true
 		}
 		return false
+	}
+	if allowWaitFallbackSell && tui != nil {
+		tui.LogEventDedup("1h-wait-resolve-fallback:"+marketID, 30*time.Second, "[%s] ⏳ 1h wait-resolve fallback active after 20m threshold; trying .999 sell", marketID)
 	}
 	if _, ok := ladderState.get(marketID); ok {
 		if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
