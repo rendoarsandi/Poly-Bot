@@ -365,3 +365,186 @@ func TestRealbotLadderCloseStateMonitorLifecycle(t *testing.T) {
 		t.Fatalf("expected mirrored qty to be preserved, got %.6f", pending.MirroredQty)
 	}
 }
+
+func TestRealbotPaperGTCSellRestsWhenBidBelowLimit(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "btc-updown-1h-1700000000"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	// Set bid below the 0.999 limit but above the 0.985 trigger.
+	engine.UpdateMarketBidAsk(marketID, "Up", 0.99, 0.995)
+	engine.UpdateMarketBidAsk(marketID, "Down", 0.005, 0.01)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(10*time.Second))
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	trader.RegisterPaperToken("up-token", marketID, "Up")
+	ladderState := newRealbotLadderCloseState()
+	market := &api.Market{
+		Slug: marketID,
+		Tokens: []api.Token{
+			{TokenID: "down-token", Outcome: "Down"},
+			{TokenID: "up-token", Outcome: "Up"},
+		},
+	}
+
+	handled := realbotSubmitLadderedOneHourCloseOrder(
+		context.Background(),
+		context.Background(),
+		ladderState,
+		marketID,
+		market,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": 0.99, "Down": 0.005},
+		map[string]float64{"Up": 0.995, "Down": 0.01},
+		map[string]int{"Up": 1000},
+		trader,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected paper GTC sell to rest as pending when bid < limit")
+	}
+	pending, ok := ladderState.get(marketID)
+	if !ok {
+		t.Fatal("expected pending paper sell to be recorded in ladder state")
+	}
+	if pending.Outcome != "Up" {
+		t.Fatalf("expected pending outcome Up, got %q", pending.Outcome)
+	}
+	if pending.OrderID != "" {
+		t.Fatalf("expected empty OrderID for resting paper sell, got %q", pending.OrderID)
+	}
+	if math.Abs(pending.Price-realbotLadderedOneHourClosePrice) > 0.000001 {
+		t.Fatalf("expected pending price %.3f, got %.6f", realbotLadderedOneHourClosePrice, pending.Price)
+	}
+	// Position should still be held
+	if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		t.Fatal("expected position to still be held while paper sell is resting")
+	}
+}
+
+func TestRealbotPaperGTCSellFillsWhenBidReachesLimit(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "btc-updown-1h-1700000000"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	ladderState := newRealbotLadderCloseState()
+
+	// Record a resting paper sell (simulating the state after submit with bid below limit).
+	ladderState.set(marketID, realbotPendingLadderCloseOrder{
+		Outcome:      "Up",
+		Price:        realbotLadderedOneHourClosePrice,
+		SubmittedAt:  time.Now(),
+		RequestedQty: 5,
+		FeeRate:      1000,
+	})
+
+	// Bid still below limit — poll should not fill.
+	filled := realbotPollPaperLadderCloseFill(
+		ladderState, marketID,
+		map[string]float64{"Up": 0.99},
+		engine, tui,
+	)
+	if filled {
+		t.Fatal("expected poll not to fill when bid < limit")
+	}
+	if _, ok := ladderState.get(marketID); !ok {
+		t.Fatal("expected pending sell to remain after poll with low bid")
+	}
+
+	// Bid rises to limit — poll should fill.
+	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourClosePrice, 1.0)
+	filled = realbotPollPaperLadderCloseFill(
+		ladderState, marketID,
+		map[string]float64{"Up": realbotLadderedOneHourClosePrice},
+		engine, tui,
+	)
+	if !filled {
+		t.Fatal("expected poll to fill when bid reaches limit")
+	}
+	if _, ok := ladderState.get(marketID); ok {
+		t.Fatal("expected pending sell to be cleared after fill")
+	}
+	if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		t.Fatalf("expected position to be cleared after paper sell fill, got %+v", engine.GetPositions())
+	}
+}
+
+func TestRealbotHandleLadderedOneHourCloseWindowPaperRestAndFill(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	// Bid above trigger (0.985) but below sell limit (0.999).
+	engine.UpdateMarketBidAsk(marketID, "Up", 0.99, 0.995)
+	engine.UpdateMarketBidAsk(marketID, "Down", 0.005, 0.01)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(10*time.Second))
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	trader.RegisterPaperToken("up-token", marketID, "Up")
+	ladderState := newRealbotLadderCloseState()
+	market := &api.Market{
+		Slug: marketID,
+		Tokens: []api.Token{
+			{TokenID: "down-token", Outcome: "Down"},
+			{TokenID: "up-token", Outcome: "Up"},
+		},
+	}
+
+	// First call: bid is below 0.999, so the paper sell should rest.
+	handled := realbotHandleLadderedOneHourCloseWindow(
+		context.Background(),
+		ladderState,
+		marketID,
+		market,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": 0.99, "Down": 0.005},
+		map[string]float64{"Up": 0.995, "Down": 0.01},
+		map[string]int{"Up": 1000},
+		paper.TUISettings{PaperArbMode: paperArbModeLaddered},
+		5*time.Second,
+		trader,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected first call to handle (resting paper sell)")
+	}
+	if _, ok := ladderState.get(marketID); !ok {
+		t.Fatal("expected pending paper sell in ladder state after first call")
+	}
+	if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		t.Fatal("expected position to still be held after first call")
+	}
+
+	// Second call: bid rises to 0.999, so the paper sell should fill.
+	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourClosePrice, 1.0)
+	handled = realbotHandleLadderedOneHourCloseWindow(
+		context.Background(),
+		ladderState,
+		marketID,
+		market,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": realbotLadderedOneHourClosePrice, "Down": 0.001},
+		map[string]float64{"Up": 1.0, "Down": 0.01},
+		map[string]int{"Up": 1000},
+		paper.TUISettings{PaperArbMode: paperArbModeLaddered},
+		4*time.Second,
+		trader,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected second call to handle (fill paper sell)")
+	}
+	if _, ok := ladderState.get(marketID); ok {
+		t.Fatal("expected pending paper sell to be cleared after fill")
+	}
+	if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		t.Fatalf("expected position to be cleared after paper sell fill, got %+v", engine.GetPositions())
+	}
+}

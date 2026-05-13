@@ -421,6 +421,21 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 		if message == "" {
 			message = "execution did not succeed"
 		}
+		// In paper mode, a GTC sell that is not immediately marketable should
+		// rest as a pending order so it can fill on a later tick when the
+		// bid reaches the limit price.
+		if trader.IsEmbeddedPaperMode() && strings.Contains(message, "not marketable") {
+			ladderState.set(marketID, realbotPendingLadderCloseOrder{
+				Outcome:      candidate.Outcome,
+				Price:        realbotLadderedOneHourClosePrice,
+				SubmittedAt:  time.Now(),
+				RequestedQty: candidate.Qty,
+				FeeRate:      feeRate,
+			})
+			tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
+			tui.LogEventDedup("1h-close-paper-resting:"+marketID, 15*time.Second, "[%s] 🪜 1h ladder close resting paper GTC sell %s %s at $%.3f (bid not yet at limit)", marketID, formatShareQty(candidate.Qty), candidate.Outcome, realbotLadderedOneHourClosePrice)
+			return true
+		}
 		tui.LogEvent("[%s] ⚠️ 1h ladder close rejected for %s: %s", marketID, candidate.Outcome, message)
 		return false
 	}
@@ -468,6 +483,45 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 	return true
 }
 
+func realbotPollPaperLadderCloseFill(ladderState *realbotLadderCloseState, marketID string, bids map[string]float64, engine *paper.Engine, tui *paper.TUI) bool {
+	if ladderState == nil || engine == nil {
+		return false
+	}
+	pending, ok := ladderState.get(marketID)
+	if !ok || pending.Price <= 0 || strings.TrimSpace(pending.OrderID) != "" {
+		return false
+	}
+	outcome := strings.TrimSpace(pending.Outcome)
+	if outcome == "" {
+		return false
+	}
+
+	bid := bids[outcome]
+	if bid <= 0 {
+		bid, _ = engine.GetMarketBidAsk(marketID, outcome)
+	}
+	if bid+1e-9 < pending.Price {
+		return false
+	}
+
+	if _, _, posOK := realbotLocalOutcomePosition(engine, marketID, outcome); !posOK {
+		ladderState.clear(marketID)
+		if tui != nil {
+			tui.ClearMarketInventoryStatus(marketID)
+		}
+		return true
+	}
+
+	applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, outcome, pending.RequestedQty, pending.Price, pending.FeeRate, true)
+	if applied > 0 {
+		ladderState.clear(marketID)
+		if tui != nil && !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+			tui.ClearMarketInventoryStatus(marketID)
+		}
+	}
+	return applied > 0
+}
+
 func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *realbotLadderCloseState, marketID string, market *api.Market, outcomes []string, bids, asks map[string]float64, tokenFeeRates map[string]int, liveCfg paper.TUISettings, timeToExpiry time.Duration, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) bool {
 	if !realbotIsLadderedOneHourMarket(marketID, liveCfg) {
 		return false
@@ -489,7 +543,7 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		}
 		return false
 	}
-	if _, ok := ladderState.get(marketID); ok {
+	if pending, ok := ladderState.get(marketID); ok {
 		if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			ladderState.clear(marketID)
 			if tui != nil {
@@ -499,6 +553,11 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		}
 		if tui != nil {
 			tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
+		}
+		// Paper GTC orders have no real OrderID; poll the market on each tick.
+		if strings.TrimSpace(pending.OrderID) == "" {
+			realbotPollPaperLadderCloseFill(ladderState, marketID, bids, engine, tui)
+			return true
 		}
 		realbotStartLadderedOneHourCloseMonitor(ctx, ladderState, marketID, trader, engine, tui)
 		return true
