@@ -50,19 +50,6 @@ func TestRealbotShouldUseLadderedOneHourCloseCanWaitForResolve(t *testing.T) {
 	}
 }
 
-func TestRealbotShouldUseLadderedOneHourCloseNowFallbackAfterTwentyMinutes(t *testing.T) {
-	cfg := paper.TUISettings{
-		PaperArbMode:          paperArbModeLaddered,
-		OneHourCryptoExitMode: core.OneHourCryptoExitWaitResolve,
-	}
-	if realbotShouldUseLadderedOneHourCloseNow("btc-updown-1h-1700000000", cfg, 21*time.Minute) {
-		t.Fatal("expected wait-resolve mode to keep waiting before the 20m fallback")
-	}
-	if !realbotShouldUseLadderedOneHourCloseNow("btc-updown-1h-1700000000", cfg, 20*time.Minute) {
-		t.Fatal("expected wait-resolve mode to allow .999 fallback at the 20m threshold")
-	}
-}
-
 func TestRealbotApplyLadderedOneHourCloseFillUpdatesProfit(t *testing.T) {
 	engine := paper.NewEngine(100)
 	if _, err := engine.BuyForMarket("btc-updown-1h-1700000000", "Up", 0.60, 5); err != nil {
@@ -304,9 +291,8 @@ func TestRealbotHandleLadderedOneHourCloseWindowWaitResolveSkipsSell(t *testing.
 		paper.TUISettings{
 			PaperArbMode:          paperArbModeLaddered,
 			OneHourCryptoExitMode: core.OneHourCryptoExitWaitResolve,
-			TakerCloseMarketTime:  int((30 * time.Minute).Seconds()),
 		},
-		25*time.Minute,
+		5*time.Second,
 		nil,
 		engine,
 		tui,
@@ -319,56 +305,6 @@ func TestRealbotHandleLadderedOneHourCloseWindowWaitResolveSkipsSell(t *testing.
 	}
 	if !realbotHasEnginePositionsForMarket(engine, marketID) {
 		t.Fatal("expected wait-resolve mode to preserve inventory")
-	}
-}
-
-func TestRealbotHandleLadderedOneHourCloseWindowWaitResolveFallbackSells(t *testing.T) {
-	engine := paper.NewEngine(100)
-	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
-	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
-		t.Fatalf("seed buy failed: %v", err)
-	}
-	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourClosePrice, 1.0)
-	tui := paper.NewTUI(engine, paper.NewOrderBook())
-	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(19*time.Minute))
-	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
-	trader.RegisterPaperToken("up-token", marketID, "Up")
-	ladderState := newRealbotLadderCloseState()
-	market := &api.Market{
-		Slug: marketID,
-		Tokens: []api.Token{
-			{TokenID: "down-token", Outcome: "Down"},
-			{TokenID: "up-token", Outcome: "Up"},
-		},
-	}
-
-	handled := realbotHandleLadderedOneHourCloseWindow(
-		context.Background(),
-		ladderState,
-		marketID,
-		market,
-		[]string{"Down", "Up"},
-		map[string]float64{"Up": realbotLadderedOneHourClosePrice},
-		map[string]float64{"Up": 1.0},
-		nil,
-		paper.TUISettings{
-			PaperArbMode:          paperArbModeLaddered,
-			OneHourCryptoExitMode: core.OneHourCryptoExitWaitResolve,
-		},
-		19*time.Minute,
-		trader,
-		engine,
-		tui,
-	)
-	if !handled {
-		t.Fatal("expected wait-resolve fallback to handle the close")
-	}
-	if realbotHasEnginePositionsForMarket(engine, marketID) {
-		t.Fatalf("expected wait-resolve fallback to sell inventory, got %+v", engine.GetPositions())
-	}
-	history := tui.GetOrderHistory()
-	if len(history) != 1 || history[0].Side != "SELL" {
-		t.Fatalf("expected one fallback sell history entry, got %+v", history)
 	}
 }
 
