@@ -1478,3 +1478,48 @@ func TestEngine_GetCompoundStatsUsesEffectiveSizingBalance(t *testing.T) {
 		t.Fatalf("expected compound stats sizing balance to keep high-water floor, got %.4f", sizing)
 	}
 }
+
+func TestRemovePositionForSettlement_DoesNotAdjustBaseline(t *testing.T) {
+	engine := NewEngine(100)
+	// Buy a position so the engine has inventory.
+	engine.SyncExternalPosition("mkt1", "Down", 20, 0.60)
+	baselineBefore := engine.GetStartingBalance()
+
+	removed := engine.RemovePositionForSettlement("mkt1", "Down")
+	if !removed {
+		t.Fatal("expected RemovePositionForSettlement to return true")
+	}
+	baselineAfter := engine.GetStartingBalance()
+	if absFloat(baselineAfter-baselineBefore) > 0.0001 {
+		t.Fatalf("pnlBaseline should not change after RemovePositionForSettlement: before=%.4f after=%.4f", baselineBefore, baselineAfter)
+	}
+	// Position should be gone.
+	positions := engine.GetPositions()
+	for _, pos := range positions {
+		if pos.MarketID == "mkt1" && pos.Outcome == "Down" {
+			t.Fatal("expected position to be removed")
+		}
+	}
+}
+
+func TestRemovePositionForSettlement_ReturnsFalseWhenMissing(t *testing.T) {
+	engine := NewEngine(100)
+	if engine.RemovePositionForSettlement("mkt1", "Down") {
+		t.Fatal("expected false for missing position")
+	}
+}
+
+func TestSyncExternalPosition_DoesAdjustBaseline(t *testing.T) {
+	// Confirm SyncExternalPosition reduces pnlBaseline (existing behaviour)
+	// so we know RemovePositionForSettlement is the correct alternative.
+	engine := NewEngine(100)
+	engine.SyncExternalPosition("mkt1", "Down", 20, 0.60)
+	baselineBefore := engine.GetStartingBalance() // 100 + 12 = 112
+
+	engine.SyncExternalPosition("mkt1", "Down", 0, 0)
+	baselineAfter := engine.GetStartingBalance() // 112 - 12 = 100
+	delta := baselineBefore - baselineAfter
+	if delta < 11.99 {
+		t.Fatalf("expected SyncExternalPosition(0,0) to reduce baseline by ~12, delta=%.4f", delta)
+	}
+}

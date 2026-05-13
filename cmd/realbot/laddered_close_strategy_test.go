@@ -548,3 +548,62 @@ func TestRealbotHandleLadderedOneHourCloseWindowPaperRestAndFill(t *testing.T) {
 		t.Fatalf("expected position to be cleared after paper sell fill, got %+v", engine.GetPositions())
 	}
 }
+
+// TestRealbotSettleLadderedOneHourOppositeLosersPreservesBaseline verifies that
+// settling losing positions in the ladder close does NOT reduce pnlBaseline,
+// so the equity delta displayed to the user remains correct.
+func TestRealbotSettleLadderedOneHourOppositeLosersPreservesBaseline(t *testing.T) {
+	const startBal = 100.0
+	engine := paper.NewEngine(startBal)
+	tui := paper.NewTUI(engine, nil)
+	marketID := "test-pnl-baseline"
+
+	// Simulate buying both sides.
+	winAvg := 0.84
+	winQty := 27.0
+	winCost := winAvg * winQty // ~22.68
+	loseAvg := 0.58
+	loseQty := 30.0
+	loseCost := loseAvg * loseQty // ~17.40
+
+	if _, err := engine.BuyForMarketWithFeeRate(marketID, "Up", winAvg, winQty, 0); err != nil {
+		t.Fatalf("buy Up: %v", err)
+	}
+	if _, err := engine.BuyForMarketWithFeeRate(marketID, "Down", loseAvg, loseQty, 0); err != nil {
+		t.Fatalf("buy Down: %v", err)
+	}
+
+	// Sell the winning side at $0.999 (simulates ladder close fill).
+	sellPrice := 0.999
+	trade, err := engine.SellForMarketWithFeeRate(marketID, "Up", sellPrice, winQty, 0)
+	if err != nil {
+		t.Fatalf("sell failed: %v", err)
+	}
+
+	// Record the baseline BEFORE loser settlement.
+	baselineBefore := engine.GetStartingBalance()
+
+	// Settle losing side.
+	result := realbotSettleLadderedOneHourOppositeLosers(engine, tui, marketID, "Up")
+	if result == nil {
+		t.Fatal("expected non-nil settlement result")
+	}
+
+	// Baseline should be unchanged — the loss is captured in realizedPnL, not pnlBaseline.
+	baselineAfter := engine.GetStartingBalance()
+	if math.Abs(baselineAfter-baselineBefore) > 0.01 {
+		t.Fatalf("pnlBaseline shifted by %.4f after settling losers; should remain stable (before=%.4f after=%.4f)",
+			baselineAfter-baselineBefore, baselineBefore, baselineAfter)
+	}
+
+	// Verify the equity delta reflects the real net loss.
+	equity := engine.GetEquity()
+	stats := engine.GetStats()
+	netChange := equity - stats.StartingBalance
+	sellProfit := trade.Value - winCost
+	expectedNetChange := sellProfit - loseCost // positive sell PnL minus loser cost (negative overall)
+	if math.Abs(netChange-expectedNetChange) > 0.02 {
+		t.Fatalf("equity delta %.4f does not match expected %.4f (sell profit %.4f - loser cost %.4f)",
+			netChange, expectedNetChange, sellProfit, loseCost)
+	}
+}
