@@ -179,6 +179,26 @@ func realbotLadderedObservedOutcomePrice(engine *paper.Engine, marketID, outcome
 	return 0
 }
 
+func realbotLadderedSellCandidateObservedPrice(engine *paper.Engine, marketID, outcome string, bids, asks map[string]float64) float64 {
+	if price := bids[outcome]; price > 0 && price < 1.0 {
+		return price
+	}
+	bid, ask := 0.0, 0.0
+	if engine != nil {
+		bid, ask = engine.GetMarketBidAsk(marketID, outcome)
+		if bid > 0 && bid < 1.0 {
+			return bid
+		}
+	}
+	if price := asks[outcome]; price > 0 && price < 1.0 {
+		return price
+	}
+	if ask > 0 && ask < 1.0 {
+		return ask
+	}
+	return 0
+}
+
 func realbotLocalOutcomePosition(engine *paper.Engine, marketID, outcome string) (qty, avgPrice float64, ok bool) {
 	if engine == nil {
 		return 0, 0, false
@@ -199,10 +219,7 @@ func realbotLadderedOneHourCloseCandidate(marketID string, outcomes []string, en
 		if !ok || !hasActionableCleanupRemainder(qty) {
 			continue
 		}
-		price := bids[outcome]
-		if price <= 0 && engine != nil {
-			price, _ = engine.GetMarketBidAsk(marketID, outcome)
-		}
+		price := realbotLadderedSellCandidateObservedPrice(engine, marketID, outcome, bids, asks)
 		if price <= 0 || price >= 1.0 {
 			continue
 		}
@@ -377,6 +394,9 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 
 	candidate, ok := realbotLadderedOneHourCloseCandidate(marketID, outcomes, engine, bids, asks)
 	if !ok {
+		if tui != nil {
+			tui.LogEventDedup("1h-close-no-candidate:"+marketID, 15*time.Second, "[%s] ⏳ 1h .999 close waiting: no held outcome has a sellable quote at or above $%.3f", marketID, realbotLadderedOneHourCloseTriggerPrice)
+		}
 		return false
 	}
 	tokenID := mkt.GetTokenIDForOutcome(market, candidate.Outcome)
@@ -482,6 +502,9 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		}
 		realbotStartLadderedOneHourCloseMonitor(ctx, ladderState, marketID, trader, engine, tui)
 		return true
+	}
+	if tui != nil && realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
 	}
 
 	// Try to find a winning candidate we hold to sell

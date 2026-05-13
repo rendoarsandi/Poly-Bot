@@ -33,6 +33,28 @@ func TestRealbotLadderedOneHourCloseCandidatePrefersHigherPricedHeldOutcome(t *t
 	}
 }
 
+func TestRealbotLadderedOneHourCloseCandidateUsesAskWhenBidMissing(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "btc-updown-1h-1700000000"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	candidate, ok := realbotLadderedOneHourCloseCandidate(
+		marketID,
+		[]string{"Down", "Up"},
+		engine,
+		nil,
+		map[string]float64{"Up": realbotLadderedOneHourClosePrice},
+	)
+	if !ok {
+		t.Fatal("expected ask-only near-winning quote to create paper .999 close candidate")
+	}
+	if candidate.Outcome != "Up" || math.Abs(candidate.ObservedPrice-realbotLadderedOneHourClosePrice) > 0.000001 {
+		t.Fatalf("unexpected ask-only candidate: %+v", candidate)
+	}
+}
+
 func TestRealbotShouldUseLadderedOneHourCloseDefaultsToSell999(t *testing.T) {
 	cfg := paper.TUISettings{PaperArbMode: paperArbModeLaddered}
 	if !realbotShouldUseLadderedOneHourClose("btc-updown-1h-1700000000", cfg) {
