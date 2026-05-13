@@ -908,3 +908,15 @@ func TestNormalizeTUISettingsDefaultsRedeemGasModeToFast(t *testing.T) {
 		t.Fatalf("expected redeem gas mode %q, got %q", core.RedeemGasModeUrgent, got.RedeemGasMode)
 	}
 }
+
+func TestNormalizeTUISettingsDefaultsOneHourCryptoExitToSell999(t *testing.T) {
+	got := normalizeTUISettings(TUISettings{})
+	if got.OneHourCryptoExitMode != core.OneHourCryptoExitSell999 {
+		t.Fatalf("expected default 1h crypto exit mode %q, got %q", core.OneHourCryptoExitSell999, got.OneHourCryptoExitMode)
+	}
+
+	got = normalizeTUISettings(TUISettings{OneHourCryptoExitMode: core.OneHourCryptoExitWaitResolve})
+	if got.OneHourCryptoExitMode != core.OneHourCryptoExitWaitResolve {
+		t.Fatalf("expected 1h crypto exit mode %q, got %q", core.OneHourCryptoExitWaitResolve, got.OneHourCryptoExitMode)
+	}
+}

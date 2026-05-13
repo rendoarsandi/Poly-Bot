@@ -37,6 +37,8 @@ const (
 	RedeemGasModeNormal            = "normal"
 	RedeemGasModeFast              = "fast"
 	RedeemGasModeUrgent            = "urgent"
+	OneHourCryptoExitSell999       = "sell-999"
+	OneHourCryptoExitWaitResolve   = "wait-resolve"
 
 	defaultExecutionLocalQuoteMaxAge = 5 * time.Second
 	defaultRestFallbackQuoteAge      = 3 * time.Second
@@ -132,6 +134,7 @@ type Config struct {
 	BlockNewEntriesOnPendingRedemption bool    // Block fresh entries while prior-round inventory/payout is still unresolved
 	RedeemEntryTiming                  string  // Re-entry timing after redemption wait: "immediate" or "next-market"
 	RedeemGasMode                      string  // "normal", "fast", or "urgent" gas profile for live redeems
+	OneHourCryptoExitMode              string  // "sell-999" or "wait-resolve" for 1h laddered crypto exits
 	TakerCloseMarketTime               int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage           float64 // Limit price for taker close (default: 0.99)
 	TakerCloseMarketMinPrice           float64 // Min price to trigger close buy (default: 0.60)
@@ -209,6 +212,7 @@ type RuntimeSettings struct {
 	BlockNewEntriesOnPendingRedemption bool    `json:"blockNewEntriesOnPendingRedemption"`
 	RedeemEntryTiming                  string  `json:"redeemEntryTiming"`
 	RedeemGasMode                      string  `json:"redeemGasMode"`
+	OneHourCryptoExitMode              string  `json:"oneHourCryptoExitMode"`
 	TakerCloseMarketTime               int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage           float64 `json:"takerCloseMarketSlippage"`
 	TakerCloseMarketMinPrice           float64 `json:"takerCloseMarketMinPrice"`
@@ -306,6 +310,7 @@ func LoadConfig() (*Config, error) {
 		BlockNewEntriesOnPendingRedemption: os.Getenv("BLOCK_NEW_ENTRIES_ON_PENDING_REDEMPTION") == "true",
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(parseEnvString("REDEEM_ENTRY_TIMING", RedeemEntryTimingNextMarket)),
 		RedeemGasMode:                      normalizeRedeemGasMode(parseEnvString("REDEEM_GAS_MODE", RedeemGasModeFast)),
+		OneHourCryptoExitMode:              NormalizeOneHourCryptoExitMode(parseEnvString("ONE_HOUR_CRYPTO_EXIT_MODE", OneHourCryptoExitSell999)),
 		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
 		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
 		CopytradeSizingMode:                normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
@@ -391,6 +396,15 @@ func normalizeRedeemGasMode(mode string) string {
 		return RedeemGasModeUrgent
 	default:
 		return RedeemGasModeFast
+	}
+}
+
+func NormalizeOneHourCryptoExitMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OneHourCryptoExitWaitResolve:
+		return OneHourCryptoExitWaitResolve
+	default:
+		return OneHourCryptoExitSell999
 	}
 }
 
@@ -829,6 +843,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		BlockNewEntriesOnPendingRedemption: c.BlockNewEntriesOnPendingRedemption,
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(c.RedeemEntryTiming),
 		RedeemGasMode:                      normalizeRedeemGasMode(c.RedeemGasMode),
+		OneHourCryptoExitMode:              NormalizeOneHourCryptoExitMode(c.OneHourCryptoExitMode),
 		TakerCloseMarketTime:               c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:           c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:           c.TakerCloseMarketMinPrice,
@@ -908,6 +923,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	c.RedeemEntryTiming = normalizeRedeemEntryTiming(s.RedeemEntryTiming)
 	c.RedeemGasMode = normalizeRedeemGasMode(s.RedeemGasMode)
+	c.OneHourCryptoExitMode = NormalizeOneHourCryptoExitMode(s.OneHourCryptoExitMode)
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
@@ -980,6 +996,7 @@ func (c *Config) SaveSettings() error {
 	envMap["TRADING_HOURS_MODE"] = c.TradingHoursMode
 	envMap["REDEEM_ENTRY_TIMING"] = normalizeRedeemEntryTiming(c.RedeemEntryTiming)
 	envMap["REDEEM_GAS_MODE"] = normalizeRedeemGasMode(c.RedeemGasMode)
+	envMap["ONE_HOUR_CRYPTO_EXIT_MODE"] = NormalizeOneHourCryptoExitMode(c.OneHourCryptoExitMode)
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 	envMap["COPYTRADE_MAX_SLIPPAGE_PCT"] = strconv.FormatFloat(normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct), 'f', -1, 64)

@@ -74,14 +74,18 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 				*state.preserveWalletTruth = true
 			}
 			args.refreshWalletTruth(5 * time.Second)
-			if realbotShouldUseLadderedOneHourClose(args.marketID, liveCfg) {
+			if realbotIsLadderedOneHourMarket(args.marketID, liveCfg) {
 				if args.ladderCloseState != nil {
 					args.ladderCloseState.clear(args.marketID)
 				}
 				if args.tui != nil {
 					args.tui.ClearMarketInventoryStatus(args.marketID)
 				}
-				args.tui.LogEvent("[%s] ⏳ Laddered 1h inventory preserved at close; waiting for resolution/redemption instead of .999 close", args.marketID)
+				if realbotShouldUseLadderedOneHourClose(args.marketID, liveCfg) {
+					args.tui.LogEvent("[%s] ⏳ Laddered 1h inventory preserved at close; .999 close no longer fillable, waiting for resolution/redemption", args.marketID)
+				} else {
+					args.tui.LogEvent("[%s] ⏳ Laddered 1h inventory preserved at close; configured to wait for resolution/redemption instead of .999 close", args.marketID)
+				}
 			} else {
 				args.tui.LogEvent("[%s] ⏳ Laddered inventory preserved at close; waiting for resolution/redemption instead of forced cleanup", args.marketID)
 			}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Market-bot/internal/api"
+	"Market-bot/internal/core"
 	mkt "Market-bot/internal/markets"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
@@ -135,8 +136,19 @@ func (s *realbotLadderCloseState) reason(marketID string) (string, bool) {
 	return fmt.Sprintf("waiting to sell %s from %s at $%.3f (GTC)", outcome, marketID, pending.Price), true
 }
 
-func realbotShouldUseLadderedOneHourClose(marketID string, liveCfg paper.TUISettings) bool {
+func realbotIsLadderedOneHourMarket(marketID string, liveCfg paper.TUISettings) bool {
 	return realbotLadderedHoldMode(liveCfg) && realbotMarketWindowDuration(marketID) == time.Hour
+}
+
+func realbotLadderedOneHourExitMode(liveCfg paper.TUISettings) string {
+	return strings.ToLower(strings.TrimSpace(liveCfg.OneHourCryptoExitMode))
+}
+
+func realbotShouldUseLadderedOneHourClose(marketID string, liveCfg paper.TUISettings) bool {
+	if !realbotIsLadderedOneHourMarket(marketID, liveCfg) {
+		return false
+	}
+	return realbotLadderedOneHourExitMode(liveCfg) != core.OneHourCryptoExitWaitResolve
 }
 
 func realbotLadderedOneHourCloseWindow(liveCfg paper.TUISettings) time.Duration {
@@ -421,11 +433,24 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 }
 
 func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *realbotLadderCloseState, marketID string, market *api.Market, outcomes []string, bids, asks map[string]float64, tokenFeeRates map[string]int, liveCfg paper.TUISettings, timeToExpiry time.Duration, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) bool {
-	if !realbotShouldUseLadderedOneHourClose(marketID, liveCfg) {
+	if !realbotIsLadderedOneHourMarket(marketID, liveCfg) {
 		return false
 	}
 	closeWindow := realbotLadderedOneHourCloseWindow(liveCfg)
 	if timeToExpiry <= 0 || timeToExpiry > closeWindow {
+		return false
+	}
+	if !realbotShouldUseLadderedOneHourClose(marketID, liveCfg) {
+		if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+			if ladderState != nil {
+				ladderState.clear(marketID)
+			}
+			if tui != nil {
+				tui.SetMarketInventoryStatus(marketID, "WAITING RESOLUTION")
+				tui.LogEventDedup("1h-wait-resolve:"+marketID, 30*time.Second, "[%s] ⏳ 1h ladder close set to wait for resolution; skipping .999 sell", marketID)
+			}
+			return true
+		}
 		return false
 	}
 	if _, ok := ladderState.get(marketID); ok {

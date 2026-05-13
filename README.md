@@ -125,6 +125,7 @@ These runtime settings are stored in the bot-specific JSON files rather than `.e
 - `tradeScaleFactor`
 - `minAskPrice` / `maxAskPrice`
 - `paperArbMode`
+- `oneHourCryptoExitMode` (`sell-999` or `wait-resolve` for 1h laddered crypto)
 - `makerQuoteGap`
 - `enableMarginAggression`
 - `maxAggressionMultiplier`

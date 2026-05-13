@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
 )
 
@@ -27,6 +28,23 @@ func TestRealbotLadderedOneHourCloseCandidatePrefersHigherPricedHeldOutcome(t *t
 	}
 	if math.Abs(candidate.Qty-5) > 0.000001 {
 		t.Fatalf("expected 5-share candidate, got %.6f", candidate.Qty)
+	}
+}
+
+func TestRealbotShouldUseLadderedOneHourCloseDefaultsToSell999(t *testing.T) {
+	cfg := paper.TUISettings{PaperArbMode: paperArbModeLaddered}
+	if !realbotShouldUseLadderedOneHourClose("btc-updown-1h-1700000000", cfg) {
+		t.Fatal("expected 1h laddered default to use .999 close")
+	}
+}
+
+func TestRealbotShouldUseLadderedOneHourCloseCanWaitForResolve(t *testing.T) {
+	cfg := paper.TUISettings{
+		PaperArbMode:          paperArbModeLaddered,
+		OneHourCryptoExitMode: core.OneHourCryptoExitWaitResolve,
+	}
+	if realbotShouldUseLadderedOneHourClose("btc-updown-1h-1700000000", cfg) {
+		t.Fatal("expected wait-resolve mode to skip .999 close")
 	}
 }
 
@@ -176,6 +194,45 @@ func TestRealbotHandleLadderedOneHourCloseWindowSettlesHeldLoserWhenOppositeNear
 	}
 	if got := engine.GetSettledLoserShares(marketID, "Down"); math.Abs(got-5) > 0.000001 {
 		t.Fatalf("expected settled loser shares 5, got %.6f", got)
+	}
+}
+
+func TestRealbotHandleLadderedOneHourCloseWindowWaitResolveSkipsSell(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(5*time.Second))
+	ladderState := newRealbotLadderCloseState()
+
+	handled := realbotHandleLadderedOneHourCloseWindow(
+		context.Background(),
+		ladderState,
+		marketID,
+		nil,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": 0.99},
+		map[string]float64{"Up": 0.995},
+		nil,
+		paper.TUISettings{
+			PaperArbMode:          paperArbModeLaddered,
+			OneHourCryptoExitMode: core.OneHourCryptoExitWaitResolve,
+		},
+		5*time.Second,
+		nil,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected wait-resolve mode to take over near close")
+	}
+	if _, ok := ladderState.get(marketID); ok {
+		t.Fatal("expected wait-resolve mode not to create a pending sell")
+	}
+	if !realbotHasEnginePositionsForMarket(engine, marketID) {
+		t.Fatal("expected wait-resolve mode to preserve inventory")
 	}
 }
 

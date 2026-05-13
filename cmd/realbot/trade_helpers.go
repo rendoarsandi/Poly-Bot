@@ -619,6 +619,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		BlockNewEntriesOnPendingRedemption: cfg.BlockNewEntriesOnPendingRedemption,
 		RedeemEntryTiming:                  cfg.RedeemEntryTiming,
 		RedeemGasMode:                      cfg.RedeemGasMode,
+		OneHourCryptoExitMode:              cfg.OneHourCryptoExitMode,
 	}
 }
 
@@ -675,6 +676,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	cfg.RedeemEntryTiming = realbotNormalizeRedeemEntryTiming(s.RedeemEntryTiming)
 	cfg.RedeemGasMode = realbotNormalizeRedeemGasMode(s.RedeemGasMode)
+	cfg.OneHourCryptoExitMode = core.NormalizeOneHourCryptoExitMode(s.OneHourCryptoExitMode)
 	if cfg.ExecutionBackend == core.ExecutionBackendPaper {
 		cfg.SplitStrategyEnabled = false
 		if normalizePaperArbMode(cfg.PaperArbMode) == paperArbModeMaker {

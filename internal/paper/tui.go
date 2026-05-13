@@ -594,6 +594,7 @@ type TUISettings struct {
 	BlockNewEntriesOnPendingRedemption bool    // block fresh entries while prior-round inventory is still awaiting redemption
 	RedeemEntryTiming                  string  // when wait-redeem is ON: "immediate" or "next-market" re-entry behavior
 	RedeemGasMode                      string  // "normal", "fast", or "urgent" gas profile for live redeems
+	OneHourCryptoExitMode              string  // "sell-999" or "wait-resolve" for 1h laddered crypto exits
 	TakerCloseMarketTime               int     // e.g. 5 seconds
 	TakerCloseMarketSlippage           float64 // e.g. 0.99 limit price
 	TakerCloseMarketMinPrice           float64 // e.g. 0.60 min spike price
@@ -631,6 +632,7 @@ const (
 	settingsRowSplitReplenishCap
 	settingsRowTakerCloseMarket
 	settingsRowBlockPendingRedemption
+	settingsRowOneHourCryptoExit
 	settingsRowRedeemEntryTiming
 	settingsRowRedeemGasMode
 	settingsRowMinAskPrice
@@ -745,6 +747,9 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	}
 	if idx == settingsRowRedeemEntryTiming {
 		return laddered && cfg.BlockNewEntriesOnPendingRedemption
+	}
+	if idx == settingsRowOneHourCryptoExit {
+		return laddered && !kalshi && normalizeMarketTimeframe(cfg.Timeframe) == "1h"
 	}
 	if idx == settingsRowRedeemGasMode {
 		return strings.EqualFold(mode, "Real") &&
@@ -948,6 +953,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Taker Close Market"
 	case settingsRowBlockPendingRedemption:
 		return "Wait Redeem Before Entry"
+	case settingsRowOneHourCryptoExit:
+		return "1h Crypto Exit"
 	case settingsRowRedeemEntryTiming:
 		return "Redeem Re-entry Timing"
 	case settingsRowRedeemGasMode:
@@ -1151,6 +1158,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	s.LadderedTakerReentryMoveCents = normalizeLadderedTakerReentryMoveCents(s.LadderedTakerReentryMoveCents)
 	s.RedeemEntryTiming = normalizeRedeemEntryTiming(s.RedeemEntryTiming)
 	s.RedeemGasMode = normalizeRedeemGasMode(s.RedeemGasMode)
+	s.OneHourCryptoExitMode = normalizeOneHourCryptoExitMode(s.OneHourCryptoExitMode)
 	if s.LadderedTakerMaxSlippagePct < 0 {
 		s.LadderedTakerMaxSlippagePct = 0
 	} else if s.LadderedTakerMaxSlippagePct > 99.0 {
@@ -1254,12 +1262,33 @@ func normalizeRedeemGasMode(mode string) string {
 	}
 }
 
+func normalizeOneHourCryptoExitMode(mode string) string {
+	return core.NormalizeOneHourCryptoExitMode(mode)
+}
+
 func cycleRedeemEntryTiming(mode string, delta int) string {
 	modes := []string{
 		core.RedeemEntryTimingNextMarket,
 		core.RedeemEntryTimingImmediate,
 	}
 	current := normalizeRedeemEntryTiming(mode)
+	idx := 0
+	for i, candidate := range modes {
+		if current == candidate {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(modes)) % len(modes)
+	return modes[idx]
+}
+
+func cycleOneHourCryptoExitMode(mode string, delta int) string {
+	modes := []string{
+		core.OneHourCryptoExitSell999,
+		core.OneHourCryptoExitWaitResolve,
+	}
+	current := normalizeOneHourCryptoExitMode(mode)
 	idx := 0
 	for i, candidate := range modes {
 		if current == candidate {
@@ -3024,6 +3053,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case settingsRowBlockPendingRedemption:
 					m.tui.settings.BlockNewEntriesOnPendingRedemption = !m.tui.settings.BlockNewEntriesOnPendingRedemption
 					changed = true
+				case settingsRowOneHourCryptoExit:
+					m.tui.settings.OneHourCryptoExitMode = cycleOneHourCryptoExitMode(m.tui.settings.OneHourCryptoExitMode, -1)
+					changed = true
 				case settingsRowRedeemEntryTiming:
 					m.tui.settings.RedeemEntryTiming = cycleRedeemEntryTiming(m.tui.settings.RedeemEntryTiming, -1)
 					changed = true
@@ -3310,6 +3342,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowBlockPendingRedemption:
 					m.tui.settings.BlockNewEntriesOnPendingRedemption = !m.tui.settings.BlockNewEntriesOnPendingRedemption
+					changed = true
+				case settingsRowOneHourCryptoExit:
+					m.tui.settings.OneHourCryptoExitMode = cycleOneHourCryptoExitMode(m.tui.settings.OneHourCryptoExitMode, 1)
 					changed = true
 				case settingsRowRedeemEntryTiming:
 					m.tui.settings.RedeemEntryTiming = cycleRedeemEntryTiming(m.tui.settings.RedeemEntryTiming, 1)
@@ -7723,6 +7758,16 @@ func (m tuiModel) renderSettings(w int) string {
 					return styleGreen.Render("  ON ")
 				}
 				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowOneHourCryptoExit),
+			value: func() string {
+				if normalizeOneHourCryptoExitMode(cfg.OneHourCryptoExitMode) == core.OneHourCryptoExitWaitResolve {
+					return styleYellow.Render(" WAIT ")
+				}
+				return styleGreen.Render(" SELL .999 ")
 			}(),
 			bar: "",
 		},

@@ -614,6 +614,7 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 		LadderedTakerWorstPnLFloor:  -2.25,
 		LadderedTakerMaxProfitPnL:   0.8,
 		RedeemGasMode:               core.RedeemGasModeUrgent,
+		OneHourCryptoExitMode:       core.OneHourCryptoExitWaitResolve,
 	}
 
 	settings := realbotTUISettingsFromConfig(cfg)
@@ -638,6 +639,9 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	if settings.RedeemGasMode != core.RedeemGasModeUrgent {
 		t.Fatalf("expected TUI settings to include redeem gas mode, got %q", settings.RedeemGasMode)
 	}
+	if settings.OneHourCryptoExitMode != core.OneHourCryptoExitWaitResolve {
+		t.Fatalf("expected TUI settings to include 1h crypto exit mode, got %q", settings.OneHourCryptoExitMode)
+	}
 
 	settings.ExecutionBackend = core.ExecutionBackendLive
 	settings.PaperBalance = 77
@@ -646,6 +650,7 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	settings.LadderedTakerWorstPnLFloor = -1.5
 	settings.LadderedTakerMaxProfitPnL = 1.1
 	settings.RedeemGasMode = core.RedeemGasModeNormal
+	settings.OneHourCryptoExitMode = core.OneHourCryptoExitSell999
 	applyRealbotTUISettings(cfg, settings)
 	if cfg.ExecutionBackend != core.ExecutionBackendLive {
 		t.Fatalf("expected config to receive updated execution backend, got %q", cfg.ExecutionBackend)
@@ -667,6 +672,9 @@ func TestRealbotTUISettingsRoundTripIncludesLadderedSlippage(t *testing.T) {
 	}
 	if cfg.RedeemGasMode != core.RedeemGasModeNormal {
 		t.Fatalf("expected config to receive updated redeem gas mode, got %q", cfg.RedeemGasMode)
+	}
+	if cfg.OneHourCryptoExitMode != core.OneHourCryptoExitSell999 {
+		t.Fatalf("expected config to receive updated 1h crypto exit mode, got %q", cfg.OneHourCryptoExitMode)
 	}
 }
 

@@ -751,6 +751,24 @@ func TestIsRowVisibleHidesUnrelatedRowsInLadderedMode(t *testing.T) {
 	}
 }
 
+func TestIsRowVisibleShowsOneHourCryptoExitOnlyForLadderedOneHour(t *testing.T) {
+	cfg := TUISettings{Exchange: "polymarket", PaperArbMode: "laddered-taker", Timeframe: "1h"}
+	if !isRowVisible(cfg, "Paper", settingsRowOneHourCryptoExit) {
+		t.Fatal("expected 1h crypto exit row to be visible for laddered 1h")
+	}
+
+	cfg.Timeframe = "15m"
+	if isRowVisible(cfg, "Paper", settingsRowOneHourCryptoExit) {
+		t.Fatal("expected 1h crypto exit row to be hidden outside 1h")
+	}
+
+	cfg.Timeframe = "1h"
+	cfg.PaperArbMode = "taker"
+	if isRowVisible(cfg, "Paper", settingsRowOneHourCryptoExit) {
+		t.Fatal("expected 1h crypto exit row to be hidden outside laddered mode")
+	}
+}
+
 func TestFormatDisplayShareQtyKeepsFiveDecimalInventoryPrecision(t *testing.T) {
 	if got := formatDisplayShareQty(1.234567); got != "1.23457" {
 		t.Fatalf("expected 5-decimal share precision, got %q", got)

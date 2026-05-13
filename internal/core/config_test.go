@@ -23,6 +23,9 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.TradingMode != ModePaper {
 		t.Fatalf("expected generic LoadConfig to ignore TRADING_MODE and default to paper, got %q", cfg.TradingMode)
 	}
+	if cfg.OneHourCryptoExitMode != OneHourCryptoExitSell999 {
+		t.Fatalf("expected default 1h crypto exit mode %q, got %q", OneHourCryptoExitSell999, cfg.OneHourCryptoExitMode)
+	}
 }
 
 func TestValidateForRealTradingRequiresCredentialsWithoutModeFlag(t *testing.T) {
@@ -79,6 +82,7 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"binanceSignalPolyAdverseMoveCents": 0.4,
 		"binanceSignalSpreadMaxCents": 3.5,
 		"redeemGasMode": "urgent",
+		"oneHourCryptoExitMode": "wait-resolve",
 		"paperArbMode": "maker",
 		"makerQuoteGap": 0.004
 	}`)
@@ -186,6 +190,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.RedeemGasMode != RedeemGasModeUrgent {
 		t.Fatalf("expected JSON RedeemGasMode urgent, got %q", cfg.RedeemGasMode)
 	}
+	if cfg.OneHourCryptoExitMode != OneHourCryptoExitWaitResolve {
+		t.Fatalf("expected JSON OneHourCryptoExitMode wait-resolve, got %q", cfg.OneHourCryptoExitMode)
+	}
 	if cfg.PaperArbMode != "maker" {
 		t.Fatalf("expected JSON PaperArbMode maker, got %q", cfg.PaperArbMode)
 	}
@@ -269,6 +276,7 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.MakerQuoteGap = 0.005
 	cfg.TradingHoursMode = "off"
 	cfg.RedeemGasMode = RedeemGasModeNormal
+	cfg.OneHourCryptoExitMode = OneHourCryptoExitWaitResolve
 
 	if err := cfg.SaveSettings(); err != nil {
 		t.Fatalf("SaveSettings failed: %v", err)
@@ -383,6 +391,9 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.RedeemGasMode != RedeemGasModeNormal {
 		t.Fatalf("expected saved RedeemGasMode normal, got %q", settings.RedeemGasMode)
+	}
+	if settings.OneHourCryptoExitMode != OneHourCryptoExitWaitResolve {
+		t.Fatalf("expected saved OneHourCryptoExitMode wait-resolve, got %q", settings.OneHourCryptoExitMode)
 	}
 }
 
