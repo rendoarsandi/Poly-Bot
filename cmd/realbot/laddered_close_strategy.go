@@ -258,7 +258,7 @@ func realbotSettleLadderedOneHourOppositeLosers(engine *paper.Engine, tui *paper
 		if pos.MarketID != marketID || strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(winningOutcome)) || pos.Quantity <= 0 {
 			continue
 		}
-		if !engine.SyncExternalPosition(marketID, pos.Outcome, 0, 0) {
+		if !engine.RemovePositionForSettlement(marketID, pos.Outcome) {
 			continue
 		}
 		if result.LosingOutcome == "" {

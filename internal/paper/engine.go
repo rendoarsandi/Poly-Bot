@@ -1962,6 +1962,25 @@ func (e *Engine) GetCompoundStats() (multiplier float64, rounds int, profitable 
 	return e.compoundMultiplier, e.roundsCompleted, e.profitableRounds, e.losingRounds, sizing
 }
 
+// RemovePositionForSettlement removes a position that has been internally
+// settled (e.g. a known loser in a ladder close). Unlike SyncExternalPosition,
+// this does NOT adjust pnlBaseline because the PnL impact is accounted for
+// separately via AdjustRealizedPnL.
+func (e *Engine) RemovePositionForSettlement(marketID, outcome string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	posKey := outcome
+	if marketID != "" {
+		posKey = marketID + ":" + outcome
+	}
+	if _, exists := e.positions[posKey]; !exists {
+		return false
+	}
+	delete(e.positions, posKey)
+	e.recalculateDrawdown()
+	return true
+}
+
 // RecordSettledLoser records a settled losing outcome so wallet truth avoids resurrecting it
 func (e *Engine) RecordSettledLoser(marketID, outcome string, shares float64) {
 	e.mu.Lock()
