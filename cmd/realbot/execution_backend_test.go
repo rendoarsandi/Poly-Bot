@@ -308,6 +308,55 @@ func TestEmbeddedPaperResolutionSweepSettlesHeldExpiredMarketBySlug(t *testing.T
 	}
 }
 
+func TestEmbeddedPaperResolutionSweepSettlesHeldExpiredMarketByGammaSlug(t *testing.T) {
+	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/markets/"+marketID:
+			http.Error(w, "not found", http.StatusNotFound)
+		case r.URL.Path == "/markets" && r.URL.Query().Get("slug") == marketID:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"conditionId":"cond-btc-1","slug":"` + marketID + `","clobTokenIds":"[\"down-token\",\"up-token\"]","outcomes":"[\"Down\",\"Up\"]","outcomePrices":"[\"0\",\"1\"]","umaResolutionStatus":"resolved","active":false,"closed":true}]`))
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk(marketID, "Up", 0.99, 1.00)
+	engine.UpdateMarketBidAsk(marketID, "Down", 0.01, 0.02)
+
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	restClient := api.NewRestClient("polymarket")
+	restClient.BaseURL = server.URL
+	restClient.GammaURL = server.URL
+	resCache := api.NewResolutionCache(nil, nil, restClient)
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	realbotStartEmbeddedPaperResolutionSweep(ctx, trader, engine, tui, restClient, resCache)
+
+	deadline := time.Now().Add(1200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := engine.GetBalance(); math.Abs(got-102.0) <= 0.000001 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if got := engine.GetBalance(); math.Abs(got-102.0) > 0.000001 {
+		t.Fatalf("expected gamma-backed embedded-paper sweep to settle to 102.00, got %.2f", got)
+	}
+	if realbotHasEnginePositionsForMarket(engine, marketID) {
+		t.Fatal("expected gamma-backed sweep to redeem and clear inventory")
+	}
+}
+
 func TestNormalizePaperArbModeDefaultsToTaker(t *testing.T) {
 	if got := normalizePaperArbMode(""); got != paperArbModeTaker {
 		t.Fatalf("expected empty mode to normalize to taker, got %q", got)

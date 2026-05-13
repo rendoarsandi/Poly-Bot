@@ -307,6 +307,15 @@ func realbotApplyLadderedOneHourCloseFill(engine *paper.Engine, tui *paper.TUI, 
 	return qty
 }
 
+func realbotRecordLadderedOneHourPaperCloseFill(tui *paper.TUI, marketID, outcome string, qty, price, netProceeds, avgPrice float64) {
+	if tui == nil || qty <= 0 {
+		return
+	}
+	profit := netProceeds - (avgPrice * qty)
+	tui.RecordOrderWithMode(marketID, outcome, "SELL", qty, price, netProceeds, 0.0, profit, paperArbModeLaddered, "FILLED")
+	tui.LogEvent("[%s] ✅ 1h ladder close filled: sold %s %s at $%.3f", marketID, formatShareQty(qty), outcome, price)
+}
+
 func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *realbotLadderCloseState, marketID string, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) {
 	if trader == nil || engine == nil || ladderState == nil {
 		return
@@ -375,6 +384,7 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 		tui.LogEvent("[%s] ⚠️ 1h ladder close skipped: missing token for %s", marketID, candidate.Outcome)
 		return false
 	}
+	_, candidateAvgPrice, _ := realbotLocalOutcomePosition(engine, marketID, candidate.Outcome)
 
 	feeRate := realbotResolveFeeRateBps(tokenFeeRates, candidate.Outcome, nil)
 	realbotRecordOrderSubmissions(1)
@@ -415,10 +425,16 @@ func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Contex
 	mirroredQty := 0.0
 	if result.AcknowledgedQty > 0 {
 		fillPrice := realbotLadderedOneHourClosePrice
-		if result.AcknowledgedQty > 0 && result.AcknowledgedNotional > 0 {
+		if result.AcknowledgedQty > 0 && result.AcknowledgedNotional > 0 && !trader.IsEmbeddedPaperMode() {
 			fillPrice = result.AcknowledgedNotional / result.AcknowledgedQty
 		}
-		mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate, true)
+		if trader.IsEmbeddedPaperMode() {
+			mirroredQty = result.AcknowledgedQty
+			realbotRecordLadderedOneHourPaperCloseFill(tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, result.AcknowledgedNotional, candidateAvgPrice)
+			realbotSettleLadderedOneHourOppositeLosers(engine, tui, marketID, candidate.Outcome)
+		} else {
+			mirroredQty = realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, candidate.Outcome, result.AcknowledgedQty, fillPrice, feeRate, true)
+		}
 	}
 	ladderState.setMirroredQty(marketID, mirroredQty)
 	if mirroredQty >= candidate.Qty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {

@@ -36,6 +36,57 @@ func TestGetMarket(t *testing.T) {
 	}
 }
 
+func TestGetGammaMarketBySlugMarksResolvedWinner(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/markets" || r.URL.Query().Get("slug") != "btc-updown-1h-1700000000" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"conditionId":"cond-btc-1","slug":"btc-updown-1h-1700000000","endDate":"2026-05-13T10:00:00Z","clobTokenIds":"[\"down-token\",\"up-token\"]","outcomes":"[\"Down\",\"Up\"]","outcomePrices":"[\"0\",\"1\"]","umaResolutionStatus":"resolved","active":false,"closed":true}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("polymarket")
+	client.GammaURL = server.URL
+	market, err := client.GetGammaMarketBySlug(context.Background(), "btc-updown-1h-1700000000")
+	if err != nil {
+		t.Fatalf("expected gamma market lookup to succeed, got %v", err)
+	}
+	if market.ConditionID != "cond-btc-1" || market.Slug != "btc-updown-1h-1700000000" {
+		t.Fatalf("unexpected gamma market: %+v", market)
+	}
+	if len(market.Tokens) != 2 || market.Tokens[0].Winner || !market.Tokens[1].Winner {
+		t.Fatalf("expected Up winner from resolved outcome prices, got %+v", market.Tokens)
+	}
+}
+
+func TestResolutionCacheUsesGammaConditionFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/markets/cond-btc-1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.URL.Path != "/markets" || r.URL.Query().Get("condition_ids") != "cond-btc-1" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"conditionId":"cond-btc-1","slug":"btc-updown-1h-1700000000","clobTokenIds":"[\"down-token\",\"up-token\"]","outcomes":"[\"Down\",\"Up\"]","outcomePrices":"[\"0\",\"1\"]","umaResolutionStatus":"resolved","active":false,"closed":true}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	client.GammaURL = server.URL
+	cache := NewResolutionCache(nil, nil, client)
+
+	status := cache.GetResolution(context.Background(), "cond-btc-1", []string{"Down", "Up"}, time.Now().Add(-time.Minute))
+	if !status.Resolved || status.Winner != "Up" {
+		t.Fatalf("expected Gamma condition fallback to resolve Up, got %+v", status)
+	}
+}
+
 func TestNewRestClientDefault(t *testing.T) {
 	client := NewRestClient("")
 	if client.BaseURL != "https://clob.polymarket.com" {

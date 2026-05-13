@@ -104,6 +104,34 @@ func realbotEmbeddedPaperMarketReady(marketID string, now time.Time) bool {
 	return !now.Add(realbotEmbeddedPaperRedemptionLead).Before(endTime)
 }
 
+func realbotLookupEmbeddedPaperResolutionMarket(ctx context.Context, restClient *api.RestClient, marketID string) (*api.Market, error) {
+	if restClient == nil {
+		return nil, nil
+	}
+	marketID = strings.TrimSpace(marketID)
+	if marketID == "" {
+		return nil, nil
+	}
+	market, err := restClient.GetMarket(ctx, marketID)
+	if err == nil && market != nil {
+		return market, nil
+	}
+	market, gammaErr := restClient.GetGammaMarketBySlug(ctx, marketID)
+	if gammaErr == nil && market != nil {
+		return market, nil
+	}
+	if strings.HasPrefix(strings.ToLower(marketID), "0x") {
+		market, conditionErr := restClient.GetGammaMarketByConditionID(ctx, marketID)
+		if conditionErr == nil && market != nil {
+			return market, nil
+		}
+	}
+	if gammaErr != nil {
+		return nil, gammaErr
+	}
+	return nil, err
+}
+
 func realbotStartEmbeddedPaperResolutionSweep(ctx context.Context, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI, restClient *api.RestClient, resCache *api.ResolutionCache) {
 	if trader == nil || !trader.IsEmbeddedPaperMode() || engine == nil || tui == nil || restClient == nil {
 		return
@@ -117,7 +145,7 @@ func realbotStartEmbeddedPaperResolutionSweep(ctx context.Context, trader *tradi
 			}
 
 			queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			market, err := restClient.GetMarket(queryCtx, marketID)
+			market, err := realbotLookupEmbeddedPaperResolutionMarket(queryCtx, restClient, marketID)
 			cancel()
 			if err != nil || market == nil {
 				continue

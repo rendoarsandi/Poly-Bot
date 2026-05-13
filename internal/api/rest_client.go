@@ -325,37 +325,11 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 
 	markets := make([]Market, 0, len(event.Markets))
 	for _, gm := range event.Markets {
-		var tokenIDs []string
-		if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
+		market, ok := marketFromGammaMarket(gm, eventSlug, eventEndTime)
+		if !ok {
 			continue
 		}
-
-		var outcomes []string
-		if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
-			outcomes = []string{"Up", "Down"}
-		}
-
-		tokenWinners := gammaWinnerFlags(gm, outcomes)
-		marketSlug := core.SanitizeString(gm.Slug)
-		if marketSlug == "" {
-			marketSlug = eventSlug
-		}
-		marketEndTime := parseGammaEventEndTime(gm.EndDate)
-		if marketEndTime.IsZero() {
-			marketEndTime = eventEndTime
-		}
-
-		markets = append(markets, Market{
-			ConditionID: gm.ConditionID,
-			Slug:        marketSlug,
-			Active:      gm.Active,
-			Closed:      gm.Closed,
-			EndTime:     marketEndTime,
-			Tokens: []Token{
-				{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
-				{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
-			},
-		})
+		markets = append(markets, *market)
 	}
 
 	if len(markets) == 0 {
@@ -363,6 +337,41 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 	}
 
 	return markets, nil
+}
+
+func marketFromGammaMarket(gm GammaMarket, fallbackSlug string, fallbackEndTime time.Time) (*Market, bool) {
+	var tokenIDs []string
+	if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
+		return nil, false
+	}
+
+	var outcomes []string
+	if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
+		outcomes = []string{"Up", "Down"}
+	}
+
+	tokenWinners := gammaWinnerFlags(gm, outcomes)
+	marketSlug := core.SanitizeString(gm.Slug)
+	if marketSlug == "" {
+		marketSlug = core.SanitizeString(fallbackSlug)
+	}
+	marketEndTime := parseGammaEventEndTime(gm.EndDate)
+	if marketEndTime.IsZero() {
+		marketEndTime = fallbackEndTime
+	}
+	resolved := strings.EqualFold(strings.TrimSpace(gm.UMAResolutionStatus), "resolved")
+
+	return &Market{
+		ConditionID: gm.ConditionID,
+		Slug:        marketSlug,
+		Active:      gm.Active,
+		Closed:      gm.Closed || resolved,
+		EndTime:     marketEndTime,
+		Tokens: []Token{
+			{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
+			{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
+		},
+	}, true
 }
 
 func gammaWinnerFlags(market GammaMarket, outcomes []string) []bool {
@@ -404,6 +413,77 @@ func gammaWinnerFlags(market GammaMarket, outcomes []string) []bool {
 	flags := make([]bool, len(outcomes))
 	flags[winnerIdx] = true
 	return flags
+}
+
+func (c *RestClient) fetchGammaMarkets(ctx context.Context, query url.Values) ([]GammaMarket, error) {
+	select {
+	case <-c.limiter:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	lookupURL := fmt.Sprintf("%s/markets?%s", c.GammaURL, query.Encode())
+	req, err := http.NewRequestWithContext(ctx, "GET", lookupURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch gamma markets: status %d", resp.StatusCode)
+	}
+
+	var markets []GammaMarket
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBodySize)).Decode(&markets); err != nil {
+		return nil, err
+	}
+	return markets, nil
+}
+
+func (c *RestClient) getGammaMarketByQuery(ctx context.Context, query url.Values, fallbackSlug string) (*Market, error) {
+	markets, err := c.fetchGammaMarkets(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	for _, gm := range markets {
+		market, ok := marketFromGammaMarket(gm, fallbackSlug, time.Time{})
+		if ok {
+			return market, nil
+		}
+	}
+	return nil, fmt.Errorf("no gamma market found")
+}
+
+func (c *RestClient) GetGammaMarketBySlug(ctx context.Context, slug string) (*Market, error) {
+	slug = core.SanitizeString(slug)
+	if slug == "" {
+		return nil, fmt.Errorf("missing gamma market slug")
+	}
+	query := url.Values{}
+	query.Add("slug", slug)
+	market, err := c.getGammaMarketByQuery(ctx, query, slug)
+	if err == nil && market != nil {
+		return market, nil
+	}
+	if eventMarket, eventErr := c.getGammaTimeframeMarket(ctx, slug); eventErr == nil && eventMarket != nil {
+		return eventMarket, nil
+	}
+	return nil, err
+}
+
+func (c *RestClient) GetGammaMarketByConditionID(ctx context.Context, conditionID string) (*Market, error) {
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return nil, fmt.Errorf("missing gamma condition id")
+	}
+	query := url.Values{}
+	query.Add("condition_ids", conditionID)
+	return c.getGammaMarketByQuery(ctx, query, "")
 }
 
 func (c *RestClient) kalshiGetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {
@@ -525,40 +605,14 @@ func (c *RestClient) getGammaTimeframeMarket(ctx context.Context, slug string) (
 	}
 
 	event := events[0]
-	gm := event.Markets[0]
 	eventEndTime := parseGammaEventEndTime(event.EndDate)
-
-	var tokenIDs []string
-	if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
-		return nil, nil
+	for _, gm := range event.Markets {
+		market, ok := marketFromGammaMarket(gm, slug, eventEndTime)
+		if ok {
+			return market, nil
+		}
 	}
-
-	var outcomes []string
-	if err := json.Unmarshal([]byte(gm.Outcomes), &outcomes); err != nil || len(outcomes) < 2 {
-		outcomes = []string{"Up", "Down"}
-	}
-
-	tokenWinners := gammaWinnerFlags(gm, outcomes)
-	marketSlug := core.SanitizeString(gm.Slug)
-	if marketSlug == "" {
-		marketSlug = core.SanitizeString(slug)
-	}
-	marketEndTime := parseGammaEventEndTime(gm.EndDate)
-	if marketEndTime.IsZero() {
-		marketEndTime = eventEndTime
-	}
-
-	return &Market{
-		ConditionID: gm.ConditionID,
-		Slug:        marketSlug,
-		Active:      gm.Active,
-		Closed:      gm.Closed,
-		EndTime:     marketEndTime,
-		Tokens: []Token{
-			{TokenID: tokenIDs[0], Outcome: core.SanitizeString(outcomes[0]), Winner: len(tokenWinners) > 0 && tokenWinners[0]},
-			{TokenID: tokenIDs[1], Outcome: core.SanitizeString(outcomes[1]), Winner: len(tokenWinners) > 1 && tokenWinners[1]},
-		},
-	}, nil
+	return nil, nil
 }
 
 func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string, timeframe string) ([]Market, error) {

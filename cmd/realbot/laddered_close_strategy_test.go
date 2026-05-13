@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"Market-bot/internal/api"
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/trading"
 )
 
 func TestRealbotLadderedOneHourCloseCandidatePrefersHigherPricedHeldOutcome(t *testing.T) {
@@ -99,6 +101,76 @@ func TestRealbotApplyLadderedOneHourCloseFillSettlesOppositeLoserInPaper(t *test
 	expectedPnL := (realbotLadderedOneHourClosePrice-0.60)*5 - (0.40 * 2)
 	if math.Abs(engine.GetStats().RealizedPnL-expectedPnL) > 0.000001 {
 		t.Fatalf("expected realized pnl %.6f after settling opposite loser, got %.6f", expectedPnL, engine.GetStats().RealizedPnL)
+	}
+}
+
+func TestRealbotSubmitLadderedOneHourCloseOrderEmbeddedPaperDoesNotDoubleSell(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "btc-updown-1h-1700000000"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket(marketID, "Down", 0.40, 2); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourClosePrice, 1.0)
+	engine.UpdateMarketBidAsk(marketID, "Down", 0.001, 0.01)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(5*time.Second))
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	trader.RegisterPaperToken("up-token", marketID, "Up")
+	ladderState := newRealbotLadderCloseState()
+	market := &api.Market{
+		Slug: marketID,
+		Tokens: []api.Token{
+			{TokenID: "down-token", Outcome: "Down"},
+			{TokenID: "up-token", Outcome: "Up"},
+		},
+	}
+
+	handled := realbotSubmitLadderedOneHourCloseOrder(
+		context.Background(),
+		context.Background(),
+		ladderState,
+		marketID,
+		market,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": realbotLadderedOneHourClosePrice, "Down": 0.001},
+		map[string]float64{"Up": 1.0, "Down": 0.01},
+		map[string]int{"Up": 1000},
+		trader,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected embedded paper close order to be handled")
+	}
+	if _, ok := ladderState.get(marketID); ok {
+		t.Fatal("expected filled embedded paper close to clear pending ladder state")
+	}
+	if realbotHasEnginePositionsForMarket(engine, marketID) {
+		t.Fatalf("expected embedded paper close to clear all market inventory, got %+v", engine.GetPositions())
+	}
+	if got := engine.GetSettledLoserShares(marketID, "Down"); math.Abs(got-2) > 0.000001 {
+		t.Fatalf("expected opposite loser settlement of 2 shares, got %.6f", got)
+	}
+
+	expectedFee := core.PolymarketTakerFeeUSDC(5, realbotLadderedOneHourClosePrice, 1000)
+	expectedNetProceeds := (5 * realbotLadderedOneHourClosePrice) - expectedFee
+	expectedPnL := expectedNetProceeds - (0.60 * 5) - (0.40 * 2)
+	if got := engine.GetStats().RealizedPnL; math.Abs(got-expectedPnL) > 0.000001 {
+		t.Fatalf("expected realized pnl %.6f with simulated sell fee and loser settlement, got %.6f", expectedPnL, got)
+	}
+
+	history := tui.GetOrderHistory()
+	if len(history) != 1 {
+		t.Fatalf("expected one recorded sell, got %+v", history)
+	}
+	if history[0].Side != "SELL" || history[0].Status != "FILLED" || history[0].ExecutionMode != paperArbModeLaddered {
+		t.Fatalf("unexpected order history entry: %+v", history[0])
+	}
+	if math.Abs(history[0].Cost-expectedNetProceeds) > 0.000001 {
+		t.Fatalf("expected sell history net proceeds %.6f, got %.6f", expectedNetProceeds, history[0].Cost)
 	}
 }
 

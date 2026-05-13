@@ -211,10 +211,20 @@ func (rc *ResolutionCache) resolveViaREST(ctx context.Context, conditionID strin
 	if rc.restClient == nil {
 		return nil, nil
 	}
-	// RestClient.GetMarket returns a Market struct; convert to MarketInfo
 	market, err := rc.restClient.GetMarket(ctx, conditionID)
 	if err != nil {
-		return nil, err
+		market, err = rc.restClient.GetGammaMarketByConditionID(ctx, conditionID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return marketInfoFromMarket(market), nil
+}
+
+func marketInfoFromMarket(market *Market) *MarketInfo {
+	if market == nil {
+		return nil
 	}
 	info := &MarketInfo{
 		ConditionID: market.ConditionID,
@@ -234,7 +244,7 @@ func (rc *ResolutionCache) resolveViaREST(ctx context.Context, conditionID strin
 			Winner:  token.Winner,
 		})
 	}
-	return info, nil
+	return info
 }
 
 // IsResolved is a convenience method that returns just the resolved bool.
