@@ -218,6 +218,8 @@ func TestRealbotResetLadderedStartupStabilityClearsState(t *testing.T) {
 
 func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing.T) {
 	// Configured at a $0.50 base with a 5c step: rungs 0..3 sit at 0.50/0.55/0.60/0.65.
+	// After filling rungs 0-3 and re-arming, already-filled rungs must NOT
+	// re-buy. Only unfilled gap rungs should be allowed.
 	entries := []realbotLadderedEntry{
 		{seq: 0, ask0: 0.50, ask1: 0.45, side: 0, rung: 0, armed: true},
 		{seq: 1, ask0: 0.55, ask1: 0.45, side: 0, rung: 1},
@@ -226,14 +228,71 @@ func TestRealbotLadderedDirectionalSideRearmsAfterReturningToBaseRung(t *testing
 	}
 
 	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.65, 0.40, 0.50, 5.0); ok {
-		t.Fatalf("expected side 0 to stay blocked until it rearms, got side=%d ok=%v", side, ok)
+		t.Fatalf("expected side 0 to stay blocked at filled rung, got side=%d ok=%v", side, ok)
 	}
 
-	// Side 0 drops back to the $0.50 base; refresh should arm a new rung 0
-	// marker so a subsequent leadership flip lets side 0 re-enter.
+	// Side 0 drops back to the $0.50 base; refresh adds re-arm marker.
 	entries = realbotRefreshLadderedEntries(entries, 0.50, 0.65, 0.50, 5.0)
+
+	// Rung 1 was already filled — must remain blocked.
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.45, 0.50, 5.0); ok {
+		t.Fatalf("expected already-filled rung 1 to stay blocked after re-arm, got side=%d ok=%v", side, ok)
+	}
+
+	// Rung 4 is new (never filled) — should be allowed.
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.70, 0.30, 0.50, 5.0); !ok || side != 0 {
+		t.Fatalf("expected new rung 4 to allow entry after re-arm, got side=%d ok=%v", side, ok)
+	}
+}
+
+// TestRealbotLadderedDirectionalSideGapFills verifies that when the bot enters
+// a market above the base (e.g., at rung 3), misses lower rungs (1 and 2),
+// and price later drops and re-enters, those missed rungs are filled without
+// re-buying already-filled rungs.
+func TestRealbotLadderedDirectionalSideGapFills(t *testing.T) {
+	// Base $0.50, 5c step. Bot enters at rung 3 ($0.65), then fills rung 4.
+	// Rungs 1 and 2 were never filled.
+	entries := []realbotLadderedEntry{
+		{seq: 0, ask0: 0.50, ask1: 0.50, side: 0, rung: 0, armed: true},
+		{seq: 0, ask0: 0.50, ask1: 0.50, side: 1, rung: 0, armed: true},
+		{seq: 1, ask0: 0.65, ask1: 0.35, side: 0, rung: 3},
+		{seq: 2, ask0: 0.70, ask1: 0.30, side: 0, rung: 4},
+	}
+
+	// Already-filled rung 3 — blocked.
+	if _, _, ok := ladderedTakerDirectionalSide(entries, 0.65, 0.35, 0.50, 5.0); ok {
+		t.Fatal("expected filled rung 3 to be blocked")
+	}
+
+	// Price drops to base, re-arm fires.
+	entries = realbotRefreshLadderedEntries(entries, 0.50, 0.50, 0.50, 5.0)
+
+	// Rung 1 ($0.55) was never filled — gap fill allowed.
 	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.45, 0.50, 5.0); !ok || side != 0 {
-		t.Fatalf("expected side 0 to re-arm after returning to the base rung, got side=%d ok=%v", side, ok)
+		t.Fatalf("expected unfilled rung 1 to allow gap fill, got side=%d ok=%v", side, ok)
+	}
+	// Record the gap fill.
+	entries = append(entries, realbotLadderedEntry{seq: 3, ask0: 0.55, ask1: 0.45, side: 0, rung: 1})
+
+	// Rung 2 ($0.60) was never filled — gap fill allowed.
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.40, 0.50, 5.0); !ok || side != 0 {
+		t.Fatalf("expected unfilled rung 2 to allow gap fill, got side=%d ok=%v", side, ok)
+	}
+	entries = append(entries, realbotLadderedEntry{seq: 4, ask0: 0.60, ask1: 0.40, side: 0, rung: 2})
+
+	// Rung 3 was filled initially — must stay blocked.
+	if _, _, ok := ladderedTakerDirectionalSide(entries, 0.65, 0.35, 0.50, 5.0); ok {
+		t.Fatal("expected previously-filled rung 3 to remain blocked after gap fill")
+	}
+
+	// Rung 4 was filled initially — must stay blocked.
+	if _, _, ok := ladderedTakerDirectionalSide(entries, 0.70, 0.30, 0.50, 5.0); ok {
+		t.Fatal("expected previously-filled rung 4 to remain blocked after gap fill")
+	}
+
+	// Rung 5 is brand new — allowed.
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.75, 0.25, 0.50, 5.0); !ok || side != 0 {
+		t.Fatalf("expected new rung 5 to allow entry, got side=%d ok=%v", side, ok)
 	}
 }
 

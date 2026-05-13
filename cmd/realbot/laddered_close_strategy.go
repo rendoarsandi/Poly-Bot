@@ -501,7 +501,13 @@ func realbotPollPaperLadderCloseFill(ladderState *realbotLadderCloseState, marke
 		bid, _ = engine.GetMarketBidAsk(marketID, outcome)
 	}
 	if bid+1e-9 < pending.Price {
-		return false
+		// In paper mode, WS bid data may not capture the exact 0.999 tick
+		// (e.g., bid jumps from 0.99 to 1.00). Use the trigger price as
+		// a relaxed fill threshold — once the bid confirms the outcome is
+		// clearly winning, the GTC sell would realistically fill.
+		if bid+1e-9 < realbotLadderedOneHourCloseTriggerPrice {
+			return false
+		}
 	}
 
 	if _, _, posOK := realbotLocalOutcomePosition(engine, marketID, outcome); !posOK {

@@ -347,6 +347,21 @@ func realbotRefreshLadderedEntries(entries []realbotLadderedEntry, ask0, ask1, b
 	return updated
 }
 
+// realbotLadderedFilledRungSet returns the set of rungs that have already been
+// filled (bought) or armed for each side. Used to allow gap-filling of missed
+// lower rungs without re-buying already-filled rungs.
+func realbotLadderedFilledRungSet(entries []realbotLadderedEntry, basePrice, moveCents float64) [2]map[int]bool {
+	filled := [2]map[int]bool{make(map[int]bool), make(map[int]bool)}
+	for _, entry := range entries {
+		side, rung, ok := realbotLadderedEntrySideRung(entry, basePrice, moveCents)
+		if !ok || side < 0 || side > 1 {
+			continue
+		}
+		filled[side][rung] = true
+	}
+	return filled
+}
+
 func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, basePrice, moveCents float64) (int, int, bool) {
 	leader := realbotLadderedLeaderSide(ask0, ask1)
 	if leader < 0 {
@@ -361,8 +376,8 @@ func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, ba
 	if len(entries) == 0 {
 		return leader, 1, true
 	}
-	maxRungs := realbotLadderedMaxRungs(entries, basePrice, moveCents)
-	if leaderRung <= maxRungs[leader] {
+	filledRungs := realbotLadderedFilledRungSet(entries, basePrice, moveCents)
+	if filledRungs[leader][leaderRung] {
 		return -1, 0, false
 	}
 	return leader, 1, true
