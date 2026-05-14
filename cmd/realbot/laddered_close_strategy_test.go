@@ -424,7 +424,7 @@ func TestRealbotPaperGTCSellRestsWhenBidBelowLimit(t *testing.T) {
 	}
 }
 
-func TestRealbotPaperGTCSellFillsWhenBidReachesLimit(t *testing.T) {
+func TestRealbotPaperGTCSellFillsWhenBidReachesTrigger(t *testing.T) {
 	engine := paper.NewEngine(100)
 	marketID := "btc-updown-1h-1700000000"
 	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
@@ -442,28 +442,29 @@ func TestRealbotPaperGTCSellFillsWhenBidReachesLimit(t *testing.T) {
 		FeeRate:      1000,
 	})
 
-	// Bid still below limit — poll should not fill.
+	// Bid well below trigger (0.985) — poll should not fill.
 	filled := realbotPollPaperLadderCloseFill(
 		ladderState, marketID,
-		map[string]float64{"Up": 0.99},
+		map[string]float64{"Up": 0.97},
 		engine, tui,
 	)
 	if filled {
-		t.Fatal("expected poll not to fill when bid < limit")
+		t.Fatal("expected poll not to fill when bid below trigger price")
 	}
 	if _, ok := ladderState.get(marketID); !ok {
 		t.Fatal("expected pending sell to remain after poll with low bid")
 	}
 
-	// Bid rises to limit — poll should fill.
-	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourClosePrice, 1.0)
+	// Bid at trigger (0.985) — paper poll should fill since the outcome is
+	// clearly winning and a real GTC at 0.999 would fill before resolution.
+	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourCloseTriggerPrice, 0.995)
 	filled = realbotPollPaperLadderCloseFill(
 		ladderState, marketID,
-		map[string]float64{"Up": realbotLadderedOneHourClosePrice},
+		map[string]float64{"Up": realbotLadderedOneHourCloseTriggerPrice},
 		engine, tui,
 	)
 	if !filled {
-		t.Fatal("expected poll to fill when bid reaches limit")
+		t.Fatal("expected poll to fill when bid reaches trigger price")
 	}
 	if _, ok := ladderState.get(marketID); ok {
 		t.Fatal("expected pending sell to be cleared after fill")
