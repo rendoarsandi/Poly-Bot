@@ -154,8 +154,10 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 		}
 	}
 
-	// Step 2: Try REST API fallback for market info
-	if !status.Resolved && len(orderedOutcomes) == 0 && rc.restClient != nil {
+	// Step 2: Try REST API fallback for market info. Gamma can expose fast
+	// proposed-final outcomes for short-liveness hourly crypto markets before
+	// the CLOB market-info endpoint marks token winners.
+	if !status.Resolved && rc.restClient != nil {
 		// Use a REST market info query via the Gamma API
 		info, err := rc.resolveViaREST(ctx, conditionID, outcomes)
 		if err == nil && info != nil {
@@ -171,9 +173,11 @@ func (rc *ResolutionCache) fetchResolution(ctx context.Context, conditionID stri
 				// Closed but no winner tagged yet
 				// Do NOT set Resolved = true here, otherwise it permanently caches without a winner.
 			}
-			orderedOutcomes = make([]string, len(info.Tokens))
-			for i, token := range info.Tokens {
-				orderedOutcomes[i] = token.Outcome
+			if len(info.Tokens) > 0 {
+				orderedOutcomes = make([]string, len(info.Tokens))
+				for i, token := range info.Tokens {
+					orderedOutcomes[i] = token.Outcome
+				}
 			}
 		}
 	}

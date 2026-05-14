@@ -227,9 +227,10 @@ func NewRestClient(exchange string) *RestClient {
 }
 
 type GammaEvent struct {
-	Slug    string        `json:"slug"`
-	EndDate string        `json:"endDate"`
-	Markets []GammaMarket `json:"markets"`
+	Slug          string             `json:"slug"`
+	EndDate       string             `json:"endDate"`
+	EventMetadata GammaEventMetadata `json:"eventMetadata"`
+	Markets       []GammaMarket      `json:"markets"`
 }
 
 type GammaMarket struct {
@@ -240,8 +241,17 @@ type GammaMarket struct {
 	Outcomes            string `json:"outcomes"`
 	OutcomePrices       string `json:"outcomePrices"`       // JSON-encoded string array
 	UMAResolutionStatus string `json:"umaResolutionStatus"` // "resolved" when winner is authoritative
+	CustomLiveness      int    `json:"customLiveness"`      // seconds; 1h crypto commonly uses 600
 	Active              bool   `json:"active"`
 	Closed              bool   `json:"closed"`
+	Events              []struct {
+		EventMetadata GammaEventMetadata `json:"eventMetadata"`
+	} `json:"events"`
+}
+
+type GammaEventMetadata struct {
+	FinalPrice  PolymarketFloat `json:"finalPrice"`
+	PriceToBeat PolymarketFloat `json:"priceToBeat"`
 }
 
 func (c *RestClient) GetEventByTokenID(ctx context.Context, tokenID string) (*GammaEvent, error) {
@@ -325,7 +335,7 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 
 	markets := make([]Market, 0, len(event.Markets))
 	for _, gm := range event.Markets {
-		market, ok := marketFromGammaMarket(gm, eventSlug, eventEndTime)
+		market, ok := marketFromGammaMarketWithEvent(gm, eventSlug, eventEndTime, event.EventMetadata)
 		if !ok {
 			continue
 		}
@@ -340,6 +350,10 @@ func marketsFromGammaEvent(event GammaEvent, fallbackSlug string) ([]Market, err
 }
 
 func marketFromGammaMarket(gm GammaMarket, fallbackSlug string, fallbackEndTime time.Time) (*Market, bool) {
+	return marketFromGammaMarketWithEvent(gm, fallbackSlug, fallbackEndTime, GammaEventMetadata{})
+}
+
+func marketFromGammaMarketWithEvent(gm GammaMarket, fallbackSlug string, fallbackEndTime time.Time, eventMetadata GammaEventMetadata) (*Market, bool) {
 	var tokenIDs []string
 	if err := json.Unmarshal([]byte(gm.ClobTokenIds), &tokenIDs); err != nil || len(tokenIDs) < 2 {
 		return nil, false
@@ -350,7 +364,6 @@ func marketFromGammaMarket(gm GammaMarket, fallbackSlug string, fallbackEndTime 
 		outcomes = []string{"Up", "Down"}
 	}
 
-	tokenWinners := gammaWinnerFlags(gm, outcomes)
 	marketSlug := core.SanitizeString(gm.Slug)
 	if marketSlug == "" {
 		marketSlug = core.SanitizeString(fallbackSlug)
@@ -359,7 +372,13 @@ func marketFromGammaMarket(gm GammaMarket, fallbackSlug string, fallbackEndTime 
 	if marketEndTime.IsZero() {
 		marketEndTime = fallbackEndTime
 	}
+	if !gammaEventMetadataAvailable(eventMetadata) && len(gm.Events) > 0 {
+		eventMetadata = gm.Events[0].EventMetadata
+	}
 	resolved := strings.EqualFold(strings.TrimSpace(gm.UMAResolutionStatus), "resolved")
+	proposedFinal := gammaProposedFinalReady(gm, marketEndTime, eventMetadata, time.Now())
+	tokenWinners := gammaWinnerFlags(gm, outcomes, marketEndTime, eventMetadata)
+	resolved = resolved || proposedFinal && hasAnyWinnerFlag(tokenWinners)
 
 	return &Market{
 		ConditionID: gm.ConditionID,
@@ -374,10 +393,22 @@ func marketFromGammaMarket(gm GammaMarket, fallbackSlug string, fallbackEndTime 
 	}, true
 }
 
-func gammaWinnerFlags(market GammaMarket, outcomes []string) []bool {
+func gammaWinnerFlags(market GammaMarket, outcomes []string, marketEndTime time.Time, eventMetadata GammaEventMetadata) []bool {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	if gammaProposedFinalReady(market, marketEndTime, eventMetadata, time.Now()) {
+		if flags := gammaWinnerFlagsFromEventMetadata(outcomes, eventMetadata); flags != nil {
+			return flags
+		}
+	}
 	if !strings.EqualFold(strings.TrimSpace(market.UMAResolutionStatus), "resolved") {
 		return nil
 	}
+	return gammaWinnerFlagsFromOutcomePrices(market, outcomes)
+}
+
+func gammaWinnerFlagsFromOutcomePrices(market GammaMarket, outcomes []string) []bool {
 	if len(outcomes) == 0 {
 		return nil
 	}
@@ -413,6 +444,50 @@ func gammaWinnerFlags(market GammaMarket, outcomes []string) []bool {
 	flags := make([]bool, len(outcomes))
 	flags[winnerIdx] = true
 	return flags
+}
+
+func gammaWinnerFlagsFromEventMetadata(outcomes []string, metadata GammaEventMetadata) []bool {
+	if len(outcomes) == 0 || !gammaEventMetadataAvailable(metadata) {
+		return nil
+	}
+	winner := "Down"
+	if float64(metadata.FinalPrice)+1e-9 >= float64(metadata.PriceToBeat) {
+		winner = "Up"
+	}
+	flags := make([]bool, len(outcomes))
+	for i, outcome := range outcomes {
+		if strings.EqualFold(strings.TrimSpace(outcome), winner) {
+			flags[i] = true
+			return flags
+		}
+	}
+	return nil
+}
+
+func gammaProposedFinalReady(market GammaMarket, marketEndTime time.Time, metadata GammaEventMetadata, now time.Time) bool {
+	if !strings.EqualFold(strings.TrimSpace(market.UMAResolutionStatus), "proposed") {
+		return false
+	}
+	if market.CustomLiveness <= 0 || marketEndTime.IsZero() || !gammaEventMetadataAvailable(metadata) {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return !now.Before(marketEndTime.Add(time.Duration(market.CustomLiveness) * time.Second))
+}
+
+func gammaEventMetadataAvailable(metadata GammaEventMetadata) bool {
+	return float64(metadata.FinalPrice) > 0 && float64(metadata.PriceToBeat) > 0
+}
+
+func hasAnyWinnerFlag(flags []bool) bool {
+	for _, flag := range flags {
+		if flag {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *RestClient) fetchGammaMarkets(ctx context.Context, query url.Values) ([]GammaMarket, error) {

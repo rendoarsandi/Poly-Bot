@@ -371,17 +371,52 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 					return
 				}
 
-				confirmedQty := trader.GetConfirmedFillSize(current.OrderID)
-				if confirmedQty > current.MirroredQty+0.0001 {
-					delta := confirmedQty - current.MirroredQty
-					applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, current.Outcome, delta, realbotLadderedOneHourClosePrice, current.FeeRate, true)
-					if applied > 0 {
-						ladderState.setMirroredQty(marketID, current.MirroredQty+applied)
-					}
-				}
+				realbotSyncPendingLadderedOneHourCloseFill(ladderState, marketID, nil, trader, engine, tui)
 			}
 		}
 	}(pending)
+}
+
+func realbotSyncPendingLadderedOneHourCloseFill(ladderState *realbotLadderCloseState, marketID string, bids map[string]float64, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) bool {
+	if ladderState == nil || engine == nil {
+		return false
+	}
+	pending, ok := ladderState.get(marketID)
+	if !ok || pending.Price <= 0 {
+		return false
+	}
+	if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		ladderState.clear(marketID)
+		if tui != nil {
+			tui.ClearMarketInventoryStatus(marketID)
+		}
+		return true
+	}
+	if strings.TrimSpace(pending.OrderID) == "" {
+		return realbotPollPaperLadderCloseFill(ladderState, marketID, bids, engine, tui)
+	}
+	if trader == nil {
+		return false
+	}
+
+	confirmedQty := trader.GetConfirmedFillSize(pending.OrderID)
+	if confirmedQty <= pending.MirroredQty+0.0001 {
+		return false
+	}
+	delta := confirmedQty - pending.MirroredQty
+	applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, pending.Outcome, delta, realbotLadderedOneHourClosePrice, pending.FeeRate, true)
+	if applied <= 0 {
+		return false
+	}
+	mirroredQty := pending.MirroredQty + applied
+	ladderState.setMirroredQty(marketID, mirroredQty)
+	if mirroredQty >= pending.RequestedQty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		ladderState.clear(marketID)
+		if tui != nil {
+			tui.ClearMarketInventoryStatus(marketID)
+		}
+	}
+	return true
 }
 
 func realbotSubmitLadderedOneHourCloseOrder(submitCtx, monitorCtx context.Context, ladderState *realbotLadderCloseState, marketID string, market *api.Market, outcomes []string, bids, asks map[string]float64, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, tui *paper.TUI) bool {
@@ -533,11 +568,9 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		return false
 	}
 	closeWindow := realbotLadderedOneHourCloseWindow(liveCfg)
-	if timeToExpiry <= 0 || timeToExpiry > closeWindow {
-		return false
-	}
+	inCloseWindow := timeToExpiry > 0 && timeToExpiry <= closeWindow
 	if !realbotShouldUseLadderedOneHourClose(marketID, liveCfg) {
-		if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		if inCloseWindow && realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			if ladderState != nil {
 				ladderState.clear(marketID)
 			}
@@ -560,13 +593,17 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 		if tui != nil {
 			tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
 		}
-		// Paper GTC orders have no real OrderID; poll the market on each tick.
+		realbotSyncPendingLadderedOneHourCloseFill(ladderState, marketID, bids, trader, engine, tui)
 		if strings.TrimSpace(pending.OrderID) == "" {
-			realbotPollPaperLadderCloseFill(ladderState, marketID, bids, engine, tui)
 			return true
 		}
 		realbotStartLadderedOneHourCloseMonitor(ctx, ladderState, marketID, trader, engine, tui)
 		return true
+	}
+
+	_, priceTriggered := realbotLadderedOneHourCloseCandidate(marketID, outcomes, engine, bids, asks)
+	if !inCloseWindow && !priceTriggered {
+		return false
 	}
 	if tui != nil && realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 		tui.SetMarketInventoryStatus(marketID, "WAITING TO SELL")
@@ -577,6 +614,9 @@ func realbotHandleLadderedOneHourCloseWindow(ctx context.Context, ladderState *r
 	defer cancel()
 	if realbotSubmitLadderedOneHourCloseOrder(submitCtx, ctx, ladderState, marketID, market, outcomes, bids, asks, tokenFeeRates, trader, engine, tui) {
 		return true
+	}
+	if !inCloseWindow {
+		return false
 	}
 
 	// If we couldn't find a winning side to sell, check if we hold clear losers.

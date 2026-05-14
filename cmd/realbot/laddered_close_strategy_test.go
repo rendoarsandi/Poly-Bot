@@ -550,6 +550,79 @@ func TestRealbotHandleLadderedOneHourCloseWindowPaperRestAndFill(t *testing.T) {
 	}
 }
 
+func TestRealbotHandleLadderedOneHourClosePriceTriggerBeforeCloseWindow(t *testing.T) {
+	engine := paper.NewEngine(100)
+	marketID := "bitcoin-up-or-down-april-19-2026-2am-et"
+	if _, err := engine.BuyForMarket(marketID, "Up", 0.60, 5); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	engine.UpdateMarketBidAsk(marketID, "Up", 0.99, 0.995)
+	engine.UpdateMarketBidAsk(marketID, "Down", 0.005, 0.01)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+	tui.AddMarket(marketID, marketID, []string{"Down", "Up"}, time.Now().Add(30*time.Minute))
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	trader.RegisterPaperToken("up-token", marketID, "Up")
+	ladderState := newRealbotLadderCloseState()
+	market := &api.Market{
+		Slug: marketID,
+		Tokens: []api.Token{
+			{TokenID: "down-token", Outcome: "Down"},
+			{TokenID: "up-token", Outcome: "Up"},
+		},
+	}
+
+	handled := realbotHandleLadderedOneHourCloseWindow(
+		context.Background(),
+		ladderState,
+		marketID,
+		market,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": 0.99, "Down": 0.005},
+		map[string]float64{"Up": 0.995, "Down": 0.01},
+		map[string]int{"Up": 1000},
+		paper.TUISettings{PaperArbMode: paperArbModeLaddered},
+		30*time.Minute,
+		trader,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected near-winning price to submit a paper .999 sell before the close window")
+	}
+	if _, ok := ladderState.get(marketID); !ok {
+		t.Fatal("expected price-triggered paper sell to rest in ladder state")
+	}
+	if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		t.Fatal("expected position to remain while price-triggered sell rests below .999")
+	}
+
+	engine.UpdateMarketBidAsk(marketID, "Up", realbotLadderedOneHourClosePrice, 1.0)
+	handled = realbotHandleLadderedOneHourCloseWindow(
+		context.Background(),
+		ladderState,
+		marketID,
+		market,
+		[]string{"Down", "Up"},
+		map[string]float64{"Up": realbotLadderedOneHourClosePrice, "Down": 0.001},
+		map[string]float64{"Up": 1.0, "Down": 0.01},
+		map[string]int{"Up": 1000},
+		paper.TUISettings{PaperArbMode: paperArbModeLaddered},
+		29*time.Minute,
+		trader,
+		engine,
+		tui,
+	)
+	if !handled {
+		t.Fatal("expected pending price-triggered paper sell to be handled before the close window")
+	}
+	if _, ok := ladderState.get(marketID); ok {
+		t.Fatal("expected pending price-triggered paper sell to clear after fill")
+	}
+	if realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		t.Fatalf("expected position to be cleared after price-triggered paper sell fill, got %+v", engine.GetPositions())
+	}
+}
+
 // TestRealbotSettleLadderedOneHourOppositeLosersPreservesBaseline verifies that
 // settling losing positions in the ladder close does NOT reduce pnlBaseline,
 // so the equity delta displayed to the user remains correct.

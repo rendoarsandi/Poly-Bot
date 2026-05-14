@@ -48,6 +48,10 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 	}
 
 	args.tui.LogEvent("[%s] ⏰ Closed", args.marketID)
+	liveCfg := args.tui.GetSettings()
+	if realbotShouldUseLadderedOneHourClose(args.marketID, liveCfg) {
+		realbotSyncPendingLadderedOneHourCloseFill(args.ladderCloseState, args.marketID, nil, args.trader, args.engine, args.tui)
+	}
 	realbotClearEngineMarketQuotes(args.engine, args.marketID, args.outcomes)
 	cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 10*time.Second)
 	realbotCancelAllMakerQuotes(cancelMakerCtx, args.marketID, "market closed", args.trader, args.engine, args.tui, args.makerQuotes)
@@ -56,7 +60,6 @@ func realbotHandleClosedMarket(args realbotMarketClosureArgs, state *realbotMark
 		args.tui.LogEvent("[%s] ℹ️ Dropping dust-only inventory at close: %.4f shares below %.2f-share redemption minimum", args.marketID, shares, minOnChainActionShares)
 	}
 
-	liveCfg := args.tui.GetSettings()
 	if realbotTakerCloseHoldMode(liveCfg) {
 		if realbotHasActionableEnginePositionsForMarket(args.engine, args.marketID) {
 			if state != nil && state.preserveWalletTruth != nil {

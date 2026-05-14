@@ -61,6 +61,58 @@ func TestGetGammaMarketBySlugMarksResolvedWinner(t *testing.T) {
 	}
 }
 
+func TestGetGammaMarketBySlugMarksProposedHourlyCryptoFinalAfterCustomLiveness(t *testing.T) {
+	endDate := time.Now().Add(-11 * time.Minute).UTC().Format(time.RFC3339)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/markets" || r.URL.Query().Get("slug") != "bitcoin-up-or-down-may-14-2026-10am-et" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"conditionId":"cond-btc-1","slug":"bitcoin-up-or-down-may-14-2026-10am-et","endDate":"` + endDate + `","clobTokenIds":"[\"up-token\",\"down-token\"]","outcomes":"[\"Up\",\"Down\"]","outcomePrices":"[\"0.9995\",\"0.0005\"]","umaResolutionStatus":"proposed","customLiveness":600,"active":true,"closed":false,"events":[{"eventMetadata":{"finalPrice":80964.85,"priceToBeat":79701.73}}]}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("polymarket")
+	client.GammaURL = server.URL
+	market, err := client.GetGammaMarketBySlug(context.Background(), "bitcoin-up-or-down-may-14-2026-10am-et")
+	if err != nil {
+		t.Fatalf("expected gamma market lookup to succeed, got %v", err)
+	}
+	if !market.Closed {
+		t.Fatalf("expected proposed custom-liveness market to be treated as closed/final, got %+v", market)
+	}
+	if len(market.Tokens) != 2 || !market.Tokens[0].Winner || market.Tokens[1].Winner {
+		t.Fatalf("expected Up winner from finalPrice >= priceToBeat, got %+v", market.Tokens)
+	}
+}
+
+func TestGetGammaMarketBySlugDoesNotMarkProposedBeforeCustomLiveness(t *testing.T) {
+	endDate := time.Now().Add(-9 * time.Minute).UTC().Format(time.RFC3339)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/markets" || r.URL.Query().Get("slug") != "bitcoin-up-or-down-may-14-2026-10am-et" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"conditionId":"cond-btc-1","slug":"bitcoin-up-or-down-may-14-2026-10am-et","endDate":"` + endDate + `","clobTokenIds":"[\"up-token\",\"down-token\"]","outcomes":"[\"Up\",\"Down\"]","outcomePrices":"[\"0.9995\",\"0.0005\"]","umaResolutionStatus":"proposed","customLiveness":600,"active":true,"closed":false,"events":[{"eventMetadata":{"finalPrice":80964.85,"priceToBeat":79701.73}}]}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("polymarket")
+	client.GammaURL = server.URL
+	market, err := client.GetGammaMarketBySlug(context.Background(), "bitcoin-up-or-down-may-14-2026-10am-et")
+	if err != nil {
+		t.Fatalf("expected gamma market lookup to succeed, got %v", err)
+	}
+	if market.Closed {
+		t.Fatalf("expected proposed market inside custom liveness to remain unresolved, got %+v", market)
+	}
+	if len(market.Tokens) != 2 || market.Tokens[0].Winner || market.Tokens[1].Winner {
+		t.Fatalf("expected no winner before custom liveness elapses, got %+v", market.Tokens)
+	}
+}
+
 func TestResolutionCacheUsesGammaConditionFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/markets/cond-btc-1" {
@@ -84,6 +136,55 @@ func TestResolutionCacheUsesGammaConditionFallback(t *testing.T) {
 	status := cache.GetResolution(context.Background(), "cond-btc-1", []string{"Down", "Up"}, time.Now().Add(-time.Minute))
 	if !status.Resolved || status.Winner != "Up" {
 		t.Fatalf("expected Gamma condition fallback to resolve Up, got %+v", status)
+	}
+}
+
+type marketInfoOnlyExchange struct {
+	ExchangeClient
+	info *MarketInfo
+}
+
+func (s marketInfoOnlyExchange) GetMarketInfo(ctx context.Context, conditionID string) (*MarketInfo, error) {
+	return s.info, nil
+}
+
+func TestResolutionCacheUsesGammaProposedFinalWhenClobHasNoWinner(t *testing.T) {
+	endDate := time.Now().Add(-11 * time.Minute).UTC().Format(time.RFC3339)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/markets/cond-btc-1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.URL.Path != "/markets" || r.URL.Query().Get("condition_ids") != "cond-btc-1" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"conditionId":"cond-btc-1","slug":"bitcoin-up-or-down-may-14-2026-10am-et","endDate":"` + endDate + `","clobTokenIds":"[\"up-token\",\"down-token\"]","outcomes":"[\"Up\",\"Down\"]","outcomePrices":"[\"0.9995\",\"0.0005\"]","umaResolutionStatus":"proposed","customLiveness":600,"active":true,"closed":false,"events":[{"eventMetadata":{"finalPrice":80964.85,"priceToBeat":79701.73}}]}]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("polymarket")
+	client.BaseURL = server.URL
+	client.GammaURL = server.URL
+	clob := marketInfoOnlyExchange{info: &MarketInfo{
+		ConditionID: "cond-btc-1",
+		Closed:      false,
+		Tokens: []struct {
+			TokenID string      `json:"token_id"`
+			Outcome string      `json:"outcome"`
+			Winner  bool        `json:"winner"`
+			Price   interface{} `json:"price"`
+		}{
+			{TokenID: "up-token", Outcome: "Up"},
+			{TokenID: "down-token", Outcome: "Down"},
+		},
+	}}
+	cache := NewResolutionCache(nil, clob, client)
+
+	status := cache.GetResolution(context.Background(), "cond-btc-1", []string{"Up", "Down"}, time.Now().Add(-time.Minute))
+	if !status.Resolved || status.Winner != "Up" {
+		t.Fatalf("expected Gamma proposed-final fallback to resolve Up, got %+v", status)
 	}
 }
 
