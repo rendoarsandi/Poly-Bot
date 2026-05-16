@@ -598,15 +598,18 @@ type TUISettings struct {
 	TakerCloseMarketTime               int     // e.g. 5 seconds
 	TakerCloseMarketSlippage           float64 // e.g. 0.99 limit price
 	TakerCloseMarketMinPrice           float64 // e.g. 0.60 min spike price
+	TakerCloseSizingMode               string  // "percent", "usdc", or "shares" when taker close is enabled
+	TakerCloseSizeUSDC                 float64 // fixed close-market budget when sizing by USDC
+	TakerCloseSizeShares               float64 // fixed close-market share cap when sizing by shares
 	PolygonRPC                         string  // Editable RPC URL
 	PolygonPrivateKey                  string  // Editable Private Key
 }
 
 // Preset quick-select settings.
 var (
-	SettingsConservative = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.12, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 1.0, LadderedTakerSizeShares: 1.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardWorst, LadderedTakerWorstPnLFloor: 0, LadderedTakerMaxProfitPnL: 0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsModerate     = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.08, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 5.0, LadderedTakerSizeShares: 5.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardWorst, LadderedTakerWorstPnLFloor: 0, LadderedTakerMaxProfitPnL: 0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
-	SettingsAggressive   = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.05, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 10.0, LadderedTakerSizeShares: 10.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardWorst, LadderedTakerWorstPnLFloor: 0, LadderedTakerMaxProfitPnL: 0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60}
+	SettingsConservative = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 2, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.01, TradeSizeUSDC: 1.0, MinMarginPercent: 3.0, BinanceSignalThresholdPct: 0.12, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 1.0, CopytradeSizeShares: 1.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 1.0, LadderedTakerSizeShares: 1.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardWorst, LadderedTakerWorstPnLFloor: 0, LadderedTakerMaxProfitPnL: 0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 5.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60, TakerCloseSizingMode: core.TakerCloseSizingModePercent, TakerCloseSizeUSDC: 1.0, TakerCloseSizeShares: 1.02}
+	SettingsModerate     = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.05, TradeSizeUSDC: 5.0, MinMarginPercent: 2.0, BinanceSignalThresholdPct: 0.08, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 5.0, CopytradeSizeShares: 5.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 5.0, LadderedTakerSizeShares: 5.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardWorst, LadderedTakerWorstPnLFloor: 0, LadderedTakerMaxProfitPnL: 0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 3.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60, TakerCloseSizingMode: core.TakerCloseSizingModePercent, TakerCloseSizeUSDC: 1.0, TakerCloseSizeShares: 1.02}
+	SettingsAggressive   = TUISettings{Exchange: "polymarket", ExecutionBackend: core.ExecutionBackendPaper, MarketSlug: "ALL", MaxMarkets: 4, Timeframe: "15m", TradeSizingMode: core.TradeSizingModePercent, TradeScaleFactor: 0.10, TradeSizeUSDC: 10.0, MinMarginPercent: 1.0, BinanceSignalThresholdPct: 0.05, PaperBinanceExecutionDelayMs: 250, PaperArbMode: "taker", CopytradePollIntervalMs: 2000, CopytradeSizingMode: core.CopytradeSizingModeUSDC, CopytradeSizeUSDC: 10.0, CopytradeSizeShares: 10.0, CopytradeSizePercent: 100.0, CopytradeMaxSlippagePct: 1.0, LadderedTakerSizingMode: core.LadderedTakerSizingModeUSDC, LadderedTakerSizeUSDC: 10.0, LadderedTakerSizeShares: 10.0, LadderedTakerReentryMoveCents: 1.0, LadderedTakerMaxSlippagePct: 1.0, LadderedTakerPnLGuardMode: core.LadderedTakerPnLGuardWorst, LadderedTakerWorstPnLFloor: 0, LadderedTakerMaxProfitPnL: 0, BuyExecutionMarginFloorPercent: -0.01, SplitMinMarginSell: 2.0, MakerMergeBufferSeconds: 30, MakerQuoteGap: 0.008, MakerInventoryTargetMult: 3.0, MakerInventoryCapMult: 5.0, MakerMinQuoteValue: 5.0, MinAskPrice: 0.10, MaxAskPrice: 0.90, TradingHoursMode: "weekdays trade only", TakerCloseMarket: false, TakerCloseMarketTime: 5, TakerCloseMarketSlippage: 0.99, TakerCloseMarketMinPrice: 0.60, TakerCloseSizingMode: core.TakerCloseSizingModePercent, TakerCloseSizeUSDC: 1.0, TakerCloseSizeShares: 1.02}
 )
 
 const (
@@ -685,6 +688,25 @@ func isLadderedTakerSettingsMode(cfg TUISettings) bool {
 
 func isLadderedTakerShareSizingMode(cfg TUISettings) bool {
 	return strings.EqualFold(strings.TrimSpace(cfg.LadderedTakerSizingMode), core.LadderedTakerSizingModeShares)
+}
+
+func normalizedTakerCloseSizingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case core.TakerCloseSizingModeUSDC:
+		return core.TakerCloseSizingModeUSDC
+	case core.TakerCloseSizingModeShares:
+		return core.TakerCloseSizingModeShares
+	default:
+		return core.TakerCloseSizingModePercent
+	}
+}
+
+func isTakerCloseShareSizingMode(cfg TUISettings) bool {
+	return strings.EqualFold(normalizedTakerCloseSizingMode(cfg.TakerCloseSizingMode), core.TakerCloseSizingModeShares)
+}
+
+func isTakerCloseUSDCSizingMode(cfg TUISettings) bool {
+	return strings.EqualFold(normalizedTakerCloseSizingMode(cfg.TakerCloseSizingMode), core.TakerCloseSizingModeUSDC)
 }
 
 func isLadderedTakerWorstPnLMode(cfg TUISettings) bool {
@@ -878,6 +900,9 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 	case settingsRowExecutionBackend:
 		return "Execution Backend"
 	case settingsRowTradeSizingMode:
+		if TakerCloseModeActive(cfg) {
+			return "Close Size Mode"
+		}
 		if copytrade {
 			return "Copy Size Mode"
 		}
@@ -886,6 +911,15 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		}
 		return "Trade Size Mode"
 	case settingsRowTradeSizingValue:
+		if TakerCloseModeActive(cfg) {
+			if isTakerCloseShareSizingMode(cfg) {
+				return "Close Size (Shares)"
+			}
+			if isTakerCloseUSDCSizingMode(cfg) {
+				return "Close Size (USDC)"
+			}
+			return "Close Size (%)"
+		}
 		if copytrade {
 			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 				return "Copy Size (Shares)"
@@ -1099,6 +1133,25 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	s.CopytradeMaxSlippagePct = math.Round(s.CopytradeMaxSlippagePct)
 	s.TakerCloseMarketSlippage = normalizeTakerClosePriceSetting(s.TakerCloseMarketSlippage, 0.99)
 	s.TakerCloseMarketMinPrice = normalizeTakerClosePriceSetting(s.TakerCloseMarketMinPrice, 0.60)
+	if s.TakerCloseMarketTime < 0 {
+		s.TakerCloseMarketTime = 0
+	}
+	if s.TakerCloseMarketTime > 60 {
+		s.TakerCloseMarketTime = 60
+	}
+	if strings.TrimSpace(s.TakerCloseSizingMode) == "" {
+		s.TakerCloseSizingMode = normalizedTakerCloseSizingMode(s.TradeSizingMode)
+	} else {
+		s.TakerCloseSizingMode = normalizedTakerCloseSizingMode(s.TakerCloseSizingMode)
+	}
+	s.TakerCloseSizeUSDC = normalizeTUIFixedTradeSizeUSDC(s.TakerCloseSizeUSDC, math.Max(s.TradeSizeUSDC, 1.0))
+	if s.TakerCloseSizeShares <= 0 {
+		s.TakerCloseSizeShares = 1.02
+	}
+	s.TakerCloseSizeShares = math.Round(s.TakerCloseSizeShares*100.0) / 100.0
+	if s.TakerCloseSizeShares < 1.02 {
+		s.TakerCloseSizeShares = 1.02
+	}
 	s.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	if s.CopytradePollIntervalMs <= 0 {
 		s.CopytradePollIntervalMs = 2000
@@ -1205,6 +1258,27 @@ func cycleCopytradeSizingMode(mode string, delta int) string {
 		}
 	}
 	idx = (idx + delta + len(modes)) % len(modes)
+	return modes[idx]
+}
+
+func cycleTakerCloseSizingMode(mode string, delta int) string {
+	modes := []string{
+		core.TakerCloseSizingModePercent,
+		core.TakerCloseSizingModeUSDC,
+		core.TakerCloseSizingModeShares,
+	}
+	current := normalizedTakerCloseSizingMode(mode)
+	idx := 0
+	for i, candidate := range modes {
+		if current == candidate {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta) % len(modes)
+	if idx < 0 {
+		idx += len(modes)
+	}
 	return modes[idx]
 }
 
@@ -1786,6 +1860,15 @@ func settingsEditValue(cfg TUISettings, row int) string {
 	case settingsRowPaperBalance:
 		return fmt.Sprintf("%.2f", cfg.PaperBalance)
 	case settingsRowTradeSizingValue:
+		if TakerCloseModeActive(cfg) {
+			if isTakerCloseShareSizingMode(cfg) {
+				return fmt.Sprintf("%.2f", cfg.TakerCloseSizeShares)
+			}
+			if isTakerCloseUSDCSizingMode(cfg) {
+				return fmt.Sprintf("%.2f", cfg.TakerCloseSizeUSDC)
+			}
+			return fmt.Sprintf("%.3f", cfg.TradeScaleFactor)
+		}
 		if isCopytradeSettingsMode(cfg) {
 			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 				return fmt.Sprintf("%.2f", cfg.CopytradeSizeShares)
@@ -1856,6 +1939,7 @@ func settingsRowSupportsTypedEdit(cfg TUISettings, mode string, row int) bool {
 		settingsRowLadderWorstPnLFloor,
 		settingsRowMinAskPrice,
 		settingsRowMaxAskPrice,
+		settingsRowTakerCloseTime,
 		settingsRowTakerCloseSlippage,
 		settingsRowTakerCloseMinPrice,
 		settingsRowRPCEdit,
@@ -2014,6 +2098,23 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 		if value <= 0 {
 			return false
 		}
+		if TakerCloseModeActive(*cfg) {
+			if isTakerCloseShareSizingMode(*cfg) {
+				if cfg.TakerCloseSizeShares == value {
+					return false
+				}
+				cfg.TakerCloseSizeShares = value
+				return true
+			}
+			if isTakerCloseUSDCSizingMode(*cfg) {
+				value = normalizeTUIFixedTradeSizeUSDC(value, cfg.TakerCloseSizeUSDC)
+				if cfg.TakerCloseSizeUSDC == value {
+					return false
+				}
+				cfg.TakerCloseSizeUSDC = value
+				return true
+			}
+		}
 		if isCopytradeSettingsMode(*cfg) {
 			if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 				if cfg.CopytradeSizeShares == value {
@@ -2094,6 +2195,12 @@ func applySettingsEditValue(cfg *TUISettings, row int, input string) bool {
 			return false
 		}
 		cfg.PaperBinanceExecutionDelayMs = int(value)
+		return true
+	case settingsRowTakerCloseTime:
+		if value < 0 || float64(cfg.TakerCloseMarketTime) == value {
+			return false
+		}
+		cfg.TakerCloseMarketTime = int(value)
 		return true
 	case settingsRowCopytradePoll:
 		if float64(cfg.CopytradePollIntervalMs) == value {
@@ -2906,7 +3013,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.Timeframe = cycleMarketTimeframe(m.tui.settings.Timeframe, -1)
 					changed = true
 				case settingsRowTradeSizingMode:
-					if isCopytradeSettingsMode(m.tui.settings) {
+					if TakerCloseModeActive(m.tui.settings) {
+						m.tui.settings.TakerCloseSizingMode = cycleTakerCloseSizingMode(m.tui.settings.TakerCloseSizingMode, -1)
+					} else if isCopytradeSettingsMode(m.tui.settings) {
 						m.tui.settings.CopytradeSizingMode = cycleCopytradeSizingMode(m.tui.settings.CopytradeSizingMode, -1)
 					} else if isLadderedTakerSettingsMode(m.tui.settings) {
 						m.tui.settings.LadderedTakerSizingMode = cycleLadderedTakerSizingMode(m.tui.settings.LadderedTakerSizingMode, -1)
@@ -2919,7 +3028,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowTradeSizingValue:
-					if isCopytradeSettingsMode(m.tui.settings) {
+					if TakerCloseModeActive(m.tui.settings) {
+						if isTakerCloseShareSizingMode(m.tui.settings) {
+							m.tui.settings.TakerCloseSizeShares -= 0.25
+							if m.tui.settings.TakerCloseSizeShares < 1.02 {
+								m.tui.settings.TakerCloseSizeShares = 1.02
+							}
+						} else if isTakerCloseUSDCSizingMode(m.tui.settings) {
+							m.tui.settings.TakerCloseSizeUSDC -= 0.1
+							if m.tui.settings.TakerCloseSizeUSDC < 1.0 {
+								m.tui.settings.TakerCloseSizeUSDC = 1.0
+							}
+						} else {
+							m.tui.settings.TradeScaleFactor -= 0.01
+							if m.tui.settings.TradeScaleFactor < 0.01 {
+								m.tui.settings.TradeScaleFactor = 0.01
+							}
+						}
+					} else if isCopytradeSettingsMode(m.tui.settings) {
 						if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 							m.tui.settings.CopytradeSizeShares -= 0.25
 							if m.tui.settings.CopytradeSizeShares < 0.01 {
@@ -3128,8 +3254,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowTakerCloseTime:
 					m.tui.settings.TakerCloseMarketTime -= 1
-					if m.tui.settings.TakerCloseMarketTime < 1 {
-						m.tui.settings.TakerCloseMarketTime = 1
+					if m.tui.settings.TakerCloseMarketTime < 0 {
+						m.tui.settings.TakerCloseMarketTime = 0
 					}
 					changed = true
 				case settingsRowTakerCloseSlippage:
@@ -3211,7 +3337,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tui.settings.Timeframe = cycleMarketTimeframe(m.tui.settings.Timeframe, 1)
 					changed = true
 				case settingsRowTradeSizingMode:
-					if isCopytradeSettingsMode(m.tui.settings) {
+					if TakerCloseModeActive(m.tui.settings) {
+						m.tui.settings.TakerCloseSizingMode = cycleTakerCloseSizingMode(m.tui.settings.TakerCloseSizingMode, 1)
+					} else if isCopytradeSettingsMode(m.tui.settings) {
 						m.tui.settings.CopytradeSizingMode = cycleCopytradeSizingMode(m.tui.settings.CopytradeSizingMode, 1)
 					} else if isLadderedTakerSettingsMode(m.tui.settings) {
 						m.tui.settings.LadderedTakerSizingMode = cycleLadderedTakerSizingMode(m.tui.settings.LadderedTakerSizingMode, 1)
@@ -3224,7 +3352,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					changed = true
 				case settingsRowTradeSizingValue:
-					if isCopytradeSettingsMode(m.tui.settings) {
+					if TakerCloseModeActive(m.tui.settings) {
+						if isTakerCloseShareSizingMode(m.tui.settings) {
+							m.tui.settings.TakerCloseSizeShares += 0.25
+						} else if isTakerCloseUSDCSizingMode(m.tui.settings) {
+							m.tui.settings.TakerCloseSizeUSDC += 0.1
+						} else {
+							m.tui.settings.TradeScaleFactor += 0.01
+							if m.tui.settings.TradeScaleFactor > 1.0 {
+								m.tui.settings.TradeScaleFactor = 1.0
+							}
+						}
+					} else if isCopytradeSettingsMode(m.tui.settings) {
 						if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 							m.tui.settings.CopytradeSizeShares += 0.25
 						} else if strings.EqualFold(m.tui.settings.CopytradeSizingMode, core.CopytradeSizingModePercent) {
@@ -7474,6 +7613,7 @@ func (m tuiModel) renderSettings(w int) string {
 	makerMode := isMakerSettingsMode(cfg)
 	copytradeMode := isCopytradeSettingsMode(cfg)
 	ladderedMode := isLadderedTakerSettingsMode(cfg)
+	takerCloseMode := TakerCloseModeActive(cfg)
 	tradeSizeBarMax := 50.0
 	if cfg.MaxTradeSize > 0 {
 		tradeSizeBarMax = cfg.MaxTradeSize
@@ -7525,6 +7665,15 @@ func (m tuiModel) renderSettings(w int) string {
 					}
 					return styleGreen.Render(" USDC ")
 				}
+				if takerCloseMode {
+					if isTakerCloseShareSizingMode(cfg) {
+						return styleCyan.Render(" SHARES ")
+					}
+					if isTakerCloseUSDCSizingMode(cfg) {
+						return styleGreen.Render(" USDC ")
+					}
+					return styleYellow.Render("   %  ")
+				}
 				if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
 					return styleGreen.Render(" USDC ")
 				}
@@ -7553,6 +7702,15 @@ func (m tuiModel) renderSettings(w int) string {
 					}
 					return fmt.Sprintf(" $%.2f ", cfg.LadderedTakerSizeUSDC)
 				}
+				if takerCloseMode {
+					if isTakerCloseShareSizingMode(cfg) {
+						return fmt.Sprintf(" %s sh ", fmtFloatTrim(cfg.TakerCloseSizeShares, 2))
+					}
+					if isTakerCloseUSDCSizingMode(cfg) {
+						return fmt.Sprintf(" $%.2f ", cfg.TakerCloseSizeUSDC)
+					}
+					return fmtPct(cfg.TradeScaleFactor)
+				}
 				if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
 					return fmt.Sprintf(" $%.2f ", cfg.TradeSizeUSDC)
 				}
@@ -7573,6 +7731,15 @@ func (m tuiModel) renderSettings(w int) string {
 						return renderBar(cfg.LadderedTakerSizeShares/25.0, 20)
 					}
 					return renderBar(cfg.LadderedTakerSizeUSDC/tradeSizeBarMax, 20)
+				}
+				if takerCloseMode {
+					if isTakerCloseShareSizingMode(cfg) {
+						return renderBar(cfg.TakerCloseSizeShares/25.0, 20)
+					}
+					if isTakerCloseUSDCSizingMode(cfg) {
+						return renderBar(cfg.TakerCloseSizeUSDC/tradeSizeBarMax, 20)
+					}
+					return renderBar(cfg.TradeScaleFactor, 20)
 				}
 				if strings.EqualFold(cfg.TradeSizingMode, core.TradeSizingModeUSDC) {
 					return renderBar(cfg.TradeSizeUSDC/tradeSizeBarMax, 20)
@@ -7913,8 +8080,13 @@ func (m tuiModel) renderSettings(w int) string {
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowTakerCloseTime),
-			value: fmt.Sprintf(" %ds ", cfg.TakerCloseMarketTime),
-			bar:   renderBar(float64(cfg.TakerCloseMarketTime)/60.0, 20),
+			value: func() string {
+				if m.settingsEdit && m.settingsCursor == settingsRowTakerCloseTime {
+					return styleCyan.Render(fmt.Sprintf(" %s _ ", m.settingsInput))
+				}
+				return fmt.Sprintf(" %ds ", cfg.TakerCloseMarketTime)
+			}(),
+			bar: renderBar(float64(cfg.TakerCloseMarketTime)/60.0, 20),
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowTakerCloseSlippage),

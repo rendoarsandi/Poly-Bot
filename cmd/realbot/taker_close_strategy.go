@@ -18,6 +18,22 @@ func realbotTakerCloseHoldMode(cfg paper.TUISettings) bool {
 }
 
 func realbotTakerCloseBudget(cash, sizingCapital float64, liveCfg paper.TUISettings) float64 {
+	switch strings.ToLower(strings.TrimSpace(liveCfg.TakerCloseSizingMode)) {
+	case core.TakerCloseSizingModeShares:
+		return 0
+	case core.TakerCloseSizingModeUSDC:
+		budget := math.Round(liveCfg.TakerCloseSizeUSDC*100.0) / 100.0
+		if budget < realbotMinDirectOrderValue {
+			budget = realbotMinDirectOrderValue
+		}
+		if liveCfg.MaxTradeSize > 0 && budget > liveCfg.MaxTradeSize {
+			budget = math.Round(liveCfg.MaxTradeSize*100.0) / 100.0
+			if budget < realbotMinDirectOrderValue {
+				budget = realbotMinDirectOrderValue
+			}
+		}
+		return budget
+	}
 	if cash <= 0 && sizingCapital <= 0 {
 		return 0
 	}
@@ -96,12 +112,10 @@ type realbotTakerClosePlan struct {
 	MinPrice     float64
 	SizingPrice  float64
 	RequestedQty float64
+	SizingMode   string
 }
 
 func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TUISettings) (realbotTakerClosePlan, error) {
-	if budget <= 0 {
-		return realbotTakerClosePlan{}, fmt.Errorf("budget must be positive")
-	}
 	if confirmedPrice <= 0 || confirmedPrice >= 1.0 {
 		return realbotTakerClosePlan{}, fmt.Errorf("confirmed price %.3f is invalid", confirmedPrice)
 	}
@@ -118,13 +132,21 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 		limitPrice = minPrice
 	}
 
-	sizingPrice := limitPrice
+	sizingPrice := confirmedPrice
 	if sizingPrice <= 0 || sizingPrice >= 1.0 {
 		return realbotTakerClosePlan{}, fmt.Errorf("sizing price %.3f is invalid", sizingPrice)
 	}
 
-	requestedQty := normalizeMarketBuyShares(budget / sizingPrice)
-	requestedQty = realbotClampBuySharesToBudget(requestedQty, budget, limitPrice)
+	sizingMode := strings.ToLower(strings.TrimSpace(liveCfg.TakerCloseSizingMode))
+	requestedQty := 0.0
+	if sizingMode == core.TakerCloseSizingModeShares {
+		requestedQty = normalizeMarketBuyShares(liveCfg.TakerCloseSizeShares)
+	} else {
+		if budget <= 0 {
+			return realbotTakerClosePlan{}, fmt.Errorf("budget must be positive")
+		}
+		requestedQty = normalizeMarketBuyShares(budget / sizingPrice)
+	}
 	if requestedQty < 1 {
 		return realbotTakerClosePlan{}, fmt.Errorf("budget $%.2f is too small at sizing price $%.3f", budget, sizingPrice)
 	}
@@ -134,6 +156,7 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 		MinPrice:     minPrice,
 		SizingPrice:  sizingPrice,
 		RequestedQty: requestedQty,
+		SizingMode:   sizingMode,
 	}, nil
 }
 
@@ -218,7 +241,10 @@ func realbotTokenIDForOutcome(tokenMap map[string]string, outcome string) string
 
 func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *realbotTakerCloseStrategyState) bool {
 	takerCloseTime := time.Duration(args.liveCfg.TakerCloseMarketTime) * time.Second
-	if !args.entryTradingAllowed || !realbotTakerCloseHoldMode(args.liveCfg) || args.timeToExpiry <= 0 || args.timeToExpiry > takerCloseTime {
+	if !args.entryTradingAllowed || !realbotTakerCloseHoldMode(args.liveCfg) || args.timeToExpiry <= 0 {
+		return false
+	}
+	if takerCloseTime > 0 && args.timeToExpiry > takerCloseTime {
 		return false
 	}
 	if args.blockNewEntries {
@@ -318,8 +344,12 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 	}
 
 	initialPosition := args.trader.GetLivePositionSize(tokenID)
-	args.tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, %s $%.3f, budget $%.2f)",
-		args.marketID, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmSource, confirmPrice, budget)
+	sizeLabel := fmt.Sprintf("budget $%.2f", budget)
+	if plan.SizingMode == core.TakerCloseSizingModeShares {
+		sizeLabel = fmt.Sprintf("share input %s", formatShareQty(plan.RequestedQty))
+	}
+	args.tui.LogEvent("[%s] ⚡ Taker close submit: %s %s shares cap $%.3f (WS $%.3f, %s $%.3f, sizing $%.3f, %s)",
+		args.marketID, bestOutcome, formatShareQty(plan.RequestedQty), plan.LimitPrice, highestPrice, confirmSource, confirmPrice, plan.SizingPrice, sizeLabel)
 	realbotMarkTakerCloseStateLogged(state.lastTakerCloseLog, state.lastTakerCloseLogKey, "submitted")
 
 	*state.takerCloseAttempted = true

@@ -70,7 +70,7 @@ func TestRealbotSizingCapitalForTradeUsesCurrentEquityInTakerClose(t *testing.T)
 	}
 }
 
-func TestBuildRealbotTakerClosePlanRespectsBuyExecSizing(t *testing.T) {
+func TestBuildRealbotTakerClosePlanSizesUSDCByConfirmedPrice(t *testing.T) {
 	plan, err := buildRealbotTakerClosePlan(50, 0.60, paper.TUISettings{
 		BuyExecutionMarginFloorPercent: -1.0,
 		TakerCloseMarketSlippage:       0.99,
@@ -79,11 +79,11 @@ func TestBuildRealbotTakerClosePlanRespectsBuyExecSizing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected plan, got %v", err)
 	}
-	if math.Abs(plan.SizingPrice-0.99) > 0.000001 {
-		t.Fatalf("expected sizing price 0.99, got %.6f", plan.SizingPrice)
+	if math.Abs(plan.SizingPrice-0.60) > 0.000001 {
+		t.Fatalf("expected sizing price 0.60, got %.6f", plan.SizingPrice)
 	}
-	if math.Abs(plan.RequestedQty-50.5050) > 0.000001 {
-		t.Fatalf("expected 50.5050 shares, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-83.3333) > 0.000001 {
+		t.Fatalf("expected 83.3333 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestRealbotHandleTakerCloseWindowStopsAtBusyEntryGate(t *testing.T) {
 	}
 }
 
-func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
+func TestBuildRealbotTakerClosePlan_UsesConfirmedPriceForSizing(t *testing.T) {
 	liveCfg := paper.TUISettings{
 		TakerCloseMarketSlippage: 0.99,
 		TakerCloseMarketMinPrice: 0.60,
@@ -203,12 +203,12 @@ func TestBuildRealbotTakerClosePlan_UsesLimitPriceForSizing(t *testing.T) {
 		t.Fatalf("buildRealbotTakerClosePlan returned error: %v", err)
 	}
 
-	if math.Abs(plan.RequestedQty-5.0505) > 0.000001 {
-		t.Fatalf("expected 5.0505 shares at $0.99 cap for a $5 budget, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-7.4626) > 0.000001 {
+		t.Fatalf("expected 7.4626 shares at $0.67 confirmed price for a $5 budget, got %.4f", plan.RequestedQty)
 	}
 
-	if got := plan.RequestedQty * plan.LimitPrice; got > 5.0+1e-9 {
-		t.Fatalf("expected cap-sized notional to stay within budget, got $%.4f", got)
+	if got := plan.RequestedQty * plan.SizingPrice; math.Abs(got-5.0) > 0.0001 {
+		t.Fatalf("expected confirmed-price notional to use the budget, got $%.4f", got)
 	}
 }
 
@@ -222,8 +222,8 @@ func TestBuildRealbotTakerClosePlan_AllowsSingleShareBudgetNearDollarCap(t *test
 	if err != nil {
 		t.Fatalf("expected close plan to allow a $1 budget at a $0.99 cap, got %v", err)
 	}
-	if math.Abs(plan.RequestedQty-1.0101) > 0.000001 {
-		t.Fatalf("expected 1.0101 shares, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-1.4925) > 0.000001 {
+		t.Fatalf("expected 1.4925 shares, got %.4f", plan.RequestedQty)
 	}
 }
 
@@ -237,8 +237,25 @@ func TestBuildRealbotTakerClosePlan_UsesBudgetFloorWithoutArtificialTwoShareMini
 	if err != nil {
 		t.Fatalf("expected one-share budget floor to pass, got %v", err)
 	}
-	if math.Abs(plan.RequestedQty-1.9090) > 0.000001 {
-		t.Fatalf("expected 1.9090 shares, got %.4f", plan.RequestedQty)
+	if math.Abs(plan.RequestedQty-2.0543) > 0.000001 {
+		t.Fatalf("expected 2.0543 shares, got %.4f", plan.RequestedQty)
+	}
+}
+
+func TestBuildRealbotTakerClosePlan_UsesConfiguredSharesMode(t *testing.T) {
+	liveCfg := paper.TUISettings{
+		TakerCloseMarketSlippage: 0.99,
+		TakerCloseMarketMinPrice: 0.60,
+		TakerCloseSizingMode:     core.TakerCloseSizingModeShares,
+		TakerCloseSizeShares:     12.34,
+	}
+
+	plan, err := buildRealbotTakerClosePlan(0, 0.72, liveCfg)
+	if err != nil {
+		t.Fatalf("expected share-sized close plan, got %v", err)
+	}
+	if math.Abs(plan.RequestedQty-12.34) > 0.000001 {
+		t.Fatalf("expected configured 12.34 shares, got %.4f", plan.RequestedQty)
 	}
 }
 

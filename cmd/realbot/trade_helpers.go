@@ -613,6 +613,9 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		TakerCloseMarketTime:               cfg.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:           cfg.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:           cfg.TakerCloseMarketMinPrice,
+		TakerCloseSizingMode:               cfg.TakerCloseSizingMode,
+		TakerCloseSizeUSDC:                 cfg.TakerCloseSizeUSDC,
+		TakerCloseSizeShares:               cfg.TakerCloseSizeShares,
 		TradingHoursMode:                   cfg.TradingHoursMode,
 		PolygonRPC:                         cfg.PolygonRPCURL,
 		PolygonPrivateKey:                  cfg.PK,
@@ -672,6 +675,9 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.TakerCloseMarketTime = s.TakerCloseMarketTime
 	cfg.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	cfg.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+	cfg.TakerCloseSizingMode = s.TakerCloseSizingMode
+	cfg.TakerCloseSizeUSDC = s.TakerCloseSizeUSDC
+	cfg.TakerCloseSizeShares = s.TakerCloseSizeShares
 	cfg.TradingHoursMode = s.TradingHoursMode
 	cfg.BlockNewEntriesOnPendingRedemption = s.BlockNewEntriesOnPendingRedemption
 	cfg.RedeemEntryTiming = realbotNormalizeRedeemEntryTiming(s.RedeemEntryTiming)

@@ -28,6 +28,9 @@ const (
 	CopytradeSizingModeUSDC        = "usdc"
 	CopytradeSizingModeShares      = "shares"
 	CopytradeSizingModePercent     = "percent"
+	TakerCloseSizingModePercent    = "percent"
+	TakerCloseSizingModeUSDC       = "usdc"
+	TakerCloseSizingModeShares     = "shares"
 	LadderedTakerSizingModeUSDC    = "usdc"
 	LadderedTakerSizingModeShares  = "shares"
 	LadderedTakerPnLGuardWorst     = "worst-pnl"
@@ -138,6 +141,9 @@ type Config struct {
 	TakerCloseMarketTime               int     // Seconds before close to trigger (default: 5)
 	TakerCloseMarketSlippage           float64 // Limit price for taker close (default: 0.99)
 	TakerCloseMarketMinPrice           float64 // Min price to trigger close buy (default: 0.60)
+	TakerCloseSizingMode               string  // "percent", "usdc", or "shares" for taker-close entries
+	TakerCloseSizeUSDC                 float64 // Fixed taker-close USDC budget when sizing by USDC
+	TakerCloseSizeShares               float64 // Fixed taker-close share cap when sizing by shares
 	CopytradeTarget                    string  // Wallet address, profile handle, or profile URL to follow
 	CopytradePollIntervalMs            int     // Copytrade public-wallet poll interval in milliseconds
 	CopytradeMaxSlippagePct            float64 // Legacy field name; interpreted as absolute copytrade slippage allowance in cents
@@ -216,6 +222,9 @@ type RuntimeSettings struct {
 	TakerCloseMarketTime               int     `json:"takerCloseMarketTime"`
 	TakerCloseMarketSlippage           float64 `json:"takerCloseMarketSlippage"`
 	TakerCloseMarketMinPrice           float64 `json:"takerCloseMarketMinPrice"`
+	TakerCloseSizingMode               string  `json:"takerCloseSizingMode"`
+	TakerCloseSizeUSDC                 float64 `json:"takerCloseSizeUsdc"`
+	TakerCloseSizeShares               float64 `json:"takerCloseSizeShares"`
 	CopytradeTarget                    string  `json:"copytradeTarget"`
 	CopytradePollIntervalMs            int     `json:"copytradePollIntervalMs"`
 	CopytradeMaxSlippagePct            float64 `json:"copytradeMaxSlippagePct"`
@@ -311,6 +320,9 @@ func LoadConfig() (*Config, error) {
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(parseEnvString("REDEEM_ENTRY_TIMING", RedeemEntryTimingNextMarket)),
 		RedeemGasMode:                      normalizeRedeemGasMode(parseEnvString("REDEEM_GAS_MODE", RedeemGasModeFast)),
 		OneHourCryptoExitMode:              NormalizeOneHourCryptoExitMode(parseEnvString("ONE_HOUR_CRYPTO_EXIT_MODE", OneHourCryptoExitSell999)),
+		TakerCloseSizingMode:               normalizeTakerCloseSizingMode(parseEnvString("TAKER_CLOSE_SIZING_MODE", parseEnvString("TRADE_SIZING_MODE", TakerCloseSizingModePercent))),
+		TakerCloseSizeUSDC:                 normalizeTakerCloseSizeUSDC(parseEnvFloat("TAKER_CLOSE_SIZE_USDC", parseEnvFloat("TRADE_SIZE_USDC", 1.0))),
+		TakerCloseSizeShares:               normalizeTakerCloseSizeShares(parseEnvFloat("TAKER_CLOSE_SIZE_SHARES", 1.02)),
 		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(parseEnvInt("COPYTRADE_POLL_INTERVAL_MS", 500)),
 		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(parseEnvFloat("COPYTRADE_MAX_SLIPPAGE_PCT", 1.0)),
 		CopytradeSizingMode:                normalizeCopytradeSizingMode(parseEnvString("COPYTRADE_SIZING_MODE", CopytradeSizingModeUSDC)),
@@ -379,6 +391,17 @@ func normalizeLadderedTakerSizingMode(mode string) string {
 	}
 }
 
+func normalizeTakerCloseSizingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case TakerCloseSizingModeUSDC:
+		return TakerCloseSizingModeUSDC
+	case TakerCloseSizingModeShares:
+		return TakerCloseSizingModeShares
+	default:
+		return TakerCloseSizingModePercent
+	}
+}
+
 func normalizeRedeemEntryTiming(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case RedeemEntryTimingImmediate:
@@ -434,6 +457,10 @@ func normalizeLadderedTakerSizeUSDC(size float64) float64 {
 	return normalizeFixedTradeSizeUSDC(size)
 }
 
+func normalizeTakerCloseSizeUSDC(size float64) float64 {
+	return normalizeFixedTradeSizeUSDC(size)
+}
+
 func normalizeCopytradeSizeShares(size float64) float64 {
 	if size <= 0 {
 		return 1.02
@@ -446,6 +473,10 @@ func normalizeCopytradeSizeShares(size float64) float64 {
 }
 
 func normalizeLadderedTakerSizeShares(size float64) float64 {
+	return normalizeCopytradeSizeShares(size)
+}
+
+func normalizeTakerCloseSizeShares(size float64) float64 {
 	return normalizeCopytradeSizeShares(size)
 }
 
@@ -847,6 +878,9 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TakerCloseMarketTime:               c.TakerCloseMarketTime,
 		TakerCloseMarketSlippage:           c.TakerCloseMarketSlippage,
 		TakerCloseMarketMinPrice:           c.TakerCloseMarketMinPrice,
+		TakerCloseSizingMode:               normalizeTakerCloseSizingMode(c.TakerCloseSizingMode),
+		TakerCloseSizeUSDC:                 normalizeTakerCloseSizeUSDC(c.TakerCloseSizeUSDC),
+		TakerCloseSizeShares:               normalizeTakerCloseSizeShares(c.TakerCloseSizeShares),
 		CopytradeTarget:                    strings.TrimSpace(c.CopytradeTarget),
 		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
 		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct),
@@ -927,6 +961,17 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseMarketTime = s.TakerCloseMarketTime
 	c.TakerCloseMarketSlippage = s.TakerCloseMarketSlippage
 	c.TakerCloseMarketMinPrice = s.TakerCloseMarketMinPrice
+	if strings.TrimSpace(s.TakerCloseSizingMode) == "" {
+		c.TakerCloseSizingMode = normalizeTakerCloseSizingMode(c.TradeSizingMode)
+	} else {
+		c.TakerCloseSizingMode = normalizeTakerCloseSizingMode(s.TakerCloseSizingMode)
+	}
+	if s.TakerCloseSizeUSDC <= 0 {
+		c.TakerCloseSizeUSDC = normalizeTakerCloseSizeUSDC(c.TradeSizeUSDC)
+	} else {
+		c.TakerCloseSizeUSDC = normalizeTakerCloseSizeUSDC(s.TakerCloseSizeUSDC)
+	}
+	c.TakerCloseSizeShares = normalizeTakerCloseSizeShares(s.TakerCloseSizeShares)
 	c.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	c.CopytradePollIntervalMs = normalizeCopytradePollIntervalMs(s.CopytradePollIntervalMs)
 	c.CopytradeMaxSlippagePct = normalizeCopytradeMaxSlippagePct(s.CopytradeMaxSlippagePct)
@@ -997,6 +1042,9 @@ func (c *Config) SaveSettings() error {
 	envMap["REDEEM_ENTRY_TIMING"] = normalizeRedeemEntryTiming(c.RedeemEntryTiming)
 	envMap["REDEEM_GAS_MODE"] = normalizeRedeemGasMode(c.RedeemGasMode)
 	envMap["ONE_HOUR_CRYPTO_EXIT_MODE"] = NormalizeOneHourCryptoExitMode(c.OneHourCryptoExitMode)
+	envMap["TAKER_CLOSE_SIZING_MODE"] = normalizeTakerCloseSizingMode(c.TakerCloseSizingMode)
+	envMap["TAKER_CLOSE_SIZE_USDC"] = strconv.FormatFloat(normalizeTakerCloseSizeUSDC(c.TakerCloseSizeUSDC), 'f', -1, 64)
+	envMap["TAKER_CLOSE_SIZE_SHARES"] = strconv.FormatFloat(normalizeTakerCloseSizeShares(c.TakerCloseSizeShares), 'f', -1, 64)
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 	envMap["COPYTRADE_MAX_SLIPPAGE_PCT"] = strconv.FormatFloat(normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct), 'f', -1, 64)
