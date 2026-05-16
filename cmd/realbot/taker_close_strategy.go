@@ -59,10 +59,7 @@ func realbotBestTakerCloseOutcomePrice(outcomes []string, bids, asks map[string]
 	bestOutcome := ""
 	highestPrice := 0.0
 	for _, outcome := range outcomes {
-		price := bids[outcome]
-		if price <= 0 || price >= 1.0 {
-			price = asks[outcome]
-		}
+		price := asks[outcome]
 		if price > 0 && price <= 1.0 && price > highestPrice {
 			highestPrice = price
 			bestOutcome = outcome
@@ -84,6 +81,17 @@ func normalizedRealbotTakerCloseMinPrice(liveCfg paper.TUISettings) float64 {
 		return 0.99
 	}
 	return minPrice
+}
+
+func normalizedRealbotTakerCloseLimitPrice(liveCfg paper.TUISettings, minPrice float64) float64 {
+	limitPrice := liveCfg.TakerCloseMarketSlippage
+	if limitPrice <= 0 || limitPrice >= 1.0 {
+		limitPrice = 0.99
+	}
+	if limitPrice < minPrice {
+		limitPrice = minPrice
+	}
+	return limitPrice
 }
 
 func realbotShouldLogTakerCloseState(lastAt *time.Time, lastKey *string, nextKey string, interval time.Duration) bool {
@@ -124,13 +132,7 @@ func buildRealbotTakerClosePlan(budget, confirmedPrice float64, liveCfg paper.TU
 	if confirmedPrice+1e-9 < minPrice {
 		return realbotTakerClosePlan{}, fmt.Errorf("confirmed price %.3f is below taker-close min %.3f", confirmedPrice, minPrice)
 	}
-	limitPrice := liveCfg.TakerCloseMarketSlippage
-	if limitPrice <= 0 || limitPrice >= 1.0 {
-		limitPrice = 0.99
-	}
-	if limitPrice < minPrice {
-		limitPrice = minPrice
-	}
+	limitPrice := normalizedRealbotTakerCloseLimitPrice(liveCfg, minPrice)
 
 	sizingPrice := confirmedPrice
 	if sizingPrice <= 0 || sizingPrice >= 1.0 {
@@ -258,10 +260,6 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 	minPrice := normalizedRealbotTakerCloseMinPrice(args.liveCfg)
 	if bestOutcome == "" && state.lastTakerCloseQuoteRefresh != nil && time.Since(*state.lastTakerCloseQuoteRefresh) > realbotTakerCloseQuoteRefresh {
 		*state.lastTakerCloseQuoteRefresh = time.Now()
-		if args.wsMgr != nil && args.wsMgr.IsConnected() && !args.wsChannelClosed && state.lastForceReconnect != nil && time.Since(*state.lastForceReconnect) > realbotWSForceReconnect {
-			*state.lastForceReconnect = time.Now()
-			args.wsMgr.ForceReconnect()
-		}
 	}
 	if bestOutcome == "" || highestPrice < minPrice {
 		if highestPrice <= 0 {
@@ -314,6 +312,13 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 	if confirmPrice < minPrice {
 		if realbotShouldLogTakerCloseState(state.lastTakerCloseLog, state.lastTakerCloseLogKey, "waiting", realbotTakerCloseLogInterval) {
 			args.tui.LogEvent("[%s] ⏳ Taker close waiting: %s confirm $%.3f is below min $%.3f (WS trigger $%.3f)", args.marketID, confirmSource, confirmPrice, minPrice, highestPrice)
+		}
+		return true
+	}
+	limitPrice := normalizedRealbotTakerCloseLimitPrice(args.liveCfg, minPrice)
+	if confirmPrice > limitPrice+1e-9 {
+		if realbotShouldLogTakerCloseState(state.lastTakerCloseLog, state.lastTakerCloseLogKey, "waiting-above-cap", realbotTakerCloseLogInterval) {
+			args.tui.LogEvent("[%s] ⏳ Taker close waiting: %s confirm $%.3f is above max cap $%.3f", args.marketID, confirmSource, confirmPrice, limitPrice)
 		}
 		return true
 	}

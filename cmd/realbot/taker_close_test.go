@@ -48,6 +48,28 @@ func TestRealbotTakerCloseBudgetSupportsFixedUSDCMode(t *testing.T) {
 	}
 }
 
+func TestRealbotBestTakerCloseOutcomePriceUsesExecutableAsk(t *testing.T) {
+	outcome, price := realbotBestTakerCloseOutcomePrice(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.92, "Up": 0.89},
+		map[string]float64{"Down": 0.93, "Up": 0.91},
+	)
+	if outcome != "Down" || math.Abs(price-0.93) > 0.000001 {
+		t.Fatalf("expected taker-close trigger to use highest executable ask, got %s %.3f", outcome, price)
+	}
+}
+
+func TestRealbotBestTakerCloseOutcomePriceIgnoresBidWithoutAsk(t *testing.T) {
+	outcome, price := realbotBestTakerCloseOutcomePrice(
+		[]string{"Down", "Up"},
+		map[string]float64{"Down": 0.95, "Up": 0.89},
+		map[string]float64{"Up": 0.91},
+	)
+	if outcome != "Up" || math.Abs(price-0.91) > 0.000001 {
+		t.Fatalf("expected taker-close trigger to ignore non-executable bid-only side, got %s %.3f", outcome, price)
+	}
+}
+
 func TestRealbotSizingCapitalForTradeUsesHighWaterOutsideTakerClose(t *testing.T) {
 	engine := paper.NewEngine(100.0)
 	engine.UpdateCompoundMultiplier(20.0, 100.0)
@@ -101,6 +123,16 @@ func TestBuildRealbotTakerClosePlanFloorsLimitToMinPrice(t *testing.T) {
 	}
 	if math.Abs(plan.SizingPrice-0.60) > 0.000001 {
 		t.Fatalf("expected sizing price capped by limit 0.60, got %.3f", plan.SizingPrice)
+	}
+}
+
+func TestNormalizedRealbotTakerCloseLimitPriceFloorsToMinPrice(t *testing.T) {
+	minPrice := normalizedRealbotTakerCloseMinPrice(paper.TUISettings{TakerCloseMarketMinPrice: 0.90})
+	got := normalizedRealbotTakerCloseLimitPrice(paper.TUISettings{
+		TakerCloseMarketSlippage: 0.80,
+	}, minPrice)
+	if math.Abs(got-0.90) > 0.000001 {
+		t.Fatalf("expected taker-close max cap to floor to min price 0.90, got %.3f", got)
 	}
 }
 

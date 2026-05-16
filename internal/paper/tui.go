@@ -4626,9 +4626,11 @@ func (t *TUI) LogEventDedup(key string, interval time.Duration, format string, a
 		interval = 10 * time.Second
 	}
 
+	body := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
-	msg := fmt.Sprintf("[%s] %s", timestamp, fmt.Sprintf(format, args...))
+	msg := fmt.Sprintf("[%s] %s", timestamp, body)
 	msg = core.SanitizeString(msg)
+	body = core.SanitizeString(body)
 
 	var issueLogger *core.CSVLogger
 	equity := 0.0
@@ -4636,11 +4638,11 @@ func (t *TUI) LogEventDedup(key string, interval time.Duration, format string, a
 	t.mu.Lock()
 	lastMsg := t.lastDedupLogMsg[key]
 	lastAt := t.lastDedupLogAt[key]
-	if msg == lastMsg && !lastAt.IsZero() && time.Since(lastAt) < interval {
+	if body == lastMsg && !lastAt.IsZero() && time.Since(lastAt) < interval {
 		t.mu.Unlock()
 		return false
 	}
-	t.lastDedupLogMsg[key] = msg
+	t.lastDedupLogMsg[key] = body
 	t.lastDedupLogAt[key] = time.Now()
 	t.eventLog = append(t.eventLog, msg)
 	if len(t.eventLog) > t.maxEvents {
@@ -6604,9 +6606,6 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		}
 	}
 	showInFlightPositions := inflightLegCount > 0
-	if TakerCloseModeActive(settings) {
-		showInFlightPositions = false
-	}
 	hasSplitInventory := len(splitPositions) > 0
 	hasWalletTruth := len(walletTruthPositions) > 0
 	hasOnChainInventory := false
@@ -6648,6 +6647,8 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 		inflightStatus := styleYellow.Render("⏳ awaiting merge")
 		if ladderedMode {
 			inflightStatus = styleYellow.Render("⏳ open inventory")
+		} else if TakerCloseModeActive(settings) {
+			inflightStatus = styleYellow.Render("⏳ holding to resolution")
 		}
 		headerCount := fmt.Sprintf("%d legs", inflightLegCount)
 		if len(byMarket) > 0 {

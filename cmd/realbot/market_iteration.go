@@ -91,9 +91,9 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 	if state.lastReconnectTime != nil && !state.lastReconnectTime.IsZero() {
 		if elapsed := time.Since(*state.lastReconnectTime); elapsed < wsWarmupDuration {
 			if args.tui != nil {
-				args.tui.LogEventDedup("ws-warmup:"+args.marketID, 1*time.Second,
-					"[%s] ⏳ Waiting %dms for WS stream to stabilize after reconnect...",
-					args.marketID, wsWarmupDuration.Milliseconds())
+				args.tui.LogEventDedup("ws-warmup", 1*time.Second,
+					"⏳ Waiting %dms for WS stream to stabilize after reconnect...",
+					wsWarmupDuration.Milliseconds())
 			}
 			return true // Skip trading during warmup, let the book rebuild
 		}

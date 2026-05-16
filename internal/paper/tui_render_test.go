@@ -428,7 +428,7 @@ func TestRenderPositionsHidesDustOnlyInFlightInventory(t *testing.T) {
 	}
 }
 
-func TestRenderPositionsHidesInFlightSectionWhenTakerCloseEnabled(t *testing.T) {
+func TestRenderPositionsShowsHeldSharesWhenTakerCloseEnabled(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), nil)
 	tui.InitSettings(TUISettings{
 		PaperArbMode:         "taker",
@@ -452,14 +452,14 @@ func TestRenderPositionsHidesInFlightSectionWhenTakerCloseEnabled(t *testing.T) 
 	model := tuiModel{tui: tui}
 	rendered := model.renderPositions(120, positions)
 
-	if strings.Contains(rendered, "IN-FLIGHT") || strings.Contains(rendered, "awaiting merge") {
-		t.Fatalf("expected in-flight merge section to be hidden in taker-close mode, got %q", rendered)
+	if !strings.Contains(rendered, "IN-FLIGHT") || strings.Contains(rendered, "awaiting merge") {
+		t.Fatalf("expected taker-close positions to show without merge wording, got %q", rendered)
 	}
-	if strings.Contains(rendered, "Down: 3@$0.99") {
-		t.Fatalf("expected in-flight position rows to be hidden in taker-close mode, got %q", rendered)
+	if !strings.Contains(rendered, "Down: 3@$0.99") {
+		t.Fatalf("expected taker-close held shares to be visible, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "(none)") {
-		t.Fatalf("expected positions panel to collapse when only in-flight rows were suppressed, got %q", rendered)
+	if !strings.Contains(rendered, "holding to resolution") {
+		t.Fatalf("expected taker-close position status to explain hold behavior, got %q", rendered)
 	}
 }
 

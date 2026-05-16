@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -306,7 +307,8 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 func realbotProcessMarketQuotes(args realbotMarketQuoteArgs, runtime realbotMarketQuoteRuntime) bool {
 	_, _, reconnects, _ := args.wsMgr.GetStats()
 	if reconnects > *runtime.lastReconnectCount {
-		args.tui.LogEvent("[%s] 🔄 WebSocket reconnected (attempt #%d)", args.marketID, reconnects)
+		args.tui.LogEventDedup(fmt.Sprintf("ws-reconnected:%d", reconnects), 3*time.Second,
+			"🔄 WebSocket reconnected (attempt #%d)", reconnects)
 		*runtime.lastReconnectCount = reconnects
 		*runtime.lastReconnectTime = time.Now()
 		*runtime.wsChannelClosed = false
