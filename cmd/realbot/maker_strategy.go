@@ -115,6 +115,9 @@ func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, eng
 	for _, key := range keys {
 		quote := makerQuotes[key]
 		if quote == nil || quote.OrderID == "" {
+			if quote != nil && quote.OrderID != "" {
+				trader.ResetConfirmedFill(quote.OrderID)
+			}
 			delete(makerQuotes, key)
 			continue
 		}
@@ -144,12 +147,14 @@ func realbotSyncMakerQuoteFills(marketID string, trader *trading.RealTrader, eng
 				quote.Price = open.Price
 			}
 			if quote.RemainingQty*quote.Price < 1.0 {
+				trader.ResetConfirmedFill(quote.OrderID)
 				delete(makerQuotes, key)
 			}
 			continue
 		}
 		quote.RemainingQty = normalizeMarketSellShares(math.Max(0, quote.RequestedQty-quote.AccountedFill))
 		if quote.RemainingQty*quote.Price < 1.0 {
+			trader.ResetConfirmedFill(quote.OrderID)
 			delete(makerQuotes, key)
 		}
 	}
@@ -170,6 +175,7 @@ func realbotCancelAllMakerQuotes(ctx context.Context, marketID, reason string, t
 	realbotSyncMakerQuoteFills(marketID, trader, engine, tui, makerQuotes, nil)
 	for key, quote := range makerQuotes {
 		realbotCancelMakerQuote(ctx, trader, quote)
+		trader.ResetConfirmedFill(quote.OrderID)
 		delete(makerQuotes, key)
 	}
 	if reason != "" {

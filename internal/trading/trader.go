@@ -334,6 +334,7 @@ type RealTrader struct {
 
 	livePositions           map[string]float64
 	confirmedOrderFills     map[string]float64
+	confirmedOrderLastAt    map[string]time.Time
 	positionLedgerQty       map[string]float64
 	positionLedgerTotalCost map[string]float64
 	paperEngine             *paper.Engine
@@ -413,10 +414,14 @@ func NewRealTrader(cfg *core.Config) (*RealTrader, error) {
 		lastCTFBalanceTry:       make(map[string]time.Time),
 		livePositions:           make(map[string]float64),
 		confirmedOrderFills:     make(map[string]float64),
+		confirmedOrderLastAt:    make(map[string]time.Time),
 		positionLedgerQty:       make(map[string]float64),
 		positionLedgerTotalCost: make(map[string]float64),
 		conditionNegRisk:        make(map[string]bool),
 	}
+
+	// Start background cleanup for order fills to prevent memory leaks
+	go trader.runConfirmedFillCleanup()
 
 	// Initialize User WebSocket for real-time fills
 	// Kalshi user WS logic to be implemented, fallback to polling or ignore for now if kalshi
@@ -437,7 +442,7 @@ func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTra
 	if cfg == nil {
 		cfg = &core.Config{}
 	}
-	return &RealTrader{
+	trader := &RealTrader{
 		config:                  cfg,
 		startOfDay:              time.Now().Truncate(24 * time.Hour),
 		ctfBalanceCache:         make(map[string]float64),
@@ -445,6 +450,7 @@ func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTra
 		lastCTFBalanceTry:       make(map[string]time.Time),
 		livePositions:           make(map[string]float64),
 		confirmedOrderFills:     make(map[string]float64),
+		confirmedOrderLastAt:    make(map[string]time.Time),
 		positionLedgerQty:       make(map[string]float64),
 		positionLedgerTotalCost: make(map[string]float64),
 		paperEngine:             engine,
@@ -452,6 +458,8 @@ func NewEmbeddedPaperRealTrader(cfg *core.Config, engine *paper.Engine) *RealTra
 		paperFeeCurves:          make(map[string]core.PolymarketFeeCurve),
 		conditionNegRisk:        make(map[string]bool),
 	}
+	go trader.runConfirmedFillCleanup()
+	return trader
 }
 
 func (t *RealTrader) IsEmbeddedPaperMode() bool {
@@ -722,6 +730,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 		grossQuantity := size
 		t.livePositions[tokenID] += netQuantity
 		t.confirmedOrderFills[orderID] = grossQuantity
+		t.confirmedOrderLastAt[orderID] = time.Now()
 		currentQty := t.positionLedgerQty[tokenID]
 		currentCost := t.positionLedgerTotalCost[tokenID]
 		t.setPositionLedgerLocked(tokenID, currentQty+netQuantity, currentCost+math.Max(0, trade.Value))
@@ -774,6 +783,7 @@ func (t *RealTrader) simulatePaperOrder(side api.Side, tokenID, outcome string, 
 			t.livePositions[tokenID] = 0
 		}
 		t.confirmedOrderFills[orderID] = trade.Quantity
+		t.confirmedOrderLastAt[orderID] = time.Now()
 		currentQty := t.positionLedgerQty[tokenID]
 		currentCost := t.positionLedgerTotalCost[tokenID]
 		switch {
@@ -827,6 +837,7 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 	}
 	if fill.OrderID != "" {
 		t.confirmedOrderFills[fill.OrderID] += size
+		t.confirmedOrderLastAt[fill.OrderID] = time.Now()
 	}
 }
 
@@ -887,6 +898,27 @@ func (t *RealTrader) ResetConfirmedFill(orderID string) {
 	t.posMu.Lock()
 	defer t.posMu.Unlock()
 	delete(t.confirmedOrderFills, orderID)
+	delete(t.confirmedOrderLastAt, orderID)
+}
+
+func (t *RealTrader) runConfirmedFillCleanup() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		t.posMu.Lock()
+		now := time.Now()
+		count := 0
+		for id, lastAt := range t.confirmedOrderLastAt {
+			if now.Sub(lastAt) > 24*time.Hour {
+				delete(t.confirmedOrderFills, id)
+				delete(t.confirmedOrderLastAt, id)
+				count++
+			}
+		}
+		t.posMu.Unlock()
+		// No easy way to log to TUI from here without passing it, but this is a background maintenance task.
+	}
 }
 
 // GetLivePositionSize returns the latest websocket-backed position size for a token.

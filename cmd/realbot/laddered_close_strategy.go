@@ -361,6 +361,9 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 					return
 				}
 				if current.MirroredQty >= current.RequestedQty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+					if current.OrderID != "" {
+						trader.ResetConfirmedFill(current.OrderID)
+					}
 					ladderState.clear(marketID)
 					if tui != nil {
 						tui.ClearMarketInventoryStatus(marketID)
@@ -386,6 +389,9 @@ func realbotSyncPendingLadderedOneHourCloseFill(ladderState *realbotLadderCloseS
 		return false
 	}
 	if !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		if pending.OrderID != "" {
+			trader.ResetConfirmedFill(pending.OrderID)
+		}
 		ladderState.clear(marketID)
 		if tui != nil {
 			tui.ClearMarketInventoryStatus(marketID)
@@ -411,6 +417,9 @@ func realbotSyncPendingLadderedOneHourCloseFill(ladderState *realbotLadderCloseS
 	mirroredQty := pending.MirroredQty + applied
 	ladderState.setMirroredQty(marketID, mirroredQty)
 	if mirroredQty >= pending.RequestedQty-0.0001 || !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
+		if pending.OrderID != "" {
+			trader.ResetConfirmedFill(pending.OrderID)
+		}
 		ladderState.clear(marketID)
 		if tui != nil {
 			tui.ClearMarketInventoryStatus(marketID)
@@ -546,6 +555,9 @@ func realbotPollPaperLadderCloseFill(ladderState *realbotLadderCloseState, marke
 	}
 
 	if _, _, posOK := realbotLocalOutcomePosition(engine, marketID, outcome); !posOK {
+		if pending.OrderID != "" {
+			trader.ResetConfirmedFill(pending.OrderID)
+		}
 		ladderState.clear(marketID)
 		if tui != nil {
 			tui.ClearMarketInventoryStatus(marketID)
@@ -555,6 +567,9 @@ func realbotPollPaperLadderCloseFill(ladderState *realbotLadderCloseState, marke
 
 	applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, outcome, pending.RequestedQty, pending.Price, pending.FeeRate, true)
 	if applied > 0 {
+		if pending.OrderID != "" {
+			trader.ResetConfirmedFill(pending.OrderID)
+		}
 		ladderState.clear(marketID)
 		if tui != nil && !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			tui.ClearMarketInventoryStatus(marketID)
