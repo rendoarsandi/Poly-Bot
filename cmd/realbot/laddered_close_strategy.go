@@ -555,9 +555,6 @@ func realbotPollPaperLadderCloseFill(ladderState *realbotLadderCloseState, marke
 	}
 
 	if _, _, posOK := realbotLocalOutcomePosition(engine, marketID, outcome); !posOK {
-		if pending.OrderID != "" {
-			trader.ResetConfirmedFill(pending.OrderID)
-		}
 		ladderState.clear(marketID)
 		if tui != nil {
 			tui.ClearMarketInventoryStatus(marketID)
@@ -567,9 +564,6 @@ func realbotPollPaperLadderCloseFill(ladderState *realbotLadderCloseState, marke
 
 	applied := realbotApplyLadderedOneHourCloseFill(engine, tui, marketID, outcome, pending.RequestedQty, pending.Price, pending.FeeRate, true)
 	if applied > 0 {
-		if pending.OrderID != "" {
-			trader.ResetConfirmedFill(pending.OrderID)
-		}
 		ladderState.clear(marketID)
 		if tui != nil && !realbotHasActionableEnginePositionsForMarket(engine, marketID) {
 			tui.ClearMarketInventoryStatus(marketID)

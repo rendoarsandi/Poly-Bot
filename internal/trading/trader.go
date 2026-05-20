@@ -827,6 +827,10 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 	t.posMu.Lock()
 	defer t.posMu.Unlock()
 
+	if t.livePositions == nil {
+		t.livePositions = make(map[string]float64)
+	}
+
 	if fill.Side == "BUY" {
 		t.livePositions[fill.AssetID] += size
 	} else if fill.Side == "SELL" {
@@ -836,7 +840,13 @@ func (t *RealTrader) applyLiveFill(fill api.OrderFillData) {
 		}
 	}
 	if fill.OrderID != "" {
+		if t.confirmedOrderFills == nil {
+			t.confirmedOrderFills = make(map[string]float64)
+		}
 		t.confirmedOrderFills[fill.OrderID] += size
+		if t.confirmedOrderLastAt == nil {
+			t.confirmedOrderLastAt = make(map[string]time.Time)
+		}
 		t.confirmedOrderLastAt[fill.OrderID] = time.Now()
 	}
 }
@@ -857,6 +867,9 @@ func (t *RealTrader) applyLiveAssetBalance(assetID, balance string) {
 
 	t.posMu.Lock()
 	defer t.posMu.Unlock()
+	if t.livePositions == nil {
+		t.livePositions = make(map[string]float64)
+	}
 	t.livePositions[assetID] = size
 	if size <= 1e-9 {
 		t.setPositionLedgerLocked(assetID, 0, 0)

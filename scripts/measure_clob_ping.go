@@ -248,7 +248,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	if exchange != "" {
 		cfg.Exchange = exchange
 	}
@@ -344,7 +344,7 @@ func main() {
 		detectStats.add(detectDur)
 
 		engine := paper.NewEngine(1000)
-		engine.SetFeeRateBps(cfg.FeeRateBps)
+		engine.SetFeeRateBps(100)
 
 		signalSeenAt := time.Now()
 		_, _, _, _, err = engine.MarketBuyArb(

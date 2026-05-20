@@ -6299,42 +6299,17 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	}
 
 	uptime := time.Since(s.startTime).Round(time.Second)
-	roundWins, roundLosses, roundFlats := roundOutcomeCounts(s.roundHistory)
-	winCount, lossCount, flatCount := 0, 0, 0
-	displayRounds := rounds
-	useRoundSummary := false
-	switch {
-	case len(s.roundHistory) > 0 && (rounds == 0 || len(s.roundHistory) >= rounds):
-		useRoundSummary = true
-		displayRounds = len(s.roundHistory)
-		winCount = roundWins
-		lossCount = roundLosses
-		flatCount = roundFlats
-	case rounds > 0:
-		useRoundSummary = true
-		if len(s.roundHistory) > 0 && len(s.roundHistory) == rounds {
-			winCount = roundWins
-			lossCount = roundLosses
-			flatCount = roundFlats
-		} else {
-			winCount = profitable
-			lossCount = losingRounds
-			flatCount = rounds - profitable - losingRounds
-			if flatCount < 0 {
-				flatCount = 0
-			}
-		}
-	default:
-		winCount, lossCount = positionWinLossFromOrderHistory(s.orderHistory, strings.EqualFold(s.settings.PaperArbMode, "copytrade"))
-		if winCount+lossCount == 0 {
-			winCount = stats.WinningTrades
-			lossCount = stats.LosingTrades
-		}
+	winCount := stats.WinningTrades
+	lossCount := stats.LosingTrades
+	flatCount := stats.FlatTrades
+	totalTrades := stats.TotalTrades
+	if totalTrades == 0 {
+		totalTrades = winCount + lossCount + flatCount
 	}
-	totalDecisions := winCount + lossCount
+
 	winRate := 0.0
-	if totalDecisions > 0 {
-		winRate = (float64(winCount) / float64(totalDecisions)) * 100
+	if totalTrades > 0 {
+		winRate = (float64(winCount) / float64(totalTrades)) * 100
 	}
 
 	drawdownSt := styleWhite
@@ -6386,24 +6361,13 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		)
 	}
 	row3 := tradeLine
-	row4 := ""
-	if useRoundSummary {
-		row4 = fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L/F %d/%d/%d  ·  ⏱ %s",
-			multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
-			displayRounds,
-			winRate,
-			winCount, lossCount, flatCount,
-			styleDimmed.Render(uptime.String()),
-		)
-	} else {
-		row4 = fmt.Sprintf("  Compound %s  ·  %d rounds  ·  Win %.0f%%  ·  W/L %d/%d  ·  ⏱ %s",
-			multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
-			rounds,
-			winRate,
-			winCount, lossCount,
-			styleDimmed.Render(uptime.String()),
-		)
-	}
+	row4 := fmt.Sprintf("  Compound %s  ·  %d trades  ·  Win %.0f%%  ·  W/L/F %d/%d/%d  ·  ⏱ %s",
+		multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
+		totalTrades,
+		winRate,
+		winCount, lossCount, flatCount,
+		styleDimmed.Render(uptime.String()),
+	)
 	row5 := "  " + renderTradingHoursStatus(s.settings.TradingHoursMode, time.Now())
 
 	content := header + "\n" + row1

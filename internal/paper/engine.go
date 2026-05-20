@@ -36,6 +36,7 @@ type Stats struct {
 	TotalTrades       int
 	WinningTrades     int
 	LosingTrades      int
+	FlatTrades        int
 	RealizedPnL       float64
 	UnrealizedPnL     float64
 	PeakExposure      float64
@@ -102,6 +103,7 @@ type Engine struct {
 	maxLossStreakCash     float64
 	winningTrades         int
 	losingTrades          int
+	flatTrades            int
 
 	// Current market prices for unrealized PnL (legacy - outcome only)
 	currentPrices map[string]float64
@@ -616,10 +618,12 @@ func (e *Engine) executeSell(posKey, outcome string, price, quantity float64, is
 
 	// Update realized PnL
 	e.trackRealizedPnL(pnl)
-	if pnl > 0 {
+	if pnl > 0.0001 {
 		e.winningTrades++
-	} else if pnl < 0 {
+	} else if pnl < -0.0001 {
 		e.losingTrades++
+	} else {
+		e.flatTrades++
 	}
 
 	// Add proceeds to balance
@@ -699,10 +703,12 @@ func (e *Engine) Redeem(winningOutcome string) float64 {
 			e.currentBalance += proceeds
 			payout += proceeds
 
-			if pnl > 0 {
+			if pnl > 0.0001 {
 				e.winningTrades++
-			} else {
+			} else if pnl < -0.0001 {
 				e.losingTrades++
+			} else {
+				e.flatTrades++
 			}
 		} else {
 			// Losing shares are worthless
@@ -775,10 +781,12 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 			result.WinningPnL += pnl
 			result.TotalPayout += proceeds
 
-			if pnl > 0 {
+			if pnl > 0.0001 {
 				e.winningTrades++
-			} else {
+			} else if pnl < -0.0001 {
 				e.losingTrades++
+			} else {
+				e.flatTrades++
 			}
 		} else {
 			// Losing shares are worthless
@@ -902,10 +910,12 @@ func (e *Engine) MergeForMarket(marketID, outcome1, outcome2 string, shares floa
 	}
 
 	// Track as winning trade if profitable
-	if pnl > 0 {
+	if pnl > 0.0001 {
 		e.winningTrades++
-	} else if pnl < 0 {
+	} else if pnl < -0.0001 {
 		e.losingTrades++
+	} else {
+		e.flatTrades++
 	}
 
 	e.updateDrawdown()
@@ -948,10 +958,12 @@ func (e *Engine) LiquidateAll() float64 {
 		e.currentBalance += proceeds
 		totalProceeds += proceeds
 
-		if pnl > 0 {
+		if pnl > 0.0001 {
 			e.winningTrades++
-		} else if pnl < 0 {
+		} else if pnl < -0.0001 {
 			e.losingTrades++
+		} else {
+			e.flatTrades++
 		}
 
 		e.totalTrades++
@@ -1208,6 +1220,7 @@ func (e *Engine) GetStats() Stats {
 		TotalTrades:       e.totalTrades,
 		WinningTrades:     e.winningTrades,
 		LosingTrades:      e.losingTrades,
+		FlatTrades:        e.flatTrades,
 		RealizedPnL:       e.realizedPnL,
 		UnrealizedPnL:     e.getUnrealizedPnL(),
 		PeakExposure:      e.peakExposure,
@@ -1414,10 +1427,12 @@ func (e *Engine) AddRealizedPnL(pnl float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.trackRealizedPnL(pnl)
-	if pnl > 0 {
+	if pnl > 0.0001 {
 		e.winningTrades++
-	} else if pnl < 0 {
+	} else if pnl < -0.0001 {
 		e.losingTrades++
+	} else {
+		e.flatTrades++
 	}
 }
 
@@ -1534,6 +1549,7 @@ func (e *Engine) resetPaperSessionLocked(balance float64) {
 	e.maxLossStreakCash = 0
 	e.winningTrades = 0
 	e.losingTrades = 0
+	e.flatTrades = 0
 	e.positions = make(map[string]*Position)
 	e.currentPrices = make(map[string]float64)
 	e.currentBids = make(map[string]float64)

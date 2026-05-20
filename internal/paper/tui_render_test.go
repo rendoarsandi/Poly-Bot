@@ -1468,12 +1468,12 @@ func TestRenderAccountStatusShowsWinRateAndWinLossCounts(t *testing.T) {
 	if !strings.Contains(rendered, "Win 70%") {
 		t.Fatalf("expected win rate in account status, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "W/L 7/3") {
-		t.Fatalf("expected win/loss counts in account status, got %q", rendered)
+	if !strings.Contains(rendered, "W/L/F 7/3/0") {
+		t.Fatalf("expected win/loss/flat counts in account status, got %q", rendered)
 	}
 }
 
-func TestRenderAccountStatusUsesPositionWinLossFromOrderHistory(t *testing.T) {
+func TestRenderAccountStatusUsesTradeStatsAndIgnoresOrderHistory(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Real",
@@ -1491,17 +1491,19 @@ func TestRenderAccountStatusUsesPositionWinLossFromOrderHistory(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   9,
 		LosingTrades:    1,
+		FlatTrades:      0,
+		TotalTrades:     10,
 	}, 0, 0, 100, 100, 1.0, 120, 0, 0, 0, nil)
 
-	if !strings.Contains(rendered, "W/L 1/1") {
-		t.Fatalf("expected W/L to be based on per-position realized result from order history, got %q", rendered)
+	if !strings.Contains(rendered, "W/L/F 9/1/0") {
+		t.Fatalf("expected W/L/F to be based on engine stats, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Win 50%") {
-		t.Fatalf("expected win rate to follow per-position W/L, got %q", rendered)
+	if !strings.Contains(rendered, "Win 90%") {
+		t.Fatalf("expected win rate to follow engine stats, got %q", rendered)
 	}
 }
 
-func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
+func TestRenderAccountStatusShowsTradeWinLossFlatCounts(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Real",
@@ -1512,13 +1514,17 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	rendered := model.renderAccountStatus(120, Stats{
 		CurrentBalance:  100,
 		StartingBalance: 100,
+		WinningTrades:   3,
+		LosingTrades:    2,
+		FlatTrades:      3,
+		TotalTrades:     8,
 	}, 0, 0, 100, 100, 1.2, 120, 8, 3, 2, nil)
 
-	if !strings.Contains(rendered, "Win 60%") {
-		t.Fatalf("expected round win rate fallback in account status, got %q", rendered)
+	if !strings.Contains(rendered, "Win 38%") {
+		t.Fatalf("expected trade win rate in account status, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "W/L/F 3/2/3") {
-		t.Fatalf("expected round win/loss/flat fallback in account status, got %q", rendered)
+		t.Fatalf("expected trade win/loss/flat in account status, got %q", rendered)
 	}
 	if strings.Contains(rendered, "profitable") {
 		t.Fatalf("expected profitable-round text to be removed, got %q", rendered)
@@ -1528,7 +1534,7 @@ func TestRenderAccountStatusFallsBackToRoundWinLossCounts(t *testing.T) {
 	}
 }
 
-func TestRenderAccountStatusUsesRoundHistorySummaryWhenAvailable(t *testing.T) {
+func TestRenderAccountStatusIgnoresRoundHistoryForTradeSummary(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Real",
@@ -1550,17 +1556,19 @@ func TestRenderAccountStatusUsesRoundHistorySummaryWhenAvailable(t *testing.T) {
 		StartingBalance: 100,
 		WinningTrades:   9,
 		LosingTrades:    1,
+		FlatTrades:      0,
+		TotalTrades:     10,
 	}, 0, 0, 100, 100, 1.0, 120, 3, 1, 1, nil)
 
-	if !strings.Contains(rendered, "W/L/F 1/1/1") {
-		t.Fatalf("expected account status to match round history outcomes when round history is available, got %q", rendered)
+	if !strings.Contains(rendered, "W/L/F 9/1/0") {
+		t.Fatalf("expected account status to match engine stats, got %q", rendered)
 	}
-	if strings.Contains(rendered, "W/L 9/1") {
-		t.Fatalf("expected round summary to override trade-history win/loss display, got %q", rendered)
+	if !strings.Contains(rendered, "Win 90%") {
+		t.Fatalf("expected win rate to follow engine stats, got %q", rendered)
 	}
 }
 
-func TestRenderAccountStatusUsesRoundHistoryWhenEngineRoundCountLags(t *testing.T) {
+func TestRenderAccountStatusUsesEngineStatsDirectlyWithoutLagChecks(t *testing.T) {
 	model := tuiModel{
 		snap: tuiSnapshot{
 			mode:        "Real",
@@ -1577,17 +1585,16 @@ func TestRenderAccountStatusUsesRoundHistoryWhenEngineRoundCountLags(t *testing.
 		StartingBalance: 20.86,
 		WinningTrades:   9,
 		LosingTrades:    1,
+		FlatTrades:      0,
+		TotalTrades:     10,
 		RealizedPnL:     -3.20,
 	}, 0, 0, 20.73, 20.73, 1.0, 20.86, 1, 1, 0, nil)
 
-	if !strings.Contains(rendered, "2 rounds") {
-		t.Fatalf("expected account status to show round-history count, got %q", rendered)
+	if !strings.Contains(rendered, "10 trades") {
+		t.Fatalf("expected account status to show trade count, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "W/L/F 0/1/1") {
-		t.Fatalf("expected account status to match amended round history outcomes, got %q", rendered)
-	}
-	if strings.Contains(rendered, "W/L/F 1/0/0") {
-		t.Fatalf("expected stale engine round counters to be ignored, got %q", rendered)
+	if !strings.Contains(rendered, "W/L/F 9/1/0") {
+		t.Fatalf("expected account status to match engine stats, got %q", rendered)
 	}
 }
 
