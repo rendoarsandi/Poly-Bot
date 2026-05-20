@@ -245,12 +245,12 @@ func recentDisplayQuote(current, lastGood float64, age time.Duration, cleared bo
 		return current
 	}
 	if cleared {
-		return 0
+		return current
 	}
-	if age <= recentQuoteDisplayGrace && lastGood > 0 {
+	if lastGood > 0 && age <= recentQuoteDisplayGrace {
 		return lastGood
 	}
-	return 0
+	return current
 }
 
 func signedDollar(amount float64) string {
