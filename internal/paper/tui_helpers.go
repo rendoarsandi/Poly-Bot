@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,10 +228,16 @@ func resolveOrderHistoryMarketSlug(entry OrderHistoryEntry, markets map[string]*
 }
 
 func marginStyle(pct float64) lipgloss.Style {
-	if pct >= 0 {
+	switch {
+	case pct >= 3:
 		return styleGreen
+	case pct >= 2:
+		return styleYellow
+	case pct < 1:
+		return styleRed
+	default:
+		return styleWhite
 	}
-	return styleRed
 }
 
 func recentDisplayQuote(current, lastGood float64, age time.Duration, cleared bool) float64 {
@@ -352,34 +359,44 @@ func walletTruthInventoryStatus(wt WalletTruthPosition) string {
 }
 
 func marketLooksPastEndFromID(marketID string, now time.Time) bool {
-	if now.IsZero() {
-		now = time.Now()
+	if endTime, err := ParseEndTimeFromSlug(strings.TrimSpace(marketID)); err == nil && !endTime.IsZero() {
+		return now.After(endTime)
 	}
-	if idx := strings.LastIndex(marketID, "-"); idx > 0 {
-		raw := marketID[idx+1:]
-		if len(raw) >= 10 {
-			raw = raw[:10]
-			if t, err := time.Parse("2006-01-02", raw); err == nil {
-				// Market is past end if we are at least 5 seconds past the day bound in UTC.
-				return now.UTC().Sub(t.UTC()) >= 5*time.Second
-			}
-		}
+
+	parts := strings.Split(marketID, "-")
+	if len(parts) <= 1 {
+		return false
 	}
-	return false
+	lastPart := parts[len(parts)-1]
+	ts, err := strconv.ParseInt(lastPart, 10, 64)
+	if err != nil || ts <= 1000000000 {
+		return false
+	}
+	return now.After(time.Unix(ts, 0))
 }
 
 func looksTerminalBook(outcomes []string, bids, asks map[string]float64) bool {
-	if len(outcomes) == 0 || len(bids) == 0 || len(asks) == 0 {
+	if len(outcomes) == 0 {
 		return false
 	}
-	for _, out := range outcomes {
-		b := bids[out]
-		a := asks[out]
-		if b >= terminalBidFloor || (a > 0 && a <= terminalAskCeil) {
-			return true
+
+	sawExtreme := false
+	for _, outcome := range outcomes {
+		bid := bids[outcome]
+		ask := asks[outcome]
+
+		if bid > 0 && bid < terminalBidFloor {
+			return false
+		}
+		if ask > 0 && ask < terminalBidFloor && ask > terminalAskCeil {
+			return false
+		}
+		if bid >= terminalBidFloor || ask >= terminalBidFloor || (ask > 0 && ask <= terminalAskCeil) {
+			sawExtreme = true
 		}
 	}
-	return false
+
+	return sawExtreme
 }
 func makePanel(innerWidth int, borderColor lipgloss.Color, content string) string {
 	if innerWidth < 4 {
