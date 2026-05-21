@@ -67,15 +67,6 @@ func realbotHandleModeDispatch(args realbotModeDispatchArgs) bool {
 	}
 
 	if args.primaryMode == paperArbModeMaker {
-		if args.embeddedPaperMode {
-			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
-			realbotCancelAllMakerQuotes(cancelMakerCtx, args.marketID, "maker disabled on embedded paper backend", args.trader, args.engine, args.tui, args.makerQuotes)
-			cancelMaker()
-			args.tui.LogEventDedup("paper-maker-disabled:"+args.marketID, 30*time.Second,
-				"[%s] ⚠️ Maker mode is disabled on the embedded paper backend. Use taker, laddered-taker, copytrade, or binance-gap.", args.marketID)
-			time.Sleep(realbotTraderLoopInterval(args.liveCfg))
-			return true
-		}
 		if !args.executionPairFresh {
 			cancelMakerCtx, cancelMaker := context.WithTimeout(context.Background(), 5*time.Second)
 			realbotCancelAllMakerQuotes(cancelMakerCtx, args.marketID, "waiting for fresh pair quotes", args.trader, args.engine, args.tui, args.makerQuotes)
@@ -91,7 +82,7 @@ func realbotHandleModeDispatch(args realbotModeDispatchArgs) bool {
 			return true
 		}
 		makerCtx, makerCancel := context.WithTimeout(args.ctx, 5*time.Second)
-		maintainRealbotMakerQuotes(makerCtx, args.marketID, args.endTime, args.outcomes, args.getTokenID, args.tokenBids, args.tokenAsks, args.tokenFeeRates, args.trader, args.engine, args.riskMgr, args.tui, args.liveCfg, args.cfg, args.makerQuotes, args.lastMakerSync)
+		maintainRealbotMakerQuotes(makerCtx, args.marketID, args.endTime, args.outcomes, args.getTokenID, args.tokenBids, args.tokenAsks, args.tokenFeeRates, args.trader, args.engine, args.riskMgr, args.tui, args.liveCfg, args.cfg, args.makerQuotes, args.lastMakerSync, args.binanceFeed)
 		makerCancel()
 		time.Sleep(realbotTraderLoopInterval(args.liveCfg))
 		return true

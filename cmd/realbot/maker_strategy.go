@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -258,27 +259,129 @@ func realbotUpsertMakerQuote(ctx context.Context, marketID string, trader *tradi
 	return true
 }
 
-func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime time.Time, outcomes []string, getTokenID func(string) string, tokenBids, tokenAsks map[string]float64, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, riskMgr *paper.RiskManager, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, makerQuotes map[string]*realbotMakerQuote, lastMakerSync *time.Time) {
-	if trader != nil && trader.IsPaperMode() {
-		realbotCancelAllMakerQuotes(ctx, marketID, "maker mode unavailable on embedded paper backend", trader, engine, tui, makerQuotes)
-		return
+func realbotUpsertPaperMakerQuote(marketID string, tui *paper.TUI, makerQuotes map[string]*realbotMakerQuote, side api.Side, outcome, tokenID string, price, qty float64) bool {
+	key := realbotMakerQuoteKey(side, outcome)
+	existing := makerQuotes[key]
+	qty = normalizeMarketSellShares(qty)
+
+	orderValue := qty * price
+	if orderValue < 1.0 || price <= 0 || tokenID == "" {
+		if existing != nil {
+			delete(makerQuotes, key)
+			return true
+		}
+		return false
 	}
+
+	if existing != nil {
+		if math.Abs(existing.Price-price) < 1e-9 && math.Abs(existing.RemainingQty-qty) < 0.01 {
+			return false
+		}
+		delete(makerQuotes, key)
+	}
+
+	makerQuotes[key] = &realbotMakerQuote{
+		OrderID:       fmt.Sprintf("sim-%s-%s-%d", strings.ToLower(string(side)), outcome, time.Now().UnixNano()),
+		TokenID:       tokenID,
+		Outcome:       outcome,
+		Side:          side,
+		Price:         price,
+		RequestedQty:  qty,
+		RemainingQty:  qty,
+		AccountedFill: 0,
+		FeeRateBps:    0,
+	}
+	return true
+}
+
+func realbotSimulatePaperMakerFills(marketID string, engine *paper.Engine, tui *paper.TUI, makerQuotes map[string]*realbotMakerQuote, tokenBids, tokenAsks map[string]float64) {
+	for key, quote := range makerQuotes {
+		if quote == nil || quote.RemainingQty <= 0 {
+			continue
+		}
+
+		bid := tokenBids[quote.Outcome]
+		ask := tokenAsks[quote.Outcome]
+		if bid <= 0 || ask <= 0 {
+			continue
+		}
+
+		filled := false
+		if quote.Side == api.SideBuy {
+			if ask <= quote.Price+1e-9 {
+				filled = true
+			}
+		} else {
+			if bid >= quote.Price-1e-9 {
+				filled = true
+			}
+		}
+
+		if filled {
+			qty := quote.RemainingQty
+			if quote.Side == api.SideBuy {
+				if _, err := engine.MakerBuyForMarket(marketID, quote.Outcome, quote.Price, qty); err != nil {
+					tui.LogEvent("[%s] ⚠️ Paper Maker buy fill failed: %v", marketID, err)
+				} else {
+					tui.LogEvent("[%s] ✅ Paper Maker BUY fill: %s %.2f @ $%.3f", marketID, quote.Outcome, qty, quote.Price)
+					tui.RecordOrderWithMode(marketID, quote.Outcome, "BUY", qty, quote.Price, qty*quote.Price, 0.0, 0.0, "maker", "FILLED")
+				}
+			} else {
+				if _, err := engine.MakerSellForMarket(marketID, quote.Outcome, quote.Price, qty); err != nil {
+					tui.LogEvent("[%s] ⚠️ Paper Maker sell fill failed: %v", marketID, err)
+				} else {
+					tui.LogEvent("[%s] ✅ Paper Maker SELL fill: %s %.2f @ $%.3f", marketID, quote.Outcome, qty, quote.Price)
+					tui.RecordOrderWithMode(marketID, quote.Outcome, "SELL", qty, quote.Price, qty*quote.Price, 0.0, 0.0, "maker", "FILLED")
+				}
+			}
+			delete(makerQuotes, key)
+		}
+	}
+}
+
+func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime time.Time, outcomes []string, getTokenID func(string) string, tokenBids, tokenAsks map[string]float64, tokenFeeRates map[string]int, trader *trading.RealTrader, engine *paper.Engine, riskMgr *paper.RiskManager, tui *paper.TUI, liveCfg paper.TUISettings, cfg *core.Config, makerQuotes map[string]*realbotMakerQuote, lastMakerSync *time.Time, binanceFeed *api.BinanceFuturesPriceFeed) {
 	if len(outcomes) != 2 {
 		realbotCancelAllMakerQuotes(ctx, marketID, "maker mode requires exactly 2 outcomes", trader, engine, tui, makerQuotes)
 		return
 	}
-	openByID := make(map[string]api.OpenOrder)
-	if len(makerQuotes) > 0 {
-		openOrders, err := trader.GetOpenOrders(ctx)
-		if err != nil {
-			tui.LogEvent("[%s] ⚠️ Maker open-order refresh failed: %v", marketID, err)
-		} else {
-			for _, order := range openOrders {
-				openByID[order.OrderID] = order
+
+	// Binance Volatility Protection
+	if binanceFeed != nil {
+		snap := binanceFeed.Snapshot(time.Now())
+		if snap.Connected && snap.Ready && !snap.UpdatedAt.IsZero() && time.Since(snap.UpdatedAt) <= core.ResolveBinanceSignalMaxAge(cfg) {
+			threshold := cfg.BinanceSignalThresholdPct
+			if threshold <= 0 {
+				threshold = 0.30
+			}
+			if math.Abs(snap.DeltaPercent) >= threshold {
+				realbotCancelAllMakerQuotes(ctx, marketID, fmt.Sprintf("Binance volatility protection triggered: delta %.3f%% >= threshold %.3f%%", snap.DeltaPercent, threshold), trader, engine, tui, makerQuotes)
+				if lastMakerSync != nil {
+					*lastMakerSync = time.Now()
+				}
+				return
 			}
 		}
 	}
-	realbotSyncMakerQuoteFills(marketID, trader, engine, tui, makerQuotes, openByID)
+
+	isPaper := trader != nil && trader.IsPaperMode()
+	openByID := make(map[string]api.OpenOrder)
+
+	if isPaper {
+		realbotSimulatePaperMakerFills(marketID, engine, tui, makerQuotes, tokenBids, tokenAsks)
+	} else {
+		if len(makerQuotes) > 0 {
+			openOrders, err := trader.GetOpenOrders(ctx)
+			if err != nil {
+				tui.LogEvent("[%s] ⚠️ Maker open-order refresh failed: %v", marketID, err)
+			} else {
+				for _, order := range openOrders {
+					openByID[order.OrderID] = order
+				}
+			}
+		}
+		realbotSyncMakerQuoteFills(marketID, trader, engine, tui, makerQuotes, openByID)
+	}
+
 	if lastMakerSync != nil && !lastMakerSync.IsZero() && time.Since(*lastMakerSync) < realbotMakerRequoteInterval {
 		realbotUpdateMakerPendingOrders(marketID, makerQuotes, tui)
 		return
@@ -378,29 +481,75 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		}
 	}
 
+	// Dynamic Inventory-Skewed Bidirectional (Sell) Quoting
+	mid0 := (bid0 + ask0) / 2.0
+	mid1 := (bid1 + ask1) / 2.0
+	if mid0 <= 0 {
+		mid0 = 0.5
+	}
+	if mid1 <= 0 {
+		mid1 = 0.5
+	}
+	targetShares0 := targetValue / mid0
+	targetShares1 := targetValue / mid1
+
+	skew0 := computeRealbotMakerInventorySkew(shares0, shares1, targetShares0)
+	skew1 := computeRealbotMakerInventorySkew(shares1, shares0, targetShares1)
+
+	quoteGap := resolveRealbotMakerQuoteGap(liveCfg, cfg)
+
+	sellPrice0, sellOK0 := computeRealbotMakerProtectedSellQuote(bid0, ask0, avg0, minPairEdge, skew0, quoteGap, tokenFeeRates[outcomes[0]], timeToEnd, makerParams)
+	sellPrice1, sellOK1 := computeRealbotMakerProtectedSellQuote(bid1, ask1, avg1, minPairEdge, skew1, quoteGap, tokenFeeRates[outcomes[1]], timeToEnd, makerParams)
+
+	sellQty0 := 0.0
+	if sellOK0 && shares0 > 0 {
+		sellQty0 = computeRealbotMakerSellQty(baseTradeValue, shares0, skew0, sellPrice0, makerParams)
+	}
+	sellQty1 := 0.0
+	if sellOK1 && shares1 > 0 {
+		sellQty1 = computeRealbotMakerSellQty(baseTradeValue, shares1, skew1, sellPrice1, makerParams)
+	}
+
 	changed := false
-	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideBuy, outcomes[0], getTokenID(outcomes[0]), buyPrice0, buyQty0, tokenFeeRates[outcomes[0]]) {
-		changed = true
-	}
-	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideBuy, outcomes[1], getTokenID(outcomes[1]), buyPrice1, buyQty1, tokenFeeRates[outcomes[1]]) {
-		changed = true
-	}
-	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[0], getTokenID(outcomes[0]), 0, 0, tokenFeeRates[outcomes[0]]) {
-		changed = true
-	}
-	if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[1], getTokenID(outcomes[1]), 0, 0, tokenFeeRates[outcomes[1]]) {
-		changed = true
+	if isPaper {
+		if realbotUpsertPaperMakerQuote(marketID, tui, makerQuotes, api.SideBuy, outcomes[0], getTokenID(outcomes[0]), buyPrice0, buyQty0) {
+			changed = true
+		}
+		if realbotUpsertPaperMakerQuote(marketID, tui, makerQuotes, api.SideBuy, outcomes[1], getTokenID(outcomes[1]), buyPrice1, buyQty1) {
+			changed = true
+		}
+		if realbotUpsertPaperMakerQuote(marketID, tui, makerQuotes, api.SideSell, outcomes[0], getTokenID(outcomes[0]), sellPrice0, sellQty0) {
+			changed = true
+		}
+		if realbotUpsertPaperMakerQuote(marketID, tui, makerQuotes, api.SideSell, outcomes[1], getTokenID(outcomes[1]), sellPrice1, sellQty1) {
+			changed = true
+		}
+	} else {
+		if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideBuy, outcomes[0], getTokenID(outcomes[0]), buyPrice0, buyQty0, tokenFeeRates[outcomes[0]]) {
+			changed = true
+		}
+		if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideBuy, outcomes[1], getTokenID(outcomes[1]), buyPrice1, buyQty1, tokenFeeRates[outcomes[1]]) {
+			changed = true
+		}
+		if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[0], getTokenID(outcomes[0]), sellPrice0, sellQty0, tokenFeeRates[outcomes[0]]) {
+			changed = true
+		}
+		if realbotUpsertMakerQuote(ctx, marketID, trader, riskMgr, tui, makerQuotes, openByID, api.SideSell, outcomes[1], getTokenID(outcomes[1]), sellPrice1, sellQty1, tokenFeeRates[outcomes[1]]) {
+			changed = true
+		}
 	}
 
 	if lastMakerSync != nil {
 		*lastMakerSync = time.Now()
 	}
 	if changed {
-		tui.LogEvent("[%s] 🧾 Live maker pair bids refreshed: %s buy@$%.3f x %.0f | %s buy@$%.3f x %.0f | pair=$%.3f",
+		tui.LogEvent("[%s] 🧾 Live maker quotes refreshed | Bids: %s buy@$%.3f x %.0f, %s buy@$%.3f x %.0f (pair=$%.3f) | Asks: %s sell@$%.3f x %.0f, %s sell@$%.3f x %.0f",
 			marketID,
 			outcomes[0], buyPrice0, buyQty0,
 			outcomes[1], buyPrice1, buyQty1,
 			buyPrice0+buyPrice1,
+			outcomes[0], sellPrice0, sellQty0,
+			outcomes[1], sellPrice1, sellQty1,
 		)
 	}
 	realbotUpdateMakerPendingOrders(marketID, makerQuotes, tui)
