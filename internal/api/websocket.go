@@ -300,7 +300,11 @@ attemptLoop:
 		m.mu.Unlock()
 
 		// Exponential backoff with cap at 10 seconds
-		delay := reconnectDelay * time.Duration(1<<uint(attempt-1))
+		shift := uint(attempt - 1)
+		if shift > 10 {
+			shift = 10
+		}
+		delay := reconnectDelay * time.Duration(1<<shift)
 		if delay > 10*time.Second {
 			delay = 10 * time.Second
 		}

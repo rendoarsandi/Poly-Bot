@@ -802,6 +802,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Settings overlay key handling ────────────────────────────────────
 		if m.showSettings {
+			m.tui.mu.Lock()
+			currentSettings := m.tui.settings
+			currentMode := m.tui.mode
+			m.tui.mu.Unlock()
+
 			if m.settingsEdit {
 				switch key {
 				case "esc":
@@ -844,13 +849,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if len(msg.Runes) > 0 {
-					m.settingsInput = appendSettingsTypedInput(m.tui.settings, m.settingsCursor, m.settingsInput, msg.Runes)
+					m.settingsInput = appendSettingsTypedInput(currentSettings, m.settingsCursor, m.settingsInput, msg.Runes)
 				}
 				return m, nil
 			}
 
-			if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) {
-				if seed, ok := settingsTypedEditSeedInput(m.tui.settings, m.settingsCursor, msg); ok {
+			if settingsRowSupportsTypedEdit(currentSettings, currentMode, m.settingsCursor) {
+				if seed, ok := settingsTypedEditSeedInput(currentSettings, m.settingsCursor, msg); ok {
 					m.settingsEdit = true
 					m.settingsInput = seed
 					return m, nil
@@ -871,7 +876,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tui.mu.Unlock()
 				return m, nil
 			case "enter":
-				if settingsRowSupportsTypedEdit(m.tui.settings, m.tui.mode, m.settingsCursor) {
+				if settingsRowSupportsTypedEdit(currentSettings, currentMode, m.settingsCursor) {
 					m.tui.mu.Lock()
 					m.settingsInput = settingsEditValue(m.tui.settings, m.settingsCursor)
 					m.tui.mu.Unlock()
@@ -896,20 +901,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.settingsCursor < 0 {
 						m.settingsCursor = settingsRowCount - 1
 					}
-					if isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
+					if isRowVisible(currentSettings, currentMode, m.settingsCursor) {
 						break
 					}
 				}
-				m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
+				m.ensureSettingsCursorVisible(currentSettings, currentMode)
 				return m, nil
 			case "down", "j":
 				for {
 					m.settingsCursor = (m.settingsCursor + 1) % settingsRowCount
-					if isRowVisible(m.tui.settings, m.tui.mode, m.settingsCursor) {
+					if isRowVisible(currentSettings, currentMode, m.settingsCursor) {
 						break
 					}
 				}
-				m.ensureSettingsCursorVisible(m.tui.settings, m.tui.mode)
+				m.ensureSettingsCursorVisible(currentSettings, currentMode)
 				return m, nil
 			case "pgup", "ctrl+b":
 				m.scrollBy(-(m.settingsViewportHeight() - 2))
