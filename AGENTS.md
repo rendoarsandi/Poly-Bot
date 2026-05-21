@@ -45,4 +45,7 @@
 - Keep secrets in `.env`, not in `config/*.json` or committed files.
 - Treat `config/realbot.settings.json` as runtime behavior, not secret storage.
 - Validate changes touching order sizing, cleanup, merge, or redemption with extra care; these paths can affect live funds.
-ing order sizing, cleanup, merge, or redemption with extra care; these paths can affect live funds.
+
+## AI Agent Guidelines
+- **Be Concise**: Do not talk too much. Avoid explaining every single tool call. Keep responses extremely brief and direct.
+- **Git Commit/Push**: Do not run `git commit` or `git push` unless the user explicitly requests it.
