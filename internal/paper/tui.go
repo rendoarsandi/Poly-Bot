@@ -2838,10 +2838,7 @@ func roundHistoryShareSummary(positions map[string]Position, redemptions []*Rede
 			parts = append(parts, text)
 		}
 
-		prefix := marketTimeSuffix(market.marketID)
-		if prefix == "" {
-			prefix = marketDisplayLabel(market.marketID)
-		}
+		prefix := formatMarketWithSuffix(market.marketID)
 		marketLines = append(marketLines, prefix+": "+strings.Join(parts, "  |  "))
 	}
 	return strings.Join(marketLines, "\n")
