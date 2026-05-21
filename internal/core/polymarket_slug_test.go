@@ -34,3 +34,28 @@ func TestParsePolymarketEndTimeFromHumanReadableHourlySlug(t *testing.T) {
 		t.Fatalf("expected hourly series key, got %q", got)
 	}
 }
+
+func TestPolymarketTimeframeFromSlugAdditionalTimeframes(t *testing.T) {
+	tests := []struct {
+		slug         string
+		wantTf       string
+		wantDuration time.Duration
+	}{
+		{"btc-updown-4h-1768032000", "4h", 4 * time.Hour},
+		{"eth-updown-1d-1768032000", "1d", 24 * time.Hour},
+		{"sol-updown-1D-1768032000", "1d", 24 * time.Hour}, // Check case insensitivity
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.slug, func(t *testing.T) {
+			gotTf := PolymarketTimeframeFromSlug(tc.slug)
+			if gotTf != tc.wantTf {
+				t.Errorf("PolymarketTimeframeFromSlug(%q) = %q, want %q", tc.slug, gotTf, tc.wantTf)
+			}
+			gotDuration := PolymarketWindowDurationFromSlug(tc.slug)
+			if gotDuration != tc.wantDuration {
+				t.Errorf("PolymarketWindowDurationFromSlug(%q) = %v, want %v", tc.slug, gotDuration, tc.wantDuration)
+			}
+		})
+	}
+}

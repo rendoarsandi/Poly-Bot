@@ -467,8 +467,8 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 		}
 	}
 
-	// FALLBACK: Proactively discover 5m/15m/1h markets for BTC/ETH/SOL/XRP
-	for _, timeframe := range []string{"5m", "15m", "1h"} {
+	// FALLBACK: Proactively discover 5m/15m/1h/4h/1d markets for BTC/ETH/SOL/XRP
+	for _, timeframe := range []string{"5m", "15m", "1h", "4h", "1d"} {
 		markets, err := w.rest.GetMarketsByTimeframe(ctx, []string{"btc", "eth", "sol", "xrp"}, timeframe)
 		if err == nil {
 			for _, mkt := range markets {

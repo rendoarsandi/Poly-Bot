@@ -14,7 +14,7 @@ var polymarketHourlyEventSlugPattern = regexp.MustCompile(`^([a-z0-9-]+)-up-or-d
 // hourly event slugs.
 func PolymarketTimeframeFromSlug(slug string) string {
 	slug = strings.ToLower(strings.TrimSpace(slug))
-	for _, timeframe := range []string{"5m", "15m", "1h", "1d"} {
+	for _, timeframe := range []string{"5m", "15m", "1h", "4h", "1d"} {
 		if strings.Contains(slug, "-"+timeframe+"-") || strings.HasSuffix(slug, "-"+timeframe) {
 			return timeframe
 		}
@@ -35,6 +35,8 @@ func PolymarketWindowDurationFromSlug(slug string) time.Duration {
 		return 15 * time.Minute
 	case "1h":
 		return time.Hour
+	case "4h":
+		return 4 * time.Hour
 	case "1d":
 		return 24 * time.Hour
 	default:

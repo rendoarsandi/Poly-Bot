@@ -471,13 +471,17 @@ func normalizeMarketTimeframe(timeframe string) string {
 		return "5m"
 	case "1h":
 		return "1h"
+	case "4h":
+		return "4h"
+	case "1d":
+		return "1d"
 	default:
 		return "15m"
 	}
 }
 
 func cycleMarketTimeframe(current string, delta int) string {
-	return cycleString([]string{"15m", "5m", "1h"}, normalizeMarketTimeframe(current), delta)
+	return cycleString([]string{"15m", "5m", "1h", "4h", "1d"}, normalizeMarketTimeframe(current), delta)
 }
 
 func normalizeTUISettings(s TUISettings) TUISettings {

@@ -708,6 +708,8 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 		interval = 300 // 5 minutes
 	case "1h":
 		interval = 3600 // 1 hour
+	case "4h":
+		interval = 14400 // 4 hours
 	case "1d":
 		interval = 86400 // 1 day
 	}

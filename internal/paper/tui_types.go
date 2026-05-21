@@ -93,7 +93,7 @@ type TUISettings struct {
 	MarketSlug                         string  // Current selected market slug or ALL or BTC,ETH
 	MaxMarkets                         int     // Max concurrent markets to trade
 	PaperBalance                       float64 // Paper-only bankroll / session reset amount
-	Timeframe                          string  // "5m", "15m", or "1h"
+	Timeframe                          string  // "5m", "15m", "1h", "4h", or "1d"
 	TradeSizingMode                    string  // "percent" or "usdc"
 	TradeScaleFactor                   float64 // e.g. 0.05 = 5% of equity per trade
 	TradeSizeUSDC                      float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"

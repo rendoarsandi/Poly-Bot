@@ -21,7 +21,7 @@ const (
 )
 
 var recentScanAssets = []string{"btc", "eth", "sol", "xrp"}
-var recentScanTimeframes = []string{"15m", "5m", "1h"}
+var recentScanTimeframes = []string{"15m", "5m", "1h", "4h", "1d"}
 
 func collectMarketsByTimeframesConcurrently(ctx context.Context, timeframes []string, fetch func(context.Context, string) ([]api.Market, error)) (map[string]api.Market, error) {
 	type timeframeFetchResult struct {

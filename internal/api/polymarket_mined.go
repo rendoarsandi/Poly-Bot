@@ -807,9 +807,9 @@ func (w *PolymarketMinedWatcher) resolveToken(ctx context.Context, tokenID strin
 	w.lastDiscoveryFallback = time.Now()
 	w.mu.Unlock()
 
-	// FALLBACK: Proactively discover 5m/15m/1h markets for BTC/ETH/SOL/XRP
+	// FALLBACK: Proactively discover 5m/15m/1h/4h/1d markets for BTC/ETH/SOL/XRP
 	// Polymarket high-frequency markets (BTC 5m) often aren't indexed by token ID in time.
-	for _, timeframe := range []string{"5m", "15m", "1h"} {
+	for _, timeframe := range []string{"5m", "15m", "1h", "4h", "1d"} {
 		markets, err := w.rest.GetMarketsByTimeframe(ctx, []string{"btc", "eth", "sol", "xrp"}, timeframe)
 		if err == nil {
 			for _, mkt := range markets {

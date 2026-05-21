@@ -814,14 +814,41 @@ func TestNormalizeTUISettingsClampsMaxMarketsToSelectedAssets(t *testing.T) {
 }
 
 func TestNormalizeTUISettingsNormalizesTimeframe(t *testing.T) {
-	got := normalizeTUISettings(TUISettings{Timeframe: "1h"})
-	if got.Timeframe != "1h" {
-		t.Fatalf("expected 1h timeframe to be preserved, got %q", got.Timeframe)
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"1h", "1h"},
+		{"4h", "4h"},
+		{"1d", "1d"},
+		{"1D", "1d"},
+		{"invalid", "15m"},
+	} {
+		got := normalizeTUISettings(TUISettings{Timeframe: tc.input})
+		if got.Timeframe != tc.want {
+			t.Errorf("normalizeTUISettings(Timeframe: %q) = %q, want %q", tc.input, got.Timeframe, tc.want)
+		}
 	}
+}
 
-	got = normalizeTUISettings(TUISettings{Timeframe: "invalid"})
-	if got.Timeframe != "15m" {
-		t.Fatalf("expected invalid timeframe to fall back to 15m, got %q", got.Timeframe)
+func TestCycleMarketTimeframe(t *testing.T) {
+	tests := []struct {
+		current string
+		delta   int
+		want    string
+	}{
+		{"15m", 1, "5m"},
+		{"5m", 1, "1h"},
+		{"1h", 1, "4h"},
+		{"4h", 1, "1d"},
+		{"1d", 1, "15m"},
+		{"15m", -1, "1d"},
+	}
+	for _, tc := range tests {
+		got := cycleMarketTimeframe(tc.current, tc.delta)
+		if got != tc.want {
+			t.Errorf("cycleMarketTimeframe(%q, %d) = %q, want %q", tc.current, tc.delta, got, tc.want)
+		}
 	}
 }
 
