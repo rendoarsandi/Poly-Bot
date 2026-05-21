@@ -180,14 +180,76 @@ func truncateText(s string, maxLen int) string {
 	return s[:maxLen-1] + "…"
 }
 
+func formatMarketWithSuffix(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "UNKNOWN"
+	}
+	suffix := marketTimeSuffix(raw)
+	if suffix == "" {
+		return marketDisplayLabel(raw)
+	}
+
+	// We have a numeric suffix. Let's extract the preceding parts.
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '-' || r == '#' || r == ':' || r == '/'
+	})
+
+	if len(parts) <= 1 {
+		return marketDisplayLabel(raw)
+	}
+
+	// Filter out the last part (which is the suffix)
+	preceding := parts[:len(parts)-1]
+
+	// Filter out redundant "updown" part (case-insensitive)
+	var filtered []string
+	for _, p := range preceding {
+		pClean := strings.TrimSpace(p)
+		if strings.EqualFold(pClean, "updown") {
+			continue
+		}
+		if pClean != "" {
+			filtered = append(filtered, pClean)
+		}
+	}
+
+	if len(filtered) == 0 {
+		return suffix
+	}
+
+	// Format the first part (usually asset name) to uppercase
+	filtered[0] = strings.ToUpper(filtered[0])
+
+	// For the rest of the parts, if they represent a timeframe (like 1m, 5m, 15m, 1h, etc), uppercase them nicely (e.g. 5M, 1H)
+	for i := 1; i < len(filtered); i++ {
+		fLower := strings.ToLower(filtered[i])
+		if len(fLower) >= 2 {
+			lastChar := fLower[len(fLower)-1]
+			if lastChar == 'm' || lastChar == 'h' || lastChar == 'd' {
+				isTimeframe := true
+				for _, r := range fLower[:len(fLower)-1] {
+					if r < '0' || r > '9' {
+						isTimeframe = false
+						break
+					}
+				}
+				if isTimeframe {
+					filtered[i] = strings.ToUpper(fLower)
+				}
+			}
+		}
+	}
+
+	prefix := strings.Join(filtered, "-")
+	return prefix + " " + suffix
+}
+
 func orderHistoryMarketLabel(marketID, marketSlug string) string {
-	if suffix := marketTimeSuffix(marketSlug); suffix != "" {
-		return suffix
+	if strings.TrimSpace(marketSlug) != "" {
+		return formatMarketWithSuffix(marketSlug)
 	}
-	if suffix := marketTimeSuffix(marketID); suffix != "" {
-		return suffix
-	}
-	return marketDisplayLabel(marketID)
+	return formatMarketWithSuffix(marketID)
 }
 
 func marketTimeSuffix(raw string) string {

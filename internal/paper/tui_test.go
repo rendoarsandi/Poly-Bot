@@ -81,3 +81,45 @@ func TestRefreshScrollMetricsIfNeededSkipsStableLayout(t *testing.T) {
 		t.Fatalf("expected stable layout refresh to be skipped, got contentLines=%d", model.contentLines)
 	}
 }
+
+func TestFormatMarketWithSuffix(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"btc-updown-15m-1776820500", "BTC-15M 1776820500"},
+		{"ETH-5M#98024767", "ETH-5M 98024767"},
+		{"eth-5m#98024767", "ETH-5M 98024767"},
+		{"BTC", "BTC"},
+		{"1779324000", "1779324000"},
+		{"btc-updown-5m-1", "BTC-5M 1"},
+		{"", "UNKNOWN"},
+		{"  ", "UNKNOWN"},
+	}
+
+	for _, tt := range tests {
+		got := formatMarketWithSuffix(tt.input)
+		if got != tt.expected {
+			t.Errorf("formatMarketWithSuffix(%q) = %q, expected %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestOrderHistoryMarketLabel(t *testing.T) {
+	tests := []struct {
+		marketID   string
+		marketSlug string
+		expected   string
+	}{
+		{"BTC", "btc-updown-15m-1776820500", "BTC-15M 1776820500"},
+		{"btc-updown-5m-1", "", "BTC-5M 1"},
+		{"BTC", "", "BTC"},
+	}
+
+	for _, tt := range tests {
+		got := orderHistoryMarketLabel(tt.marketID, tt.marketSlug)
+		if got != tt.expected {
+			t.Errorf("orderHistoryMarketLabel(%q, %q) = %q, expected %q", tt.marketID, tt.marketSlug, got, tt.expected)
+		}
+	}
+}
