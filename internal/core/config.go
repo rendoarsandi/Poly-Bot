@@ -85,9 +85,11 @@ type Config struct {
 	TradeSizeUSDC    float64 // Fixed per-trade USDC amount when TradeSizingMode == "usdc"
 
 	// Safety settings for real trading
-	MaxTradeSize   float64 // Maximum USDC per single trade (overrides scaling)
-	MaxDailyLoss   float64 // Maximum daily loss before stopping
-	RequireConfirm bool    // Require confirmation before each trade
+	MaxTradeSize      float64 // Maximum USDC per single trade (overrides scaling)
+	MaxDailyLoss      float64 // Maximum daily loss before stopping
+	RequireConfirm    bool    // Require confirmation before each trade
+	DisableKillSwitch bool    // Whether to disable risk manager kill switch
+	MaxExposure       float64 // Maximum exposure in dollars (0 = math.MaxFloat64/unlimited)
 
 	// Logging settings
 	EnableCSVLogger bool // Whether to enable CSV logging of bot activity
@@ -190,6 +192,8 @@ type RuntimeSettings struct {
 	MaxTradeSize                       float64 `json:"maxTradeSize"`
 	MaxDailyLoss                       float64 `json:"maxDailyLoss"`
 	RequireConfirm                     bool    `json:"requireConfirm"`
+	DisableKillSwitch                  bool    `json:"disableKillSwitch"`
+	MaxExposure                        float64 `json:"maxExposure"`
 	EnableCSVLogger                    bool    `json:"enableCsvLogger"`
 	EnableRawAPILog                    bool    `json:"enableRawApiLog"`
 	ExecutionLocalQuoteMaxAgeMs        int     `json:"executionLocalQuoteMaxAgeMs"`
@@ -282,6 +286,8 @@ func LoadConfig() (*Config, error) {
 		MaxTradeSize:                parseEnvFloat("MAX_TRADE_SIZE", 0), // 0 = no hard cap, use scaling
 		MaxDailyLoss:                parseEnvFloat("MAX_DAILY_LOSS", 0), // 0 = disabled (rely on kill switch drawdown instead)
 		RequireConfirm:              os.Getenv("REQUIRE_CONFIRM") == "true",
+		DisableKillSwitch:           parseEnvBool("DISABLE_KILL_SWITCH", true),
+		MaxExposure:                 parseEnvFloat("MAX_EXPOSURE", 0), // 0 = unlimited / math.MaxFloat64
 		EnableCSVLogger:             os.Getenv("ENABLE_CSV_LOGGER") == "true",
 		EnableRawAPILog:             os.Getenv("ENABLE_RAW_API_LOG") == "true",
 		ExecutionLocalQuoteMaxAgeMs: parseEnvInt("EXECUTION_LOCAL_QUOTE_MAX_AGE_MS", int(defaultExecutionLocalQuoteMaxAge/time.Millisecond)),
@@ -846,6 +852,8 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		MaxTradeSize:                       c.MaxTradeSize,
 		MaxDailyLoss:                       c.MaxDailyLoss,
 		RequireConfirm:                     c.RequireConfirm,
+		DisableKillSwitch:                  c.DisableKillSwitch,
+		MaxExposure:                        c.MaxExposure,
 		EnableCSVLogger:                    c.EnableCSVLogger,
 		EnableRawAPILog:                    c.EnableRawAPILog,
 		ExecutionLocalQuoteMaxAgeMs:        c.ExecutionLocalQuoteMaxAgeMs,
@@ -929,6 +937,8 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.MaxTradeSize = s.MaxTradeSize
 	c.MaxDailyLoss = s.MaxDailyLoss
 	c.RequireConfirm = s.RequireConfirm
+	c.DisableKillSwitch = s.DisableKillSwitch
+	c.MaxExposure = s.MaxExposure
 	c.EnableCSVLogger = s.EnableCSVLogger
 	c.EnableRawAPILog = s.EnableRawAPILog
 	c.ExecutionLocalQuoteMaxAgeMs = s.ExecutionLocalQuoteMaxAgeMs
@@ -1031,6 +1041,8 @@ func (c *Config) SaveSettings() error {
 	envMap["MIN_ASK_PRICE"] = strconv.FormatFloat(c.MinAskPrice, 'f', -1, 64)
 	envMap["MAX_ASK_PRICE"] = strconv.FormatFloat(c.MaxAskPrice, 'f', -1, 64)
 	envMap["PAPER_ARB_MODE"] = c.PaperArbMode
+	envMap["DISABLE_KILL_SWITCH"] = strconv.FormatBool(c.DisableKillSwitch)
+	envMap["MAX_EXPOSURE"] = strconv.FormatFloat(c.MaxExposure, 'f', -1, 64)
 	envMap["BUY_EXECUTION_MARGIN_FLOOR_PERCENT"] = strconv.FormatFloat(c.BuyExecutionMarginFloorPercent, 'f', -1, 64)
 	envMap["SPLIT_STRATEGY_ENABLED"] = strconv.FormatBool(c.SplitStrategyEnabled)
 	envMap["SPLIT_MIN_MARGIN_SELL"] = strconv.FormatFloat(c.SplitMinMarginSell, 'f', -1, 64)

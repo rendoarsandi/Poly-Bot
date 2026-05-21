@@ -117,10 +117,14 @@ func realbotFinalizeRound(ctx context.Context, markets map[string]*api.Market, t
 	engine.ClearMarketData()
 }
 
-func realbotMarketRiskConfig() paper.RiskConfig {
+func realbotMarketRiskConfig(cfg *core.Config) paper.RiskConfig {
+	maxExposure := cfg.MaxExposure
+	if maxExposure <= 0 {
+		maxExposure = math.MaxFloat64
+	}
 	return paper.RiskConfig{
-		DisableKillSwitch:  true,
-		MaxExposure:        math.MaxFloat64,
+		DisableKillSwitch:  cfg.DisableKillSwitch,
+		MaxExposure:        maxExposure,
 		MaxUnmatchedRatio:  0.20,
 		MaxUnmatchedShares: 500.0,
 		SkewThreshold:      0.10,
@@ -172,7 +176,7 @@ func realbotLaunchRoundMarkets(globalCtx, roundCtx context.Context, markets map[
 		tui.AddMarket(marketID, market.Slug, outcomes, endTime)
 		tui.LogEvent("🚀 %s → %s", marketID, endTime.Format("15:04"))
 
-		marketRiskMgr := paper.NewRiskManager(realbotMarketRiskConfig(), engine, orderBook, outcomes)
+		marketRiskMgr := paper.NewRiskManager(realbotMarketRiskConfig(cfg), engine, orderBook, outcomes)
 		realbotStartMarketWorker(globalCtx, roundCtx, marketID, market, endTime, realTrader, engine, orderBook, marketRiskMgr, tui, restClient, cfg, currentBalance, copytradePoller, globalSplitStatus, globalSplitInventories, globalInitialSplits, splitMu, splitTxMu, entryGate, ladderCloseState, resolutionCache, &wg)
 	}
 	return &wg

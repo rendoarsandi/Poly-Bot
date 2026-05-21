@@ -17,8 +17,8 @@ Main loop:
 - rotate into the next market
 
 Main run modes:
-- `paperbot` = simulated trading
-- `realbot` = single entrypoint with `executionBackend: live | paper`
+- `realbot` with `executionBackend: paper` = simulated trading
+- `realbot` with `executionBackend: live` = real money trading
 
 ## What the bot actually does
 
@@ -44,19 +44,20 @@ Plain English: create split inventory first, dump both sides later when the mark
 - emergency cleanup runs on shutdown/panic
 
 Important current note:
-- the shared risk-manager kill switch is currently **disabled** in both `paperbot` and `realbot`
-- `realbot` can still enforce `MAX_TRADE_SIZE` and `MAX_DAILY_LOSS` if those are set
+- the shared risk-manager kill switch can be configured using `DISABLE_KILL_SWITCH` (defaults to `true`/disabled) and `MAX_EXPOSURE` (defaults to `0`/unlimited)
+- the bot enforces `MAX_TRADE_SIZE` and `MAX_DAILY_LOSS` if those are set
 
 ## Main commands
 
 ### Paper trading
 ```bash
-go run cmd/paperbot/main.go
+# Run with EXECUTION_BACKEND=paper configured in .env or config JSON
+go run cmd/realbot/main.go
 ```
 
 Notes:
-- starts with `$100` paper balance
-- simulates fills, balance, PnL, merge, split inventory, and market rotation
+- starts with configured `PAPER_BALANCE` (default `$100`)
+- simulates fills, balance, PnL, merge, split inventory, and market rotation using live quotes
 
 ### Real trading
 ```bash
@@ -171,9 +172,9 @@ Near expiry it pauses new trades and starts settling inventory:
 - sell / clean leftovers where possible
 - check redemption after close
 
-## Paperbot vs realbot
+## Paper vs Live Execution
 
-### `paperbot`
+### Paper Trading (`executionBackend = paper`)
 Use this to test logic safely.
 
 Simulates:
@@ -185,7 +186,7 @@ Simulates:
 - maker-mode quoting, including buy-side guards that avoid building inventory when pair completion is unprofitable or there is no protected maker sell path
 - market rotation
 
-### `realbot`
+### Live Trading (`executionBackend = live`)
 Use this when actually trading.
 
 Adds:
@@ -219,7 +220,6 @@ The settings panel can update runtime values like market filters, trade scaling,
 ## Repo layout
 
 ### Main entrypoints
-- `cmd/paperbot`
 - `cmd/realbot`
 - `cmd/diagnose`
 - `cmd/util`

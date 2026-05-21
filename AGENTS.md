@@ -1,13 +1,13 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `cmd/` contains runnable binaries. Main entrypoints are `cmd/paperbot`, `cmd/realbot`, `cmd/diagnose`, `cmd/mergeredeem`, and `cmd/derivekey`.
+- `cmd/` contains runnable binaries. Main entrypoints are `cmd/realbot`, `cmd/diagnose`, `cmd/mergeredeem`, and `cmd/derivekey`.
 - `internal/` holds application code:
   - `internal/api` for Polymarket/Kalshi clients, signing, REST, and WebSocket code
   - `internal/trading` for real order execution and on-chain flows
   - `internal/paper` for the TUI, paper engine, risk logic, and inventory tracking
   - `internal/core`, `internal/markets`, `internal/strategy`, `internal/setup`, `internal/marketlookup` for shared logic
-- `config/` stores runtime JSON settings for `paperbot` and `realbot`.
+- `config/` stores runtime JSON settings for the profiles.
 - `scripts/` contains ad hoc Go and Node utilities. `logs/` is runtime output, not source.
 
 ## Build, Test, and Development Commands

@@ -84,7 +84,9 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 		"redeemGasMode": "urgent",
 		"oneHourCryptoExitMode": "wait-resolve",
 		"paperArbMode": "maker",
-		"makerQuoteGap": 0.004
+		"makerQuoteGap": 0.004,
+		"disableKillSwitch": false,
+		"maxExposure": 1000.0
 	}`)
 	if err := os.WriteFile(settingsPath, data, 0o644); err != nil {
 		t.Fatalf("failed to write temp settings: %v", err)
@@ -199,6 +201,12 @@ func TestLoadBotConfigWithPathUsesJSONRuntimeSettings(t *testing.T) {
 	if cfg.MakerQuoteGap != 0.004 {
 		t.Fatalf("expected JSON MakerQuoteGap 0.004, got %.3f", cfg.MakerQuoteGap)
 	}
+	if cfg.DisableKillSwitch {
+		t.Fatal("expected JSON DisableKillSwitch false, got true")
+	}
+	if cfg.MaxExposure != 1000.0 {
+		t.Fatalf("expected JSON MaxExposure 1000.0, got %.1f", cfg.MaxExposure)
+	}
 	if cfg.TradingHoursMode != "weekdays trade only" {
 		t.Fatal("expected missing JSON tradingHoursMode to keep default weekdays trade only")
 	}
@@ -277,6 +285,8 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	cfg.TradingHoursMode = "off"
 	cfg.RedeemGasMode = RedeemGasModeNormal
 	cfg.OneHourCryptoExitMode = OneHourCryptoExitWaitResolve
+	cfg.DisableKillSwitch = false
+	cfg.MaxExposure = 1250.0
 
 	if err := cfg.SaveSettings(); err != nil {
 		t.Fatalf("SaveSettings failed: %v", err)
@@ -394,6 +404,12 @@ func TestSaveSettingsWritesBotJSON(t *testing.T) {
 	}
 	if settings.OneHourCryptoExitMode != OneHourCryptoExitWaitResolve {
 		t.Fatalf("expected saved OneHourCryptoExitMode wait-resolve, got %q", settings.OneHourCryptoExitMode)
+	}
+	if settings.DisableKillSwitch {
+		t.Fatal("expected saved DisableKillSwitch false, got true")
+	}
+	if settings.MaxExposure != 1250.0 {
+		t.Fatalf("expected saved MaxExposure 1250.0, got %.1f", settings.MaxExposure)
 	}
 }
 
