@@ -1,11 +1,12 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `cmd/` contains runnable binaries. Main entrypoints are `cmd/realbot`, `cmd/diagnose`, `cmd/mergeredeem`, and `cmd/derivekey`.
+- `cmd/` contains runnable binaries. Main entrypoints are `cmd/realbot`, `cmd/diagnose`, `cmd/mergeredeem`, `cmd/derivekey`, `cmd/analyzewallet`, `cmd/manual`, and `cmd/util`.
 - `internal/` holds application code:
   - `internal/api` for Polymarket/Kalshi clients, signing, REST, and WebSocket code
   - `internal/trading` for real order execution and on-chain flows
   - `internal/paper` for the TUI, paper engine, risk logic, and inventory tracking
+  - `internal/analysis` for wallet, execution, and PnL analysis logic
   - `internal/core`, `internal/markets`, `internal/strategy`, `internal/setup`, `internal/marketlookup` for shared logic
 - `config/` stores runtime JSON settings for the profiles.
 - `scripts/` contains ad hoc Go and Node utilities. `logs/` is runtime output, not source.
@@ -48,4 +49,5 @@
 
 ## AI Agent Guidelines
 - **Be Concise**: Do not talk too much. Avoid explaining every single tool call. Keep responses extremely brief and direct.
+- **No Prefaces to Tool Calls**: Do not output any conversational text, explanations, or prefaces before invoking a tool. Execute the tool call directly in silence.
 - **Git Commit/Push**: Do not run `git commit` or `git push` unless the user explicitly requests it.
