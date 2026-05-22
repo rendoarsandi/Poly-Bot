@@ -72,12 +72,12 @@ func TestNormalizeTUISettingsClampsFixedTradeSizeUSDCToOneDollarMinimum(t *testi
 
 func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "maker"}
-	for _, idx := range []int{settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap} {
-		if settingsRowEditable(cfg, "Paper", idx) {
-			t.Fatalf("expected row %d to be read-only in maker mode", idx)
+	for _, idx := range []int{settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket} {
+		if settingsRowEditable(cfg, "Real", idx) {
+			t.Fatalf("expected row %d to be disabled/invisible in maker mode", idx)
 		}
 	}
-	for _, idx := range []int{settingsRowMinMargin, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice} {
+	for _, idx := range []int{settingsRowMinMargin, settingsRowMinAskPrice, settingsRowMaxAskPrice} {
 		if !settingsRowEditable(cfg, "Paper", idx) {
 			t.Fatalf("expected row %d to remain editable in maker mode", idx)
 		}

@@ -201,6 +201,13 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 		}
 	}
 
+	if maker {
+		switch idx {
+		case settingsRowTakerCloseMarket:
+			return false
+		}
+	}
+
 	if laddered {
 		switch idx {
 		case settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket:
