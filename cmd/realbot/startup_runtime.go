@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -189,16 +188,6 @@ func run() error {
 
 	if err := os.MkdirAll("logs", 0o755); err != nil {
 		fmt.Printf("⚠️  Could not create logs directory: %v\n", err)
-	} else {
-		issueLogPath := filepath.Join("logs", "realbot-issues.csv")
-		issueLogger, logErr := core.NewCSVLogger(issueLogPath)
-		if logErr != nil {
-			fmt.Printf("⚠️  Could not start critical issue logger: %v\n", logErr)
-		} else {
-			tui.SetIssueLogger(issueLogger)
-			defer tui.CloseIssueLogger()
-			fmt.Printf("📝 Critical issue log: %s\n", issueLogPath)
-		}
 	}
 	backendRuntimeStop := realbotStartSessionBackendRuntime(ctx, cfg, realTrader, engine, tui, restClient, resolutionCache)
 	defer func() {
