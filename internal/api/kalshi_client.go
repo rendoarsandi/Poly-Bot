@@ -15,8 +15,8 @@ const KalshiBaseURL = "https://api.elections.kalshi.com/trade-api/v2"
 
 // KalshiClient implements ExchangeClient for the Kalshi exchange
 type KalshiClient struct {
-	baseURL string
-	signer  *KalshiSigner
+	baseURL  string
+	signer   *KalshiSigner
 	testMode bool
 }
 
@@ -120,7 +120,7 @@ func (c *KalshiClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*Orde
 		"side":   kalshiSide,
 		"count":  count,
 	}
-	
+
 	// In Kalshi V2, 'type' is not explicitly required/supported in the payload.
 	// It infers limit orders if yes_price or no_price is provided.
 	// We only pass price for limit orders.
@@ -186,7 +186,7 @@ func (c *KalshiClient) GetPositions(ctx context.Context) ([]Position, error) {
 		if p.PositionFp == "" || p.PositionFp == "0" || p.PositionFp == "0.00" {
 			continue
 		}
-		
+
 		var size float64
 		_, err := fmt.Sscanf(p.PositionFp, "%f", &size)
 		if err != nil {
@@ -278,7 +278,7 @@ func (c *KalshiClient) GetBalanceAllowance(ctx context.Context) (*BalanceAllowan
 
 	return &BalanceAllowance{
 		Balance:   float64(resp.Balance) / 100.0, // Convert to dollars
-		Allowance: 1000000.0, // Kalshi uses cash, no allowance
+		Allowance: 1000000.0,                     // Kalshi uses cash, no allowance
 	}, nil
 }
 

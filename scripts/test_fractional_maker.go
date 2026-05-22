@@ -57,7 +57,7 @@ func main() {
 		fmt.Printf("   ❌ ERROR: %v\n", err)
 		return
 	}
-	
+
 	if buyResp.Success {
 		fmt.Printf("   ✅ SUCCESS! Buy Order ID: %s (Status: %s)\n", buyResp.OrderID, buyResp.Status)
 	} else {

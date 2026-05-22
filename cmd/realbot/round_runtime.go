@@ -133,8 +133,11 @@ func realbotMarketRiskConfig(cfg *core.Config) paper.RiskConfig {
 }
 
 func realbotResolveMarketEndTime(ctx context.Context, trader *trading.RealTrader, market *api.Market) time.Time {
+	if market == nil {
+		return time.Time{}
+	}
 	endTime, _ := paper.ParseEndTimeFromSlug(market.Slug)
-	if market == nil || trader == nil {
+	if trader == nil {
 		return endTime
 	}
 	if mInfo, err := trader.GetMarketInfo(ctx, market.ConditionID); err == nil && mInfo.EndDateISO != "" {

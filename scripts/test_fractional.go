@@ -54,7 +54,7 @@ func main() {
 		TimeInForce: api.TIFFillAndKill,
 		FeeRateBps:  0, // some markets have fees, standard is to pass what the API gives, but let's try 0 or 1000
 	}
-	
+
 	// Actually we should fetch fee rate just in case, but let's try 1000 to avoid rejection
 	buyReq.FeeRateBps = 1000
 
@@ -64,7 +64,7 @@ func main() {
 		fmt.Printf("   ❌ ERROR: %v\n", err)
 		return
 	}
-	
+
 	if buyResp.Success {
 		fmt.Printf("   ✅ SUCCESS! Buy Order ID: %s (Status: %s)\n", buyResp.OrderID, buyResp.Status)
 	} else {

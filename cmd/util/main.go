@@ -231,7 +231,7 @@ func main() {
 	var exChoice string
 	_, _ = fmt.Scanln(&exChoice)
 	exChoice = strings.TrimSpace(exChoice)
-	
+
 	if exChoice == "2" {
 		cfg.Exchange = "kalshi"
 	} else {
@@ -435,7 +435,7 @@ takeAction:
 		var choice string
 		_, _ = fmt.Scanln(&choice)
 		choice = strings.TrimSpace(choice)
-		
+
 		if choice == "1" || choice == "" {
 			var inputAmount float64
 			fmt.Print("Pairs to Panic Buy (shares per side): ")
