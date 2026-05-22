@@ -135,7 +135,11 @@ func main() {
 						fmt.Println("📦 Detected Token Balances:")
 						foundTokens = true
 					}
-					fmt.Printf("   • %-10s: %.6f shares (%s)\n", m.Slug[:10]+"...", s, t.Outcome)
+					slugDisp := m.Slug
+					if len(slugDisp) > 10 {
+						slugDisp = slugDisp[:10] + "..."
+					}
+					fmt.Printf("   • %-13s: %.6f shares (%s)\n", slugDisp, s, t.Outcome)
 				}
 			}
 		}

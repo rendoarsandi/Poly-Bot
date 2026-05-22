@@ -354,6 +354,9 @@ func LoadConfig() (*Config, error) {
 		BinanceSignalSpreadMaxCents:        normalizeBinanceSignalSpreadMaxCents(parseEnvFloat("BINANCE_SIGNAL_SPREAD_MAX_CENTS", 4.0)),
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -1019,6 +1022,9 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 // the config was loaded through LoadBotConfig. Generic configs keep the legacy
 // .env fallback for non-bot tools.
 func (c *Config) SaveSettings() error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("cannot save invalid settings: %w", err)
+	}
 	if c.settingsPath != "" {
 		return writeRuntimeSettings(c.settingsPath, c.runtimeSettings())
 	}
@@ -1201,6 +1207,9 @@ func loadBotConfigWithPath(profile, path string) (*Config, error) {
 		return nil, fmt.Errorf("unknown bot profile: %s", profile)
 	}
 	if path == "" {
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 	settings, err := readRuntimeSettings(path, cfg.runtimeSettings())
@@ -1208,9 +1217,15 @@ func loadBotConfigWithPath(profile, path string) (*Config, error) {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 	cfg.applyRuntimeSettings(settings)
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid runtime settings for %s: %w", profile, err)
+	}
 	return cfg, nil
 }
 
@@ -1299,4 +1314,72 @@ func ResolvePaperBinanceExecutionDelay(cfg *Config) time.Duration {
 		return time.Duration(normalizePaperBinanceExecutionDelayMs(cfg.PaperBinanceExecutionDelayMs)) * time.Millisecond
 	}
 	return time.Duration(normalizePaperBinanceExecutionDelayMs(250)) * time.Millisecond
+}
+
+// Validate checks that all configuration parameters are safe and sane.
+func (c *Config) Validate() error {
+	if c.BaseBalance < 0 {
+		return fmt.Errorf("invalid BaseBalance: must be non-negative (got %f)", c.BaseBalance)
+	}
+	if c.BaseTradeSize < 0 {
+		return fmt.Errorf("invalid BaseTradeSize: must be non-negative (got %f)", c.BaseTradeSize)
+	}
+	if c.PaperBalance < 0 {
+		return fmt.Errorf("invalid PaperBalance: must be non-negative (got %f)", c.PaperBalance)
+	}
+	if c.MinMarginPercent < 0 {
+		return fmt.Errorf("invalid MinMarginPercent: must be non-negative (got %f)", c.MinMarginPercent)
+	}
+	if c.TradeScaleFactor < 0 {
+		return fmt.Errorf("invalid TradeScaleFactor: must be non-negative (got %f)", c.TradeScaleFactor)
+	}
+	if c.TradeSizeUSDC < 0 {
+		return fmt.Errorf("invalid TradeSizeUSDC: must be non-negative (got %f)", c.TradeSizeUSDC)
+	}
+	if c.MaxTradeSize < 0 {
+		return fmt.Errorf("invalid MaxTradeSize: must be non-negative (got %f)", c.MaxTradeSize)
+	}
+	if c.MaxDailyLoss < 0 {
+		return fmt.Errorf("invalid MaxDailyLoss: must be non-negative (got %f)", c.MaxDailyLoss)
+	}
+	if c.MaxExposure < 0 {
+		return fmt.Errorf("invalid MaxExposure: must be non-negative (got %f)", c.MaxExposure)
+	}
+	if c.MinAskPrice < 0 || c.MinAskPrice > 1.0 {
+		return fmt.Errorf("invalid MinAskPrice: must be between 0 and 1.0 (got %f)", c.MinAskPrice)
+	}
+	if c.MaxAskPrice < 0 || c.MaxAskPrice > 1.0 {
+		return fmt.Errorf("invalid MaxAskPrice: must be between 0 and 1.0 (got %f)", c.MaxAskPrice)
+	}
+	if c.MinAskPrice > c.MaxAskPrice {
+		return fmt.Errorf("invalid Price Filters: MinAskPrice (%f) cannot be greater than MaxAskPrice (%f)", c.MinAskPrice, c.MaxAskPrice)
+	}
+	if c.SplitMinMarginSell < 0 {
+		return fmt.Errorf("invalid SplitMinMarginSell: must be non-negative (got %f)", c.SplitMinMarginSell)
+	}
+	if c.SplitTargetMarginReserve < 0 {
+		return fmt.Errorf("invalid SplitTargetMarginReserve: must be non-negative (got %f)", c.SplitTargetMarginReserve)
+	}
+	if c.SplitReplenishThreshold < 0 {
+		return fmt.Errorf("invalid SplitReplenishThreshold: must be non-negative (got %f)", c.SplitReplenishThreshold)
+	}
+	if c.SplitInitialCapPct < 0 || c.SplitInitialCapPct > 1.0 {
+		return fmt.Errorf("invalid SplitInitialCapPct: must be between 0 and 1.0 (got %f)", c.SplitInitialCapPct)
+	}
+	if c.SplitReplenishCapPct < 0 || c.SplitReplenishCapPct > 1.0 {
+		return fmt.Errorf("invalid SplitReplenishCapPct: must be between 0 and 1.0 (got %f)", c.SplitReplenishCapPct)
+	}
+	if c.MakerQuoteGap < 0 {
+		return fmt.Errorf("invalid MakerQuoteGap: must be non-negative (got %f)", c.MakerQuoteGap)
+	}
+	if c.MakerInventoryTargetMult < 0 {
+		return fmt.Errorf("invalid MakerInventoryTargetMult: must be non-negative (got %f)", c.MakerInventoryTargetMult)
+	}
+	if c.MakerInventoryCapMult < 0 {
+		return fmt.Errorf("invalid MakerInventoryCapMult: must be non-negative (got %f)", c.MakerInventoryCapMult)
+	}
+	if c.MakerMinQuoteValue < 0 {
+		return fmt.Errorf("invalid MakerMinQuoteValue: must be non-negative (got %f)", c.MakerMinQuoteValue)
+	}
+	return nil
 }

@@ -535,3 +535,76 @@ func TestNormalizeBinanceSignalPolyAdverseMoveCentsAllowsDisable(t *testing.T) {
 		t.Fatalf("expected negative adverse-move limit to normalize to disabled, got %.2f", got)
 	}
 }
+
+func TestConfigValidate(t *testing.T) {
+	// 1. Valid config should pass validation
+	cfg := &Config{
+		BaseBalance:              1000.0,
+		BaseTradeSize:            50.0,
+		PaperBalance:             100.0,
+		MinMarginPercent:         2.0,
+		TradeScaleFactor:         0.05,
+		TradeSizeUSDC:            5.0,
+		MaxTradeSize:             100.0,
+		MaxDailyLoss:             200.0,
+		MaxExposure:              500.0,
+		MinAskPrice:              0.10,
+		MaxAskPrice:              0.90,
+		SplitMinMarginSell:       3.0,
+		SplitTargetMarginReserve: 6.0,
+		SplitReplenishThreshold:  50.0,
+		SplitInitialCapPct:       0.25,
+		SplitReplenishCapPct:     0.50,
+		MakerQuoteGap:            0.008,
+		MakerInventoryTargetMult: 3.0,
+		MakerInventoryCapMult:    5.0,
+		MakerMinQuoteValue:       10.0,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid config to pass, got: %v", err)
+	}
+
+	// 2. Negative values
+	badCfg := *cfg
+	badCfg.BaseBalance = -10
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for negative BaseBalance")
+	}
+
+	badCfg = *cfg
+	badCfg.MinMarginPercent = -1
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for negative MinMarginPercent")
+	}
+
+	badCfg = *cfg
+	badCfg.MaxExposure = -100
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for negative MaxExposure")
+	}
+
+	badCfg = *cfg
+	badCfg.MinAskPrice = -0.05
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for negative MinAskPrice")
+	}
+
+	badCfg = *cfg
+	badCfg.MaxAskPrice = 1.05
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for MaxAskPrice > 1.0")
+	}
+
+	badCfg = *cfg
+	badCfg.MinAskPrice = 0.85
+	badCfg.MaxAskPrice = 0.75
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for MinAskPrice > MaxAskPrice")
+	}
+
+	badCfg = *cfg
+	badCfg.SplitInitialCapPct = 1.2
+	if err := badCfg.Validate(); err == nil {
+		t.Error("expected error for SplitInitialCapPct > 1.0")
+	}
+}

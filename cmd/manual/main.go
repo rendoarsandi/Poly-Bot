@@ -134,7 +134,11 @@ func main() {
 
 		for i, b := range balances {
 			if b >= 0.0001 {
-				fmt.Printf("   • %s: %.4f shares (Token: %s)\n", outcomes[i], b, tokenIDs[i][:10]+"...")
+				tokenDisp := tokenIDs[i]
+				if len(tokenDisp) > 10 {
+					tokenDisp = tokenDisp[:10] + "..."
+				}
+				fmt.Printf("   • %s: %.4f shares (Token: %s)\n", outcomes[i], b, tokenDisp)
 				fmt.Printf("   👉 ACTION: DUMP %.4f shares of %s at market?\n", b, outcomes[i])
 				fmt.Print("   Confirm Sell? (y/n): ")
 				var confirm string
