@@ -226,7 +226,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 		// Taker-close mode bypasses the normal split/panic-buy paths, so hide
 		// controls that do not affect the dedicated close-market execution flow.
 		switch idx {
-		case settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowMinAskPrice, settingsRowMaxAskPrice:
+		case settingsRowMinMargin, settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowMinAskPrice, settingsRowMaxAskPrice:
 			return false
 		}
 	}
