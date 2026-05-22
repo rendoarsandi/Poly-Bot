@@ -6,15 +6,15 @@ import (
 	"Market-bot/internal/core"
 )
 
-func TestNormalizeStartupWizardSettingsDisablesUnsupportedRealbotPaperModes(t *testing.T) {
+func TestNormalizeStartupWizardSettingsAllowsRealbotPaperModes(t *testing.T) {
 	got := normalizeStartupWizardSettings(TUISettings{
 		ExecutionBackend:     core.ExecutionBackendPaper,
 		PaperArbMode:         "maker",
 		SplitStrategyEnabled: true,
 	}, "Real")
 
-	if got.PaperArbMode != "taker" {
-		t.Fatalf("expected realbot paper startup settings to coerce maker to taker, got %q", got.PaperArbMode)
+	if got.PaperArbMode != "maker" {
+		t.Fatalf("expected realbot paper startup settings to allow maker, got %q", got.PaperArbMode)
 	}
 	if got.SplitStrategyEnabled {
 		t.Fatal("expected realbot paper startup settings to disable split strategy")

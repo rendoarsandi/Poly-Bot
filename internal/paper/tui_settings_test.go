@@ -84,12 +84,17 @@ func TestSettingsRowEditableDisablesSplitAndTakerOnlyRowsInMakerMode(t *testing.
 	}
 }
 
-func TestSettingsArbModesHideMakerForRealbotPaperBackend(t *testing.T) {
+func TestSettingsArbModesShowMakerForRealbotPaperBackend(t *testing.T) {
 	modes := settingsArbModes(TUISettings{ExecutionBackend: core.ExecutionBackendPaper}, "Real")
+	found := false
 	for _, mode := range modes {
 		if mode == "maker" {
-			t.Fatalf("expected realbot paper backend arb modes to hide maker, got %v", modes)
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Fatalf("expected realbot paper backend arb modes to show maker, got %v", modes)
 	}
 }
 
@@ -110,7 +115,7 @@ func TestApplySettingsEditValueNormalizesTradingHoursMode(t *testing.T) {
 	}
 }
 
-func TestSetModeCoercesMakerForRealbotPaperBackend(t *testing.T) {
+func TestSetModeDoesNotCoerceMakerForRealbotPaperBackend(t *testing.T) {
 	tui := NewTUI(NewEngine(1000.0), NewOrderBook())
 	tui.InitSettings(TUISettings{
 		ExecutionBackend: core.ExecutionBackendPaper,
@@ -119,8 +124,8 @@ func TestSetModeCoercesMakerForRealbotPaperBackend(t *testing.T) {
 
 	tui.SetMode("Real")
 
-	if got := tui.GetSettings().PaperArbMode; got != "taker" {
-		t.Fatalf("expected realbot paper backend to coerce maker mode to taker, got %q", got)
+	if got := tui.GetSettings().PaperArbMode; got != "maker" {
+		t.Fatalf("expected realbot paper backend to keep maker mode, got %q", got)
 	}
 }
 

@@ -685,9 +685,6 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.OneHourCryptoExitMode = core.NormalizeOneHourCryptoExitMode(s.OneHourCryptoExitMode)
 	if cfg.ExecutionBackend == core.ExecutionBackendPaper {
 		cfg.SplitStrategyEnabled = false
-		if normalizePaperArbMode(cfg.PaperArbMode) == paperArbModeMaker {
-			cfg.PaperArbMode = paperArbModeTaker
-		}
 	}
 	if cfg.Exchange == "kalshi" {
 		cfg.SplitStrategyEnabled = false

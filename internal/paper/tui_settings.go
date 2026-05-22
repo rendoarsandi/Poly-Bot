@@ -129,7 +129,7 @@ func TakerCloseModeActive(cfg TUISettings) bool {
 }
 
 func realbotPaperBackendDisablesMaker(cfg TUISettings, mode string) bool {
-	return strings.EqualFold(mode, "Real") && strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper)
+	return false
 }
 
 func realbotPaperBackendDisablesSplit(cfg TUISettings, mode string) bool {
@@ -137,7 +137,7 @@ func realbotPaperBackendDisablesSplit(cfg TUISettings, mode string) bool {
 }
 
 func usesPaperExecutionSemantics(cfg TUISettings, mode string) bool {
-	return strings.EqualFold(mode, "Paper") || realbotPaperBackendDisablesMaker(cfg, mode)
+	return strings.EqualFold(mode, "Paper") || strings.EqualFold(cfg.ExecutionBackend, core.ExecutionBackendPaper)
 }
 
 func settingsArbModes(cfg TUISettings, mode string) []string {

@@ -37,7 +37,7 @@ func TestRealbotInitBackendPaperMode(t *testing.T) {
 	}
 }
 
-func TestApplyRealbotTUISettingsDisablesUnsupportedPaperBackendModes(t *testing.T) {
+func TestApplyRealbotTUISettingsAllowsMakerPaperBackendMode(t *testing.T) {
 	cfg := &core.Config{}
 	applyRealbotTUISettings(cfg, paper.TUISettings{
 		ExecutionBackend:     core.ExecutionBackendPaper,
@@ -48,8 +48,8 @@ func TestApplyRealbotTUISettingsDisablesUnsupportedPaperBackendModes(t *testing.
 	if cfg.ExecutionBackend != core.ExecutionBackendPaper {
 		t.Fatalf("expected paper execution backend, got %q", cfg.ExecutionBackend)
 	}
-	if cfg.PaperArbMode != paperArbModeTaker {
-		t.Fatalf("expected unsupported maker mode to coerce to taker, got %q", cfg.PaperArbMode)
+	if cfg.PaperArbMode != paperArbModeMaker {
+		t.Fatalf("expected maker mode to be allowed, got %q", cfg.PaperArbMode)
 	}
 	if cfg.SplitStrategyEnabled {
 		t.Fatal("expected split strategy to be disabled on paper backend")
