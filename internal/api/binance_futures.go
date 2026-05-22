@@ -373,3 +373,11 @@ func (f *BinanceFuturesPriceFeed) setError(err error) {
 	f.lastError = msg
 	f.mu.Unlock()
 }
+
+func (f *BinanceFuturesPriceFeed) RecordTradeSampleForTest(price float64, at time.Time) {
+	f.recordTradeSample(price, at)
+}
+
+func (f *BinanceFuturesPriceFeed) SetConnectedForTest(connected bool) {
+	f.setConnected(connected)
+}

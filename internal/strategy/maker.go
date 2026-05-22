@@ -170,7 +170,11 @@ func ComputeMakerPairQuoteQty(baseTradeValue, pairedShares, maxInventoryValue, c
 	if price2 > 0 {
 		minShares = math.Max(minShares, params.MinQuoteValue/price2)
 	}
-	if qty < minShares {
+	checkMin := minShares
+	if normalizeQty != nil {
+		checkMin = normalizeQty(minShares)
+	}
+	if qty < checkMin {
 		return 0
 	}
 	return qty
@@ -212,8 +216,11 @@ func ComputeMakerBuyQty(baseTradeValue, positionShares, skew, maxInventoryValue,
 	if price > 0 {
 		minShares = params.MinQuoteValue / price
 	}
-
-	if qty < minShares {
+	checkMin := minShares
+	if normalizeQty != nil {
+		checkMin = normalizeQty(minShares)
+	}
+	if qty < checkMin {
 		return 0
 	}
 	return qty
@@ -239,8 +246,11 @@ func ComputeMakerSellQty(baseTradeValue, positionShares, skew, price float64, pa
 	if price > 0 {
 		minShares = params.MinQuoteValue / price
 	}
-
-	if qty < minShares {
+	checkMin := minShares
+	if normalizeQty != nil {
+		checkMin = normalizeQty(minShares)
+	}
+	if qty < checkMin {
 		return 0
 	}
 	return qty
