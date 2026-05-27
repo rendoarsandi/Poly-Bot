@@ -19,6 +19,9 @@ func PolymarketTimeframeFromSlug(slug string) string {
 			return timeframe
 		}
 	}
+	if strings.Contains(slug, "-24h-") || strings.HasSuffix(slug, "-24h") {
+		return "1d"
+	}
 	if _, ok := parsePolymarketHourlyEventSlug(slug); ok {
 		return "1h"
 	}
