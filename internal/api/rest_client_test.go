@@ -560,3 +560,78 @@ func TestGetCLOBBidAskFetchesOrderBooksConcurrently(t *testing.T) {
 		t.Fatalf("expected concurrent order book fetches, max inflight=%d", atomic.LoadInt32(&maxInflight))
 	}
 }
+
+func TestGetMarketsByTimeframe_XRP_and_1D_Candidates(t *testing.T) {
+	var requestedSlugs []string
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slug := r.URL.Query().Get("slug")
+		mu.Lock()
+		requestedSlugs = append(requestedSlugs, slug)
+		mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := NewRestClient("")
+	client.GammaURL = server.URL
+
+	// 1. Verify XRP 1h timeframes query both hourly (xrp-up-or-down) and legacy (ripple-updown / xrp-updown)
+	_, err := client.GetMarketsByTimeframe(context.Background(), []string{"xrp"}, "1h")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	mu.Lock()
+	xrp1hSlugs := make([]string, len(requestedSlugs))
+	copy(xrp1hSlugs, requestedSlugs)
+	requestedSlugs = nil
+	mu.Unlock()
+
+	hasXRPHourly := false
+	hasRippleLegacy := false
+	for _, slug := range xrp1hSlugs {
+		if strings.Contains(slug, "xrp-up-or-down-") {
+			hasXRPHourly = true
+		}
+		if strings.Contains(slug, "ripple-updown-1h-") {
+			hasRippleLegacy = true
+		}
+	}
+	if !hasXRPHourly {
+		t.Errorf("expected XRP 1h to query hourly event slug candidates starting with 'xrp-up-or-down-', got %v", xrp1hSlugs)
+	}
+	if !hasRippleLegacy {
+		t.Errorf("expected XRP 1h to query legacy candidates starting with 'ripple-updown-1h-', got %v", xrp1hSlugs)
+	}
+
+	// 2. Verify 1d timeframe queries both lowercase '1d' and uppercase '1D' legacy slugs
+	_, err = client.GetMarketsByTimeframe(context.Background(), []string{"btc"}, "1d")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	mu.Lock()
+	btc1dSlugs := requestedSlugs
+	mu.Unlock()
+
+	has1dLower := false
+	has1dUpper := false
+	for _, slug := range btc1dSlugs {
+		if strings.Contains(slug, "-updown-1d-") {
+			has1dLower = true
+		}
+		if strings.Contains(slug, "-updown-1D-") {
+			has1dUpper = true
+		}
+	}
+	if !has1dLower {
+		t.Errorf("expected 1d to query lowercase '1d' slug candidates, got %v", btc1dSlugs)
+	}
+	if !has1dUpper {
+		t.Errorf("expected 1d to query uppercase '1D' slug candidates, got %v", btc1dSlugs)
+	}
+}
