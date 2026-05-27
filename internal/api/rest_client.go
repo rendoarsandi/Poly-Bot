@@ -758,7 +758,7 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 	results := make(chan timeframeResult, len(tasks))
 	var wg sync.WaitGroup
 	taskCh := make(chan timeframeTask)
-	workerCount := 4
+	workerCount := 12
 	if len(tasks) < workerCount {
 		workerCount = len(tasks)
 	}

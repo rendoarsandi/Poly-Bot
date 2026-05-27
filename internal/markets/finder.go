@@ -15,7 +15,7 @@ import (
 	"Market-bot/internal/paper"
 )
 
-const finderTimeframeLookupTimeout = 1500 * time.Millisecond
+const finderTimeframeLookupTimeout = 5000 * time.Millisecond
 
 func requestedAssetsFromSettings(cfg paper.TUISettings) []string {
 	marketSlug := strings.TrimSpace(cfg.MarketSlug)
