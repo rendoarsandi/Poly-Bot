@@ -661,7 +661,26 @@ func (c *RestClient) getGammaTimeframeMarket(ctx context.Context, slug string) (
 		return nil, err
 	}
 
-	resp, err := httpClient.Do(req)
+	var resp *http.Response
+	for attempt := 0; attempt < 3; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		resp, err = httpClient.Do(req)
+		if err == nil {
+			if resp.StatusCode == 429 {
+				resp.Body.Close()
+				time.Sleep(time.Duration(150*(attempt+1)) * time.Millisecond)
+				continue
+			}
+			break
+		}
+
+		time.Sleep(time.Duration(150*(attempt+1)) * time.Millisecond)
+	}
 	if err != nil {
 		return nil, err
 	}
