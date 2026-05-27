@@ -771,7 +771,7 @@ func (c *RestClient) GetMarketsByTimeframe(ctx context.Context, assets []string,
 				var err error
 				for _, slug := range task.slugs {
 					market, err = c.getGammaTimeframeMarket(ctx, slug)
-					if market != nil || err == nil {
+					if market != nil {
 						break
 					}
 				}
@@ -817,15 +817,30 @@ func gammaTimeframeWindowSlugCandidates(asset, timeframe string, windowStart tim
 	timeframe = strings.ToLower(strings.TrimSpace(timeframe))
 	asset = strings.ToLower(strings.TrimSpace(asset))
 
-	legacy := fmt.Sprintf("%s-updown-%s-%d", asset, timeframe, windowStart.Unix())
-	if timeframe != "1h" {
-		return []string{legacy}
+	var slugAssets []string
+	switch asset {
+	case "btc", "bitcoin":
+		slugAssets = []string{"bitcoin", "btc"}
+	case "eth", "ethereum":
+		slugAssets = []string{"ethereum", "eth"}
+	case "sol", "solana":
+		slugAssets = []string{"solana", "sol"}
+	case "xrp", "ripple":
+		slugAssets = []string{"ripple", "xrp"}
+	default:
+		slugAssets = []string{asset}
 	}
 
-	return []string{
-		core.PolymarketHourlyEventSlug(asset, windowStart),
-		legacy,
+	var candidates []string
+	for _, sa := range slugAssets {
+		legacy := fmt.Sprintf("%s-updown-%s-%d", sa, timeframe, windowStart.Unix())
+		if timeframe == "1h" {
+			candidates = append(candidates, core.PolymarketHourlyEventSlug(sa, windowStart))
+		}
+		candidates = append(candidates, legacy)
 	}
+
+	return candidates
 }
 
 func parseGammaEventEndTime(endDate string) time.Time {

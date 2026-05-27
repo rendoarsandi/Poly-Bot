@@ -61,8 +61,8 @@ func finderAssetSlugAliases(asset string) []string {
 		return []string{"eth", "ethereum"}
 	case "sol", "solana":
 		return []string{"sol", "solana"}
-	case "xrp":
-		return []string{"xrp"}
+	case "xrp", "ripple":
+		return []string{"xrp", "ripple"}
 	default:
 		if asset == "" {
 			return nil
