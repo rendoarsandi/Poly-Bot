@@ -621,6 +621,7 @@ func TestGetMarketsByTimeframe_XRP_and_1D_Candidates(t *testing.T) {
 	has1dLower := false
 	has1dUpper := false
 	has24h := false
+	hasDailyReadable := false
 	for _, slug := range btc1dSlugs {
 		if strings.Contains(slug, "-updown-1d-") {
 			has1dLower = true
@@ -631,6 +632,9 @@ func TestGetMarketsByTimeframe_XRP_and_1D_Candidates(t *testing.T) {
 		if strings.Contains(slug, "-updown-24h-") {
 			has24h = true
 		}
+		if strings.Contains(slug, "bitcoin-up-or-down-on-") {
+			hasDailyReadable = true
+		}
 	}
 	if !has1dLower {
 		t.Errorf("expected 1d to query lowercase '1d' slug candidates, got %v", btc1dSlugs)
@@ -640,5 +644,8 @@ func TestGetMarketsByTimeframe_XRP_and_1D_Candidates(t *testing.T) {
 	}
 	if !has24h {
 		t.Errorf("expected 1d to query '24h' slug candidates, got %v", btc1dSlugs)
+	}
+	if !hasDailyReadable {
+		t.Errorf("expected 1d to query daily human-readable slug candidates starting with 'bitcoin-up-or-down-on-', got %v", btc1dSlugs)
 	}
 }

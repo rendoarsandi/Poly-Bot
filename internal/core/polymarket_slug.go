@@ -8,10 +8,11 @@ import (
 )
 
 var polymarketHourlyEventSlugPattern = regexp.MustCompile(`^([a-z0-9-]+)-up-or-down-([a-z]+)-([0-9]{1,2})-([0-9]{4})-([0-9]{1,2})(am|pm)-et$`)
+var polymarketDailyEventSlugPattern = regexp.MustCompile(`^([a-z0-9-]+)-up-or-down-on-([a-z]+)-([0-9]{1,2})-([0-9]{4})$`)
 
 // PolymarketTimeframeFromSlug returns the timeframe bucket encoded in a market
 // slug. It supports both legacy timestamp slugs and the newer human-readable
-// hourly event slugs.
+// hourly/daily event slugs.
 func PolymarketTimeframeFromSlug(slug string) string {
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	for _, timeframe := range []string{"5m", "15m", "1h", "4h", "1d"} {
@@ -24,6 +25,9 @@ func PolymarketTimeframeFromSlug(slug string) string {
 	}
 	if _, ok := parsePolymarketHourlyEventSlug(slug); ok {
 		return "1h"
+	}
+	if _, ok := parsePolymarketDailyEventSlug(slug); ok {
+		return "1d"
 	}
 	return ""
 }
@@ -59,11 +63,15 @@ func ParsePolymarketEndTimeFromSlug(slug string) (time.Time, error) {
 		return endTime, nil
 	}
 
-	startTime, ok := parsePolymarketHourlyEventSlug(slug)
-	if !ok {
-		return time.Time{}, fmt.Errorf("could not parse timestamp from slug: %s", slug)
+	if startTime, ok := parsePolymarketHourlyEventSlug(slug); ok {
+		return startTime.Add(time.Hour).UTC(), nil
 	}
-	return startTime.Add(time.Hour).UTC(), nil
+
+	if startTime, ok := parsePolymarketDailyEventSlug(slug); ok {
+		return startTime.Add(24 * time.Hour).UTC(), nil
+	}
+
+	return time.Time{}, fmt.Errorf("could not parse timestamp from slug: %s", slug)
 }
 
 // PolymarketSeriesKeyFromSlug collapses per-round slugs into a stable family
@@ -88,6 +96,12 @@ func PolymarketSeriesKeyFromSlug(slug string) string {
 			parts := strings.SplitN(slug, "-up-or-down-", 2)
 			if len(parts) == 2 && parts[0] != "" {
 				return parts[0] + "-up-or-down-1h"
+			}
+		}
+		if tf == "1d" && strings.Contains(slug, "-up-or-down-on-") {
+			parts := strings.SplitN(slug, "-up-or-down-on-", 2)
+			if len(parts) == 2 && parts[0] != "" {
+				return parts[0] + "-up-or-down-1d"
 			}
 		}
 	}
@@ -130,6 +144,35 @@ func PolymarketHourlyEventSlug(asset string, windowStart time.Time) string {
 		us.Day(),
 		us.Year(),
 		hour,
+	)
+}
+
+// PolymarketDailyEventSlug formats the current live Polymarket daily event
+// slug for a given asset/window start.
+func PolymarketDailyEventSlug(asset string, windowStart time.Time) string {
+	name := strings.ToLower(strings.TrimSpace(asset))
+	switch name {
+	case "btc", "bitcoin":
+		name = "bitcoin"
+	case "eth", "ethereum":
+		name = "ethereum"
+	case "sol", "solana":
+		name = "solana"
+	case "xrp", "ripple":
+		name = "xrp"
+	default:
+		name = SanitizeString(name)
+	}
+
+	// Calculate a point that is guaranteed to be on the same calendar day in ET
+	// as windowStart represents. Add 12 hours to midnight UTC.
+	us := USTime(windowStart.Add(12 * time.Hour))
+	return fmt.Sprintf(
+		"%s-up-or-down-on-%s-%d-%d",
+		name,
+		strings.ToLower(us.Month().String()),
+		us.Day(),
+		us.Year(),
 	)
 }
 
@@ -187,4 +230,28 @@ func parsePolymarketHourlyEventSlug(slug string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return parsed, true
+}
+
+func parsePolymarketDailyEventSlug(slug string) (time.Time, bool) {
+	matches := polymarketDailyEventSlugPattern.FindStringSubmatch(strings.ToLower(strings.TrimSpace(slug)))
+	if len(matches) != 5 {
+		return time.Time{}, false
+	}
+
+	month := matches[2]
+	day := matches[3]
+	year := matches[4]
+
+	if month == "" || day == "" || year == "" {
+		return time.Time{}, false
+	}
+
+	month = strings.ToUpper(month[:1]) + month[1:]
+	parsed, err := time.ParseInLocation("January-2-2006", month+"-"+day+"-"+year, USMarketLocation())
+	if err != nil {
+		return time.Time{}, false
+	}
+	// Noon ET on this day is when it resolves. The window started at noon ET the previous day.
+	resolvedTime := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 12, 0, 0, 0, USMarketLocation())
+	return resolvedTime.Add(-24 * time.Hour).UTC(), true
 }

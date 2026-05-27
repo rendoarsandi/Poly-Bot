@@ -59,3 +59,33 @@ func TestPolymarketTimeframeFromSlugAdditionalTimeframes(t *testing.T) {
 		})
 	}
 }
+
+func TestPolymarketDailyEventSlugFormattingAndParsing(t *testing.T) {
+	windowStart := time.Date(2026, time.May, 27, 0, 0, 0, 0, time.UTC)
+	got := PolymarketDailyEventSlug("btc", windowStart)
+	want := "bitcoin-up-or-down-on-may-27-2026"
+	if got != want {
+		t.Fatalf("expected daily slug %q, got %q", want, got)
+	}
+
+	// Test parse/end time estimation
+	endTime, err := ParsePolymarketEndTimeFromSlug(got)
+	if err != nil {
+		t.Fatalf("expected daily slug parse to succeed, got %v", err)
+	}
+	// The resolved time (noon ET on May 27) = 16:00:00 UTC on May 27
+	wantEnd := time.Date(2026, time.May, 27, 16, 0, 0, 0, time.UTC)
+	if !endTime.Equal(wantEnd) {
+		t.Fatalf("expected end time %s, got %s", wantEnd, endTime)
+	}
+
+	if tf := PolymarketTimeframeFromSlug(got); tf != "1d" {
+		t.Fatalf("expected daily timeframe, got %q", tf)
+	}
+	if gotDur := PolymarketWindowDurationFromSlug(got); gotDur != 24*time.Hour {
+		t.Fatalf("expected 24h duration, got %v", gotDur)
+	}
+	if gotKey := PolymarketSeriesKeyFromSlug(got); gotKey != "bitcoin-up-or-down-1d" {
+		t.Fatalf("expected daily series key, got %q", gotKey)
+	}
+}

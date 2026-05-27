@@ -858,6 +858,7 @@ func gammaTimeframeWindowSlugCandidates(asset, timeframe string, windowStart tim
 		}
 		candidates = append(candidates, legacy)
 		if timeframe == "1d" {
+			candidates = append(candidates, core.PolymarketDailyEventSlug(sa, windowStart))
 			candidates = append(candidates, fmt.Sprintf("%s-updown-1D-%d", sa, windowStart.Unix()))
 			candidates = append(candidates, fmt.Sprintf("%s-updown-24h-%d", sa, windowStart.Unix()))
 		}
