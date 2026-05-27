@@ -108,7 +108,7 @@ func PolymarketHourlyEventSlug(asset string, windowStart time.Time) string {
 	case "sol", "solana":
 		name = "solana"
 	case "xrp", "ripple":
-		name = "ripple"
+		name = "xrp"
 	default:
 		name = SanitizeString(name)
 	}
