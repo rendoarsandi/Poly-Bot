@@ -191,11 +191,21 @@ func FindMarkets(
 				endTime, err = paper.ParseEndTimeFromSlug(m.Slug)
 			}
 
+			if logFn != nil {
+				logFn("🔍 Finder checking market: %s, EndTime: %s, TimeLeft: %s", m.Slug, endTime.Format(time.RFC3339), time.Until(endTime))
+			}
+
 			if err == nil && !endTime.IsZero() {
 				if time.Now().After(endTime) {
+					if logFn != nil {
+						logFn("⚠️ Market %s skipped: already expired (endTime: %s)", m.Slug, endTime.Format(time.RFC3339))
+					}
 					continue // already expired
 				}
 				if time.Until(endTime) < 30*time.Second {
+					if logFn != nil {
+						logFn("⚠️ Market %s skipped: expiring in < 30s (%s)", m.Slug, time.Until(endTime))
+					}
 					continue // expiring too soon
 				}
 			}
@@ -205,6 +215,10 @@ func FindMarkets(
 			// For Kalshi, we bypass this check since timeframe isn't directly in the slug this way.
 			tfSuffix := finderMarketTimeframeSuffix(slug)
 			isTargetTimeframe := tfSuffix != "" || restClient.Exchange == "kalshi"
+
+			if logFn != nil {
+				logFn("🔍 Market %s: tfSuffix=%s, isTargetTimeframe=%t", m.Slug, tfSuffix, isTargetTimeframe)
+			}
 
 			// If it's an exact market, bypass the strict name checks
 			isExactMatch := false
@@ -221,6 +235,9 @@ func FindMarkets(
 					key := strings.ToUpper(asset)
 					mCopy := m
 					found[key] = &mCopy
+					if logFn != nil {
+						logFn("✅ Selected exact market for key %s: %s", key, m.Slug)
+					}
 					if len(found) >= maxMarkets {
 						return found
 					}
@@ -236,8 +253,15 @@ func FindMarkets(
 					if _, exists := found[key]; !exists {
 						mCopy := m
 						found[key] = &mCopy
+						if logFn != nil {
+							logFn("✅ Selected market for key %s: %s (endTime: %s)", key, m.Slug, endTime.Format(time.RFC3339))
+						}
 						if len(found) >= maxMarkets {
 							return found
+						}
+					} else {
+						if logFn != nil {
+							logFn("ℹ️ Key %s already exists, skipping market %s", key, m.Slug)
 						}
 					}
 				}
