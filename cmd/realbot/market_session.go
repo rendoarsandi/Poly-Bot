@@ -150,6 +150,12 @@ func realbotInitMarketSession(ctx context.Context, marketID string, market *api.
 		})
 	}
 
+	if wsMgr != nil && tui != nil {
+		wsMgr.SetReconnectCallback(func(attempt int, err error) {
+			tui.LogEvent("[%s] 🔌 WS reconnect attempt #%d failed: %v", marketID, attempt, err)
+		})
+	}
+
 	return &realbotMarketSession{
 		tokenMap:       tokenMap,
 		tokenToOutcome: tokenToOutcome,

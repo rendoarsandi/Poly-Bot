@@ -49,9 +49,10 @@ type WSManager struct {
 	subMu         sync.Mutex
 
 	// Reconnection
-	reconnecting atomic.Bool
-	ctx          context.Context
-	cancel       context.CancelFunc
+	reconnecting       atomic.Bool
+	ctx                context.Context
+	cancel             context.CancelFunc
+	onReconnectAttempt func(attempt int, err error)
 
 	// Stats
 	reconnectCount atomic.Int32
@@ -265,6 +266,13 @@ func (m *WSManager) usesTextHeartbeat() bool {
 	return exchange == "" || strings.EqualFold(exchange, "polymarket")
 }
 
+// SetReconnectCallback sets a callback to receive notifications of reconnection attempts and their outcomes
+func (m *WSManager) SetReconnectCallback(cb func(attempt int, err error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onReconnectAttempt = cb
+}
+
 func (m *WSManager) tryReconnect() {
 	// Prevent multiple simultaneous reconnection attempts
 	if !m.reconnecting.CompareAndSwap(false, true) {
@@ -318,6 +326,12 @@ attemptLoop:
 		err := m.connectInternal(ctx)
 
 		if err != nil {
+			m.mu.Lock()
+			cb := m.onReconnectAttempt
+			m.mu.Unlock()
+			if cb != nil {
+				cb(attempt, err)
+			}
 			continue
 		}
 
@@ -335,6 +349,12 @@ attemptLoop:
 			if err != nil {
 				m.connected.Store(false)
 				allSubscribed = false
+				m.mu.Lock()
+				cb := m.onReconnectAttempt
+				m.mu.Unlock()
+				if cb != nil {
+					cb(attempt, fmt.Errorf("subscription failed: %w", err))
+				}
 				break
 			}
 		}

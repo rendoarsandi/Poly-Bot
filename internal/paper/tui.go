@@ -3559,10 +3559,17 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 	}
 
 	// ── Staleness
-	age := time.Since(mkt.LastUpdate)
+	var age time.Duration
+	hasAge := false
+	if !mkt.LastUpdate.IsZero() {
+		age = time.Since(mkt.LastUpdate)
+		hasAge = true
+	}
 	if !mkt.LastDepthUpdate.IsZero() {
-		if depthAge := time.Since(mkt.LastDepthUpdate); depthAge < age {
+		depthAge := time.Since(mkt.LastDepthUpdate)
+		if !hasAge || depthAge < age {
 			age = depthAge
+			hasAge = true
 		}
 	}
 	ageSt := styleGreen
@@ -3577,10 +3584,10 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 	isResolved := looksTerminalBook(mkt.Outcomes, mkt.Bids, mkt.Asks) || looksTerminalBook(mkt.Outcomes, mkt.RealBids, mkt.RealAsks)
 
 	isUnhealthyWS := mkt.DataSource == "WS" && wsLatency > 15*time.Second && !isResolved
-	if (age > 60*time.Second && !isResolved) || isUnhealthyWS {
+	if (hasAge && age > 60*time.Second && !isResolved) || isUnhealthyWS || (!hasAge && !isResolved) {
 		ageSt = styleRed
 		ageWarn = " ⚠"
-	} else if age > 10*time.Second && !isResolved {
+	} else if hasAge && age > 10*time.Second && !isResolved {
 		ageSt = styleYellow
 	}
 
@@ -3608,9 +3615,13 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 			ageWarn,
 		)
 	} else {
+		ageStr := "?"
+		if hasAge {
+			ageStr = fmt.Sprintf("%dms", age.Milliseconds())
+		}
 		timeLine = fmt.Sprintf("⏱ %s  ·  %s [%s]%s",
 			timeSt.Render(remaining.Round(time.Second).String()),
-			ageSt.Render(fmt.Sprintf("%dms", age.Milliseconds())),
+			ageSt.Render(ageStr),
 			srcSt.Render(src),
 			ageWarn,
 		)

@@ -1881,3 +1881,25 @@ func TestRenderMarketPanelDisplaysLiveWSPing(t *testing.T) {
 		t.Fatalf("expected rendered TUI market panel to display WS ping latency 'WS 12ms', got %q", rendered)
 	}
 }
+
+func TestRenderMarketPanelHandlesZeroTimeGracefully(t *testing.T) {
+	model := tuiModel{}
+	mkt := &MarketData{
+		Slug:       "test-slug-zero-time",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		Bids:       map[string]float64{"Yes": 0.45, "No": 0.53},
+		Asks:       map[string]float64{"Yes": 0.47, "No": 0.55},
+		RealBids:   map[string]float64{"Yes": 0.45, "No": 0.53},
+		RealAsks:   map[string]float64{"Yes": 0.47, "No": 0.55},
+		DataSource: "REST",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if strings.Contains(rendered, "9223372036854") {
+		t.Fatalf("rendered TUI market panel contained MaxInt64 uninitialized staleness time: %q", rendered)
+	}
+	if !strings.Contains(rendered, "?") {
+		t.Fatalf("expected rendered TUI market panel to show '?' for uninitialized age, got %q", rendered)
+	}
+}
