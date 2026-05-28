@@ -212,9 +212,10 @@ type RestClient struct {
 	limiter <-chan time.Time
 
 	// Real-time order book cache
-	bookMu    sync.RWMutex
-	bookCache map[string]*OrderBookResponse
-	wsActive  func() bool
+	bookMu     sync.RWMutex
+	bookCache  map[string]*OrderBookResponse
+	wsActive   func() bool
+	wsProvider func(tokenID string) *OrderBookResponse
 }
 
 func NewRestClient(exchange string) *RestClient {
@@ -1114,16 +1115,23 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 		return c.kalshiGetOrderBook(ctx, tokenID)
 	}
 
-	// 1. Try to serve from live WS-backed cache if WebSocket is active/healthy
+	// 1. Try to serve from live WS-backed provider or cache if WebSocket is active/healthy
 	c.bookMu.RLock()
-	cached, found := c.bookCache[tokenID]
 	wsIsActive := c.wsActive != nil && c.wsActive()
+	provider := c.wsProvider
+	cached, found := c.bookCache[tokenID]
 	c.bookMu.RUnlock()
 
-	if found && cached != nil {
-		if wsIsActive {
+	if wsIsActive {
+		if provider != nil {
+			if book := provider(tokenID); book != nil {
+				return book, nil
+			}
+		}
+		if found && cached != nil {
 			return cached, nil
 		}
+	} else if found && cached != nil {
 		// If WS is not active, fallback to returning cache if it is extremely fresh (< 5s old)
 		if parsedTime, err := ParseOrderBookTimestamp(cached.Timestamp); err == nil {
 			if time.Since(parsedTime) < 5*time.Second {
@@ -1460,4 +1468,14 @@ func (c *RestClient) UpdateOrderBookCache(tokenID string, book *OrderBookRespons
 		c.bookCache = make(map[string]*OrderBookResponse)
 	}
 	c.bookCache[tokenID] = book
+}
+
+// SetWSOrderBookProvider sets a callback to query the live in-memory WebSocket feed on demand
+func (c *RestClient) SetWSOrderBookProvider(cb func(tokenID string) *OrderBookResponse) {
+	if c == nil {
+		return
+	}
+	c.bookMu.Lock()
+	defer c.bookMu.Unlock()
+	c.wsProvider = cb
 }

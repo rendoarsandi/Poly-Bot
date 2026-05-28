@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
 
+	"Market-bot/internal/api"
 	"Market-bot/internal/paper"
 )
 
@@ -183,5 +185,54 @@ func TestRealbotHandleMarketWSOrderBookClearsEmptySide(t *testing.T) {
 	}
 	if len(tokenFullBids["Up"]) != 0 || len(tokenFullAsks["Up"]) != 1 {
 		t.Fatalf("expected depth to mirror one-sided book, got bids=%v asks=%v", tokenFullBids["Up"], tokenFullAsks["Up"])
+	}
+}
+
+func TestRealbotUpdateRestClientBookCacheThrottling(t *testing.T) {
+	restClient := api.NewRestClient("polymarket")
+
+	args := realbotMarketQuoteArgs{
+		marketID:      "test-market",
+		restClient:    restClient,
+		tokenMap:      map[string]string{"token-x": "Yes"},
+		tokenFullBids: map[string][]paper.MarketLevel{"Yes": {{Price: 0.85, Size: 10}}},
+		tokenFullAsks: map[string][]paper.MarketLevel{"Yes": {{Price: 0.87, Size: 12}}},
+	}
+
+	// 1. Initial call should update cache
+	realbotUpdateRestClientBookCache(args, "Yes")
+
+	book, err := restClient.GetOrderBook(context.Background(), "token-x")
+	if err != nil {
+		t.Fatalf("expected cached book, got error: %v", err)
+	}
+	if len(book.Bids) != 1 || book.Bids[0].Price != "0.850" {
+		t.Fatalf("unexpected cached book details: %+v", book)
+	}
+
+	// 2. Modify values and update again immediately. It should be throttled and return the same old cached value.
+	args.tokenFullBids["Yes"] = []paper.MarketLevel{{Price: 0.99, Size: 99}}
+	realbotUpdateRestClientBookCache(args, "Yes")
+
+	bookThrottled, err := restClient.GetOrderBook(context.Background(), "token-x")
+	if err != nil {
+		t.Fatalf("expected cached book, got error: %v", err)
+	}
+	if bookThrottled.Bids[0].Price != "0.850" {
+		t.Fatalf("expected throttled cached book price to remain 0.850, but got %s", bookThrottled.Bids[0].Price)
+	}
+
+	// 3. Clear/override throttle time to force an update
+	realbotCacheThrottleMu.Lock()
+	delete(realbotCacheLastTime, "token-x")
+	realbotCacheThrottleMu.Unlock()
+
+	realbotUpdateRestClientBookCache(args, "Yes")
+	bookUpdated, err := restClient.GetOrderBook(context.Background(), "token-x")
+	if err != nil {
+		t.Fatalf("expected cached book, got error: %v", err)
+	}
+	if bookUpdated.Bids[0].Price != "0.990" {
+		t.Fatalf("expected updated book price 0.990, but got %s", bookUpdated.Bids[0].Price)
 	}
 }

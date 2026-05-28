@@ -723,3 +723,43 @@ func TestRestClientOrderBookCache(t *testing.T) {
 		t.Fatalf("expected cached timestamp %s, got %s", testBook.Timestamp, cachedBookWS.Timestamp)
 	}
 }
+
+func TestRestClientOrderBookProvider(t *testing.T) {
+	client := NewRestClient("polymarket")
+	client.BaseURL = "http://127.0.0.1:54321" // Invalid URL to force error when hitting REST
+
+	wsActive := true
+	client.SetWSActiveCallback(func() bool {
+		return wsActive
+	})
+
+	providerBook := &OrderBookResponse{
+		Market:    "test-market",
+		AssetID:   "test-token",
+		Timestamp: "123456789",
+		Bids:      []PriceLevel{{Price: "0.99", Size: "99"}},
+	}
+
+	client.SetWSOrderBookProvider(func(tokenID string) *OrderBookResponse {
+		if tokenID == "test-token" {
+			return providerBook
+		}
+		return nil
+	})
+
+	// Since WS is active and provider is set, it should return provider book
+	book, err := client.GetOrderBook(context.Background(), "test-token")
+	if err != nil {
+		t.Fatalf("expected provider book, got err: %v", err)
+	}
+	if book.Timestamp != "123456789" || len(book.Bids) != 1 || book.Bids[0].Price != "0.99" {
+		t.Fatalf("unexpected book returned: %+v", book)
+	}
+
+	// Deactivate WS, should bypass provider and hit REST (mocked here to return error/limiter)
+	wsActive = false
+	_, err = client.GetOrderBook(context.Background(), "test-token")
+	if err == nil {
+		t.Fatal("expected error from REST call since BaseURL is empty, but got no error")
+	}
+}

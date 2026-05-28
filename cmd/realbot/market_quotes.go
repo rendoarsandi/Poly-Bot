@@ -210,7 +210,9 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 				args.engine.UpdateMarketData(args.marketID, outcome, mid, args.tokenBids[outcome], args.tokenAsks[outcome])
 				args.polySignalTracker.Record(outcome, args.tokenBids[outcome], args.tokenAsks[outcome], time.Now())
 			}
-			realbotUpdateRestClientBookCache(args, outcome)
+			if depthChanged && touchedOutcomes[outcome] {
+				realbotUpdateRestClientBookCache(args, outcome)
+			}
 		}
 
 		if foundForThisMarket {
@@ -784,6 +786,11 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 	return success, depthChanged
 }
 
+var (
+	realbotCacheThrottleMu sync.Mutex
+	realbotCacheLastTime   = make(map[string]time.Time)
+)
+
 func realbotUpdateRestClientBookCache(args realbotMarketQuoteArgs, outcome string) {
 	if args.restClient == nil {
 		return
@@ -798,6 +805,17 @@ func realbotUpdateRestClientBookCache(args realbotMarketQuoteArgs, outcome strin
 	if tokenID == "" {
 		return
 	}
+
+	// Throttle cache updates to at most once per 100ms per token
+	realbotCacheThrottleMu.Lock()
+	lastUpdate := realbotCacheLastTime[tokenID]
+	now := time.Now()
+	if now.Sub(lastUpdate) < 100*time.Millisecond {
+		realbotCacheThrottleMu.Unlock()
+		return
+	}
+	realbotCacheLastTime[tokenID] = now
+	realbotCacheThrottleMu.Unlock()
 
 	bids := make([]api.PriceLevel, len(args.tokenFullBids[outcome]))
 	for i, l := range args.tokenFullBids[outcome] {
