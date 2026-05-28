@@ -3600,12 +3600,21 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		}
 	}
 
-	timeLine := fmt.Sprintf("⏱ %s  ·  %s [%s]%s",
-		timeSt.Render(remaining.Round(time.Second).String()),
-		ageSt.Render(fmt.Sprintf("%dms", age.Milliseconds())),
-		srcSt.Render(src),
-		ageWarn,
-	)
+	var timeLine string
+	if mkt.DataSource == "WS" {
+		timeLine = fmt.Sprintf("⏱ %s  ·  [%s]%s",
+			timeSt.Render(remaining.Round(time.Second).String()),
+			srcSt.Render(src),
+			ageWarn,
+		)
+	} else {
+		timeLine = fmt.Sprintf("⏱ %s  ·  %s [%s]%s",
+			timeSt.Render(remaining.Round(time.Second).String()),
+			ageSt.Render(fmt.Sprintf("%dms", age.Milliseconds())),
+			srcSt.Render(src),
+			ageWarn,
+		)
+	}
 
 	var priceLinesB strings.Builder
 	buyMargin := 0.0
