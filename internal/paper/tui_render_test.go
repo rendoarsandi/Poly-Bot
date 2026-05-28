@@ -1857,3 +1857,27 @@ func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testi
 		t.Fatalf("expected account status to label realized loss streak explicitly, got %q", rendered)
 	}
 }
+
+func TestRenderMarketPanelDisplaysLiveWSPing(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			wsPingLatency: 12 * time.Millisecond,
+		},
+	}
+	mkt := &MarketData{
+		Slug:       "test-slug",
+		Outcomes:   []string{"Yes", "No"},
+		EndTime:    time.Now().Add(10 * time.Minute),
+		LastUpdate: time.Now(),
+		Bids:       map[string]float64{"Yes": 0.45, "No": 0.53},
+		Asks:       map[string]float64{"Yes": 0.47, "No": 0.55},
+		RealBids:   map[string]float64{"Yes": 0.45, "No": 0.53},
+		RealAsks:   map[string]float64{"Yes": 0.47, "No": 0.55},
+		DataSource: "WS",
+	}
+
+	rendered, _ := model.renderMarketPanel("BTC", mkt, 80, nil)
+	if !strings.Contains(rendered, "WS 12ms") {
+		t.Fatalf("expected rendered TUI market panel to display WS ping latency 'WS 12ms', got %q", rendered)
+	}
+}

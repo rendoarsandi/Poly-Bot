@@ -144,6 +144,12 @@ func realbotInitMarketSession(ctx context.Context, marketID string, market *api.
 		return nil, err
 	}
 
+	if restClient != nil && wsMgr != nil {
+		restClient.SetWSActiveCallback(func() bool {
+			return wsMgr.IsConnected() && wsMgr.TimeSinceLastMessage() < 15*time.Second
+		})
+	}
+
 	return &realbotMarketSession{
 		tokenMap:       tokenMap,
 		tokenToOutcome: tokenToOutcome,

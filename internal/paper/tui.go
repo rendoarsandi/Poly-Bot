@@ -3591,6 +3591,13 @@ func (m tuiModel) renderMarketPanel(id string, mkt *MarketData, innerW int, dept
 		srcSt = styleMuted
 	} else if src == "REST" {
 		srcSt = styleYellow
+	} else if src == "WS" {
+		pingMs := m.snap.wsPingLatency.Milliseconds()
+		if pingMs > 0 {
+			src = fmt.Sprintf("WS %dms", pingMs)
+		} else {
+			src = "WS"
+		}
 	}
 
 	timeLine := fmt.Sprintf("⏱ %s  ·  %s [%s]%s",

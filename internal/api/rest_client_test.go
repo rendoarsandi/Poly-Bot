@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -647,5 +648,78 @@ func TestGetMarketsByTimeframe_XRP_and_1D_Candidates(t *testing.T) {
 	}
 	if !hasDailyReadable {
 		t.Errorf("expected 1d to query daily human-readable slug candidates starting with 'bitcoin-up-or-down-on-', got %v", btc1dSlugs)
+	}
+}
+
+func TestRestClientOrderBookCache(t *testing.T) {
+	client := NewRestClient("polymarket")
+
+	// Create test order book
+	testBook := &OrderBookResponse{
+		Market:    "test-market",
+		AssetID:   "test-token",
+		Timestamp: fmt.Sprintf("%d", time.Now().UnixMilli()),
+		Bids:      []PriceLevel{{Price: "0.45", Size: "100"}},
+		Asks:      []PriceLevel{{Price: "0.47", Size: "120"}},
+	}
+
+	// 1. Initially empty cache, calling GetOrderBook should hit the REST URL
+	var restCalled int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&restCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"asset_id":"test-token","bids":[{"price":"0.45","size":"100"}],"asks":[{"price":"0.47","size":"120"}],"timestamp":"1710000000123"}`))
+	}))
+	defer server.Close()
+	client.BaseURL = server.URL
+
+	// 2. Populate cache
+	client.UpdateOrderBookCache("test-token", testBook)
+
+	// Test serving from cache with WS inactive but timestamp extremely fresh (< 5 seconds)
+	cachedBook, err := client.GetOrderBook(context.Background(), "test-token")
+	if err != nil {
+		t.Fatalf("expected cached book, got err: %v", err)
+	}
+	if atomic.LoadInt32(&restCalled) != 0 {
+		t.Fatal("REST API was called even though fresh cached book was available")
+	}
+	if cachedBook.AssetID != "test-token" || len(cachedBook.Bids) != 1 || cachedBook.Bids[0].Price != "0.45" {
+		t.Fatalf("unexpected cached book details: %+v", cachedBook)
+	}
+
+	// Test with WS active callback returning true
+	var wsActive bool
+	client.SetWSActiveCallback(func() bool {
+		return wsActive
+	})
+
+	// Make timestamp old
+	testBook.Timestamp = fmt.Sprintf("%d", time.Now().Add(-10*time.Second).UnixMilli())
+	client.UpdateOrderBookCache("test-token", testBook)
+
+	// Since WS is inactive, GetOrderBook should bypass cache and fetch from REST
+	restBook, err := client.GetOrderBook(context.Background(), "test-token")
+	if err != nil {
+		t.Fatalf("expected REST book, got err: %v", err)
+	}
+	if atomic.LoadInt32(&restCalled) != 1 {
+		t.Fatalf("expected 1 REST call, got %d", atomic.LoadInt32(&restCalled))
+	}
+	if restBook.Timestamp != "1710000000123" {
+		t.Fatalf("expected REST timestamp 1710000000123, got %s", restBook.Timestamp)
+	}
+
+	// Now make WS active
+	wsActive = true
+	cachedBookWS, err := client.GetOrderBook(context.Background(), "test-token")
+	if err != nil {
+		t.Fatalf("expected cached book, got err: %v", err)
+	}
+	if atomic.LoadInt32(&restCalled) != 1 {
+		t.Fatalf("expected REST call count to remain at 1, got %d", atomic.LoadInt32(&restCalled))
+	}
+	if cachedBookWS.Timestamp != testBook.Timestamp {
+		t.Fatalf("expected cached timestamp %s, got %s", testBook.Timestamp, cachedBookWS.Timestamp)
 	}
 }

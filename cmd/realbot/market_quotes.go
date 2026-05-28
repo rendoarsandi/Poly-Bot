@@ -124,6 +124,7 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 				args.engine.UpdateMarketData(args.marketID, outcome, mid, bid, ask)
 				args.polySignalTracker.Record(outcome, bid, ask, updatedAt)
 			}
+			realbotUpdateRestClientBookCache(args, outcome)
 		}
 		return depthChanged
 
@@ -209,6 +210,7 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 				args.engine.UpdateMarketData(args.marketID, outcome, mid, args.tokenBids[outcome], args.tokenAsks[outcome])
 				args.polySignalTracker.Record(outcome, args.tokenBids[outcome], args.tokenAsks[outcome], time.Now())
 			}
+			realbotUpdateRestClientBookCache(args, outcome)
 		}
 
 		if foundForThisMarket {
@@ -780,4 +782,44 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 		}
 	}
 	return success, depthChanged
+}
+
+func realbotUpdateRestClientBookCache(args realbotMarketQuoteArgs, outcome string) {
+	if args.restClient == nil {
+		return
+	}
+	var tokenID string
+	for id, out := range args.tokenMap {
+		if out == outcome {
+			tokenID = id
+			break
+		}
+	}
+	if tokenID == "" {
+		return
+	}
+
+	bids := make([]api.PriceLevel, len(args.tokenFullBids[outcome]))
+	for i, l := range args.tokenFullBids[outcome] {
+		bids[i] = api.PriceLevel{
+			Price: fmt.Sprintf("%.3f", l.Price),
+			Size:  fmt.Sprintf("%.2f", l.Size),
+		}
+	}
+
+	asks := make([]api.PriceLevel, len(args.tokenFullAsks[outcome]))
+	for i, l := range args.tokenFullAsks[outcome] {
+		asks[i] = api.PriceLevel{
+			Price: fmt.Sprintf("%.3f", l.Price),
+			Size:  fmt.Sprintf("%.2f", l.Size),
+		}
+	}
+
+	args.restClient.UpdateOrderBookCache(tokenID, &api.OrderBookResponse{
+		Market:    args.marketID,
+		AssetID:   tokenID,
+		Timestamp: fmt.Sprintf("%d", time.Now().UnixMilli()),
+		Bids:      bids,
+		Asks:      asks,
+	})
 }

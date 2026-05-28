@@ -210,6 +210,11 @@ type RestClient struct {
 	GammaURL string
 	// Rate limiting: strictly enforce max requests per second
 	limiter <-chan time.Time
+
+	// Real-time order book cache
+	bookMu    sync.RWMutex
+	bookCache map[string]*OrderBookResponse
+	wsActive  func() bool
 }
 
 func NewRestClient(exchange string) *RestClient {
@@ -221,6 +226,7 @@ func NewRestClient(exchange string) *RestClient {
 		GammaURL:      "https://gamma-api.polymarket.com",
 		KalshiBaseURL: KalshiBaseURL,
 		limiter:       limiter.C,
+		bookCache:     make(map[string]*OrderBookResponse),
 	}
 
 	return client
@@ -1107,6 +1113,25 @@ func (c *RestClient) GetOrderBook(ctx context.Context, tokenID string) (*OrderBo
 	if c.Exchange == "kalshi" {
 		return c.kalshiGetOrderBook(ctx, tokenID)
 	}
+
+	// 1. Try to serve from live WS-backed cache if WebSocket is active/healthy
+	c.bookMu.RLock()
+	cached, found := c.bookCache[tokenID]
+	wsIsActive := c.wsActive != nil && c.wsActive()
+	c.bookMu.RUnlock()
+
+	if found && cached != nil {
+		if wsIsActive {
+			return cached, nil
+		}
+		// If WS is not active, fallback to returning cache if it is extremely fresh (< 5s old)
+		if parsedTime, err := ParseOrderBookTimestamp(cached.Timestamp); err == nil {
+			if time.Since(parsedTime) < 5*time.Second {
+				return cached, nil
+			}
+		}
+	}
+
 	// Rate limit check
 	select {
 	case <-c.limiter:
@@ -1412,4 +1437,27 @@ func (c *RestClient) Ping(ctx context.Context) error {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return nil
+}
+
+// SetWSActiveCallback sets a callback to check if the WebSocket feed is active and healthy
+func (c *RestClient) SetWSActiveCallback(cb func() bool) {
+	if c == nil {
+		return
+	}
+	c.bookMu.Lock()
+	defer c.bookMu.Unlock()
+	c.wsActive = cb
+}
+
+// UpdateOrderBookCache writes a fresh real-time order book snapshot into the in-memory cache
+func (c *RestClient) UpdateOrderBookCache(tokenID string, book *OrderBookResponse) {
+	if c == nil || tokenID == "" || book == nil {
+		return
+	}
+	c.bookMu.Lock()
+	defer c.bookMu.Unlock()
+	if c.bookCache == nil {
+		c.bookCache = make(map[string]*OrderBookResponse)
+	}
+	c.bookCache[tokenID] = book
 }
