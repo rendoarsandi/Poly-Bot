@@ -24,11 +24,12 @@ type Trade struct {
 
 // Position represents current holdings for an outcome
 type Position struct {
-	Outcome   string
-	MarketID  string // Which market this position belongs to (e.g., "BTC", "ETH")
-	Quantity  float64
-	AvgPrice  float64
-	TotalCost float64
+	Outcome         string
+	MarketID        string // Which market this position belongs to (e.g., "BTC", "ETH")
+	Quantity        float64
+	AvgPrice        float64
+	TotalCost       float64
+	HighestBuyPrice float64
 }
 
 // Stats holds all trading statistics
@@ -527,6 +528,11 @@ func (e *Engine) executeBuy(marketID, outcome string, price, quantity float64, i
 	}
 	pos.Quantity = newTotalQty
 	pos.TotalCost += cost
+
+	// Update highest buy price
+	if price > pos.HighestBuyPrice {
+		pos.HighestBuyPrice = price
+	}
 
 	// Record trade
 	e.totalTrades++
@@ -1709,11 +1715,12 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 			avgPrice = totalCost / quantity
 		}
 		e.positions[posKey] = &Position{
-			Outcome:   outcome,
-			MarketID:  marketID,
-			Quantity:  quantity,
-			AvgPrice:  avgPrice,
-			TotalCost: totalCost,
+			Outcome:         outcome,
+			MarketID:        marketID,
+			Quantity:        quantity,
+			AvgPrice:        avgPrice,
+			TotalCost:       totalCost,
+			HighestBuyPrice: markPrice,
 		}
 		// External carry should start neutral in the session PnL view until it is
 		// actually sold, merged, or redeemed on-chain.
@@ -1735,6 +1742,9 @@ func (e *Engine) SyncExternalPosition(marketID, outcome string, quantity, markPr
 		e.refreshCompoundStateLocked(e.sizingBalance)
 		pos.Quantity = quantity
 		changed = true
+		if markPrice > pos.HighestBuyPrice {
+			pos.HighestBuyPrice = markPrice
+		}
 	case quantity < pos.Quantity-eps:
 		prevCost := pos.TotalCost
 		if pos.Quantity > eps {
@@ -1810,11 +1820,12 @@ func (e *Engine) SyncExternalPositionWithTotalCost(marketID, outcome string, qua
 			avgPrice = totalCost / quantity
 		}
 		e.positions[posKey] = &Position{
-			Outcome:   outcome,
-			MarketID:  marketID,
-			Quantity:  quantity,
-			AvgPrice:  avgPrice,
-			TotalCost: totalCost,
+			Outcome:         outcome,
+			MarketID:        marketID,
+			Quantity:        quantity,
+			AvgPrice:        avgPrice,
+			TotalCost:       totalCost,
+			HighestBuyPrice: avgPrice,
 		}
 		e.pnlBaseline += totalCost
 		e.sizingBalance += totalCost
@@ -1828,13 +1839,21 @@ func (e *Engine) SyncExternalPositionWithTotalCost(marketID, outcome string, qua
 	prevQty := pos.Quantity
 
 	if math.Abs(quantity-prevQty) > eps || math.Abs(totalCost-prevCost) > eps {
+		deltaQty := quantity - prevQty
+		deltaCost := totalCost - prevCost
 		pos.Quantity = quantity
 		pos.TotalCost = totalCost
-		deltaCost := totalCost - prevCost
 		e.pnlBaseline += deltaCost
 		e.sizingBalance += deltaCost
 		e.refreshCompoundStateLocked(e.sizingBalance)
 		changed = true
+
+		if deltaQty > eps && deltaCost > eps {
+			marginalPrice := deltaCost / deltaQty
+			if marginalPrice > pos.HighestBuyPrice {
+				pos.HighestBuyPrice = marginalPrice
+			}
+		}
 	}
 
 	if pos.Quantity > eps {

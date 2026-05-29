@@ -4652,10 +4652,14 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 
 		strs := make([]string, 0, len(mps))
 		for _, pos := range mps {
-			ps := fmt.Sprintf("%s: %s@$%.2f", core.SanitizeString(pos.Outcome), formatDisplayShareQty(pos.Quantity), pos.AvgPrice)
+			refPrice := pos.HighestBuyPrice
+			if refPrice <= 0 {
+				refPrice = pos.AvgPrice
+			}
+			ps := fmt.Sprintf("%s: %s@$%.2f", core.SanitizeString(pos.Outcome), formatDisplayShareQty(pos.Quantity), refPrice)
 			if pos.CurrentBid > 0 {
 				bidSt := styleGreen
-				if pos.CurrentBid < pos.AvgPrice {
+				if pos.CurrentBid < refPrice {
 					bidSt = styleRed
 				}
 				ps += " (" + bidSt.Render(fmt.Sprintf("now:$%.2f", pos.CurrentBid)) + ")"
