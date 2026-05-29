@@ -237,7 +237,10 @@ func (m *WSManager) heartbeatLoop() {
 			}
 
 			if m.usesTextHeartbeat() {
-				m.lastPingSentNs.Store(pingStart.UnixNano())
+				// Only store the ping sent time if there isn't already an outstanding ping.
+				// This preserves the timestamp of the oldest unacknowledged ping,
+				// allowing it to eventually exceed the grace period and register a miss.
+				m.lastPingSentNs.CompareAndSwap(0, pingStart.UnixNano())
 				// NOTE: Do NOT update lastMessage here - only actual inbound traffic
 				// should count as feed/connection freshness.
 			}
@@ -518,8 +521,12 @@ func (m *WSManager) IsConnected() bool {
 	return m.connected.Load()
 }
 
-// ForceReconnect triggers a reconnection attempt from external code
+// ForceReconnect triggers a reconnection attempt from external code.
+// If the manager is already reconnecting, this is a no-op to avoid disrupting the active reconnect loop.
 func (m *WSManager) ForceReconnect() {
+	if m.reconnecting.Load() {
+		return
+	}
 	m.handleConnectionFailure(nil, websocket.StatusGoingAway, "force reconnect")
 	// Trigger reconnection in background
 	go m.tryReconnect()

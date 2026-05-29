@@ -197,3 +197,54 @@ func TestWSManagerStartStreamingPreservesQueuedMessagesWhenBufferFills(t *testin
 		t.Fatal("timed out waiting for second queued message")
 	}
 }
+
+func TestWSManagerForceReconnectDuringReconnectDoesNotNillify(t *testing.T) {
+	mgr := NewWSManager("polymarket", "", "", "ws://invalid-url-designed-to-fail")
+	mgr.ctx, mgr.cancel = context.WithCancel(context.Background())
+	defer mgr.cancel()
+
+	// Simulate that it is reconnecting
+	mgr.reconnecting.Store(true)
+
+	// Set a mock connection
+	mockConn := &websocket.Conn{}
+	mgr.conn = mockConn
+
+	// Call ForceReconnect
+	mgr.ForceReconnect()
+
+	// Verify that mgr.conn is NOT set to nil because it was already reconnecting!
+	if mgr.conn != mockConn {
+		t.Fatal("Expected conn to not be modified or set to nil during active reconnection")
+	}
+}
+
+func TestWSManagerOutstandingPingNotOverwritten(t *testing.T) {
+	mgr := NewWSManager("polymarket", "", "", "")
+
+	pingStart1 := time.Now()
+	// First ping
+	mgr.lastPingSentNs.CompareAndSwap(0, pingStart1.UnixNano())
+
+	if mgr.lastPingSentNs.Load() != pingStart1.UnixNano() {
+		t.Fatalf("Expected lastPingSentNs to be %d, got %d", pingStart1.UnixNano(), mgr.lastPingSentNs.Load())
+	}
+
+	// Second ping while first is outstanding
+	pingStart2 := pingStart1.Add(time.Second)
+	mgr.lastPingSentNs.CompareAndSwap(0, pingStart2.UnixNano())
+
+	// Should NOT be overwritten!
+	if mgr.lastPingSentNs.Load() != pingStart1.UnixNano() {
+		t.Fatalf("Expected lastPingSentNs to remain %d, but was overwritten by %d", pingStart1.UnixNano(), mgr.lastPingSentNs.Load())
+	}
+
+	// Clear it (simulate PONG)
+	mgr.lastPingSentNs.Store(0)
+
+	// Try again
+	mgr.lastPingSentNs.CompareAndSwap(0, pingStart2.UnixNano())
+	if mgr.lastPingSentNs.Load() != pingStart2.UnixNano() {
+		t.Fatalf("Expected lastPingSentNs to be updated to %d after clearing", pingStart2.UnixNano())
+	}
+}
