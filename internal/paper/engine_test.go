@@ -566,6 +566,53 @@ func TestEngine_MaxDrawdownCashPreservesActualLossAcrossNewPeaks(t *testing.T) {
 	}
 }
 
+func TestEngine_MaximalAndRelativeDrawdownMT4MT5(t *testing.T) {
+	// Initialize with starting balance 100.0
+	engine := NewEngine(100.0)
+
+	// Drop to 75.0 (25% drop, $25 cash loss)
+	engine.SetBalance(75.0)
+	engine.RecalculateDrawdown()
+
+	stats := engine.GetStats()
+	if absFloat(stats.MaxDrawdown-25.0) > 0.0001 {
+		t.Fatalf("expected Relative Drawdown 25.0%%, got %.4f", stats.MaxDrawdown)
+	}
+	if absFloat(stats.RelativeDrawdownCash-25.0) > 0.0001 {
+		t.Fatalf("expected Relative Drawdown Cash $25.00, got %.4f", stats.RelativeDrawdownCash)
+	}
+	if absFloat(stats.MaxDrawdownCash-25.0) > 0.0001 {
+		t.Fatalf("expected Maximal Drawdown Cash $25.00, got %.4f", stats.MaxDrawdownCash)
+	}
+	if absFloat(stats.MaximalDrawdownPct-25.0) > 0.0001 {
+		t.Fatalf("expected Maximal Drawdown Pct 25.0%%, got %.4f", stats.MaximalDrawdownPct)
+	}
+
+	// Rise to 200.0 (sets new Peak = 200.0)
+	engine.SetBalance(200.0)
+	engine.RecalculateDrawdown()
+
+	// Drop to 160.0 (20% drop from 200, $40 cash loss)
+	engine.SetBalance(160.0)
+	engine.RecalculateDrawdown()
+
+	stats = engine.GetStats()
+	// Relative Drawdown (max percentage drop) should still be 25% (from 100 -> 75), and its cash is $25.00.
+	if absFloat(stats.MaxDrawdown-25.0) > 0.0001 {
+		t.Fatalf("expected Relative Drawdown to remain 25.0%%, got %.4f", stats.MaxDrawdown)
+	}
+	if absFloat(stats.RelativeDrawdownCash-25.0) > 0.0001 {
+		t.Fatalf("expected Relative Drawdown Cash to remain $25.00, got %.4f", stats.RelativeDrawdownCash)
+	}
+	// Maximal Drawdown (max cash drop) should be $40.00 (from 200 -> 160), and its percentage is 20%.
+	if absFloat(stats.MaxDrawdownCash-40.0) > 0.0001 {
+		t.Fatalf("expected Maximal Drawdown Cash to be $40.00, got %.4f", stats.MaxDrawdownCash)
+	}
+	if absFloat(stats.MaximalDrawdownPct-20.0) > 0.0001 {
+		t.Fatalf("expected Maximal Drawdown Pct to be 20.0%%, got %.4f", stats.MaximalDrawdownPct)
+	}
+}
+
 func TestEngine_RedeemWithDetailsRecordsEconomicDrawdownWhilePayoutPending(t *testing.T) {
 	engine := NewEngine(20.73)
 

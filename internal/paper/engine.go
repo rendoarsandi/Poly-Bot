@@ -34,19 +34,21 @@ type Position struct {
 
 // Stats holds all trading statistics
 type Stats struct {
-	TotalTrades       int
-	WinningTrades     int
-	LosingTrades      int
-	FlatTrades        int
-	RealizedPnL       float64
-	UnrealizedPnL     float64
-	PeakExposure      float64
-	MaxDrawdown       float64
-	MaxDrawdownCash   float64
-	MaxLossStreakCash float64
-	PeakBalance       float64
-	CurrentBalance    float64
-	StartingBalance   float64
+	TotalTrades          int
+	WinningTrades        int
+	LosingTrades         int
+	FlatTrades           int
+	RealizedPnL          float64
+	UnrealizedPnL        float64
+	PeakExposure         float64
+	MaxDrawdown          float64 // Relative drawdown in % (MT4/MT5 definition)
+	RelativeDrawdownCash float64 // Cash drawdown at the moment of relative drawdown % (MT4/MT5 definition)
+	MaxDrawdownCash      float64 // Maximal drawdown in cash (MT4/MT5 definition)
+	MaximalDrawdownPct   float64 // Drawdown % at the moment of maximal drawdown cash (MT4/MT5 definition)
+	MaxLossStreakCash    float64
+	PeakBalance          float64
+	CurrentBalance       float64
+	StartingBalance      float64
 }
 
 type BalanceSyncResult struct {
@@ -99,7 +101,9 @@ type Engine struct {
 	peakExposure          float64
 	peakBalance           float64
 	maxDrawdown           float64
+	relativeDrawdownCash  float64
 	maxDrawdownCash       float64
+	maximalDrawdownPct    float64
 	currentLossStreakCash float64
 	maxLossStreakCash     float64
 	winningTrades         int
@@ -1044,9 +1048,11 @@ func (e *Engine) recalculateDrawdown() {
 		drawdown := drawdownCash / e.peakBalance
 		if drawdown > e.maxDrawdown {
 			e.maxDrawdown = drawdown
+			e.relativeDrawdownCash = drawdownCash
 		}
 		if drawdownCash > e.maxDrawdownCash {
 			e.maxDrawdownCash = drawdownCash
+			e.maximalDrawdownPct = drawdown
 		}
 	}
 }
@@ -1223,19 +1229,21 @@ func (e *Engine) GetStats() Stats {
 	defer e.mu.RUnlock()
 
 	return Stats{
-		TotalTrades:       e.totalTrades,
-		WinningTrades:     e.winningTrades,
-		LosingTrades:      e.losingTrades,
-		FlatTrades:        e.flatTrades,
-		RealizedPnL:       e.realizedPnL,
-		UnrealizedPnL:     e.getUnrealizedPnL(),
-		PeakExposure:      e.peakExposure,
-		MaxDrawdown:       e.maxDrawdown * 100, // as percentage
-		MaxDrawdownCash:   e.maxDrawdownCash,
-		MaxLossStreakCash: e.maxLossStreakCash,
-		PeakBalance:       e.peakBalance,
-		CurrentBalance:    e.currentBalance,
-		StartingBalance:   e.pnlBaseline,
+		TotalTrades:          e.totalTrades,
+		WinningTrades:        e.winningTrades,
+		LosingTrades:         e.losingTrades,
+		FlatTrades:           e.flatTrades,
+		RealizedPnL:          e.realizedPnL,
+		UnrealizedPnL:        e.getUnrealizedPnL(),
+		PeakExposure:         e.peakExposure,
+		MaxDrawdown:          e.maxDrawdown * 100, // as percentage (Relative Drawdown %)
+		RelativeDrawdownCash: e.relativeDrawdownCash,
+		MaxDrawdownCash:      e.maxDrawdownCash,          // Maximal Drawdown $
+		MaximalDrawdownPct:   e.maximalDrawdownPct * 100, // Maximal Drawdown %
+		MaxLossStreakCash:    e.maxLossStreakCash,
+		PeakBalance:          e.peakBalance,
+		CurrentBalance:       e.currentBalance,
+		StartingBalance:      e.pnlBaseline,
 	}
 }
 
@@ -1550,7 +1558,9 @@ func (e *Engine) resetPaperSessionLocked(balance float64) {
 	e.peakExposure = 0
 	e.peakBalance = balance
 	e.maxDrawdown = 0
+	e.relativeDrawdownCash = 0
 	e.maxDrawdownCash = 0
+	e.maximalDrawdownPct = 0
 	e.currentLossStreakCash = 0
 	e.maxLossStreakCash = 0
 	e.winningTrades = 0

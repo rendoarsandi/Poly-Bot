@@ -4286,20 +4286,30 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		winRate = (float64(winCount) / float64(totalTrades)) * 100
 	}
 
-	drawdownSt := styleWhite
-	if stats.MaxDrawdown > 5.0 {
-		drawdownSt = styleYellow
+	maximalDrawdownSt := styleWhite
+	if stats.MaximalDrawdownPct > 5.0 {
+		maximalDrawdownSt = styleYellow
 	}
-	if stats.MaxDrawdown > 10.0 {
-		drawdownSt = styleRed
+	if stats.MaximalDrawdownPct > 10.0 {
+		maximalDrawdownSt = styleRed
 	}
 
-	lossStreakSt := styleWhite
-	if stats.MaxLossStreakCash > 10.0 {
-		lossStreakSt = styleRed
-	} else if stats.MaxLossStreakCash > 5.0 {
-		lossStreakSt = styleYellow
+	relativeDrawdownSt := styleWhite
+	if stats.MaxDrawdown > 5.0 {
+		relativeDrawdownSt = styleYellow
 	}
+	if stats.MaxDrawdown > 10.0 {
+		relativeDrawdownSt = styleRed
+	}
+
+	maxDDRender := fmt.Sprintf("%s (%.2f%%)",
+		formatDrawdownCash(stats.MaxDrawdownCash),
+		stats.MaximalDrawdownPct,
+	)
+	relDDRender := fmt.Sprintf("%.2f%% (%s)",
+		stats.MaxDrawdown,
+		formatDrawdownCash(stats.RelativeDrawdownCash),
+	)
 
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
 	cashLabel := "Cash"
@@ -4307,15 +4317,15 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	if isRealMode {
 		cashLabel = "pUSD"
 	}
-	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Max DD %s  ·  Loss Streak %s",
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Maximal DD %s  ·  Relative DD %s",
 		cashLabel,
 		styleBold.Render(cashText),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", maxExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(signedDollar(displayNetChange)),
-		drawdownSt.Render(formatDrawdownCash(stats.MaxDrawdownCash)),
-		lossStreakSt.Render(formatDrawdownCash(stats.MaxLossStreakCash)),
+		maximalDrawdownSt.Render(maxDDRender),
+		relativeDrawdownSt.Render(relDDRender),
 	)
 	// Real-mode wallet line: surface legacy USDC.e (wrap candidate) and POL (gas) so the
 	// operator can see what's available before pressing W/U.
