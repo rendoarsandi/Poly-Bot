@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"Market-bot/internal/api"
 	"Market-bot/internal/paper"
 	"Market-bot/internal/trading"
 )
@@ -83,5 +84,30 @@ func TestRealbotRoundSnapshotPnLCountsObservedLiveFillCostAndProceeds(t *testing
 	got := realbotRoundSnapshotPnL(&trading.RealTrader{}, engine, snapshot, engine.GetBookEquity(), 0)
 	if math.Abs(got+3.25) > 0.000001 {
 		t.Fatalf("expected round snapshot pnl to count observed tx loss -3.25, got %.6f", got)
+	}
+}
+
+func TestRealbotPostQuoteIterationPausesWhenWSDisconnected(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	tui := paper.NewTUI(engine, paper.NewOrderBook())
+
+	// Create WSManager that is not connected
+	wsMgr := api.NewWSManager("polymarket", "", "", "")
+
+	args := realbotPostQuoteIterationArgs{
+		marketID:    "BTC",
+		trader:      &trading.RealTrader{},
+		engine:      engine,
+		tui:         tui,
+		makerQuotes: make(map[string]*realbotMakerQuote),
+		wsMgr:       wsMgr,
+	}
+
+	state := &realbotPostQuoteIterationState{}
+
+	// Because wsMgr is not connected, realbotHandlePostQuoteIteration should return true (pause loop)
+	paused := realbotHandlePostQuoteIteration(args, state)
+	if !paused {
+		t.Fatalf("expected realbotHandlePostQuoteIteration to pause when WS is disconnected, got paused=false")
 	}
 }

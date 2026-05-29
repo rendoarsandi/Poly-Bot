@@ -145,6 +145,9 @@ func realbotHandlePostQuoteIteration(args realbotPostQuoteIterationArgs, state *
 	}
 
 	liveCfg := args.tui.GetSettings()
+	if args.wsMgr != nil && !args.wsMgr.IsConnected() {
+		return realbotPauseMarketLoop(args.marketID, "WS stream disconnected", args.trader, args.engine, args.tui, args.makerQuotes, liveCfg)
+	}
 	arbMode := normalizePaperArbMode(liveCfg.PaperArbMode)
 	primaryMode := realbotPrimaryExecutionMode(liveCfg)
 	executionQuoteMaxAge := realbotExecutionQuoteGuardAge(core.ResolveExecutionLocalQuoteMaxAge(args.cfg))
