@@ -839,9 +839,19 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.settingsInput = ""
 					return m, nil
 				case "backspace", "ctrl+h":
-					runes := []rune(m.settingsInput)
-					if len(runes) > 0 {
-						m.settingsInput = string(runes[:len(runes)-1])
+					if m.settingsCursor == settingsRowTradingHoursMode {
+						digits := keepOnlyDigits(m.settingsInput)
+						if len(digits) > 0 {
+							digits = digits[:len(digits)-1]
+							m.settingsInput = formatTradingHoursFromDigits(digits)
+						} else {
+							m.settingsInput = ""
+						}
+					} else {
+						runes := []rune(m.settingsInput)
+						if len(runes) > 0 {
+							m.settingsInput = string(runes[:len(runes)-1])
+						}
 					}
 					return m, nil
 				case "ctrl+u":

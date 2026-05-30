@@ -1158,7 +1158,43 @@ func appendSettingsNumericRune(cfg TUISettings, row int, input string, r rune) (
 	}
 }
 
+func keepOnlyDigits(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+func formatTradingHoursFromDigits(digits string) string {
+	var sb strings.Builder
+	for i, r := range digits {
+		if i == 2 {
+			sb.WriteRune(':')
+		} else if i == 4 {
+			sb.WriteRune('-')
+		} else if i == 6 {
+			sb.WriteRune(':')
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
+}
+
 func appendSettingsTypedInput(cfg TUISettings, row int, input string, runes []rune) string {
+	if row == settingsRowTradingHoursMode {
+		digits := keepOnlyDigits(input)
+		for _, r := range runes {
+			if r >= '0' && r <= '9' {
+				if len(digits) < 8 {
+					digits += string(r)
+				}
+			}
+		}
+		return formatTradingHoursFromDigits(digits)
+	}
 	if settingsRowUsesFreeformTypedInput(row) {
 		return input + string(runes)
 	}

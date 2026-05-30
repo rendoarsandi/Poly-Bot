@@ -952,3 +952,60 @@ func TestNormalizeTUISettingsDefaultsOneHourCryptoExitToSell999(t *testing.T) {
 		t.Fatalf("expected 1h crypto exit mode %q, got %q", core.OneHourCryptoExitWaitResolve, got.OneHourCryptoExitMode)
 	}
 }
+
+func TestTradingHoursDigitsOnlyInput(t *testing.T) {
+	// Test keepOnlyDigits
+	if got := keepOnlyDigits("08:00-17:00"); got != "08001700" {
+		t.Fatalf("expected keepOnlyDigits to return '08001700', got %q", got)
+	}
+	if got := keepOnlyDigits("wib 8.00-17.30"); got != "8001730" {
+		t.Fatalf("expected keepOnlyDigits to return '8001730', got %q", got)
+	}
+
+	// Test formatTradingHoursFromDigits
+	testCases := []struct {
+		digits   string
+		expected string
+	}{
+		{"", ""},
+		{"0", "0"},
+		{"08", "08"},
+		{"080", "08:0"},
+		{"0800", "08:00"},
+		{"08001", "08:00-1"},
+		{"080017", "08:00-17"},
+		{"0800170", "08:00-17:0"},
+		{"08001700", "08:00-17:00"},
+	}
+	for _, tc := range testCases {
+		if got := formatTradingHoursFromDigits(tc.digits); got != tc.expected {
+			t.Fatalf("formatTradingHoursFromDigits(%q) = %q; expected %q", tc.digits, got, tc.expected)
+		}
+	}
+
+	// Test appendSettingsTypedInput for settingsRowTradingHoursMode
+	cfg := TUISettings{}
+	// Empty input, typing a digit
+	got := appendSettingsTypedInput(cfg, settingsRowTradingHoursMode, "", []rune{'9'})
+	if got != "9" {
+		t.Fatalf("expected '9', got %q", got)
+	}
+
+	// Input "08:00", typing '1'
+	got = appendSettingsTypedInput(cfg, settingsRowTradingHoursMode, "08:00", []rune{'1'})
+	if got != "08:00-1" {
+		t.Fatalf("expected '08:00-1', got %q", got)
+	}
+
+	// Input "08:00-17:00" (max digits), typing '9' (should be ignored)
+	got = appendSettingsTypedInput(cfg, settingsRowTradingHoursMode, "08:00-17:00", []rune{'9'})
+	if got != "08:00-17:00" {
+		t.Fatalf("expected '08:00-17:00', got %q", got)
+	}
+
+	// Typed input with multiple runes (some non-digit)
+	got = appendSettingsTypedInput(cfg, settingsRowTradingHoursMode, "08:0", []rune{'0', '-', '1', '7', ':', '0', '0'})
+	if got != "08:00-17:00" {
+		t.Fatalf("expected '08:00-17:00', got %q", got)
+	}
+}
