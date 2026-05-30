@@ -1855,7 +1855,7 @@ func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testi
 	if !strings.Contains(rendered, "Maximal DD -$5.00 (5.00%)") {
 		t.Fatalf("expected account status to show maximal drawdown in MT4/MT5 style, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Relative DD 5.00% (-$5.00)") {
+	if !strings.Contains(rendered, "Relative DD -$5.00 (5.00%)") {
 		t.Fatalf("expected account status to show relative drawdown in MT4/MT5 style, got %q", rendered)
 	}
 }

@@ -4306,9 +4306,9 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		formatDrawdownCash(stats.MaxDrawdownCash),
 		stats.MaximalDrawdownPct,
 	)
-	relDDRender := fmt.Sprintf("%.2f%% (%s)",
-		stats.MaxDrawdown,
+	relDDRender := fmt.Sprintf("%s (%.2f%%)",
 		formatDrawdownCash(stats.RelativeDrawdownCash),
+		stats.MaxDrawdown,
 	)
 
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
