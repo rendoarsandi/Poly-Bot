@@ -4104,7 +4104,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	s := m.snap
 	inner := w - 4
 	settings := s.settings
-	if m.tui != nil && strings.TrimSpace(settings.PaperArbMode) == "" {
+	if m.tui != nil {
 		settings = m.tui.settings
 	}
 	copytradeMode := isCopytradeSettingsMode(settings)
@@ -4248,7 +4248,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		tradeLine = "  "
 	}
 	tradeLine += fmt.Sprintf("Realized %s", realizedSt.Render(signedDollar(displayRealized)))
-	if !copytradeMode {
+	if !copytradeMode && math.Abs(guaranteedProfit) >= 0.005 {
 		arbLabel := "Arb"
 		if ladderedMode {
 			arbLabel = "Matched"
@@ -4542,7 +4542,7 @@ func (m tuiModel) renderPositions(w int, positionsWithPnL map[string]PositionPnL
 	s := m.snap
 	inner := w - 4
 	settings := s.settings
-	if m.tui != nil && strings.TrimSpace(settings.PaperArbMode) == "" {
+	if m.tui != nil {
 		settings = m.tui.settings
 	}
 	ladderedMode := isLadderedTakerSettingsMode(settings)

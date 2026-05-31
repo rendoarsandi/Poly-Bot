@@ -1907,3 +1907,59 @@ func TestRenderMarketPanelHandlesZeroTimeGracefully(t *testing.T) {
 		t.Fatalf("expected rendered TUI market panel to show '?' for uninitialized age, got %q", rendered)
 	}
 }
+
+func TestRenderAccountStatusHidesZeroArbMatchedPnL(t *testing.T) {
+	model := tuiModel{
+		snap: tuiSnapshot{
+			mode: "Real",
+			settings: TUISettings{
+				PaperArbMode: "taker",
+			},
+		},
+	}
+
+	// With zero positions, guaranteed profit is 0.0, so Arb/Matched label should be hidden
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100.0,
+		StartingBalance: 100.0,
+	}, 0.0, 0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, map[string]Position{})
+
+	if strings.Contains(rendered, "Arb ") || strings.Contains(rendered, "Matched ") {
+		t.Fatalf("expected zero arb/matched profit to be hidden, got %q", rendered)
+	}
+}
+
+func TestRenderAccountStatusPrefersTUISettingsWhenTUIActive(t *testing.T) {
+	tui := &TUI{
+		settings: TUISettings{
+			PaperArbMode:            "laddered-taker",
+			LadderedTakerSizingMode: core.LadderedTakerSizingModeShares,
+			LadderedTakerSizeShares: 10.0,
+		},
+	}
+	model := tuiModel{
+		tui: tui,
+		snap: tuiSnapshot{
+			mode: "Real",
+			settings: TUISettings{
+				PaperArbMode:    "taker",
+				TradeSizingMode: core.TradeSizingModeUSDC,
+				TradeSizeUSDC:   10.0,
+			},
+		},
+	}
+
+	rendered := model.renderAccountStatus(120, Stats{
+		CurrentBalance:  100.0,
+		StartingBalance: 100.0,
+	}, 0.0, 0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, map[string]Position{})
+
+	// Since m.tui is not nil, it should prefer m.tui.settings (laddered-taker, 10 shares)
+	// instead of snap.settings (taker, $10.00 fixed)
+	if !strings.Contains(rendered, "Ladder 10 shares") {
+		t.Fatalf("expected UI to show 'Ladder 10 shares' from tui.settings, got %q", rendered)
+	}
+	if strings.Contains(rendered, "fixed") {
+		t.Fatalf("expected UI to avoid showing 'fixed' from snap.settings when tui.settings is active, got %q", rendered)
+	}
+}
