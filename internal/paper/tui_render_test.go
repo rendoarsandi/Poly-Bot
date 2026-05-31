@@ -1837,13 +1837,15 @@ func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testi
 	}
 
 	rendered := model.renderAccountStatus(120, Stats{
-		CurrentBalance:       95.0,
-		StartingBalance:      100.0,
-		PeakExposure:         25.0,
-		MaxDrawdown:          5.0,
-		RelativeDrawdownCash: 5.0,
-		MaxDrawdownCash:      5.0,
-		MaximalDrawdownPct:   5.0,
+		CurrentBalance:         95.0,
+		StartingBalance:        100.0,
+		PeakExposure:           25.0,
+		MaxDrawdown:            5.0,
+		RelativeDrawdownCash:   5.0,
+		MaxDrawdownCash:        5.0,
+		MaximalDrawdownPct:     5.0,
+		MaxBalanceDrawdownCash: 5.0,
+		MaxBalanceDrawdownPct:  5.0,
 	}, 12.5, 25.0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, nil)
 
 	if !strings.Contains(rendered, "Exposure $12.50") {
@@ -1852,11 +1854,11 @@ func TestRenderAccountStatusShowsCurrentAndMaxExposureAndDollarDrawdown(t *testi
 	if !strings.Contains(rendered, "Max Exp $25.00") {
 		t.Fatalf("expected account status to show max exposure as a UI stat, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Maximal DD -$5.00 (5.00%)") {
-		t.Fatalf("expected account status to show maximal drawdown in MT4/MT5 style, got %q", rendered)
+	if !strings.Contains(rendered, "Balance DD -$5.00 (5.00%)") {
+		t.Fatalf("expected account status to show Balance DD in MT4/MT5 style, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Relative DD -$5.00 (5.00%)") {
-		t.Fatalf("expected account status to show relative drawdown in MT4/MT5 style, got %q", rendered)
+	if !strings.Contains(rendered, "Equity DD -$5.00 (5.00%)") {
+		t.Fatalf("expected account status to show Equity DD in MT4/MT5 style, got %q", rendered)
 	}
 }
 

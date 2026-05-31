@@ -613,6 +613,61 @@ func TestEngine_MaximalAndRelativeDrawdownMT4MT5(t *testing.T) {
 	}
 }
 
+func TestEngine_BalanceDrawdown(t *testing.T) {
+	// Initialize with starting balance 1000.0
+	engine := NewEngine(1000.0)
+
+	// Realize a loss of $100.00
+	engine.mu.Lock()
+	engine.trackRealizedPnL(-100.0)
+	engine.mu.Unlock()
+	engine.RecalculateDrawdown()
+
+	stats := engine.GetStats()
+	if absFloat(stats.MaxBalanceDrawdownCash-100.0) > 0.0001 {
+		t.Fatalf("expected Max Balance Drawdown Cash $100.00, got %.4f", stats.MaxBalanceDrawdownCash)
+	}
+	if absFloat(stats.MaxBalanceDrawdownPct-10.0) > 0.0001 {
+		t.Fatalf("expected Max Balance Drawdown Pct 10.0%%, got %.4f", stats.MaxBalanceDrawdownPct)
+	}
+
+	// Realize a profit of $300.00 (Closed Balance goes to 1200.0, Peak Closed Balance becomes 1200.0)
+	engine.mu.Lock()
+	engine.trackRealizedPnL(300.0)
+	engine.mu.Unlock()
+	engine.RecalculateDrawdown()
+
+	stats = engine.GetStats()
+	if absFloat(stats.MaxBalanceDrawdownCash-100.0) > 0.0001 {
+		t.Fatalf("expected Max Balance Drawdown Cash to remain $100.00, got %.4f", stats.MaxBalanceDrawdownCash)
+	}
+
+	// Realize a loss of $60.00 (Closed Balance drops to 1140.0, drop of $60.00 / 5%)
+	engine.mu.Lock()
+	engine.trackRealizedPnL(-60.0)
+	engine.mu.Unlock()
+	engine.RecalculateDrawdown()
+
+	stats = engine.GetStats()
+	if absFloat(stats.MaxBalanceDrawdownCash-100.0) > 0.0001 {
+		t.Fatalf("expected Max Balance Drawdown Cash to remain $100.00, got %.4f", stats.MaxBalanceDrawdownCash)
+	}
+
+	// Realize a loss of $150.00 (Closed Balance drops to 990.0, drop of $210.00 / 17.50% from 1200.0 peak)
+	engine.mu.Lock()
+	engine.trackRealizedPnL(-150.0)
+	engine.mu.Unlock()
+	engine.RecalculateDrawdown()
+
+	stats = engine.GetStats()
+	if absFloat(stats.MaxBalanceDrawdownCash-210.0) > 0.0001 {
+		t.Fatalf("expected Max Balance Drawdown Cash to update to $210.00, got %.4f", stats.MaxBalanceDrawdownCash)
+	}
+	if absFloat(stats.MaxBalanceDrawdownPct-17.5) > 0.0001 {
+		t.Fatalf("expected Max Balance Drawdown Pct to update to 17.5%%, got %.4f", stats.MaxBalanceDrawdownPct)
+	}
+}
+
 func TestEngine_RedeemWithDetailsRecordsEconomicDrawdownWhilePayoutPending(t *testing.T) {
 	engine := NewEngine(20.73)
 

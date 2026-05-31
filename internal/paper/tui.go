@@ -4289,29 +4289,29 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		winRate = (float64(winCount) / float64(totalTrades)) * 100
 	}
 
-	maximalDrawdownSt := styleWhite
+	balanceDrawdownSt := styleWhite
+	if stats.MaxBalanceDrawdownPct > 5.0 {
+		balanceDrawdownSt = styleYellow
+	}
+	if stats.MaxBalanceDrawdownPct > 10.0 {
+		balanceDrawdownSt = styleRed
+	}
+
+	equityDrawdownSt := styleWhite
 	if stats.MaximalDrawdownPct > 5.0 {
-		maximalDrawdownSt = styleYellow
+		equityDrawdownSt = styleYellow
 	}
 	if stats.MaximalDrawdownPct > 10.0 {
-		maximalDrawdownSt = styleRed
+		equityDrawdownSt = styleRed
 	}
 
-	relativeDrawdownSt := styleWhite
-	if stats.MaxDrawdown > 5.0 {
-		relativeDrawdownSt = styleYellow
-	}
-	if stats.MaxDrawdown > 10.0 {
-		relativeDrawdownSt = styleRed
-	}
-
-	maxDDRender := fmt.Sprintf("%s (%.2f%%)",
+	balDDRender := fmt.Sprintf("%s (%.2f%%)",
+		formatDrawdownCash(stats.MaxBalanceDrawdownCash),
+		stats.MaxBalanceDrawdownPct,
+	)
+	eqDDRender := fmt.Sprintf("%s (%.2f%%)",
 		formatDrawdownCash(stats.MaxDrawdownCash),
 		stats.MaximalDrawdownPct,
-	)
-	relDDRender := fmt.Sprintf("%s (%.2f%%)",
-		formatDrawdownCash(stats.RelativeDrawdownCash),
-		stats.MaxDrawdown,
 	)
 
 	header := sectionHeader("💼", "ACCOUNT STATUS", clrTeal)
@@ -4320,15 +4320,15 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 	if isRealMode {
 		cashLabel = "pUSD"
 	}
-	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Maximal DD %s  ·  Relative DD %s",
+	row1 := fmt.Sprintf("  %s %s  ·  Exposure %s  ·  Max Exp %s  ·  Equity %s  (%s)  ·  Balance DD %s  ·  Equity DD %s",
 		cashLabel,
 		styleBold.Render(cashText),
 		styleWhite.Render(fmt.Sprintf("$%.2f", totalExposure)),
 		styleWhite.Render(fmt.Sprintf("$%.2f", maxExposure)),
 		styleBold.Render(fmt.Sprintf("$%.2f", displayEquity)),
 		changeSt.Render(signedDollar(displayNetChange)),
-		maximalDrawdownSt.Render(maxDDRender),
-		relativeDrawdownSt.Render(relDDRender),
+		balanceDrawdownSt.Render(balDDRender),
+		equityDrawdownSt.Render(eqDDRender),
 	)
 	// Real-mode wallet line: surface legacy USDC.e (wrap candidate) and POL (gas) so the
 	// operator can see what's available before pressing W/U.
