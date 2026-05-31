@@ -384,6 +384,15 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		return
 	}
 
+	// Fast-path: exit immediately if the bot has no actionable positions and no pending payout.
+	pendingPayout := 0.0
+	if engine != nil {
+		pendingPayout = engine.GetPendingRedemptions()[id]
+	}
+	if !realbotHasActionableEnginePositionsForMarket(engine, id) && pendingPayout <= 0.000001 {
+		return
+	}
+
 	// Detect timeframe from the market ID slug (e.g. BTC-15m-1715878400)
 	is5m := strings.Contains(strings.ToLower(id), "5m")
 	is15m := strings.Contains(strings.ToLower(id), "15m")
