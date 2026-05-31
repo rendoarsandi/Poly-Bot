@@ -383,6 +383,30 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 	if trader == nil {
 		return
 	}
+
+	// Detect timeframe from the market ID slug (e.g. BTC-15m-1715878400)
+	is5m := strings.Contains(strings.ToLower(id), "5m")
+	is15m := strings.Contains(strings.ToLower(id), "15m")
+	is1h := strings.Contains(strings.ToLower(id), "1h")
+	_ = is5m
+	_ = is15m
+
+	// Set pollInterval according to the timeframe:
+	// - 5m and 15m markets fallback to check every 1 minute instead of 5 minutes
+	// - 1h markets check every 30 seconds
+	// - default fallback is 1 minute
+	pollInterval := 1 * time.Minute
+	if is1h {
+		pollInterval = 30 * time.Second
+	}
+
+	shouldSkipCheck := func() bool {
+		if is1h && time.Since(marketEndTime) < 10*time.Minute {
+			return true
+		}
+		return false
+	}
+
 	if trader.IsEmbeddedPaperMode() {
 		pendingPayout := 0.0
 		if engine != nil {
@@ -391,12 +415,11 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		if !realbotHasActionableEnginePositionsForMarket(engine, id) && pendingPayout <= 0.000001 {
 			return
 		}
-		ticker := time.NewTicker(realbotEmbeddedPaperRedemptionPollInterval)
+		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		pendingLogged := false
 		for {
-			if resCache != nil {
-				resCache.ForceRefresh(conditionID)
+			if resCache != nil && !shouldSkipCheck() {
 				status := resCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
 				if status.Error != nil {
 					tui.LogEvent("[%s] ⚠️ Paper resolution check failed: %v", id, status.Error)
@@ -424,7 +447,11 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 			}
 			tui.UpdateWalletTruthResolution(id, false, "")
 			if !pendingLogged {
-				tui.LogEvent("[%s] ⏳ Paper resolution pending...", id)
+				if is1h && time.Since(marketEndTime) < 10*time.Minute {
+					tui.LogEvent("[%s] ⏳ Paper resolution pending (skipping check for the first 10m after close)...", id)
+				} else {
+					tui.LogEvent("[%s] ⏳ Paper resolution pending...", id)
+				}
 				pendingLogged = true
 			}
 			select {
@@ -461,18 +488,20 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		defer unregister()
 	}
 
-	ticker := time.NewTicker(realbotRedemptionPollInterval)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	checkRound := 0
 	lastResolutionState := ""
 
 	for {
+		triggeredByWS := false
 		if checkRound > 0 {
 			select {
 			case <-ctx.Done():
 				return
 			case <-wsResCh:
 				tui.LogEvent("[%s] ⚡ WebSocket: ConditionResolution event detected on-chain!", id)
+				triggeredByWS = true
 			case <-ticker.C:
 			}
 		}
@@ -480,8 +509,7 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 
 		resolved := false
 		winner := ""
-		if resCache != nil {
-			resCache.ForceRefresh(conditionID)
+		if resCache != nil && (triggeredByWS || !shouldSkipCheck()) {
 			status := resCache.GetResolution(ctx, conditionID, outcomes, marketEndTime)
 			if status.Error != nil {
 				tui.LogEvent("[%s] ⚠️ Resolution check failed: %v", id, status.Error)
@@ -491,20 +519,22 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 		}
 
 		if numOutcomes == 0 || winner == "" {
-			info, err := trader.GetMarketInfo(ctx, conditionID)
-			if err != nil {
-				if !resolved {
-					tui.LogEvent("[%s] ⚠️ Resolution check failed: %v", id, err)
-					continue
-				}
-			} else {
-				if len(info.Tokens) > numOutcomes {
-					numOutcomes = len(info.Tokens)
-				}
-				for _, token := range info.Tokens {
-					if token.Winner {
-						winner = token.Outcome
-						break
+			if triggeredByWS || !shouldSkipCheck() {
+				info, err := trader.GetMarketInfo(ctx, conditionID)
+				if err != nil {
+					if !resolved {
+						tui.LogEvent("[%s] ⚠️ Resolution check failed: %v", id, err)
+						continue
+					}
+				} else {
+					if len(info.Tokens) > numOutcomes {
+						numOutcomes = len(info.Tokens)
+					}
+					for _, token := range info.Tokens {
+						if token.Winner {
+							winner = token.Outcome
+							break
+						}
 					}
 				}
 			}
