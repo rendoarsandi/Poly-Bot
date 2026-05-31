@@ -4158,13 +4158,6 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		realizedSt = styleRed
 	}
 
-	multSt := styleWhite
-	if multiplier >= 1.5 {
-		multSt = styleGreen
-	} else if multiplier > 1.0 {
-		multSt = styleYellow
-	}
-
 	// Guaranteed arb profit from matched pairs
 	byMarket := make(map[string][]Position)
 	for _, pos := range positions {
@@ -4355,8 +4348,7 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		)
 	}
 	row3 := tradeLine
-	row4 := fmt.Sprintf("  Compound %s  ·  %d trades  ·  Win %.0f%%  ·  W/L/F %d/%d/%d  ·  ⏱ %s",
-		multSt.Render(fmt.Sprintf("%.2f×", multiplier)),
+	row4 := fmt.Sprintf("  %d trades  ·  Win %.0f%%  ·  W/L/F %d/%d/%d  ·  ⏱ %s",
 		totalTrades,
 		winRate,
 		winCount, lossCount, flatCount,
