@@ -359,7 +359,7 @@ func realbotHandleTakerCloseWindow(args realbotTakerCloseStrategyArgs, state *re
 
 	*state.takerCloseAttempted = true
 	tradeCtx, cancelTrade := context.WithTimeout(args.ctx, 4*time.Second)
-	exec := executeMarketOrderWithSignals(tradeCtx, args.trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, args.tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
+	exec := executeMarketOrderWithSignalsNoCancel(tradeCtx, args.trader, api.SideBuy, tokenID, bestOutcome, plan.LimitPrice, plan.RequestedQty, args.tokenFeeRates[bestOutcome], initialPosition, 2500*time.Millisecond)
 	cancelTrade()
 	logDirectExecutionAudit(args.tui, args.marketID, "Taker Close BUY", plan.RequestedQty, plan.LimitPrice, exec)
 

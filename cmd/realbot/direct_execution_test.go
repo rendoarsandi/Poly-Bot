@@ -170,3 +170,23 @@ func TestBuildDirectMarketOrderRequestSellKeepsFAK(t *testing.T) {
 		t.Fatalf("expected sell to keep FAK, got %q", req.TimeInForce)
 	}
 }
+
+func TestShouldCancelResidualBuyOrderRespectsNoCancel(t *testing.T) {
+	req := directMarketOrderSignalRequest{
+		Side:        api.SideBuy,
+		TokenID:     "token-1",
+		Price:       0.44,
+		Size:        1.00,
+		ExactShares: true,
+		NoCancel:    true,
+	}
+
+	if shouldCancelResidualBuyOrder(req, 0.50) {
+		t.Fatal("expected shouldCancelResidualBuyOrder to return false when NoCancel is true")
+	}
+
+	req.NoCancel = false
+	if !shouldCancelResidualBuyOrder(req, 0.50) {
+		t.Fatal("expected shouldCancelResidualBuyOrder to return true when NoCancel is false and executedQty is less than requested size")
+	}
+}

@@ -36,6 +36,7 @@ type directMarketOrderSignalRequest struct {
 	FeeRateBps     int
 	InitialBalance float64
 	ExactShares    bool
+	NoCancel       bool
 }
 
 var venueFeeRateMismatchPattern = regexp.MustCompile(`current market's taker fee:\s*(\d+)`)
@@ -408,7 +409,7 @@ func hydrateDirectMarketTradeResult(req directMarketOrderSignalRequest, result *
 }
 
 func shouldCancelResidualBuyOrder(req directMarketOrderSignalRequest, executedQty float64) bool {
-	if req.Side != api.SideBuy || !req.ExactShares || req.Size <= 0 {
+	if req.Side != api.SideBuy || !req.ExactShares || req.Size <= 0 || req.NoCancel {
 		return false
 	}
 	return executedQty < req.Size-0.0001
@@ -565,6 +566,20 @@ func executeMarketOrderWithSignals(ctx context.Context, trader *trading.RealTrad
 		FeeRateBps:     feeRateBps,
 		InitialBalance: initialBalance,
 		ExactShares:    side == api.SideBuy,
+	}, confirmTimeout)
+}
+
+func executeMarketOrderWithSignalsNoCancel(ctx context.Context, trader *trading.RealTrader, side api.Side, tokenID, outcome string, price, size float64, feeRateBps int, initialBalance float64, confirmTimeout time.Duration) directMarketExecution {
+	return executeMarketOrderRequestWithSignals(ctx, trader, directMarketOrderSignalRequest{
+		Side:           side,
+		TokenID:        tokenID,
+		Outcome:        outcome,
+		Price:          price,
+		Size:           size,
+		FeeRateBps:     feeRateBps,
+		InitialBalance: initialBalance,
+		ExactShares:    side == api.SideBuy,
+		NoCancel:       true,
 	}, confirmTimeout)
 }
 
