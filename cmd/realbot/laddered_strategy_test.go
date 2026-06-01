@@ -1193,3 +1193,50 @@ func TestRealbotRefreshLadderedPreTradeQuoteBlocksTerminalRestBook(t *testing.T)
 		t.Fatalf("expected REST terminal bid to be observed before block, got %.3f", tokenBids["Down"])
 	}
 }
+
+func TestRealbotLadderedTwoSidedRearmsOnPriceDrop(t *testing.T) {
+	// Configured with a MinAskPrice (basePrice) of 0.10 and a 2c step.
+	// Side 0 goes up from 0.50 to 0.60 (rungs 20 to 25).
+	// Side 0 is then bought at rung 25.
+	// Then the price of Side 0 drops back to 0.40 (rung 15).
+	// Under two-sided re-arming, Side 0's max rung must reset/re-arm to 15.
+	// If Side 0 then rises to 0.42 (rung 16), it should be eligible to buy again,
+	// skipping any already-filled rungs (like rung 25) but allowing the new rung 16.
+	basePrice := 0.10
+	moveCents := 2.0
+	entries := []realbotLadderedEntry{
+		{seq: 0, ask0: 0.10, ask1: 0.10, side: 0, rung: 0, armed: true},
+		{seq: 0, ask0: 0.10, ask1: 0.10, side: 1, rung: 0, armed: true},
+		{seq: 1, ask0: 0.60, ask1: 0.40, side: 0, rung: 25},
+	}
+
+	// Verify Side 0's max rung is currently 25.
+	maxRungs := realbotLadderedMaxRungs(entries, basePrice, moveCents)
+	if maxRungs[0] != 25 {
+		t.Fatalf("expected initial max rung to be 25, got %d", maxRungs[0])
+	}
+
+	// Side 0 ask drops to 0.40 (rung 15). B ask goes to 0.60 (rung 25).
+	// realbotRefreshLadderedEntries should observe that 15 < 25, appending a new armed entry at 15.
+	refreshed := realbotRefreshLadderedEntries(entries, 0.40, 0.60, basePrice, moveCents)
+
+	// Verify that the new max rung is reset to 15.
+	newMaxRungs := realbotLadderedMaxRungs(refreshed, basePrice, moveCents)
+	if newMaxRungs[0] != 15 {
+		t.Fatalf("expected max rung to reset to 15 after drop, got %d", newMaxRungs[0])
+	}
+
+	// Now Side 0 starts rising: ask0 becomes 0.42 (rung 16).
+	// Rung 16 is greater than max rung (15) and has not been filled, so Side 0 should be eligible.
+	side, _, ok := ladderedTakerDirectionalSide(refreshed, 0.42, 0.10, basePrice, moveCents)
+	if !ok || side != 0 {
+		t.Fatalf("expected Side 0 to be eligible to buy at rung 16 after re-arming, got side=%d ok=%v", side, ok)
+	}
+
+	// If Side 0 rises to 0.60 (rung 25) again, it should stay BLOCKED because rung 25 was already filled (bought).
+	refreshedWithRung16 := append(refreshed, realbotLadderedEntry{seq: 2, ask0: 0.42, ask1: 0.10, side: 0, rung: 16})
+	side, _, ok = ladderedTakerDirectionalSide(refreshedWithRung16, 0.60, 0.40, basePrice, moveCents)
+	if ok && side == 0 {
+		t.Fatal("expected already-filled rung 25 to stay blocked when Side 0 rises back to 0.60")
+	}
+}

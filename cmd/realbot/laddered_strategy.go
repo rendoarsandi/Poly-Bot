@@ -331,18 +331,17 @@ func realbotRefreshLadderedEntries(entries []realbotLadderedEntry, ask0, ask1, b
 	maxRungs := realbotLadderedMaxRungs(entries, basePrice, moveCents)
 	updated := entries
 	for side := 0; side < len(currentRungs); side++ {
-		if currentRungs[side] != 0 || maxRungs[side] <= 0 {
-			continue
+		if currentRungs[side] < maxRungs[side] && maxRungs[side] > 0 {
+			updated = append(updated, realbotLadderedEntry{
+				seq:   0,
+				ask0:  ask0,
+				ask1:  ask1,
+				side:  side,
+				rung:  currentRungs[side],
+				armed: true,
+			})
+			maxRungs[side] = currentRungs[side]
 		}
-		updated = append(updated, realbotLadderedEntry{
-			seq:   0,
-			ask0:  ask0,
-			ask1:  ask1,
-			side:  side,
-			rung:  0,
-			armed: true,
-		})
-		maxRungs[side] = 0
 	}
 	return updated
 }
