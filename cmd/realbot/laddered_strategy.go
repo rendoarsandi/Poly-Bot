@@ -709,10 +709,6 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 
-	if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
-		return false
-	}
-
 	if !ladderedTakerEntryEligible(ask1, ask2) {
 		realbotResetLadderedStartupStability(state)
 		return false
@@ -728,6 +724,23 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 	}
 	if state != nil && state.ladderedEntries != nil {
 		*state.ladderedEntries = realbotRefreshLadderedEntries(*state.ladderedEntries, ask1, ask2, ladderBasePrice, moveCents)
+	}
+
+	currentEntries := derefLadderedEntries(stateEntries(state))
+	ladderedDirection, _, directionalReady := ladderedTakerDirectionalSide(currentEntries, ask1, ask2, ladderBasePrice, moveCents)
+	if !directionalReady {
+		if !realbotLadderedHasConfirmedEntries(currentEntries) {
+			realbotResetLadderedStartupStability(state)
+		}
+		return true
+	}
+
+	activeAsk := ask1
+	if ladderedDirection == 1 {
+		activeAsk = ask2
+	}
+	if activeAsk < rMinAsk || activeAsk > rMaxAsk {
+		return false
 	}
 
 	if state != nil && state.entryExecutionInFlight != nil && *state.entryExecutionInFlight {
@@ -763,12 +776,24 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		setEntryCooldown(500 * time.Millisecond)
 		return true
 	}
-	if ask1 < rMinAsk || ask1 > rMaxAsk || ask2 < rMinAsk || ask2 > rMaxAsk {
+	if !ladderedTakerEntryEligible(ask1, ask2) {
+		realbotResetLadderedStartupStability(state)
 		setEntryCooldown(500 * time.Millisecond)
 		return true
 	}
-	if !ladderedTakerEntryEligible(ask1, ask2) {
-		realbotResetLadderedStartupStability(state)
+
+	currentEntries = derefLadderedEntries(stateEntries(state))
+	ladderedDirection, _, directionalReady = ladderedTakerDirectionalSide(currentEntries, ask1, ask2, ladderBasePrice, moveCents)
+	if !directionalReady {
+		setEntryCooldown(500 * time.Millisecond)
+		return true
+	}
+
+	activeAsk = ask1
+	if ladderedDirection == 1 {
+		activeAsk = ask2
+	}
+	if activeAsk < rMinAsk || activeAsk > rMaxAsk {
 		setEntryCooldown(500 * time.Millisecond)
 		return true
 	}
@@ -794,14 +819,6 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 	limitPrice1 := realbotDirectionalBuyLimitPrice(ask1, rMaxAsk, realbotCfg.LadderedTakerMaxSlippagePct)
 	limitPrice2 := realbotDirectionalBuyLimitPrice(ask2, rMaxAsk, realbotCfg.LadderedTakerMaxSlippagePct)
 
-	currentEntries := derefLadderedEntries(stateEntries(state))
-	ladderedDirection, _, directionalReady := ladderedTakerDirectionalSide(currentEntries, ask1, ask2, ladderBasePrice, moveCents)
-	if !directionalReady {
-		if !realbotLadderedHasConfirmedEntries(currentEntries) {
-			realbotResetLadderedStartupStability(state)
-		}
-		return true
-	}
 	if !realbotLadderedHasConfirmedEntries(currentEntries) {
 		candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, moveCents, ladderedDirection)
 		if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {

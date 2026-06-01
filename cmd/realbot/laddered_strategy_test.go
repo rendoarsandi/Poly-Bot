@@ -1240,3 +1240,86 @@ func TestRealbotLadderedTwoSidedRearmsOnPriceDrop(t *testing.T) {
 		t.Fatal("expected already-filled rung 25 to stay blocked when Side 0 rises back to 0.60")
 	}
 }
+
+func TestRealbotLadderedActiveSideMinAskFilter(t *testing.T) {
+	// If MaxAskPrice is set to 0.90, and Side 0 ask is 0.95 while Side 1 ask is 0.05,
+	// the bot should block trading Side 0 (0.95 is above MaxAskPrice),
+	// returning false.
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	tui.InitSettings(paper.TUISettings{
+		PaperArbMode:                  paperArbModeLaddered,
+		MinAskPrice:                   0.10,
+		MaxAskPrice:                   0.90,
+		LadderedTakerReentryMoveCents: 2.0,
+	}, nil)
+
+	// Anchored at basePrice = 0.10 for testing
+	entries := []realbotLadderedEntry{
+		{seq: 0, ask0: 0.10, ask1: 0.10, side: 0, rung: 0, armed: true},
+		{seq: 0, ask0: 0.10, ask1: 0.10, side: 1, rung: 0, armed: true},
+	}
+
+	entryExecutionInFlight := true
+	panicBuyCooldown := time.Time{}
+	lastPairUpdate := time.Now()
+	lastTrade := time.Time{}
+	lastDustRecoveryNotice := time.Time{}
+	nextLadderedEntrySeq := uint64(1)
+
+	// 1. Pass Case: Active ask (Up) is 0.85 <= MaxAskPrice (0.90).
+	// It should pass the active ask filter and return true because entryExecutionInFlight is true.
+	tokenBidsPass := map[string]float64{"Down": 0.14, "Up": 0.84}
+	tokenAsksPass := map[string]float64{"Down": 0.15, "Up": 0.85} // Up is Side 0 (leader), Down is Side 1
+	handledPass := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Up", "Down"},
+		tokenToOutcome: map[string]string{"up-token": "Up", "down-token": "Down"},
+		tokenBids:      tokenBidsPass,
+		tokenAsks:      tokenAsksPass,
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &entries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+
+	if !handledPass {
+		t.Fatal("expected active ask 0.85 to pass the MaxAskPrice (0.90) filter")
+	}
+
+	// 2. Fail Case: Make Up ask 0.95.
+	// Since Up is leader (at 0.95) and 0.95 > 0.90, the active ask filter should fail and return false.
+	tokenBidsFail := map[string]float64{"Down": 0.04, "Up": 0.94}
+	tokenAsksFail := map[string]float64{"Down": 0.05, "Up": 0.95}
+	handledFail := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Up", "Down"},
+		tokenToOutcome: map[string]string{"up-token": "Up", "down-token": "Down"},
+		tokenBids:      tokenBidsFail,
+		tokenAsks:      tokenAsksFail,
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &entries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+
+	if handledFail {
+		t.Fatal("expected active ask 0.95 to fail the MaxAskPrice (0.90) filter")
+	}
+}
