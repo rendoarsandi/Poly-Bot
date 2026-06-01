@@ -125,18 +125,20 @@ func TestRealbotLadderedDirectionalSideUsesAnchoredRungs(t *testing.T) {
 }
 
 func TestRealbotLadderedDirectionalSideOnlyBuysCurrentHigherSide(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.55, ask1: 0.45, side: 0, rung: 1}}
+	entries := []realbotLadderedEntry{
+		{seq: 0, ask0: 0.50, ask1: 0.50, side: 0, rung: 0, armed: true},
+		{seq: 0, ask0: 0.50, ask1: 0.50, side: 1, rung: 0, armed: true},
+		{seq: 1, ask0: 0.55, ask1: 0.45, side: 0, rung: 1},
+	}
 
 	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.55, 0.50, 5.0); !ok || side != 0 {
 		t.Fatalf("expected higher side 0 to re-enter after crossing the next anchored 5c rung, got side=%d ok=%v", side, ok)
 	}
 
 	entries = append(entries, realbotLadderedEntry{seq: 2, ask0: 0.60, ask1: 0.55, side: 0, rung: 2})
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.55, 0.50, 5.0); ok {
-		t.Fatalf("expected lower side 1 at the first rung to stay blocked while side 0 is still higher, got side=%d ok=%v", side, ok)
-	}
-	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.50, 0.55, 0.50, 5.0); !ok || side != 1 {
-		t.Fatalf("expected side 1 to re-enter only after becoming the higher side, got side=%d ok=%v", side, ok)
+	// Side 1 (rung 1) has never been filled, so under two-sided laddering it should allow entry even though side 0 is higher
+	if side, _, ok := ladderedTakerDirectionalSide(entries, 0.60, 0.55, 0.50, 5.0); !ok || side != 1 {
+		t.Fatalf("expected unfilled lower side 1 at the first rung to allow entry under two-sided laddering, got side=%d ok=%v", side, ok)
 	}
 }
 
@@ -297,10 +299,10 @@ func TestRealbotLadderedDirectionalSideGapFills(t *testing.T) {
 }
 
 func TestRealbotPendingLadderedEntryUsesCurrentQuoteOnLargeGaps(t *testing.T) {
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.85}}
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.85, side: 1}}
 
 	// With the base at $0.50 and a 5c step, an ask of 0.85 = (0.85-0.50)/0.05 = rung 7.
-	pending := realbotPendingLadderedEntry(entries, 2, 0.55, 0.85, 0.50, 5.0)
+	pending := realbotPendingLadderedEntry(entries, 2, 0.55, 0.85, 0.50, 5.0, 1)
 	if math.Abs(pending.ask0-0.55) > 1e-9 || math.Abs(pending.ask1-0.85) > 1e-9 {
 		t.Fatalf("expected pending anchor to jump to the current quote, got %+v", pending)
 	}

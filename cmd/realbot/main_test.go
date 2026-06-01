@@ -111,8 +111,8 @@ func TestRealbotEnsureTopAskLevelSkipsInjectionWhenTopAlreadyPresent(t *testing.
 
 func TestRealbotLargeGapRequiresFreshStepAfterAnchorReset(t *testing.T) {
 	// Configured at a $0.50 base with a 2c step: an ask of 0.85 sits at rung 17.
-	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.85}}
-	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.55, 0.85, 0.50, 2.0))
+	entries := []realbotLadderedEntry{{seq: 1, ask0: 0.50, ask1: 0.85, side: 1}}
+	entries = append(entries, realbotPendingLadderedEntry(entries, 2, 0.55, 0.85, 0.50, 2.0, 1))
 
 	if side, mult, ok := ladderedTakerDirectionalSide(entries, 0.55, 0.859, 0.50, 2.0); ok {
 		t.Fatalf("expected move below the next full 2c step to stay blocked, got side=%d mult=%d ok=%v", side, mult, ok)

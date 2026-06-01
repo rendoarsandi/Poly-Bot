@@ -364,32 +364,45 @@ func realbotLadderedFilledRungSet(entries []realbotLadderedEntry, basePrice, mov
 
 func ladderedTakerDirectionalSide(entries []realbotLadderedEntry, ask0, ask1, basePrice, moveCents float64) (int, int, bool) {
 	leader := realbotLadderedLeaderSide(ask0, ask1)
-	if leader < 0 {
-		return -1, 0, false
+
+	rung0 := realbotLadderedRungIndex(ask0, basePrice, moveCents)
+	rung1 := realbotLadderedRungIndex(ask1, basePrice, moveCents)
+
+	if len(entries) == 0 {
+		if leader >= 0 {
+			return leader, 1, true
+		}
+		return 0, 1, true
 	}
 
-	leaderAsk := ask0
-	if leader == 1 {
-		leaderAsk = ask1
-	}
-	leaderRung := realbotLadderedRungIndex(leaderAsk, basePrice, moveCents)
-	if len(entries) == 0 {
-		return leader, 1, true
-	}
 	filledRungs := realbotLadderedFilledRungSet(entries, basePrice, moveCents)
-	if filledRungs[leader][leaderRung] {
-		return -1, 0, false
+	maxRungs := realbotLadderedMaxRungs(entries, basePrice, moveCents)
+
+	eligible0 := !filledRungs[0][rung0] && ask0 >= basePrice && rung0 > maxRungs[0] && maxRungs[0] >= 0 && rung0 > 0
+	eligible1 := !filledRungs[1][rung1] && ask1 >= basePrice && rung1 > maxRungs[1] && maxRungs[1] >= 0 && rung1 > 0
+
+	if eligible0 && eligible1 {
+		if leader >= 0 {
+			return leader, 1, true
+		}
+		return 0, 1, true
 	}
-	return leader, 1, true
+	if eligible0 {
+		return 0, 1, true
+	}
+	if eligible1 {
+		return 1, 1, true
+	}
+
+	return -1, 0, false
 }
 
-func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, basePrice, moveCents float64) realbotLadderedEntry {
-	side := realbotLadderedLeaderSide(ask0, ask1)
+func realbotPendingLadderedEntry(_ []realbotLadderedEntry, seq uint64, ask0, ask1, basePrice, moveCents float64, activeSide int) realbotLadderedEntry {
 	ask := ask0
-	if side == 1 {
+	if activeSide == 1 {
 		ask = ask1
 	}
-	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1, side: side, rung: realbotLadderedRungIndex(ask, basePrice, moveCents)}
+	return realbotLadderedEntry{seq: seq, ask0: ask0, ask1: ask1, side: activeSide, rung: realbotLadderedRungIndex(ask, basePrice, moveCents)}
 }
 
 func realbotTrimLadderedEntries(entries []realbotLadderedEntry) []realbotLadderedEntry {
@@ -791,7 +804,7 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 	if !realbotLadderedHasConfirmedEntries(currentEntries) {
-		candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, moveCents)
+		candidate := realbotPendingLadderedEntry(currentEntries, 0, ask1, ask2, ladderBasePrice, moveCents, ladderedDirection)
 		if !realbotLadderedStartupStabilityReady(state, candidate.side, candidate.rung, time.Now()) {
 			return true
 		}
@@ -802,7 +815,7 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		*state.nextLadderedEntrySeq = *state.nextLadderedEntrySeq + 1
 		ladderedEntrySeq = *state.nextLadderedEntrySeq
 	}
-	pendingLadderedEntry := realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, moveCents)
+	pendingLadderedEntry := realbotPendingLadderedEntry(derefLadderedEntries(stateEntries(state)), ladderedEntrySeq, ask1, ask2, ladderBasePrice, moveCents, ladderedDirection)
 
 	requestSize1, requestSize2 := 0.0, 0.0
 	if ladderedDirection == 1 {
