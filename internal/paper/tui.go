@@ -4200,6 +4200,22 @@ func (m tuiModel) renderAccountStatus(w int, stats Stats, totalExposure, maxExpo
 		} else {
 			tradeLine = fmt.Sprintf("  Ladder $%.2f cap  ·  ", settings.LadderedTakerSizeUSDC)
 		}
+	} else if TakerCloseModeActive(settings) {
+		if isTakerCloseShareSizingMode(settings) {
+			tradeLine = fmt.Sprintf("  Close %.5g shares  ·  ", settings.TakerCloseSizeShares)
+		} else if isTakerCloseUSDCSizingMode(settings) {
+			tradeLine = fmt.Sprintf("  Close $%.2f cap  ·  ", settings.TakerCloseSizeUSDC)
+		} else {
+			if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(displayMode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, settings.TradeSizeUSDC, s.maxTradeSize, multiplier, core.TakerCloseSizingModePercent); baseTradeCost > 0 {
+				if strings.EqualFold(displayMode, "Paper") && math.Abs(effectiveTradeCost-baseTradeCost) > 0.005 {
+					tradeLine = fmt.Sprintf("  Close %.1f%%  ($%.2f base / $%.2f effective)  ·  ", s.tradeFactor*100, baseTradeCost, effectiveTradeCost)
+				} else {
+					tradeLine = fmt.Sprintf("  Close %.1f%%  ($%.2f base)  ·  ", s.tradeFactor*100, baseTradeCost)
+				}
+			} else {
+				tradeLine = fmt.Sprintf("  Close %.1f%%  ·  ", s.tradeFactor*100)
+			}
+		}
 	} else if baseTradeCost, effectiveTradeCost := displayedTradeBudgetsWithMode(displayMode, stats.CurrentBalance, tradeBudgetEquity, stats.StartingBalance, effectiveSizingBalance, s.tradeFactor, settings.TradeSizeUSDC, s.maxTradeSize, multiplier, settings.TradeSizingMode); baseTradeCost > 0 {
 		if strings.EqualFold(settings.TradeSizingMode, core.TradeSizingModeUSDC) {
 			tradeLine = fmt.Sprintf("  Trade $%.2f fixed  ·  ", baseTradeCost)
@@ -6143,6 +6159,24 @@ func (m tuiModel) renderSettings(w int) string {
 	modeNote := ""
 	if makerMode {
 		modeNote = styleDimmed.Render("  Maker mode: split/taker-only rows are shown for reference and ignored live") + "\n"
+	} else if takerCloseMode {
+		if isTakerCloseShareSizingMode(cfg) {
+			balanceNote = styleDimmed.Render(fmt.Sprintf(
+				"  Taker close share sizing active → close position up to %s shares per entry",
+				fmtFloatTrim(cfg.TakerCloseSizeShares, 2),
+			))
+		} else if isTakerCloseUSDCSizingMode(cfg) {
+			balanceNote = styleDimmed.Render(fmt.Sprintf(
+				"  Taker close USDC sizing active → close position up to $%.2f",
+				cfg.TakerCloseSizeUSDC,
+			))
+		} else {
+			balanceNote = styleDimmed.Render(fmt.Sprintf(
+				"  Taker close percent sizing active → close position up to %.1f%% of equity",
+				cfg.TradeScaleFactor*100,
+			))
+		}
+		modeNote = styleDimmed.Render("  Taker close mode automatically closes your live position once timing or price/slippage thresholds are met.") + "\n"
 	} else if copytradeMode {
 		if strings.EqualFold(cfg.CopytradeSizingMode, core.CopytradeSizingModeShares) {
 			balanceNote = styleDimmed.Render(fmt.Sprintf(

@@ -1390,10 +1390,10 @@ func TestRenderAccountStatusRealModeTakerCloseUsesCurrentEquityBudget(t *testing
 		RealizedPnL:     5.59,
 	}, 0.0, 0, 61.53, 61.53, 1.0, 203.20, 4, 4, 0, nil)
 
-	if !strings.Contains(rendered, "($3.08/trade)") {
+	if !strings.Contains(rendered, "($3.08 base)") {
 		t.Fatalf("expected taker-close trade budget to follow current live equity, got %q", rendered)
 	}
-	if strings.Contains(rendered, "($10.16/trade)") {
+	if strings.Contains(rendered, "($10.16 base)") {
 		t.Fatalf("expected taker-close mode to ignore stale high-water sizing, got %q", rendered)
 	}
 }
@@ -1963,3 +1963,50 @@ func TestRenderAccountStatusPrefersTUISettingsWhenTUIActive(t *testing.T) {
 		t.Fatalf("expected UI to avoid showing 'fixed' from snap.settings when tui.settings is active, got %q", rendered)
 	}
 }
+
+func TestRenderAccountStatusTakerCloseSizingModes(t *testing.T) {
+	// Share Sizing Mode
+	modelShares := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				TakerCloseMarket:     true,
+				TakerCloseSizingMode: core.TakerCloseSizingModeShares,
+				TakerCloseSizeShares: 5.0,
+			},
+		},
+	}
+
+	renderedShares := modelShares.renderAccountStatus(120, Stats{
+		CurrentBalance:  100.0,
+		StartingBalance: 100.0,
+	}, 0.0, 0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, map[string]Position{})
+
+	if !strings.Contains(renderedShares, "Close 5 shares") {
+		t.Fatalf("expected UI to show 'Close 5 shares' when taker-close is active with share sizing, got %q", renderedShares)
+	}
+
+	// USDC Sizing Mode
+	modelUSDC := tuiModel{
+		snap: tuiSnapshot{
+			mode:        "Paper",
+			tradeFactor: 0.05,
+			settings: TUISettings{
+				TakerCloseMarket:     true,
+				TakerCloseSizingMode: core.TakerCloseSizingModeUSDC,
+				TakerCloseSizeUSDC:   5.0,
+			},
+		},
+	}
+
+	renderedUSDC := modelUSDC.renderAccountStatus(120, Stats{
+		CurrentBalance:  100.0,
+		StartingBalance: 100.0,
+	}, 0.0, 0, 100.0, 100.0, 1.0, 100.0, 0, 0, 0, map[string]Position{})
+
+	if !strings.Contains(renderedUSDC, "Close $5.00 cap") {
+		t.Fatalf("expected UI to show 'Close $5.00 cap' when taker-close is active with USDC sizing, got %q", renderedUSDC)
+	}
+}
+
