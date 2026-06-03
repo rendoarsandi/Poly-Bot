@@ -108,8 +108,11 @@ func (ob *OrderBook) PlaceOrder(outcome, side string, price, quantity float64, l
 // PlaceOrderWithMode places a new limit order and tags its execution path for UI/reporting.
 func (ob *OrderBook) PlaceOrderWithMode(outcome, side string, price, quantity float64, ladderLevel int, executionMode string) *LimitOrder {
 	// Simulate API latency before placing order
-	if ob.orderDelay > 0 {
-		time.Sleep(ob.orderDelay)
+	ob.mu.RLock()
+	delay := ob.orderDelay
+	ob.mu.RUnlock()
+	if delay > 0 {
+		time.Sleep(delay)
 	}
 
 	ob.mu.Lock()

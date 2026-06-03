@@ -1444,3 +1444,80 @@ func TestRealTrader_GetCTFBalanceFloatBacksOffAfterFailure(t *testing.T) {
 		t.Fatalf("expected retry backoff to limit CTF RPC calls to 1, got %d", calls)
 	}
 }
+
+func TestRealTrader_GetCTFBalanceFloat_TokenIDParsing(t *testing.T) {
+	var rpcCalls int32
+	var lastParsedTokenID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&rpcCalls, 1)
+		// Extract token ID from payload
+		var req struct {
+			Params []any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && len(req.Params) > 0 {
+			if callParams, ok := req.Params[0].(map[string]any); ok {
+				if dataStr, ok := callParams["data"].(string); ok && len(dataStr) >= 74 {
+					lastParsedTokenID = dataStr[len(dataStr)-64:]
+				}
+			}
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x2625a0"}`)) // 2,500,000 micros = 2.5 shares
+	}))
+	defer server.Close()
+
+	trader := &RealTrader{
+		client:  &stubExchangeClient{address: "0x1111111111111111111111111111111111111111"},
+		polygon: api.NewPolygonClient(server.URL),
+	}
+
+	// 1. Decimal parsing
+	_, err := trader.GetCTFBalanceFloat(context.Background(), "123456789")
+	if err != nil {
+		t.Fatalf("decimal token parsing failed: %v", err)
+	}
+	expectedHex := fmt.Sprintf("%064x", big.NewInt(123456789))
+	if lastParsedTokenID != expectedHex {
+		t.Errorf("expected parsed decimal token ID to match %s, got %s", expectedHex, lastParsedTokenID)
+	}
+
+	// Reset cached tried state and cache to bypass throttles for next test
+	trader.ctfBalanceCache = nil
+	trader.lastCTFBalanceTry = nil
+	trader.lastCTFBalanceUpdate = nil
+
+	// 2. 0x hex parsing
+	_, err = trader.GetCTFBalanceFloat(context.Background(), "0xabcdef12345")
+	if err != nil {
+		t.Fatalf("0x hex token parsing failed: %v", err)
+	}
+	expectedHex0x, _ := new(big.Int).SetString("abcdef12345", 16)
+	expectedHex = fmt.Sprintf("%064x", expectedHex0x)
+	if lastParsedTokenID != expectedHex {
+		t.Errorf("expected parsed 0x hex token ID to match %s, got %s", expectedHex, lastParsedTokenID)
+	}
+
+	// Reset cached tried state and cache to bypass throttles for next test
+	trader.ctfBalanceCache = nil
+	trader.lastCTFBalanceTry = nil
+	trader.lastCTFBalanceUpdate = nil
+
+	// 3. raw hex parsing (base-16 auto fallback)
+	_, err = trader.GetCTFBalanceFloat(context.Background(), "abcdef12345")
+	if err != nil {
+		t.Fatalf("raw hex token parsing failed: %v", err)
+	}
+	if lastParsedTokenID != expectedHex {
+		t.Errorf("expected parsed raw hex token ID to match %s, got %s", expectedHex, lastParsedTokenID)
+	}
+
+	// Reset cached tried state and cache to bypass throttles for next test
+	trader.ctfBalanceCache = nil
+	trader.lastCTFBalanceTry = nil
+	trader.lastCTFBalanceUpdate = nil
+
+	// 4. Invalid token parsing error
+	_, err = trader.GetCTFBalanceFloat(context.Background(), "invalid-token-123xyz")
+	if err == nil {
+		t.Error("expected error parsing invalid token ID")
+	}
+}

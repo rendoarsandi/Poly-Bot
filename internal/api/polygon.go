@@ -287,11 +287,17 @@ func (c *PolygonClient) RedeemPositionsWithGasModeAndAdapter(ctx context.Context
 // 1 pUSD → 1 YES token + 1 NO token
 // Use this to build inventory, then sell when bid_sum > $1.03 for profit.
 func (c *PolygonClient) SplitPositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
 	return c.SplitPositionsWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, amount, numOutcomes)
 }
 
 // SplitPositionsWithAdapter converts pUSD into YES+NO tokens through a specific pUSD CTF adapter.
 func (c *PolygonClient) SplitPositionsWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
 	data := encodePositionAmountData("0x72ce4275", conditionID, amount, numOutcomes)
 	return c.signAndSendWriteTransaction(ctx, signer, normalizeCTFAdapter(adapter), big.NewInt(0), polygonCTFAdapterGasLimit, data)
 }
@@ -300,11 +306,17 @@ func (c *PolygonClient) SplitPositionsWithAdapter(ctx context.Context, signer *S
 // Unlike RedeemPositions, this works ANYTIME - no need to wait for market resolution.
 // Use this immediately after buying both sides to capture arbitrage profit instantly.
 func (c *PolygonClient) MergePositions(ctx context.Context, signer *Signer, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
 	return c.MergePositionsWithAdapter(ctx, signer, CtfCollateralAdapter, conditionID, amount, numOutcomes)
 }
 
 // MergePositionsWithAdapter burns equal YES+NO tokens through a specific pUSD CTF adapter.
 func (c *PolygonClient) MergePositionsWithAdapter(ctx context.Context, signer *Signer, adapter, conditionID string, amount *big.Int, numOutcomes int) (string, error) {
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
 	data := encodePositionAmountData("0x9e7212ad", conditionID, amount, numOutcomes)
 	return c.signAndSendWriteTransaction(ctx, signer, normalizeCTFAdapter(adapter), big.NewInt(0), polygonCTFAdapterGasLimit, data)
 }
@@ -414,6 +426,9 @@ func (c *PolygonClient) gasFeesForWriteTxMode(ctx context.Context, gasMode strin
 }
 
 func (c *PolygonClient) signAndSendWriteTransaction(ctx context.Context, signer *Signer, to string, value *big.Int, gasLimit uint64, data string) (string, error) {
+	if signer == nil {
+		return "", fmt.Errorf("signer is nil")
+	}
 	nonce, err := c.GetNonce(ctx, signer.Address())
 	if err != nil {
 		return "", err
@@ -427,6 +442,9 @@ func (c *PolygonClient) signAndSendWriteTransaction(ctx context.Context, signer 
 }
 
 func (c *PolygonClient) signAndSendFastWriteTransaction(ctx context.Context, signer *Signer, to string, value *big.Int, gasLimit uint64, data string) (string, error) {
+	if signer == nil {
+		return "", fmt.Errorf("signer is nil")
+	}
 	nonce, err := c.GetNonce(ctx, signer.Address())
 	if err != nil {
 		return "", err
@@ -440,6 +458,9 @@ func (c *PolygonClient) signAndSendFastWriteTransaction(ctx context.Context, sig
 }
 
 func (c *PolygonClient) signAndSendUrgentWriteTransaction(ctx context.Context, signer *Signer, to string, value *big.Int, gasLimit uint64, data string) (string, error) {
+	if signer == nil {
+		return "", fmt.Errorf("signer is nil")
+	}
 	nonce, err := c.GetNonce(ctx, signer.Address())
 	if err != nil {
 		return "", err
@@ -669,15 +690,29 @@ func rpcError(raw json.RawMessage) *RPCError {
 	return &RPCError{Code: -1, Message: string(raw)}
 }
 
+func padAddress(address string) (string, error) {
+	addr := strings.TrimPrefix(strings.TrimSpace(address), "0x")
+	if len(addr) != 40 {
+		return "", fmt.Errorf("invalid address length: %d (expected 40 hex characters)", len(addr))
+	}
+	for i := 0; i < len(addr); i++ {
+		char := addr[i]
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return "", fmt.Errorf("invalid hex character in address at position %d: %q", i, char)
+		}
+	}
+	return "000000000000000000000000" + strings.ToLower(addr), nil
+}
+
 // GetCollateralBalance returns the pUSD collateral balance for an address in human-readable format (6 decimals).
 func (c *PolygonClient) GetCollateralBalance(ctx context.Context, address string) (float64, error) {
 	// ERC20 balanceOf function selector: 0x70a08231
 	// Followed by address padded to 32 bytes
-	addr := strings.TrimPrefix(address, "0x")
-	if len(addr) < 40 {
-		addr = strings.Repeat("0", 40-len(addr)) + addr
+	padded, err := padAddress(address)
+	if err != nil {
+		return 0, err
 	}
-	data := "0x70a08231000000000000000000000000" + addr
+	data := "0x70a08231" + padded
 
 	// Make eth_call
 	callParams := map[string]string{
@@ -718,8 +753,14 @@ func (c *PolygonClient) GetUSDCBalance(ctx context.Context, address string) (flo
 // GetCollateralAllowance returns the current allowance for a spender to use an owner's pUSD.
 func (c *PolygonClient) GetCollateralAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
 	// ERC20 allowance(address,address) function selector: 0xdd62ed3e
-	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
-	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	ownerAddr, err := padAddress(owner)
+	if err != nil {
+		return nil, err
+	}
+	spenderAddr, err := padAddress(spender)
+	if err != nil {
+		return nil, err
+	}
 
 	data := "0xdd62ed3e" + ownerAddr + spenderAddr
 
@@ -749,8 +790,14 @@ func (c *PolygonClient) GetUSDCAllowance(ctx context.Context, owner, spender str
 // IsCTFApproved checks if a spender is approved for all of an owner's CTF tokens
 func (c *PolygonClient) IsCTFApproved(ctx context.Context, owner, operator string) (bool, error) {
 	// ERC1155 isApprovedForAll(address,address) function selector: 0xe985e9c5
-	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
-	operatorAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(operator), "0x")
+	ownerAddr, err := padAddress(owner)
+	if err != nil {
+		return false, err
+	}
+	operatorAddr, err := padAddress(operator)
+	if err != nil {
+		return false, err
+	}
 
 	data := "0xe985e9c5" + ownerAddr + operatorAddr
 
@@ -783,8 +830,14 @@ func (c *PolygonClient) ApproveCollateral(ctx context.Context, signer *Signer, s
 	// Parameters:
 	// 1. spender: (provided)
 	// 2. amount: (provided)
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
 
-	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	spenderAddr, err := padAddress(spender)
+	if err != nil {
+		return "", err
+	}
 	amtHex := fmt.Sprintf("%064x", amount)
 
 	data := "0x095ea7b3" + spenderAddr + amtHex
@@ -803,7 +856,10 @@ func (c *PolygonClient) ApproveCTF(ctx context.Context, signer *Signer, spender 
 	// 1. operator: (spender)
 	// 2. approved: (true/false)
 
-	operator := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	operator, err := padAddress(spender)
+	if err != nil {
+		return "", err
+	}
 
 	val := "0000000000000000000000000000000000000000000000000000000000000001"
 	if !approved {
@@ -821,8 +877,14 @@ func (c *PolygonClient) GetCTFBalance(ctx context.Context, address string, token
 	// Parameters:
 	// 1. account: address (padded to 32 bytes)
 	// 2. id: tokenID (padded to 32 bytes)
+	if tokenID == nil {
+		return nil, fmt.Errorf("tokenID is nil")
+	}
 
-	account := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(address), "0x")
+	account, err := padAddress(address)
+	if err != nil {
+		return nil, err
+	}
 	idHex := fmt.Sprintf("%064x", tokenID)
 
 	data := "0x00fdd58e" + account + idHex
@@ -847,11 +909,11 @@ func (c *PolygonClient) GetCTFBalance(ctx context.Context, address string, token
 
 // GetUSDCeBalance returns the legacy USDC.e ERC-20 balance for an address (6 decimals).
 func (c *PolygonClient) GetUSDCeBalance(ctx context.Context, address string) (float64, error) {
-	addr := strings.TrimPrefix(address, "0x")
-	if len(addr) < 40 {
-		addr = strings.Repeat("0", 40-len(addr)) + addr
+	padded, err := padAddress(address)
+	if err != nil {
+		return 0, err
 	}
-	data := "0x70a08231000000000000000000000000" + addr
+	data := "0x70a08231" + padded
 
 	callParams := map[string]string{
 		"to":   USDCeContract,
@@ -883,8 +945,14 @@ func (c *PolygonClient) GetUSDCeBalance(ctx context.Context, address string) (fl
 
 // GetUSDCeAllowance returns the current USDC.e allowance for a spender against the given owner.
 func (c *PolygonClient) GetUSDCeAllowance(ctx context.Context, owner, spender string) (*big.Int, error) {
-	ownerAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(owner), "0x")
-	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	ownerAddr, err := padAddress(owner)
+	if err != nil {
+		return nil, err
+	}
+	spenderAddr, err := padAddress(spender)
+	if err != nil {
+		return nil, err
+	}
 
 	data := "0xdd62ed3e" + ownerAddr + spenderAddr
 
@@ -908,7 +976,13 @@ func (c *PolygonClient) GetUSDCeAllowance(ctx context.Context, owner, spender st
 
 // ApproveUSDCe grants allowance on USDC.e to a spender (e.g. the Collateral Onramp) (PAID WRITE).
 func (c *PolygonClient) ApproveUSDCe(ctx context.Context, signer *Signer, spender string, amount *big.Int) (string, error) {
-	spenderAddr := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(spender), "0x")
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
+	spenderAddr, err := padAddress(spender)
+	if err != nil {
+		return "", err
+	}
 	amtHex := fmt.Sprintf("%064x", amount)
 
 	data := "0x095ea7b3" + spenderAddr + amtHex
@@ -919,8 +993,14 @@ func (c *PolygonClient) ApproveUSDCe(ctx context.Context, signer *Signer, spende
 // `to` receives the resulting pUSD; pass the signer's own address to keep the funds in-wallet.
 // `amount` is in 6-decimal USDC.e units (e.g. 1.00 USDC.e == 1_000_000).
 func (c *PolygonClient) WrapUSDCe(ctx context.Context, signer *Signer, to string, amount *big.Int) (string, error) {
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
+	toPad, err := padAddress(to)
+	if err != nil {
+		return "", err
+	}
 	asset := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCeContract), "0x")
-	toPad := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(to), "0x")
 	amtHex := fmt.Sprintf("%064x", amount)
 
 	// Selector for wrap(address,address,uint256)
@@ -932,8 +1012,14 @@ func (c *PolygonClient) WrapUSDCe(ctx context.Context, signer *Signer, to string
 // `to` receives the resulting USDC.e; pass the signer's own address to keep the funds in-wallet.
 // `amount` is in 6-decimal pUSD units (e.g. 1.00 pUSD == 1_000_000).
 func (c *PolygonClient) UnwrapPUSD(ctx context.Context, signer *Signer, to string, amount *big.Int) (string, error) {
+	if amount == nil {
+		return "", fmt.Errorf("amount is nil")
+	}
+	toPad, err := padAddress(to)
+	if err != nil {
+		return "", err
+	}
 	asset := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(USDCeContract), "0x")
-	toPad := "000000000000000000000000" + strings.TrimPrefix(strings.ToLower(to), "0x")
 	amtHex := fmt.Sprintf("%064x", amount)
 
 	// Selector for unwrap(address,address,uint256)

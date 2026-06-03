@@ -57,38 +57,9 @@ func main() {
 		allowance, errAllow := polygon.GetUSDCAllowance(ctx, address, contract)
 		ctfApproved, errApprove := polygon.IsCTFApproved(ctx, address, contract)
 
-		usdcIcon := "✅"
-		var allowanceStr string
-
-		// Check pUSD allowance
-		if errAllow != nil {
-			usdcIcon = "⚠️"
-			allowanceStr = fmt.Sprintf("(%v)", errAllow)
+		usdcIcon, allowanceStr, ctfIcon, ctfStr, isGood := checkPermissionStatus(allowance, errAllow, ctfApproved, errApprove, name)
+		if !isGood {
 			allGood = false
-		} else if allowance.Cmp(big.NewInt(0)) == 0 {
-			usdcIcon = "❌"
-			allowanceStr = allowance.String()
-			allGood = false
-		} else {
-			allowanceStr = allowance.String()
-		}
-
-		// Check CTF Operator (Skip for CTF Contract)
-		ctfIcon := "✅"
-		ctfStr := fmt.Sprintf("%v", ctfApproved)
-
-		if name == "CTF Contract" {
-			ctfIcon = "⚪"
-			ctfStr = "N/A"
-		} else {
-			if errApprove != nil {
-				ctfIcon = "⚠️"
-				ctfStr = fmt.Sprintf("(%v)", errApprove)
-				allGood = false
-			} else if !ctfApproved {
-				ctfIcon = "❌"
-				allGood = false
-			}
 		}
 
 		fmt.Printf("   • %-20s\n", name)
@@ -169,4 +140,44 @@ func main() {
 			fmt.Println("No changes made.")
 		}
 	}
+}
+
+func checkPermissionStatus(allowance *big.Int, errAllow error, ctfApproved bool, errApprove error, name string) (usdcIcon, allowanceStr, ctfIcon, ctfStr string, isGood bool) {
+	isGood = true
+	usdcIcon = "✅"
+
+	if errAllow != nil {
+		usdcIcon = "⚠️"
+		allowanceStr = fmt.Sprintf("(%v)", errAllow)
+		isGood = false
+	} else if allowance == nil || allowance.Cmp(big.NewInt(0)) == 0 {
+		usdcIcon = "❌"
+		if allowance != nil {
+			allowanceStr = allowance.String()
+		} else {
+			allowanceStr = "0"
+		}
+		isGood = false
+	} else {
+		allowanceStr = allowance.String()
+	}
+
+	ctfIcon = "✅"
+	ctfStr = fmt.Sprintf("%v", ctfApproved)
+
+	if name == "CTF Contract" {
+		ctfIcon = "⚪"
+		ctfStr = "N/A"
+	} else {
+		if errApprove != nil {
+			ctfIcon = "⚠️"
+			ctfStr = fmt.Sprintf("(%v)", errApprove)
+			isGood = false
+		} else if !ctfApproved {
+			ctfIcon = "❌"
+			isGood = false
+		}
+	}
+
+	return usdcIcon, allowanceStr, ctfIcon, ctfStr, isGood
 }

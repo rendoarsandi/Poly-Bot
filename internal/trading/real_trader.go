@@ -2099,7 +2099,17 @@ func (t *RealTrader) GetCTFBalanceFloat(ctx context.Context, tokenID string) (fl
 	t.ctfMu.Unlock()
 
 	tid := new(big.Int)
-	if _, ok := tid.SetString(tokenID, 10); !ok {
+	tokenIDClean := strings.TrimSpace(tokenID)
+	var ok bool
+	if strings.HasPrefix(strings.ToLower(tokenIDClean), "0x") {
+		_, ok = tid.SetString(tokenIDClean[2:], 16)
+	} else {
+		_, ok = tid.SetString(tokenIDClean, 10)
+		if !ok {
+			_, ok = tid.SetString(tokenIDClean, 16)
+		}
+	}
+	if !ok {
 		return 0, fmt.Errorf("invalid token id: %s", tokenID)
 	}
 

@@ -496,3 +496,34 @@ func TestGetFullBlockByNumber(t *testing.T) {
 		t.Fatalf("unexpected transactions %+v", block.Transactions)
 	}
 }
+
+func TestPolygonClient_PadAddressAndNilChecks(t *testing.T) {
+	// 1. Test padAddress directly through calling GetCollateralBalance with invalid address
+	client := NewPolygonClient("http://localhost:8545")
+	_, err := client.GetCollateralBalance(context.Background(), "invalid-addr")
+	if err == nil {
+		t.Error("expected error for invalid address length")
+	}
+
+	_, err = client.GetCollateralBalance(context.Background(), "0xinvalid-char-length-40-hex-characters-zzzz")
+	if err == nil {
+		t.Error("expected error for invalid characters")
+	}
+
+	// 2. Test nil big.Int amount checks
+	_, err = client.ApproveCollateral(context.Background(), nil, "0x0000000000000000000000000000000000000000", nil)
+	if err == nil || !strings.Contains(err.Error(), "amount is nil") {
+		t.Errorf("expected 'amount is nil' error, got %v", err)
+	}
+
+	_, err = client.GetCTFBalance(context.Background(), "0x0000000000000000000000000000000000000000", nil)
+	if err == nil || !strings.Contains(err.Error(), "tokenID is nil") {
+		t.Errorf("expected 'tokenID is nil' error, got %v", err)
+	}
+
+	// 3. Test nil Signer checks
+	_, err = client.SplitPositions(context.Background(), nil, "0x0000000000000000000000000000000000000000000000000000000000000000", big.NewInt(100), 2)
+	if err == nil || !strings.Contains(err.Error(), "signer is nil") {
+		t.Errorf("expected 'signer is nil' error, got %v", err)
+	}
+}

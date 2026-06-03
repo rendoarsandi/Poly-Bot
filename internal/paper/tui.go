@@ -1560,43 +1560,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					notifySettingsChange()
 				}
 				return m, nil
-			// Quick presets
-			case "1":
-				m.tui.mu.Lock()
-				preset := SettingsConservative
-				preset.PaperBalance = m.tui.settings.PaperBalance
-				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
-				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				notifySettingsChange := m.tui.settingsChangeHookLocked()
-				m.tui.mu.Unlock()
-				if notifySettingsChange != nil {
-					notifySettingsChange()
-				}
-				return m, nil
-			case "2":
-				m.tui.mu.Lock()
-				preset := SettingsModerate
-				preset.PaperBalance = m.tui.settings.PaperBalance
-				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
-				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				notifySettingsChange := m.tui.settingsChangeHookLocked()
-				m.tui.mu.Unlock()
-				if notifySettingsChange != nil {
-					notifySettingsChange()
-				}
-				return m, nil
-			case "3":
-				m.tui.mu.Lock()
-				preset := SettingsAggressive
-				preset.PaperBalance = m.tui.settings.PaperBalance
-				m.tui.settings = normalizeTUISettingsForContext(preset, m.tui.mode)
-				m.tui.tradeFactor = m.tui.settings.TradeScaleFactor
-				notifySettingsChange := m.tui.settingsChangeHookLocked()
-				m.tui.mu.Unlock()
-				if notifySettingsChange != nil {
-					notifySettingsChange()
-				}
-				return m, nil
+
 			}
 			return m, nil
 		}
@@ -5546,11 +5510,11 @@ func (m tuiModel) renderSettings(w int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(clrBrand)
 	title := titleStyle.Render("⚙  LIVE SETTINGS")
 
-	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [1/2/3] Presets  [r/s] Apply  [Esc] Dismiss")
+	keysLine := styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [r/s] Apply  [Esc] Dismiss")
 	if m.settingsEdit {
 		keysLine = styleDimmed.Render("  Type value  [Enter] Save  [Esc] Cancel  [Ctrl+U] Clear")
 	} else if isCopytradeSettingsMode(cfg) {
-		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [Enter] Paste Target  [1/2/3] Presets  [r/s] Apply  [Esc] Dismiss")
+		keysLine = styleDimmed.Render("  [↑↓/jk] Navigate  [←→/+-] Adjust  [PgUp/PgDn] Scroll  [Enter] Paste Target  [r/s] Apply  [Esc] Dismiss")
 	}
 
 	divider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
@@ -6162,18 +6126,7 @@ func (m tuiModel) renderSettings(w int) string {
 		rowLines = append(rowLines, line)
 	}
 
-	// Preset descriptions
-	presetDivider := styleMuted.Render("  " + strings.Repeat("─", min(inner-2, 60)))
-	presetTitle := styleDimmed.Render("  Quick Presets:")
-	p1 := fmt.Sprintf("  %s Conservative  scale=1%%   margin=3%%  (%s)",
-		lipgloss.NewStyle().Foreground(clrAmber).Render("[1]"),
-		styleDimmed.Render("$1/trade on $100 balance"))
-	p2 := fmt.Sprintf("  %s Moderate      scale=5%%   margin=2%%  (%s)",
-		lipgloss.NewStyle().Foreground(clrTeal).Render("[2]"),
-		styleDimmed.Render("$5/trade on $100 balance"))
-	p3 := fmt.Sprintf("  %s Aggressive    scale=10%%  margin=1%%  (%s)",
-		lipgloss.NewStyle().Foreground(clrEmerald).Render("[3]"),
-		styleDimmed.Render("$10/trade on $100 balance"))
+
 
 	// Trade size preview
 	balanceNote := styleDimmed.Render(fmt.Sprintf(
@@ -6253,12 +6206,6 @@ func (m tuiModel) renderSettings(w int) string {
 	}
 	contentLines = append(contentLines, rowLines...)
 	contentLines = append(contentLines,
-		"",
-		presetDivider,
-		presetTitle,
-		p1,
-		p2,
-		p3,
 		"",
 		divider,
 	)

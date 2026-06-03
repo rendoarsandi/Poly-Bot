@@ -1,6 +1,9 @@
 package paper
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestProcessComplementaryBuyUpdateFillsAgainstOppositeBuyInterest(t *testing.T) {
 	ob := NewOrderBookWithRealism(0, 0)
@@ -34,4 +37,26 @@ func TestProcessComplementaryBuyUpdateFillsAgainstOppositeBuyInterest(t *testing
 	if fillPrice != 0.92 {
 		t.Fatalf("expected maker order to fill at its resting bid, got %.3f", fillPrice)
 	}
+}
+
+func TestOrderBookConcurrency_SetRealism_PlaceOrder(t *testing.T) {
+	ob := NewOrderBook()
+
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				ob.SetRealism(0.001, 1*time.Millisecond)
+			}
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		ob.PlaceOrderWithMode("Up", "buy", 0.5, 10, 0, "maker")
+	}
+
+	close(stop)
 }
