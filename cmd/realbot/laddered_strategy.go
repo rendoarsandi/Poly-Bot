@@ -235,6 +235,9 @@ func realbotLadderedWithinReconnectConfirmWindow(now time.Time, state *realbotPa
 	if state == nil || state.lastReconnectTime == nil || state.lastReconnectTime.IsZero() {
 		return false
 	}
+	if state.lastPairUpdate != nil && !state.lastPairUpdate.IsZero() && state.lastPairUpdate.After(*state.lastReconnectTime) {
+		return false
+	}
 	return now.Sub(*state.lastReconnectTime) <= realbotLadderedReconnectConfirmWindow
 }
 

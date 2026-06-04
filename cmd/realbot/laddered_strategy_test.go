@@ -1323,3 +1323,32 @@ func TestRealbotLadderedActiveSideMinAskFilter(t *testing.T) {
 		t.Fatal("expected active ask 0.95 to fail the MaxAskPrice (0.90) filter")
 	}
 }
+
+func TestRealbotLadderedWithinReconnectConfirmWindowShortCircuitsWithPairUpdate(t *testing.T) {
+	now := time.Now()
+	reconnectTime := now.Add(-1 * time.Second)
+
+	// Case 1: lastPairUpdate is after lastReconnectTime
+	pairUpdateAfter := now
+	state := &realbotPanicBuyStrategyState{
+		lastReconnectTime: &reconnectTime,
+		lastPairUpdate:    &pairUpdateAfter,
+	}
+	if realbotLadderedWithinReconnectConfirmWindow(now, state) {
+		t.Fatal("expected reconnect confirm window to short-circuit when lastPairUpdate is after lastReconnectTime")
+	}
+
+	// Case 2: lastPairUpdate is before lastReconnectTime
+	pairUpdateBefore := now.Add(-2 * time.Second)
+	state.lastPairUpdate = &pairUpdateBefore
+	if !realbotLadderedWithinReconnectConfirmWindow(now, state) {
+		t.Fatal("expected reconnect confirm window to be active when lastPairUpdate is before lastReconnectTime")
+	}
+
+	// Case 3: lastPairUpdate is zero
+	pairUpdateZero := time.Time{}
+	state.lastPairUpdate = &pairUpdateZero
+	if !realbotLadderedWithinReconnectConfirmWindow(now, state) {
+		t.Fatal("expected reconnect confirm window to be active when lastPairUpdate is zero")
+	}
+}
