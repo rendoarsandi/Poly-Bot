@@ -23,6 +23,7 @@ const (
 	settingsRowLadderSlippage
 	settingsRowLadderPnLGuardMode
 	settingsRowLadderWorstPnLFloor
+	settingsRowLadderHedgeBypass
 	settingsRowMinMargin
 	settingsRowBinanceExecutionDelay
 	settingsRowPaperArbMode
@@ -228,7 +229,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	switch idx {
 	case settingsRowLadderCooldown:
 		return laddered
-	case settingsRowLadderSlippage, settingsRowLadderPnLGuardMode, settingsRowLadderWorstPnLFloor:
+	case settingsRowLadderSlippage, settingsRowLadderPnLGuardMode, settingsRowLadderWorstPnLFloor, settingsRowLadderHedgeBypass:
 		return laddered
 	case settingsRowCopytradeTarget, settingsRowCopytradeUseMempool, settingsRowCopytradePoll:
 		return copytrade
@@ -360,6 +361,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 			return "Ladder Worst PnL Floor"
 		}
 		return "Ladder Min Profit PnL"
+	case settingsRowLadderHedgeBypass:
+		return "Ladder Hedge Floor Bypass"
 	case settingsRowMinMargin:
 		if maker {
 			return "Maker Min Sell Edge %"
@@ -1048,6 +1051,11 @@ func settingsEditValue(cfg TUISettings, row int) string {
 			return "OFF"
 		}
 		return fmt.Sprintf("%.2f", cfg.LadderedTakerMaxProfitPnL)
+	case settingsRowLadderHedgeBypass:
+		if cfg.LadderedTakerHedgeBypass {
+			return "ON"
+		}
+		return "OFF"
 	case settingsRowMinAskPrice:
 		return fmt.Sprintf("%.2f", cfg.MinAskPrice)
 	case settingsRowMaxAskPrice:

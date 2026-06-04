@@ -162,6 +162,7 @@ type Config struct {
 	LadderedTakerPnLGuardMode          string  // "worst-pnl" or "max-profit-pnl" for ladder entry blocking
 	LadderedTakerWorstPnLFloor         float64 // 0 = no safety guard (DISABLED), otherwise block entries below this projected worst-case resolve PnL
 	LadderedTakerMaxProfitPnL          float64 // 0 = no safety guard (DISABLED), otherwise require this projected winning-side resolve PnL cap
+	LadderedTakerHedgeBypass           bool    // true = bypass PnL floor guard for risk-reducing or risk-neutral trades
 	BinanceQuoteAsset                  string  // Futures quote asset suffix used to build symbols, e.g. USDT
 	BinanceSignalThresholdPct          float64 // Percent move over the lookback window required to trigger entry
 	PaperBinanceExecutionDelayMs       int     // Paper-only execution delay for Binance-gap entries/exits in milliseconds
@@ -246,6 +247,7 @@ type RuntimeSettings struct {
 	LadderedTakerPnLGuardMode          string  `json:"ladderedTakerPnlGuardMode"`
 	LadderedTakerWorstPnLFloor         float64 `json:"ladderedTakerWorstPnlFloor"`
 	LadderedTakerMaxProfitPnL          float64 `json:"ladderedTakerMaxProfitPnl"`
+	LadderedTakerHedgeBypass           bool    `json:"ladderedTakerHedgeBypass"`
 	BinanceQuoteAsset                  string  `json:"binanceQuoteAsset"`
 	BinanceSignalThresholdPct          float64 `json:"binanceSignalThresholdPct"`
 	PaperBinanceExecutionDelayMs       int     `json:"paperBinanceExecutionDelayMs"`
@@ -346,6 +348,7 @@ func LoadConfig() (*Config, error) {
 		LadderedTakerPnLGuardMode:          normalizeLadderedTakerPnLGuardMode(parseEnvString("LADDERED_TAKER_PNL_GUARD_MODE", LadderedTakerPnLGuardWorst)),
 		LadderedTakerWorstPnLFloor:         normalizeLadderedTakerWorstPnLFloor(parseEnvFloat("LADDERED_TAKER_WORST_PNL_FLOOR", 0)),
 		LadderedTakerMaxProfitPnL:          normalizeLadderedTakerMaxProfitPnL(parseEnvFloat("LADDERED_TAKER_MAX_PROFIT_PNL", 0)),
+		LadderedTakerHedgeBypass:           parseEnvBool("LADDERED_TAKER_HEDGE_BYPASS", true),
 		BinanceQuoteAsset:                  normalizeBinanceQuoteAsset(parseEnvString("BINANCE_QUOTE_ASSET", "USDT")),
 		BinanceSignalThresholdPct:          normalizeBinanceSignalThresholdPct(parseEnvFloat("BINANCE_SIGNAL_THRESHOLD_PCT", 0.02)),
 		PaperBinanceExecutionDelayMs:       normalizePaperBinanceExecutionDelayMs(parseEnvInt("PAPER_BINANCE_EXECUTION_DELAY_MS", 250)),
@@ -911,6 +914,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		LadderedTakerPnLGuardMode:          normalizeLadderedTakerPnLGuardMode(c.LadderedTakerPnLGuardMode),
 		LadderedTakerWorstPnLFloor:         normalizeLadderedTakerWorstPnLFloor(c.LadderedTakerWorstPnLFloor),
 		LadderedTakerMaxProfitPnL:          normalizeLadderedTakerMaxProfitPnL(c.LadderedTakerMaxProfitPnL),
+		LadderedTakerHedgeBypass:           c.LadderedTakerHedgeBypass,
 		BinanceQuoteAsset:                  normalizeBinanceQuoteAsset(c.BinanceQuoteAsset),
 		BinanceSignalThresholdPct:          normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct),
 		PaperBinanceExecutionDelayMs:       normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs),
@@ -1005,6 +1009,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.LadderedTakerPnLGuardMode = normalizeLadderedTakerPnLGuardMode(s.LadderedTakerPnLGuardMode)
 	c.LadderedTakerWorstPnLFloor = normalizeLadderedTakerWorstPnLFloor(s.LadderedTakerWorstPnLFloor)
 	c.LadderedTakerMaxProfitPnL = normalizeLadderedTakerMaxProfitPnL(s.LadderedTakerMaxProfitPnL)
+	c.LadderedTakerHedgeBypass = s.LadderedTakerHedgeBypass
 	c.BinanceQuoteAsset = normalizeBinanceQuoteAsset(s.BinanceQuoteAsset)
 	c.BinanceSignalThresholdPct = normalizeBinanceSignalThresholdPct(s.BinanceSignalThresholdPct)
 	c.PaperBinanceExecutionDelayMs = normalizePaperBinanceExecutionDelayMs(s.PaperBinanceExecutionDelayMs)
@@ -1084,6 +1089,7 @@ func (c *Config) SaveSettings() error {
 	envMap["LADDERED_TAKER_PNL_GUARD_MODE"] = normalizeLadderedTakerPnLGuardMode(c.LadderedTakerPnLGuardMode)
 	envMap["LADDERED_TAKER_WORST_PNL_FLOOR"] = strconv.FormatFloat(normalizeLadderedTakerWorstPnLFloor(c.LadderedTakerWorstPnLFloor), 'f', -1, 64)
 	envMap["LADDERED_TAKER_MAX_PROFIT_PNL"] = strconv.FormatFloat(normalizeLadderedTakerMaxProfitPnL(c.LadderedTakerMaxProfitPnL), 'f', -1, 64)
+	envMap["LADDERED_TAKER_HEDGE_BYPASS"] = strconv.FormatBool(c.LadderedTakerHedgeBypass)
 	envMap["BINANCE_QUOTE_ASSET"] = normalizeBinanceQuoteAsset(c.BinanceQuoteAsset)
 	envMap["BINANCE_SIGNAL_THRESHOLD_PCT"] = strconv.FormatFloat(normalizeBinanceSignalThresholdPct(c.BinanceSignalThresholdPct), 'f', -1, 64)
 	envMap["PAPER_BINANCE_EXECUTION_DELAY_MS"] = strconv.Itoa(normalizePaperBinanceExecutionDelayMs(c.PaperBinanceExecutionDelayMs))

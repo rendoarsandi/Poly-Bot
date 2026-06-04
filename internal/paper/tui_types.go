@@ -117,6 +117,7 @@ type TUISettings struct {
 	LadderedTakerPnLGuardMode          string  // "worst-pnl" or "max-profit-pnl" for laddered taker entry blocking
 	LadderedTakerWorstPnLFloor         float64 // 0 = no safety guard (DISABLED), otherwise block entries below this projected worst-case resolve PnL
 	LadderedTakerMaxProfitPnL          float64 // 0 = no safety guard (DISABLED), otherwise require projected winning-side resolve PnL cap
+	LadderedTakerHedgeBypass           bool    // true = bypass PnL floor guard for risk-reducing or risk-neutral trades
 	BuyExecutionMarginFloorPercent     float64 // e.g. -1.0 = allow buy/sell execution to slip to -1% pair margin
 	SplitMinMarginSell                 float64 // e.g. 3.0 = sell splits at 3% margin
 	SplitStrategyEnabled               bool    // toggle split strategy on/off

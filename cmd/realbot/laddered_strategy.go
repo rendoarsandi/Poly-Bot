@@ -484,7 +484,7 @@ func realbotFormatSignedUSD(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
-func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64, guardMode string, configuredWorstPnLFloor, configuredMaxProfitPnL float64) (bool, string) {
+func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, outcomes []string, side int, requestedQty, price float64, guardMode string, configuredWorstPnLFloor, configuredMaxProfitPnL float64, hedgeBypass bool) (bool, string) {
 	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 || price <= 0 {
 		return false, ""
 	}
@@ -560,7 +560,7 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 		currentWorstResolvePnL = currentResolvePnL1
 	}
 
-	if worstResolvePnL >= currentWorstResolvePnL-1e-9 {
+	if hedgeBypass && worstResolvePnL >= currentWorstResolvePnL-1e-9 {
 		return false, ""
 	}
 
@@ -1057,6 +1057,7 @@ func realbotLadderedSyncPreTradeInventory(args realbotPanicBuyStrategyArgs, ladd
 		realbotCfg.LadderedTakerPnLGuardMode,
 		realbotCfg.LadderedTakerWorstPnLFloor,
 		realbotCfg.LadderedTakerMaxProfitPnL,
+		realbotCfg.LadderedTakerHedgeBypass,
 	); blocked {
 		setCooldown(500 * time.Millisecond)
 		return false

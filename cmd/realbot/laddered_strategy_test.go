@@ -393,7 +393,7 @@ func TestRealbotLadderedInventoryCapBlocksHeavyLeader(t *testing.T) {
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0, false)
 	if !blocked {
 		t.Fatal("expected active side inventory cap to block an already-heavy leader")
 	}
@@ -411,7 +411,7 @@ func TestRealbotLadderedInventoryCapAllowsLeaderToBalanceOtherSide(t *testing.T)
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0, false)
 	if blocked {
 		t.Fatalf("expected cap to allow buying the leader while it is balancing the other side, got %q", reason)
 	}
@@ -420,7 +420,7 @@ func TestRealbotLadderedInventoryCapAllowsLeaderToBalanceOtherSide(t *testing.T)
 func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *testing.T) {
 	engine := paper.NewEngine(100)
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0, false)
 	if blocked {
 		t.Fatalf("expected first ladder chunk to be allowed, got %q", reason)
 	}
@@ -428,7 +428,7 @@ func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0, false)
 	if blocked {
 		t.Fatalf("expected second ladder chunk to stay allowed, got %q", reason)
 	}
@@ -436,7 +436,7 @@ func TestRealbotLadderedInventoryCapAllowsBootstrapExposureForFirstTwoChunks(t *
 		t.Fatalf("seed buy failed: %v", err)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.20, 0, false)
 	if !blocked {
 		t.Fatal("expected third same-side chunk to be blocked once worst-case resolve loss gets too deep")
 	}
@@ -449,7 +449,7 @@ func TestRealbotLadderedInventoryCapZeroFloorDisablesWorstPnLGuard(t *testing.T)
 	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 50.0); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
 	}
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.60, core.LadderedTakerPnLGuardWorst, 0, 0, false)
 	if blocked {
 		t.Fatalf("expected zero worst-PnL floor to disable the safety guard, got %q", reason)
 	}
@@ -462,7 +462,7 @@ func TestRealbotLadderedInventoryCapZeroCapDisablesMaxProfitGuard(t *testing.T) 
 	if _, err := engine.BuyForMarket("BTC", "Up", 0.30, 100.0); err != nil {
 		t.Fatalf("seed buy failed: %v", err)
 	}
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.30, core.LadderedTakerPnLGuardMaxProfit, 0, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.30, core.LadderedTakerPnLGuardMaxProfit, 0, 0, false)
 	if blocked {
 		t.Fatalf("expected zero max-profit cap to disable the safety guard, got %q", reason)
 	}
@@ -471,7 +471,7 @@ func TestRealbotLadderedInventoryCapZeroCapDisablesMaxProfitGuard(t *testing.T) 
 func TestRealbotLadderedInventoryCapHonorsConfiguredWorstPnLFloor(t *testing.T) {
 	engine := paper.NewEngine(100)
 
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -0.50, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -0.50, 0, false)
 	if !blocked {
 		t.Fatal("expected tighter configured worst-PnL floor to block the first chunk")
 	}
@@ -479,7 +479,7 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredWorstPnLFloor(t *testing.T) 
 		t.Fatalf("expected block reason to show the configured floor, got %q", reason)
 	}
 
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.00, 0)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 1.0, 0.60, core.LadderedTakerPnLGuardWorst, -1.00, 0, false)
 	if blocked {
 		t.Fatalf("expected looser configured worst-PnL floor to allow the first chunk, got %q", reason)
 	}
@@ -490,7 +490,7 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredMaxProfitPnL(t *testing.T) {
 
 	// Buy 10 shares @ 0.60. Cost: 6.00. PnL if "Up" wins: 10.00 - 6.00 = +$4.00.
 	// If cap is 5.00, this should be allowed.
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.60, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 10.0, 0.60, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00, false)
 	if blocked {
 		t.Fatalf("expected trade under cap to be allowed, got %q", reason)
 	}
@@ -500,7 +500,7 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredMaxProfitPnL(t *testing.T) {
 	// Attempt to buy 4 more shares @ 0.50. Additional Cost: 2.00. Total Cost: 8.00.
 	// New PnL if "Up" wins: 14.00 - 8.00 = +$6.00.
 	// If cap is 5.00, this should be blocked.
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 4.0, 0.50, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 1, 4.0, 0.50, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00, false)
 	if !blocked {
 		t.Fatal("expected trade exceeding cap to be blocked")
 	}
@@ -511,7 +511,7 @@ func TestRealbotLadderedInventoryCapHonorsConfiguredMaxProfitPnL(t *testing.T) {
 	// Attempt to buy 4 more shares on "Down" @ 0.50. Cost: 2.00. Total Cost: 8.00.
 	// New PnL if "Down" wins: 4.00 - 8.00 = -$4.00.
 	// This is well below the cap of 5.00, so it should be allowed (hedging).
-	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00)
+	blocked, reason = realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 4.0, 0.50, core.LadderedTakerPnLGuardMaxProfit, 0, 5.00, false)
 	if blocked {
 		t.Fatalf("expected hedging trade under cap to be allowed, got %q", reason)
 	}
@@ -1367,8 +1367,14 @@ func TestRealbotLadderedInventoryCapAllowsHedgeUnderFloor(t *testing.T) {
 	// Projected worst case: Down wins (PnL = 5 - 8 = -3.00).
 	// Under the old code, since -3.00 < -2.00 (the floor), this is BLOCKED.
 	// But since -3.00 > -6.00 (the current worst case), it is risk-reducing and should be ALLOWED.
-	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 5.0, 0.40, core.LadderedTakerPnLGuardWorst, -2.00, 0)
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 5.0, 0.40, core.LadderedTakerPnLGuardWorst, -2.00, 0, true)
 	if blocked {
 		t.Fatalf("expected risk-reducing hedge to be allowed despite being below worst-case PnL floor, got %q", reason)
+	}
+
+	// If bypass is disabled, it should be blocked as before.
+	blockedBlocked, _ := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 5.0, 0.40, core.LadderedTakerPnLGuardWorst, -2.00, 0, false)
+	if !blockedBlocked {
+		t.Fatal("expected hedge to be blocked when bypass is disabled")
 	}
 }

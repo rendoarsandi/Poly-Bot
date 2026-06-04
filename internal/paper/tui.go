@@ -1076,6 +1076,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					changed = true
+				case settingsRowLadderHedgeBypass:
+					m.tui.settings.LadderedTakerHedgeBypass = !m.tui.settings.LadderedTakerHedgeBypass
+					changed = true
 				case settingsRowMinMargin:
 					m.tui.settings.MinMarginPercent -= 0.5
 					if m.tui.settings.MinMarginPercent < 0.5 {
@@ -1381,6 +1384,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.tui.settings.LadderedTakerMaxProfitPnL = 1000.0
 						}
 					}
+					changed = true
+				case settingsRowLadderHedgeBypass:
+					m.tui.settings.LadderedTakerHedgeBypass = !m.tui.settings.LadderedTakerHedgeBypass
 					changed = true
 				case settingsRowMinMargin:
 					m.tui.settings.MinMarginPercent += 0.5
@@ -5736,6 +5742,16 @@ func (m tuiModel) renderSettings(w int) string {
 				}
 				return renderBar(math.Min(cfg.LadderedTakerMaxProfitPnL, 10.0)/10.0, 20)
 			}(),
+		},
+		{
+			label: settingsRowLabel(cfg, settingsRowLadderHedgeBypass),
+			value: func() string {
+				if cfg.LadderedTakerHedgeBypass {
+					return styleGreen.Render("  ON ")
+				}
+				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
 		},
 		{
 			label: settingsRowLabel(cfg, settingsRowMinMargin),
