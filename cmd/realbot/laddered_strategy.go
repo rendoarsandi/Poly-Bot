@@ -350,11 +350,13 @@ func realbotRefreshLadderedEntries(entries []realbotLadderedEntry, ask0, ask1, b
 }
 
 // realbotLadderedFilledRungSet returns the set of rungs that have already been
-// filled (bought) or armed for each side. Used to allow gap-filling of missed
-// lower rungs without re-buying already-filled rungs.
+// filled (bought) for each side. Reset/arm entries are skipped.
 func realbotLadderedFilledRungSet(entries []realbotLadderedEntry, basePrice, moveCents float64) [2]map[int]bool {
 	filled := [2]map[int]bool{make(map[int]bool), make(map[int]bool)}
 	for _, entry := range entries {
+		if entry.armed {
+			continue
+		}
 		side, rung, ok := realbotLadderedEntrySideRung(entry, basePrice, moveCents)
 		if !ok || side < 0 || side > 1 {
 			continue
@@ -540,6 +542,25 @@ func realbotLadderedInventoryCapReached(engine *paper.Engine, marketID string, o
 				realbotFormatSignedUSD(maxProfitCap),
 			)
 		}
+		return false, ""
+	}
+
+	currentTotalCost := totalCost - projectedCost
+	currentQty0 := qtyByOutcome[outcomes[0]]
+	currentQty1 := qtyByOutcome[outcomes[1]]
+	if side == 0 {
+		currentQty0 -= requestedQty
+	} else {
+		currentQty1 -= requestedQty
+	}
+	currentResolvePnL0 := currentQty0 - currentTotalCost
+	currentResolvePnL1 := currentQty1 - currentTotalCost
+	currentWorstResolvePnL := currentResolvePnL0
+	if currentResolvePnL1 < currentWorstResolvePnL {
+		currentWorstResolvePnL = currentResolvePnL1
+	}
+
+	if worstResolvePnL >= currentWorstResolvePnL-1e-9 {
 		return false, ""
 	}
 

@@ -1352,3 +1352,23 @@ func TestRealbotLadderedWithinReconnectConfirmWindowShortCircuitsWithPairUpdate(
 		t.Fatal("expected reconnect confirm window to be active when lastPairUpdate is zero")
 	}
 }
+
+func TestRealbotLadderedInventoryCapAllowsHedgeUnderFloor(t *testing.T) {
+	// Hold 10 shares of Up at 0.60. Cost: 6.00. Worst case: Down wins (PnL = -6.00).
+	// Worst PnL floor: -2.00.
+	// Since -6.00 < -2.00, we are already below the worst-case PnL floor.
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 10.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	// We attempt to buy 5 shares of Down at 0.40. Cost: 2.00.
+	// Total cost: 8.00.
+	// Projected worst case: Down wins (PnL = 5 - 8 = -3.00).
+	// Under the old code, since -3.00 < -2.00 (the floor), this is BLOCKED.
+	// But since -3.00 > -6.00 (the current worst case), it is risk-reducing and should be ALLOWED.
+	blocked, reason := realbotLadderedInventoryCapReached(engine, "BTC", []string{"Down", "Up"}, 0, 5.0, 0.40, core.LadderedTakerPnLGuardWorst, -2.00, 0)
+	if blocked {
+		t.Fatalf("expected risk-reducing hedge to be allowed despite being below worst-case PnL floor, got %q", reason)
+	}
+}
