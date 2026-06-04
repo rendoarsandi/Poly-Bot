@@ -1009,3 +1009,20 @@ func TestTradingHoursDigitsOnlyInput(t *testing.T) {
 		t.Fatalf("expected '08:00-17:00', got %q", got)
 	}
 }
+
+func TestSettingsRowCopytradeUseMempool(t *testing.T) {
+	cfg := TUISettings{PaperArbMode: "copytrade"}
+	if !isRowVisible(cfg, "Real", settingsRowCopytradeUseMempool) {
+		t.Fatal("expected settingsRowCopytradeUseMempool to be visible in copytrade mode")
+	}
+
+	label := settingsRowLabel(cfg, settingsRowCopytradeUseMempool)
+	if label != "Use Mempool Watcher" {
+		t.Fatalf("expected 'Use Mempool Watcher', got %q", label)
+	}
+
+	cfgNotCopy := TUISettings{PaperArbMode: "maker"}
+	if isRowVisible(cfgNotCopy, "Real", settingsRowCopytradeUseMempool) {
+		t.Fatal("expected settingsRowCopytradeUseMempool to be invisible in non-copytrade mode")
+	}
+}

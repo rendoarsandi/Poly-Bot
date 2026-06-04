@@ -1093,6 +1093,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
+				case settingsRowCopytradeUseMempool:
+					m.tui.settings.CopytradeUseMempool = !m.tui.settings.CopytradeUseMempool
+					changed = true
 				case settingsRowCopytradePoll:
 					m.tui.settings.CopytradePollIntervalMs -= 100
 					if m.tui.settings.CopytradePollIntervalMs < 100 {
@@ -1396,6 +1399,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
+				case settingsRowCopytradeUseMempool:
+					m.tui.settings.CopytradeUseMempool = !m.tui.settings.CopytradeUseMempool
+					changed = true
 				case settingsRowCopytradePoll:
 					m.tui.settings.CopytradePollIntervalMs += 100
 					if m.tui.settings.CopytradePollIntervalMs > 30000 {
@@ -5779,6 +5785,16 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
+			label: settingsRowLabel(cfg, settingsRowCopytradeUseMempool),
+			value: func() string {
+				if cfg.CopytradeUseMempool {
+					return styleGreen.Render("  ON ")
+				}
+				return styleMuted.Render(" OFF ")
+			}(),
+			bar: "",
+		},
+		{
 			label: settingsRowLabel(cfg, settingsRowCopytradePoll),
 			value: func() string {
 				if m.settingsEdit && m.settingsCursor == settingsRowCopytradePoll {
@@ -6141,8 +6157,6 @@ func (m tuiModel) renderSettings(w int) string {
 		)
 		rowLines = append(rowLines, line)
 	}
-
-
 
 	// Trade size preview
 	balanceNote := styleDimmed.Render(fmt.Sprintf(

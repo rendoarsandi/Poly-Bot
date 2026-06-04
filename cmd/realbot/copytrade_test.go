@@ -731,3 +731,20 @@ func TestRealbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 		t.Fatalf("expected default UI interval %s, got %s", realbotUIRefreshInterval, got)
 	}
 }
+
+func TestRealbotTUISettingsRoundTripIncludesCopytradeUseMempool(t *testing.T) {
+	cfg := &core.Config{
+		CopytradeUseMempool: true,
+	}
+
+	settings := realbotTUISettingsFromConfig(cfg)
+	if !settings.CopytradeUseMempool {
+		t.Fatal("expected settings to preserve true CopytradeUseMempool")
+	}
+
+	settings.CopytradeUseMempool = false
+	applyRealbotTUISettings(cfg, settings)
+	if cfg.CopytradeUseMempool {
+		t.Fatal("expected config to update to false CopytradeUseMempool")
+	}
+}

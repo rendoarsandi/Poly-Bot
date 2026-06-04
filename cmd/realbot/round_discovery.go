@@ -94,7 +94,10 @@ func realbotPrepareCopytradeRound(ctx context.Context, cfg *core.Config, polygon
 		}
 	}
 	chainWSURL := api.ResolvePolygonWSURL(os.Getenv("POLYGON_WS_URL"), cfg.PolygonRPCURL)
-	pendingWSURL := api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), cfg.PolygonRPCURL)
+	pendingWSURL := ""
+	if cfg.CopytradeUseMempool {
+		pendingWSURL = api.ResolvePolymarketPendingWSURL(os.Getenv("COPYTRADE_PENDING_WS_URL"), cfg.PolygonRPCURL)
+	}
 	*copytradeWatchers = ensureRealbotCopytradeWatcherSet(
 		ctx,
 		*copytradeWatchers,
