@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
+	"math/big"
 	"os"
 	"strings"
 	"time"
@@ -26,6 +26,7 @@ type marketInfoFetcher interface {
 type marketResolutionReader interface {
 	IsMarketResolved(ctx context.Context, conditionID string) (bool, error)
 	GetWinningOutcome(ctx context.Context, conditionID string, outcomes []string) (string, error)
+	GetPayoutNumerator(ctx context.Context, conditionID string, index int) (*big.Int, error)
 }
 
 type redeemDecision struct {
@@ -217,7 +218,12 @@ func mergeablePairs(balances []float64) float64 {
 	if len(balances) < 2 {
 		return 0
 	}
-	minQty := math.Min(balances[0], balances[1])
+	minQty := balances[0]
+	for _, bal := range balances {
+		if bal < minQty {
+			minQty = bal
+		}
+	}
 	if minQty < minOnChainActionShares {
 		return 0
 	}
@@ -302,27 +308,67 @@ func resolveRedeemDecisionOnChain(ctx context.Context, resolutionReader marketRe
 		return redeemDecision{source: "on-chain", reason: "market not decided yet"}, nil
 	}
 
-	winnerOutcome, err := resolutionReader.GetWinningOutcome(checkCtx, market.ConditionID, outcomes)
-	if err != nil {
-		return redeemDecision{}, err
+	// Query payout numerators for all outcomes to handle splits, ties, and normal wins
+	var winningOutcomes []string
+	hasPayout := false
+	for i, outcome := range outcomes {
+		numerator, err := resolutionReader.GetPayoutNumerator(checkCtx, market.ConditionID, i)
+		if err != nil {
+			// If GetPayoutNumerator fails, fallback to GetWinningOutcome for backward compatibility
+			winnerOutcome, winErr := resolutionReader.GetWinningOutcome(checkCtx, market.ConditionID, outcomes)
+			if winErr != nil {
+				return redeemDecision{}, winErr
+			}
+			if winnerOutcome == "" {
+				return redeemDecision{
+					resolved: true,
+					source:   "on-chain",
+					reason:   "winner not decided yet",
+				}, nil
+			}
+			if hasWinningBalance(winnerOutcome, outcomes, balances) {
+				return redeemDecision{
+					winnerOutcome: winnerOutcome,
+					shouldRedeem:  true,
+					resolved:      true,
+					source:        "on-chain",
+				}, nil
+			}
+			return redeemDecision{
+				winnerOutcome: winnerOutcome,
+				resolved:      true,
+				source:        "on-chain",
+				reason:        redeemSkipOnlyLosingBalance,
+			}, nil
+		}
+
+		if numerator.Sign() > 0 {
+			winningOutcomes = append(winningOutcomes, outcome)
+			if i < len(balances) && balances[i] >= minOnChainActionShares {
+				hasPayout = true
+			}
+		}
 	}
-	if winnerOutcome == "" {
+
+	if len(winningOutcomes) == 0 {
 		return redeemDecision{
 			resolved: true,
 			source:   "on-chain",
 			reason:   "winner not decided yet",
 		}, nil
 	}
-	if hasWinningBalance(winnerOutcome, outcomes, balances) {
+
+	winnerLabel := strings.Join(winningOutcomes, "/")
+	if hasPayout {
 		return redeemDecision{
-			winnerOutcome: winnerOutcome,
+			winnerOutcome: winnerLabel,
 			shouldRedeem:  true,
 			resolved:      true,
 			source:        "on-chain",
 		}, nil
 	}
 	return redeemDecision{
-		winnerOutcome: winnerOutcome,
+		winnerOutcome: winnerLabel,
 		resolved:      true,
 		source:        "on-chain",
 		reason:        redeemSkipOnlyLosingBalance,

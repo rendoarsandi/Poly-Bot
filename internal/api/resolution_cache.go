@@ -106,7 +106,7 @@ func (rc *ResolutionCache) GetResolution(ctx context.Context, conditionID string
 	entry.status = status
 	entry.checkCount++
 
-	if status.Resolved && status.Winner != "" {
+	if status.Resolved {
 		entry.ttl = resolutionResolvedTTL
 	} else {
 		// Exponential backoff: 30s, 60s, 120s, 240s, 300s (capped)

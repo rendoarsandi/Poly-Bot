@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/big"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ type stubMarketResolutionReader struct {
 	winner     string
 	resolveErr error
 	winnerErr  error
+	numerators []*big.Int
 }
 
 func (s stubMarketResolutionReader) IsMarketResolved(ctx context.Context, conditionID string) (bool, error) {
@@ -32,6 +34,21 @@ func (s stubMarketResolutionReader) IsMarketResolved(ctx context.Context, condit
 
 func (s stubMarketResolutionReader) GetWinningOutcome(ctx context.Context, conditionID string, outcomes []string) (string, error) {
 	return s.winner, s.winnerErr
+}
+
+func (s stubMarketResolutionReader) GetPayoutNumerator(ctx context.Context, conditionID string, index int) (*big.Int, error) {
+	if index >= 0 && index < len(s.numerators) {
+		return s.numerators[index], nil
+	}
+	// Fallback when numerators are not set in the stub
+	if s.winner != "" {
+		for i, outcome := range []string{"Up", "Down"} {
+			if outcome == s.winner && i == index {
+				return big.NewInt(1), nil
+			}
+		}
+	}
+	return big.NewInt(0), nil
 }
 
 func TestMergeablePairsAllowsDecimalPairs(t *testing.T) {
@@ -175,3 +192,31 @@ func TestResolveRedeemDecisionSkipsLosingBalanceQuietly(t *testing.T) {
 		t.Fatalf("expected losing-only skip reason, got %+v", decision)
 	}
 }
+
+func TestResolveRedeemDecisionHandlesSplitOrTie(t *testing.T) {
+	market := api.Market{
+		ConditionID: "0xabc",
+		EndTime:     time.Now().Add(-time.Minute),
+		Tokens: []api.Token{
+			{Outcome: "Up"},
+			{Outcome: "Down"},
+		},
+	}
+	infoFetcher := stubMarketInfoFetcher{
+		info: &api.MarketInfo{Closed: false},
+	}
+	resolutionReader := stubMarketResolutionReader{
+		resolved:   true,
+		winner:     "",
+		numerators: []*big.Int{big.NewInt(1), big.NewInt(1)}, // 50/50 payout
+	}
+
+	decision, err := resolveRedeemDecision(context.Background(), infoFetcher, resolutionReader, market, []float64{1, 0})
+	if err != nil {
+		t.Fatalf("resolveRedeemDecision() error = %v", err)
+	}
+	if !decision.shouldRedeem || decision.winnerOutcome != "Up/Down" || decision.source != "on-chain" {
+		t.Fatalf("expected split/tie winning redeem decision, got %+v", decision)
+	}
+}
+

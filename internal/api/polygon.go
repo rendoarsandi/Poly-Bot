@@ -138,7 +138,7 @@ func (c *PolygonClient) GetWinningOutcome(ctx context.Context, conditionID strin
 	positiveCount := 0
 
 	for i, outcome := range outcomes {
-		numerator, err := c.getPayoutNumerator(ctx, id, i)
+		numerator, err := c.GetPayoutNumerator(ctx, id, i)
 		if err != nil {
 			return "", err
 		}
@@ -164,11 +164,15 @@ func (c *PolygonClient) GetWinningOutcome(ctx context.Context, conditionID strin
 	return "", nil
 }
 
-func (c *PolygonClient) getPayoutNumerator(ctx context.Context, conditionIDNoPrefix string, index int) (*big.Int, error) {
+func (c *PolygonClient) GetPayoutNumerator(ctx context.Context, conditionID string, index int) (*big.Int, error) {
+	id := strings.TrimPrefix(conditionID, "0x")
+	if len(id) != 64 {
+		return nil, fmt.Errorf("invalid condition ID length: %d", len(id))
+	}
 	if index < 0 {
 		return nil, fmt.Errorf("invalid payout numerator index: %d", index)
 	}
-	data := payoutNumeratorsSelector + conditionIDNoPrefix + fmt.Sprintf("%064x", index)
+	data := payoutNumeratorsSelector + id + fmt.Sprintf("%064x", index)
 	callParams := map[string]string{
 		"to":   CTFContract,
 		"data": data,

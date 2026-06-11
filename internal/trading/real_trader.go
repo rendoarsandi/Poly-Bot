@@ -2313,3 +2313,8 @@ func (t *RealTrader) QueryBalancedCTFBalanceDelta(
 
 	return
 }
+
+// Polygon returns the underlying Polygon RPC client.
+func (t *RealTrader) Polygon() *api.PolygonClient {
+	return t.polygon
+}

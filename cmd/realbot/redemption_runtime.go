@@ -16,9 +16,17 @@ func realbotWinningOnChainShares(positions []paper.WalletTruthPosition, winner s
 	if winner == "" {
 		return 0
 	}
+	winningOutcomes := strings.Split(winner, "/")
 	total := 0.0
 	for _, pos := range positions {
-		if strings.EqualFold(pos.Outcome, winner) && hasActionableCleanupRemainder(pos.OnChainShares) {
+		isWinner := false
+		for _, w := range winningOutcomes {
+			if strings.EqualFold(pos.Outcome, w) {
+				isWinner = true
+				break
+			}
+		}
+		if isWinner && hasActionableCleanupRemainder(pos.OnChainShares) {
 			total += pos.OnChainShares
 		}
 	}
@@ -92,6 +100,19 @@ func realbotRedemptionOutcomeKey(outcome string) string {
 	return strings.ToLower(strings.TrimSpace(outcome))
 }
 
+func realbotIsOutcomeWinner(outcomeKey, winnerKey string) bool {
+	if outcomeKey == "" || winnerKey == "" {
+		return false
+	}
+	parts := strings.Split(winnerKey, "/")
+	for _, p := range parts {
+		if strings.TrimSpace(p) == outcomeKey {
+			return true
+		}
+	}
+	return false
+}
+
 func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID, winner string, positions []paper.WalletTruthPosition) (adjusted int, missingCostBasis []string) {
 	if engine == nil || marketID == "" {
 		return 0, nil
@@ -120,7 +141,7 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 			markPrice = 0.5
 		}
 		if !hasActionableCleanupRemainder(wt.OnChainShares) {
-			if winnerKey != "" && outcomeKey == winnerKey {
+			if winnerKey != "" && realbotIsOutcomeWinner(outcomeKey, winnerKey) {
 				if hasActionableCleanupRemainder(localShares) {
 					// A zero winning CTF balance at resolution can mean the redeem
 					// transaction already cleared before this poll. Keep the local
@@ -135,7 +156,7 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 					continue
 				}
 			}
-			if winnerKey != "" && outcomeKey != winnerKey && hasActionableCleanupRemainder(localShares) {
+			if winnerKey != "" && !realbotIsOutcomeWinner(outcomeKey, winnerKey) && hasActionableCleanupRemainder(localShares) {
 				settledLoserShares := engine.GetSettledLoserShares(marketID, wt.Outcome)
 				if settledLoserShares+1e-6 < localShares {
 					// Losing ladder outcomes can already read as zero on-chain once the
@@ -153,7 +174,7 @@ func realbotSyncEngineToWalletTruthForResolution(engine *paper.Engine, marketID,
 		}
 		if !exists || pos.Quantity <= 0 {
 			missingCostBasis = append(missingCostBasis, wt.Outcome)
-			if winnerKey != "" && outcomeKey == winnerKey {
+			if winnerKey != "" && realbotIsOutcomeWinner(outcomeKey, winnerKey) {
 				// If the wallet holds winning shares that the local engine did not
 				// cost, book them at payout value so redemption accounting recognizes
 				// the receivable without inventing PnL.
@@ -546,6 +567,23 @@ func checkRedemption(ctx context.Context, id, conditionID string, outcomes []str
 						}
 					}
 				}
+			}
+		}
+
+		if resolved && winner == "" {
+			var winningOutcomes []string
+			polygonClient := trader.Polygon()
+			if polygonClient != nil {
+				for i, outcome := range outcomes {
+					num, err := polygonClient.GetPayoutNumerator(ctx, conditionID, i)
+					if err == nil && num != nil && num.Sign() > 0 {
+						winningOutcomes = append(winningOutcomes, outcome)
+					}
+				}
+			}
+			if len(winningOutcomes) > 0 {
+				winner = strings.Join(winningOutcomes, "/")
+				tui.LogEvent("[%s] 🏁 On-chain tie/split winner resolved: %s", id, winner)
 			}
 		}
 

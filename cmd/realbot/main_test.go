@@ -1308,3 +1308,37 @@ func TestShouldCancelResidualBuyOrderOnlyForExactShareBuys(t *testing.T) {
 		t.Fatal("expected sells to skip residual cancellation")
 	}
 }
+
+func TestRealbotWinningOnChainSharesHandlesSplitWinner(t *testing.T) {
+	positions := []paper.WalletTruthPosition{
+		{Outcome: "Up", OnChainShares: 3.1},
+		{Outcome: "Down", OnChainShares: 2.0},
+		{Outcome: "Up", OnChainShares: 0.4},
+	}
+	// Tie resolution where both Up and Down are winners
+	if got := realbotWinningOnChainShares(positions, "Up/Down"); math.Abs(got-5.5) > 0.000001 {
+		t.Fatalf("expected winning on-chain shares 5.5, got %.4f", got)
+	}
+}
+
+func TestRealbotSyncEngineToWalletTruthHandlesSplitWinner(t *testing.T) {
+	engine := paper.NewEngine(100)
+	if _, err := engine.BuyForMarket("BTC", "Up", 0.60, 3.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+	if _, err := engine.BuyForMarket("BTC", "Down", 0.40, 2.0); err != nil {
+		t.Fatalf("seed buy failed: %v", err)
+	}
+
+	// Resolution is a tie "Up/Down"
+	adjusted, missing := realbotSyncEngineToWalletTruthForResolution(engine, "BTC", "Up/Down", []paper.WalletTruthPosition{
+		{MarketID: "BTC", Outcome: "Up", LocalShares: 3.0, OnChainShares: 3.0},
+		{MarketID: "BTC", Outcome: "Down", LocalShares: 2.0, OnChainShares: 2.0},
+	})
+	if adjusted != 0 {
+		t.Fatalf("expected no outcomes to require adjustment, got %d", adjusted)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing-cost-basis outcomes, got %v", missing)
+	}
+}

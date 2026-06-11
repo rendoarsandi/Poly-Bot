@@ -783,8 +783,17 @@ func (e *Engine) RedeemWithDetails(marketID, winningOutcome string) *RedemptionR
 			continue
 		}
 
-		// Correctly match the outcome
-		if strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(winningOutcome)) {
+		// Correctly match the outcome (supports slash-separated winning outcomes for ties/splits)
+		isWinner := false
+		winningOutcomes := strings.Split(winningOutcome, "/")
+		for _, w := range winningOutcomes {
+			if strings.EqualFold(strings.TrimSpace(pos.Outcome), strings.TrimSpace(w)) {
+				isWinner = true
+				break
+			}
+		}
+
+		if isWinner {
 			// Winning shares are economically locked in at $1 each, but on-chain cash
 			// may not arrive until the redeem transaction confirms.
 			proceeds := pos.Quantity * 1.0
