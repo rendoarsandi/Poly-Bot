@@ -368,7 +368,7 @@ func LoadConfig() (*Config, error) {
 
 func normalizeTradeSizingMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case TradeSizingModeUSDC:
+	case TradeSizingModeUSDC, "fixed", "fixed usdc":
 		return TradeSizingModeUSDC
 	default:
 		return TradeSizingModePercent
@@ -392,6 +392,8 @@ func normalizeCopytradeSizingMode(mode string) string {
 		return CopytradeSizingModeShares
 	case CopytradeSizingModePercent:
 		return CopytradeSizingModePercent
+	case CopytradeSizingModeUSDC, "fixed", "fixed usdc":
+		return CopytradeSizingModeUSDC
 	default:
 		return CopytradeSizingModeUSDC
 	}
@@ -401,6 +403,8 @@ func normalizeLadderedTakerSizingMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case LadderedTakerSizingModeShares:
 		return LadderedTakerSizingModeShares
+	case LadderedTakerSizingModeUSDC, "fixed", "fixed usdc":
+		return LadderedTakerSizingModeUSDC
 	default:
 		return LadderedTakerSizingModeUSDC
 	}
@@ -408,7 +412,7 @@ func normalizeLadderedTakerSizingMode(mode string) string {
 
 func normalizeTakerCloseSizingMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case TakerCloseSizingModeUSDC:
+	case TakerCloseSizingModeUSDC, "fixed", "fixed usdc":
 		return TakerCloseSizingModeUSDC
 	case TakerCloseSizingModeShares:
 		return TakerCloseSizingModeShares
