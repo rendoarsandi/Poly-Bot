@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -254,5 +255,70 @@ func TestRealbotMaintainMakerQuotesPaperMode(t *testing.T) {
 	}
 	if qYes.Price+qNo.Price > 0.99 {
 		t.Fatalf("expected sum of prices to be <= 0.99 (maxPairCost), got %.3f", qYes.Price+qNo.Price)
+	}
+}
+
+type mockExchangeClientForOpenOrdersErr struct {
+	api.ExchangeClient
+}
+
+func (m *mockExchangeClientForOpenOrdersErr) GetOpenOrders(ctx context.Context) ([]api.OpenOrder, error) {
+	return nil, errors.New("simulated API error")
+}
+
+func TestRealbotMaintainMakerQuotesOpenOrdersFailure(t *testing.T) {
+	engine := paper.NewEngine(1000)
+	tui := paper.NewTUI(engine, nil)
+	trader := &trading.RealTrader{}
+	mockClient := &mockExchangeClientForOpenOrdersErr{}
+	trader.SetClient(mockClient)
+
+	// Create pre-existing maker quotes in the map
+	makerQuotes := map[string]*realbotMakerQuote{
+		realbotMakerQuoteKey(api.SideBuy, "Yes"): {
+			OrderID:      "order-123",
+			TokenID:      "yes-token",
+			Outcome:      "Yes",
+			Side:         api.SideBuy,
+			Price:        0.50,
+			RequestedQty: 10.0,
+			RemainingQty: 10.0,
+		},
+	}
+
+	cfg := &core.Config{}
+	liveCfg := paper.TUISettings{}
+
+	var lastSync time.Time
+	// Call maintainRealbotMakerQuotes, which should encounter an error on GetOpenOrders,
+	// log it, and return early.
+	maintainRealbotMakerQuotes(
+		context.Background(),
+		"mkt-1",
+		time.Now().Add(1*time.Hour),
+		[]string{"Yes", "No"},
+		func(outcome string) string { return outcome + "-token" },
+		map[string]float64{"Yes": 0.49, "No": 0.49},
+		map[string]float64{"Yes": 0.51, "No": 0.51},
+		map[string]int{"Yes": 0, "No": 0},
+		trader,
+		engine,
+		nil,
+		tui,
+		liveCfg,
+		cfg,
+		makerQuotes,
+		&lastSync,
+		nil,
+	)
+
+	// Verify that the existing quote was NOT deleted or orphaned on failure
+	key := realbotMakerQuoteKey(api.SideBuy, "Yes")
+	q, ok := makerQuotes[key]
+	if !ok || q == nil {
+		t.Fatal("expected existing quote to be preserved on GetOpenOrders failure, but it was deleted")
+	}
+	if q.OrderID != "order-123" {
+		t.Fatalf("expected order ID 'order-123', got %q", q.OrderID)
 	}
 }

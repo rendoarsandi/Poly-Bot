@@ -372,11 +372,11 @@ func maintainRealbotMakerQuotes(ctx context.Context, marketID string, endTime ti
 		if len(makerQuotes) > 0 {
 			openOrders, err := trader.GetOpenOrders(ctx)
 			if err != nil {
-				tui.LogEvent("[%s] ⚠️ Maker open-order refresh failed: %v", marketID, err)
-			} else {
-				for _, order := range openOrders {
-					openByID[order.OrderID] = order
-				}
+				tui.LogEvent("[%s] ⚠️ Maker open-order refresh failed: %v — skipping maker quote maintenance", marketID, err)
+				return
+			}
+			for _, order := range openOrders {
+				openByID[order.OrderID] = order
 			}
 		}
 		realbotSyncMakerQuoteFills(marketID, trader, engine, tui, makerQuotes, openByID)

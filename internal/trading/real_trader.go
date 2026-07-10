@@ -600,6 +600,11 @@ func (t *RealTrader) Exchange() api.ExchangeClient {
 	return t.client
 }
 
+// SetClient sets the underlying ExchangeClient (primarily for testing purposes).
+func (t *RealTrader) SetClient(client api.ExchangeClient) {
+	t.client = client
+}
+
 // GetConfirmedFillSize returns the cumulative WS-confirmed fill quantity for an order.
 func (t *RealTrader) GetConfirmedFillSize(orderID string) float64 {
 	if orderID == "" {
