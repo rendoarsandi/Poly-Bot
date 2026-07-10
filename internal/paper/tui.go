@@ -3308,11 +3308,21 @@ func (t *TUI) UpdateWalletTruthRedeemable(marketID string, winningOutcome string
 	if !ok {
 		return
 	}
-	winningKey := walletTruthOutcomeKey(winningOutcome)
+	winningKeys := strings.Split(winningOutcome, "/")
+	for i := range winningKeys {
+		winningKeys[i] = walletTruthOutcomeKey(winningKeys[i])
+	}
 	for i := range positions {
 		positions[i].ResolutionStatus = "resolved"
 		positions[i].Redeemable = false
-		if walletTruthOutcomeKey(positions[i].Outcome) == winningKey {
+		isWinner := false
+		for _, wKey := range winningKeys {
+			if walletTruthOutcomeKey(positions[i].Outcome) == wKey {
+				isWinner = true
+				break
+			}
+		}
+		if isWinner {
 			positions[i].IsWinner = true
 			if positions[i].OnChainShares > 0 {
 				positions[i].Redeemable = true
@@ -3335,12 +3345,22 @@ func (t *TUI) UpdateWalletTruthResolution(marketID string, resolved bool, winnin
 	if !ok {
 		return
 	}
-	winningKey := walletTruthOutcomeKey(winningOutcome)
+	winningKeys := strings.Split(winningOutcome, "/")
+	for i := range winningKeys {
+		winningKeys[i] = walletTruthOutcomeKey(winningKeys[i])
+	}
 	for i := range positions {
 		if resolved {
 			positions[i].ResolutionStatus = "resolved"
 			if winningOutcome != "" {
-				positions[i].IsWinner = walletTruthOutcomeKey(positions[i].Outcome) == winningKey
+				isWinner := false
+				for _, wKey := range winningKeys {
+					if walletTruthOutcomeKey(positions[i].Outcome) == wKey {
+						isWinner = true
+						break
+					}
+				}
+				positions[i].IsWinner = isWinner
 				positions[i].Redeemable = false
 				if positions[i].IsWinner && positions[i].OnChainShares > 0 {
 					positions[i].Redeemable = true

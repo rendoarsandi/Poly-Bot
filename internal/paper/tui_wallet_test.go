@@ -319,3 +319,56 @@ func TestRecordWalletSyncAdjustmentAddsSyncHistoryEntry(t *testing.T) {
 		t.Fatalf("expected ADJ+ side, got %q", history[0].Side)
 	}
 }
+
+func TestTUI_UpdateWalletTruthResolutionSplitTie(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tui.SetWalletTruthPositions("BTC#3", []WalletTruthPosition{
+		{MarketID: "BTC#3", Outcome: "Up", OnChainShares: 5.0},
+		{MarketID: "BTC#3", Outcome: "Down", OnChainShares: 5.0},
+	})
+
+	tui.UpdateWalletTruthResolution("BTC#3", true, "Up/Down")
+
+	got := tui.getWalletTruthPositions()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 wallet truth positions, got %d", len(got))
+	}
+	for _, pos := range got {
+		if !pos.IsWinner || !pos.Redeemable || pos.ResolutionStatus != "redeemable" {
+			t.Fatalf("expected both Up and Down to be recognized as winners in a tie, got %+v", pos)
+		}
+	}
+}
+
+func TestTUI_UpdateWalletTruthRedeemableSplitTie(t *testing.T) {
+	engine := NewEngine(1000.0)
+	orderBook := NewOrderBook()
+	tui := NewTUI(engine, orderBook)
+
+	tui.SetWalletTruthPositions("BTC#4", []WalletTruthPosition{
+		{MarketID: "BTC#4", Outcome: "Up", OnChainShares: 2.5},
+		{MarketID: "BTC#4", Outcome: "Down", OnChainShares: 0},
+	})
+
+	tui.UpdateWalletTruthRedeemable("BTC#4", "Up/Down")
+
+	got := tui.getWalletTruthPositions()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 wallet truth positions, got %d", len(got))
+	}
+	for _, pos := range got {
+		switch pos.Outcome {
+		case "Up":
+			if !pos.IsWinner || !pos.Redeemable || pos.ResolutionStatus != "redeemable" {
+				t.Fatalf("expected Up to be winning/redeemable, got %+v", pos)
+			}
+		case "Down":
+			if !pos.IsWinner || pos.Redeemable || pos.ResolutionStatus != "resolved" {
+				t.Fatalf("expected Down to be resolved winner but not redeemable, got %+v", pos)
+			}
+		}
+	}
+}
