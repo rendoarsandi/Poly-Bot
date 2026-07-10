@@ -115,9 +115,9 @@ func realbotPrepareCopytradeRound(ctx context.Context, cfg *core.Config, polygon
 		(*copytradeWatchers).attach(copytradePoller)
 	}
 	if !realbotCopytradeHasOnchainWatcher(copytradePoller) {
-		tui.LogEvent("⚠️ Copytrade disabled: Polygon WS RPC watcher is required; public trades/positions API fallback is off")
+		tui.LogEvent("ℹ️ Copytrade running in REST-polling fallback mode; Polygon WS RPC watcher is off")
 	} else {
-		tui.LogEvent("ℹ️ Copytrade WS-only mode active; public trades/positions API disabled")
+		tui.LogEvent("ℹ️ Copytrade WS-only mode active")
 		if !realbotCopytradeHasPendingWatcher(copytradePoller) {
 			tui.LogEvent("ℹ️ Copytrade running in mined/onchain mode only; pending filtering requires Alchemy, so fills can trail the master")
 		}

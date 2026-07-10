@@ -77,7 +77,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if restClient == nil || trader == nil || engine == nil || market == nil || state == nil || poller == nil {
 		return
 	}
-	if !realbotCopytradeHasOnchainWatcher(poller) {
+	if !realbotCopytradeHasOnchainWatcher(poller) && !realbotCopytradeShouldUsePublicActivityAPI(poller) {
 		return
 	}
 
@@ -87,21 +87,72 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	}
 	polledTrades := make([]api.PublicTrade, 0)
 	targetDeltas := make(map[string]float64)
-	shouldPoll := state.lastTradeFetch.IsZero() || time.Since(state.lastTradeFetch) >= pollEvery
-	if shouldPoll {
-		since := state.lastTradeFetch
-		state.lastTradeFetch = time.Now()
-		if !since.IsZero() {
-			since = since.Add(-10 * time.Second)
+
+	if realbotCopytradeShouldUsePublicActivityAPI(poller) {
+		snapshot, err := poller.snapshotForCondition(ctx, restClient, pollEvery, market.ConditionID)
+		if err != nil {
+			state.lastError = fmt.Sprintf("snapshot: %v", err)
+			return
 		}
-		minedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
-		pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since)
-		combinedTrades := realbotMergeCopytradeTrades(pendingTrades, minedTrades)
-		if len(combinedTrades) > 0 {
+		if snapshot.TradesErr != nil {
+			state.lastError = fmt.Sprintf("trades: %v", snapshot.TradesErr)
+		} else if snapshot.PositionsErr != nil {
+			state.lastError = fmt.Sprintf("positions: %v", snapshot.PositionsErr)
+		} else {
 			state.lastError = ""
-			polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
+		}
+
+		var freshTrades []api.PublicTrade
+		if len(snapshot.Trades) > 0 {
+			preparedTrades := realbotPrepareCopytradeTrades(snapshot.Trades, "public", liveCfg)
+			freshTrades = realbotCopytradeFreshTrades(state, preparedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
+		}
+
+		syncTrades, deltas := realbotCopytradePositionSyncTrades(
+			state,
+			market.ConditionID,
+			outcomes,
+			snapshot.Positions,
+			snapshot.PositionsPolledAt,
+			freshTrades,
+			liveCfg.CopytradeSizingMode,
+		)
+		polledTrades = append(freshTrades, syncTrades...)
+		targetDeltas = deltas
+	} else {
+		shouldPoll := state.lastTradeFetch.IsZero() || time.Since(state.lastTradeFetch) >= pollEvery
+		if shouldPoll {
+			since := state.lastTradeFetch
+			state.lastTradeFetch = time.Now()
+			if !since.IsZero() {
+				since = since.Add(-10 * time.Second)
+			}
+			minedTrades := poller.minedSignalsForCondition(market.ConditionID, since)
+			pendingTrades := poller.pendingSignalsForCondition(market.ConditionID, since)
+			combinedTrades := realbotMergeCopytradeTrades(pendingTrades, minedTrades)
+			if len(combinedTrades) > 0 {
+				state.lastError = ""
+				polledTrades = realbotCopytradeFreshTrades(state, combinedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
+			}
+		}
+
+		if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModePercent) {
+			snapshot, err := poller.snapshotForCondition(ctx, restClient, pollEvery, market.ConditionID)
+			if err == nil && snapshot.PositionsErr == nil {
+				_, deltas := realbotCopytradePositionSyncTrades(
+					state,
+					market.ConditionID,
+					outcomes,
+					snapshot.Positions,
+					snapshot.PositionsPolledAt,
+					polledTrades,
+					liveCfg.CopytradeSizingMode,
+				)
+				targetDeltas = deltas
+			}
 		}
 	}
+
 	for _, trade := range polledTrades {
 		realbotObserveCopytradeBuySignal(state, trade)
 	}

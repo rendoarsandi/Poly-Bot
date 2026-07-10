@@ -50,6 +50,16 @@ var httpClient = &http.Client{
 	},
 }
 
+// SetHTTPClientForTesting overrides the default httpClient. Used in testing.
+func SetHTTPClientForTesting(client *http.Client) {
+	httpClient = client
+}
+
+// GetHTTPClientForTesting returns the current httpClient. Used in testing.
+func GetHTTPClientForTesting() *http.Client {
+	return httpClient
+}
+
 func restRetryDelay(attempt int) time.Duration {
 	return time.Duration(75*(1<<attempt)) * time.Millisecond
 }
