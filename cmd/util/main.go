@@ -858,23 +858,10 @@ func utilbotBestBidFromLevels(levels []paper.MarketLevel) (float64, bool) {
 }
 
 func utilbotBestBidAskFromOrderBook(book *api.OrderBookResponse) (float64, float64) {
-	bestBid, bestAsk := 0.0, 1.0
-	for _, bid := range book.Bids {
-		p, _ := strconv.ParseFloat(bid.Price, 64)
-		if p > bestBid {
-			bestBid = p
-		}
+	if book == nil {
+		return 0, 0
 	}
-	for _, ask := range book.Asks {
-		p, _ := strconv.ParseFloat(ask.Price, 64)
-		if p < bestAsk && p > 0 {
-			bestAsk = p
-		}
-	}
-	if bestAsk >= 1.0 {
-		bestAsk = 0
-	}
-	return bestBid, bestAsk
+	return mkt.BestBidAskFromPriceLevels(book.Bids, book.Asks)
 }
 
 func utilbotRefreshRestQuotes(ctx context.Context, client *api.RestClient, tokenMap map[string]string, store *utilbotQuoteStore) {

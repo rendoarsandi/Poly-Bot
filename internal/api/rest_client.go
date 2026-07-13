@@ -1191,18 +1191,7 @@ func (c *RestClient) GetBestBidAsk(ctx context.Context, tokenID string) (bestBid
 	if err != nil {
 		return 0, 0, err
 	}
-	for _, b := range book.Bids {
-		p, _ := parseFloat(b.Price)
-		if p > bestBid {
-			bestBid = p
-		}
-	}
-	for _, a := range book.Asks {
-		p, _ := parseFloat(a.Price)
-		if p > 0 && (bestAsk == 0 || p < bestAsk) {
-			bestAsk = p
-		}
-	}
+	bestBid, bestAsk = BestBidAskFromPriceLevels(book.Bids, book.Asks)
 	return bestBid, bestAsk, nil
 }
 
@@ -1365,19 +1354,7 @@ func (c *RestClient) GetCLOBBidAsk(ctx context.Context, tokenMap map[string]stri
 				return
 			}
 
-			var bestBid, bestAsk float64
-			for _, b := range book.Bids {
-				p, _ := parseFloat(b.Price)
-				if p > bestBid {
-					bestBid = p
-				}
-			}
-			for _, a := range book.Asks {
-				p, _ := parseFloat(a.Price)
-				if p > 0 && (bestAsk == 0 || p < bestAsk) {
-					bestAsk = p
-				}
-			}
+			bestBid, bestAsk := BestBidAskFromPriceLevels(book.Bids, book.Asks)
 
 			results <- clobBidAskResult{
 				outcome: outcome,

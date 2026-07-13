@@ -99,3 +99,24 @@ func TestRefreshTopOfBookFromDepthUsesOutcomeKeys(t *testing.T) {
 		t.Fatalf("expected unrelated token-id key to remain untouched, got %.2f", got)
 	}
 }
+
+func TestBestBidAskFromPriceLevels(t *testing.T) {
+	bids := []api.PriceLevel{
+		{Price: "0.45", Size: "100"},
+		{Price: "0.49", Size: "150"},
+		{Price: "0.42", Size: "50"},
+	}
+	asks := []api.PriceLevel{
+		{Price: "0.55", Size: "100"},
+		{Price: "0.51", Size: "150"},
+		{Price: "0.58", Size: "50"},
+	}
+
+	bestBid, bestAsk := BestBidAskFromPriceLevels(bids, asks)
+	if bestBid != 0.49 {
+		t.Errorf("expected bestBid 0.49, got %f", bestBid)
+	}
+	if bestAsk != 0.51 {
+		t.Errorf("expected bestAsk 0.51, got %f", bestAsk)
+	}
+}

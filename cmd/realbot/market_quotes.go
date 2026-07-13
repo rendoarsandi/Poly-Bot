@@ -265,19 +265,7 @@ func realbotHandleMarketWSMessage(args realbotMarketQuoteArgs, msg []byte, lastP
 		if book == nil || book.AssetID == "" {
 			return false
 		}
-		bid, ask := 0.0, 0.0
-		for _, bidLevel := range book.Bids {
-			price, _ := strconv.ParseFloat(bidLevel.Price, 64)
-			if price > 0 && price <= 1.0 && price > bid {
-				bid = price
-			}
-		}
-		for _, askLevel := range book.Asks {
-			price, _ := strconv.ParseFloat(askLevel.Price, 64)
-			if price > 0 && price <= 1.0 && (ask == 0 || price < ask) {
-				ask = price
-			}
-		}
+		bid, ask := mkt.BestBidAskFromPriceLevels(book.Bids, book.Asks)
 
 		if bid > 0 && ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
 			return false
@@ -717,19 +705,7 @@ func handleRestFallbackWithDepth(ctx context.Context, id string, staleTime time.
 			continue
 		}
 
-		bid, ask := 0.0, 0.0
-		for _, b := range book.Bids {
-			p, _ := strconv.ParseFloat(b.Price, 64)
-			if p > 0 && p <= 1.0 && p > bid {
-				bid = p
-			}
-		}
-		for _, a := range book.Asks {
-			p, _ := strconv.ParseFloat(a.Price, 64)
-			if p > 0 && p <= 1.0 && (ask == 0 || p < ask) {
-				ask = p
-			}
-		}
+		bid, ask := mkt.BestBidAskFromPriceLevels(book.Bids, book.Asks)
 
 		if bid > 0 && ask > 0 && !realbotHasSaneTopOfBook(bid, ask) {
 			bids[outcome] = 0

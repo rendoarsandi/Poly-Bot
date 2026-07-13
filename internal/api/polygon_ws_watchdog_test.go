@@ -87,3 +87,37 @@ func TestReadPolygonWSJSONWithHeartbeatKeepsIdleConnectionAlive(t *testing.T) {
 		t.Fatal("expected message after idle heartbeat")
 	}
 }
+
+func TestReadPolygonWSJSONWithHeartbeatHandlesReaderExitAndErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		// Immediately close the connection to force a read error
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// This should exit with a read error because the server closed connection immediately
+	err = readPolygonWSJSONWithHeartbeat(ctx, conn, "test", func(raw map[string]json.RawMessage) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected read error, got nil")
+	}
+	if !strings.Contains(err.Error(), "websocket read failed") {
+		t.Errorf("expected error message to contain 'websocket read failed', got: %v", err)
+	}
+}

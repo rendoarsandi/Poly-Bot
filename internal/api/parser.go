@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -176,4 +177,22 @@ func ParseBestBidAsk(data []byte) (*BestBidAskUpdate, error) {
 		return nil, err
 	}
 	return &update, nil
+}
+
+// BestBidAskFromPriceLevels returns the best bid and best ask from raw PriceLevel slices.
+func BestBidAskFromPriceLevels(bids, asks []PriceLevel) (float64, float64) {
+	bestBid, bestAsk := 0.0, 0.0
+	for _, b := range bids {
+		p, _ := strconv.ParseFloat(b.Price, 64)
+		if p > bestBid {
+			bestBid = p
+		}
+	}
+	for _, a := range asks {
+		p, _ := strconv.ParseFloat(a.Price, 64)
+		if p > 0 && (bestAsk == 0 || p < bestAsk) {
+			bestAsk = p
+		}
+	}
+	return bestBid, bestAsk
 }

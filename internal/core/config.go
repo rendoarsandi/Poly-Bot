@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -49,6 +50,8 @@ const (
 )
 
 type Config struct {
+	mu sync.RWMutex
+
 	// Trading mode is inferred internally from the selected bot/profile.
 	TradingMode TradingMode
 
@@ -1434,4 +1437,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid MakerMinQuoteValue: must be non-negative (got %f)", c.MakerMinQuoteValue)
 	}
 	return nil
+}
+
+// Lock locks the config for writing.
+func (c *Config) Lock() {
+	c.mu.Lock()
+}
+
+// Unlock unlocks the config after writing.
+func (c *Config) Unlock() {
+	c.mu.Unlock()
+}
+
+// RLock locks the config for reading.
+func (c *Config) RLock() {
+	c.mu.RLock()
+}
+
+// RUnlock unlocks the config after reading.
+func (c *Config) RUnlock() {
+	c.mu.RUnlock()
 }

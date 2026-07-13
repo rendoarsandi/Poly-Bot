@@ -629,6 +629,9 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 }
 
 func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
+	cfg.Lock()
+	defer cfg.Unlock()
+
 	cfg.Exchange = s.Exchange
 	cfg.ExecutionBackend = core.ExecutionBackendLive
 	if strings.EqualFold(strings.TrimSpace(s.ExecutionBackend), core.ExecutionBackendPaper) {

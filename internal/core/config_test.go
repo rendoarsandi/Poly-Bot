@@ -608,3 +608,21 @@ func TestConfigValidate(t *testing.T) {
 		t.Error("expected error for SplitInitialCapPct > 1.0")
 	}
 }
+
+func TestConfigMutex(t *testing.T) {
+	cfg := &Config{}
+
+	// Verify we can lock and unlock for writing
+	cfg.Lock()
+	cfg.MarketSlug = "test-slug"
+	cfg.Unlock()
+
+	// Verify we can lock and unlock for reading
+	cfg.RLock()
+	slug := cfg.MarketSlug
+	cfg.RUnlock()
+
+	if slug != "test-slug" {
+		t.Errorf("expected MarketSlug 'test-slug', got %q", slug)
+	}
+}

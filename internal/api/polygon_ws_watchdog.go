@@ -20,6 +20,9 @@ func readPolygonWSJSONWithHeartbeat(ctx context.Context, conn *websocket.Conn, s
 		return fmt.Errorf("%s websocket connection is nil", source)
 	}
 
+	innerCtx, innerCancel := context.WithCancel(ctx)
+	defer innerCancel()
+
 	msgCh := make(chan map[string]json.RawMessage, 1)
 	errCh := make(chan error, 1)
 
@@ -27,7 +30,7 @@ func readPolygonWSJSONWithHeartbeat(ctx context.Context, conn *websocket.Conn, s
 		defer close(msgCh)
 		for {
 			var raw map[string]json.RawMessage
-			if err := wsjson.Read(ctx, conn, &raw); err != nil {
+			if err := wsjson.Read(innerCtx, conn, &raw); err != nil {
 				select {
 				case errCh <- fmt.Errorf("%s websocket read failed: %w", source, err):
 				default:
@@ -37,7 +40,7 @@ func readPolygonWSJSONWithHeartbeat(ctx context.Context, conn *websocket.Conn, s
 
 			select {
 			case msgCh <- raw:
-			case <-ctx.Done():
+			case <-innerCtx.Done():
 				return
 			}
 		}
@@ -59,6 +62,13 @@ func readPolygonWSJSONWithHeartbeat(ctx context.Context, conn *websocket.Conn, s
 			if !ok {
 				if ctx.Err() != nil {
 					return ctx.Err()
+				}
+				select {
+				case err := <-errCh:
+					if err != nil {
+						return err
+					}
+				default:
 				}
 				return fmt.Errorf("%s websocket read loop ended", source)
 			}
