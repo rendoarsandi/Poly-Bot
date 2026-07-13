@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestDecodePolymarketMatchOrdersInputExtractsTargetOrderFields(t *testing.T) {
@@ -125,16 +126,19 @@ func TestNewPolymarketPendingWatcherRejectsNonAlchemy(t *testing.T) {
 	}
 }
 
-func TestPolymarketPendingAlchemyFilterIncludesWalletTarget(t *testing.T) {
-	filter := polymarketPendingAlchemyFilter("0xe0229e10a858860218b6132f4234602c47bd6603")
+func TestPolymarketPendingAlchemyFilter(t *testing.T) {
+	filter := polymarketPendingAlchemyFilter()
 
-	fromAddresses, ok := filter["fromAddress"].([]string)
-	if !ok || len(fromAddresses) != 1 || fromAddresses[0] != "0xe0229e10a858860218b6132f4234602c47bd6603" {
-		t.Fatalf("unexpected fromAddress filter: %#v", filter["fromAddress"])
+	toAddresses, ok := filter["toAddress"].([]string)
+	if !ok || len(toAddresses) != 2 {
+		t.Fatalf("unexpected toAddress filter: %#v", filter["toAddress"])
+	}
+	if toAddresses[0] != CTFExchange || toAddresses[1] != NegRiskExchange {
+		t.Fatalf("unexpected exchange addresses in filter: %#v", toAddresses)
 	}
 
-	if _, ok := filter["toAddress"]; ok {
-		t.Fatalf("unexpected toAddress filter: %#v", filter["toAddress"])
+	if _, ok := filter["fromAddress"]; ok {
+		t.Fatalf("unexpected fromAddress filter: %#v", filter["fromAddress"])
 	}
 
 	if hashesOnly, ok := filter["hashesOnly"].(bool); !ok || hashesOnly {
@@ -169,5 +173,50 @@ func TestPolymarketPendingWatcherPrimeTrackedMarkets(t *testing.T) {
 	}
 	if resolved.outcome != "Down" {
 		t.Fatalf("unexpected outcome %q", resolved.outcome)
+	}
+}
+
+func TestPolymarketPendingWatcherResolveTokenCaching(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := make(chan time.Time)
+	go func() {
+		for {
+			select {
+			case ch <- time.Now():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	rest := &RestClient{
+		limiter: ch,
+	}
+
+	watcher := &PolymarketPendingWatcher{
+		tokenCache:  make(map[string]pendingResolvedToken),
+		failedCache: make(map[string]time.Time),
+		rest:        rest,
+	}
+
+	_, err := watcher.resolveToken(ctx, "nonexistent-token")
+	if err == nil {
+		t.Fatal("expected resolveToken to fail for nonexistent token")
+	}
+
+	// It should now be in the failedCache
+	watcher.mu.Lock()
+	_, exists := watcher.failedCache["nonexistent-token"]
+	watcher.mu.Unlock()
+	if !exists {
+		t.Fatal("expected nonexistent-token to be in failedCache")
+	}
+
+	// A second call should fail immediately via cache check
+	_, err2 := watcher.resolveToken(ctx, "nonexistent-token")
+	if err2 == nil {
+		t.Fatal("expected second resolveToken to fail via cache")
 	}
 }

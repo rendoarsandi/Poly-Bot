@@ -77,7 +77,8 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	if restClient == nil || trader == nil || engine == nil || market == nil || state == nil || poller == nil {
 		return
 	}
-	if !realbotCopytradeHasOnchainWatcher(poller) && !realbotCopytradeShouldUsePublicActivityAPI(poller) {
+	// If the user did not choose public-api but watchers are down, abort copytrading rather than silently falling back.
+	if core.NormalizeCopytradeWatcherMode(liveCfg.CopytradeWatcherMode) != "public-api" && !realbotCopytradeHasWatcher(poller) {
 		return
 	}
 
@@ -88,7 +89,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	polledTrades := make([]api.PublicTrade, 0)
 	targetDeltas := make(map[string]float64)
 
-	if realbotCopytradeShouldUsePublicActivityAPI(poller) {
+	if realbotCopytradeShouldUsePublicActivityAPI(poller, liveCfg.CopytradeWatcherMode) {
 		snapshot, err := poller.snapshotForCondition(ctx, restClient, pollEvery, market.ConditionID)
 		if err != nil {
 			state.lastError = fmt.Sprintf("snapshot: %v", err)

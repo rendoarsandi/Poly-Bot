@@ -582,6 +582,7 @@ func realbotTUISettingsFromConfig(cfg *core.Config) paper.TUISettings {
 		PaperArbMode:                       normalizePaperArbMode(cfg.PaperArbMode),
 		CopytradeTarget:                    cfg.CopytradeTarget,
 		CopytradeUseMempool:                cfg.CopytradeUseMempool,
+		CopytradeWatcherMode:               cfg.CopytradeWatcherMode,
 		CopytradePollIntervalMs:            cfg.CopytradePollIntervalMs,
 		CopytradeSizingMode:                cfg.CopytradeSizingMode,
 		CopytradeSizeUSDC:                  cfg.CopytradeSizeUSDC,
@@ -645,6 +646,7 @@ func applyRealbotTUISettings(cfg *core.Config, s paper.TUISettings) {
 	cfg.PaperArbMode = normalizePaperArbMode(s.PaperArbMode)
 	cfg.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	cfg.CopytradeUseMempool = s.CopytradeUseMempool
+	cfg.CopytradeWatcherMode = s.CopytradeWatcherMode
 	cfg.CopytradePollIntervalMs = s.CopytradePollIntervalMs
 	cfg.CopytradeSizingMode = s.CopytradeSizingMode
 	cfg.CopytradeSizeUSDC = s.CopytradeSizeUSDC

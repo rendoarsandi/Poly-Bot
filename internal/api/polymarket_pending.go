@@ -59,12 +59,14 @@ type PolymarketPendingWatcher struct {
 	targetWallet string
 	polygon      *PolygonClient
 
-	mu         sync.Mutex
-	recent     []PendingPolymarketSignal
-	seen       map[string]time.Time
-	tokenCache map[string]pendingResolvedToken
-	started    bool
-	logf       func(string, ...interface{})
+	mu                    sync.Mutex
+	recent                []PendingPolymarketSignal
+	seen                  map[string]time.Time
+	tokenCache            map[string]pendingResolvedToken
+	failedCache           map[string]time.Time
+	lastDiscoveryFallback time.Time
+	started               bool
+	logf                  func(string, ...interface{})
 }
 
 func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, polygon *PolygonClient, targetWallet string) *PolymarketPendingWatcher {
@@ -80,6 +82,7 @@ func NewPolymarketPendingWatcher(wsURL string, rest *RestClient, polygon *Polygo
 		targetWallet: targetWallet,
 		seen:         make(map[string]time.Time),
 		tokenCache:   make(map[string]pendingResolvedToken),
+		failedCache:  make(map[string]time.Time),
 	}
 }
 
@@ -230,6 +233,11 @@ func (w *PolymarketPendingWatcher) SignalsSince(conditionID string, since time.T
 			delete(w.seen, key)
 		}
 	}
+	for key, failedAt := range w.failedCache {
+		if now.Sub(failedAt) > 5*time.Minute {
+			delete(w.failedCache, key)
+		}
+	}
 	return filtered
 }
 
@@ -315,7 +323,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		return nil
 	}
 
-	params := append([]interface{}{method}, polymarketPendingAlchemyFilter(w.targetWallet))
+	params := append([]interface{}{method}, polymarketPendingAlchemyFilter())
 
 	subReq := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -345,7 +353,11 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		if err := json.Unmarshal(paramsRaw, &params); err != nil {
 			return nil
 		}
-		w.handlePendingTransaction(ctx, params.Result)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.handlePendingTransaction(ctx, params.Result)
+		}()
 		return nil
 	})
 }
@@ -452,6 +464,10 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 		w.mu.Unlock()
 		return cached, nil
 	}
+	if failedAt, ok := w.failedCache[tokenID]; ok && time.Since(failedAt) < 60*time.Second {
+		w.mu.Unlock()
+		return pendingResolvedToken{}, fmt.Errorf("token %s failed resolution recently (cached)", tokenID)
+	}
 	w.mu.Unlock()
 
 	// Try direct event lookup first
@@ -466,6 +482,22 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 			return resolved, nil
 		}
 	}
+
+	w.mu.Lock()
+	if cached, ok := w.tokenCache[tokenID]; ok {
+		w.mu.Unlock()
+		return cached, nil
+	}
+
+	if time.Since(w.lastDiscoveryFallback) <= 5*time.Second {
+		if ctx.Err() == nil {
+			w.failedCache[tokenID] = time.Now()
+		}
+		w.mu.Unlock()
+		return pendingResolvedToken{}, fmt.Errorf("token %s not found and discovery fallback is cooling down", tokenID)
+	}
+	w.lastDiscoveryFallback = time.Now()
+	w.mu.Unlock()
 
 	// FALLBACK: Proactively discover 5m/15m/1h/4h/1d markets for BTC/ETH/SOL/XRP
 	for _, timeframe := range []string{"5m", "15m", "1h", "4h", "1d"} {
@@ -485,6 +517,15 @@ func (w *PolymarketPendingWatcher) resolveToken(ctx context.Context, tokenID str
 		}
 	}
 
+	if ctx.Err() == nil {
+		w.mu.Lock()
+		w.failedCache[tokenID] = time.Now()
+		w.mu.Unlock()
+	}
+
+	if ctx.Err() != nil {
+		return pendingResolvedToken{}, ctx.Err()
+	}
 	return pendingResolvedToken{}, fmt.Errorf("token %s could not be resolved in mempool", tokenID)
 }
 
@@ -509,11 +550,13 @@ func (w *PolymarketPendingWatcher) storeSignal(sig PendingPolymarketSignal) bool
 	return true
 }
 
-func polymarketPendingAlchemyFilter(targetWallet string) map[string]interface{} {
-	targetWallet = NormalizeWalletAddress(targetWallet)
+func polymarketPendingAlchemyFilter() map[string]interface{} {
 	return map[string]interface{}{
-		"fromAddress": []string{targetWallet},
-		"hashesOnly":  false,
+		"toAddress": []string{
+			CTFExchange,
+			NegRiskExchange,
+		},
+		"hashesOnly": false,
 	}
 }
 

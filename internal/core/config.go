@@ -147,7 +147,8 @@ type Config struct {
 	TakerCloseSizeUSDC                 float64 // Fixed taker-close USDC budget when sizing by USDC
 	TakerCloseSizeShares               float64 // Fixed taker-close share cap when sizing by shares
 	CopytradeTarget                    string  // Wallet address, profile handle, or profile URL to follow
-	CopytradeUseMempool                bool    // Whether to use mempool watcher for copytrade
+	CopytradeUseMempool                bool    // Deprecated: Use CopytradeWatcherMode instead.
+	CopytradeWatcherMode               string  // "all", "mempool", "onchain", or "public-api"
 	CopytradePollIntervalMs            int     // Copytrade public-wallet poll interval in milliseconds
 	CopytradeMaxSlippagePct            float64 // Legacy field name; interpreted as absolute copytrade slippage allowance in cents
 	CopytradeSizingMode                string  // "usdc" or "shares" for copytrade entries
@@ -233,6 +234,7 @@ type RuntimeSettings struct {
 	TakerCloseSizeShares               float64 `json:"takerCloseSizeShares"`
 	CopytradeTarget                    string  `json:"copytradeTarget"`
 	CopytradeUseMempool                bool    `json:"copytradeUseMempool"`
+	CopytradeWatcherMode               string  `json:"copytradeWatcherMode"`
 	CopytradePollIntervalMs            int     `json:"copytradePollIntervalMs"`
 	CopytradeMaxSlippagePct            float64 `json:"copytradeMaxSlippagePct"`
 	CopytradeSizingMode                string  `json:"copytradeSizingMode"`
@@ -327,6 +329,7 @@ func LoadConfig() (*Config, error) {
 		TradingHoursMode:                   parseEnvString("TRADING_HOURS_MODE", TradingHoursModeWeekdays),
 		CopytradeTarget:                    strings.TrimSpace(parseEnvString("COPYTRADE_TARGET", "")),
 		CopytradeUseMempool:                os.Getenv("COPYTRADE_USE_MEMPOOL") != "false",
+		CopytradeWatcherMode:               NormalizeCopytradeWatcherMode(os.Getenv("COPYTRADE_WATCHER_MODE")),
 		BlockNewEntriesOnPendingRedemption: os.Getenv("BLOCK_NEW_ENTRIES_ON_PENDING_REDEMPTION") == "true",
 		RedeemEntryTiming:                  normalizeRedeemEntryTiming(parseEnvString("REDEEM_ENTRY_TIMING", RedeemEntryTimingNextMarket)),
 		RedeemGasMode:                      normalizeRedeemGasMode(parseEnvString("REDEEM_GAS_MODE", RedeemGasModeFast)),
@@ -396,6 +399,36 @@ func normalizeCopytradeSizingMode(mode string) string {
 		return CopytradeSizingModeUSDC
 	default:
 		return CopytradeSizingModeUSDC
+	}
+}
+
+func NormalizeCopytradeWatcherMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		// Read legacy environment variables
+		useMempool := os.Getenv("COPYTRADE_USE_MEMPOOL") != "false"
+		minedMode := strings.ToLower(strings.TrimSpace(os.Getenv("COPYTRADE_MINED_WATCHER_MODE")))
+		useOnchain := minedMode == "" || minedMode == "fallback" || minedMode == "always" || minedMode == "on" || minedMode == "true" || minedMode == "1" || minedMode == "enabled"
+
+		if !useMempool && !useOnchain {
+			return "public-api"
+		} else if useMempool && !useOnchain {
+			return "mempool"
+		} else if !useMempool && useOnchain {
+			return "onchain"
+		} else {
+			return "all"
+		}
+	}
+	switch mode {
+	case "mempool", "pending":
+		return "mempool"
+	case "onchain", "mined":
+		return "onchain"
+	case "public-api", "public", "rest", "api":
+		return "public-api"
+	default:
+		return "all"
 	}
 }
 
@@ -904,6 +937,7 @@ func (c *Config) runtimeSettings() RuntimeSettings {
 		TakerCloseSizeShares:               normalizeTakerCloseSizeShares(c.TakerCloseSizeShares),
 		CopytradeTarget:                    strings.TrimSpace(c.CopytradeTarget),
 		CopytradeUseMempool:                c.CopytradeUseMempool,
+		CopytradeWatcherMode:               NormalizeCopytradeWatcherMode(c.CopytradeWatcherMode),
 		CopytradePollIntervalMs:            normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs),
 		CopytradeMaxSlippagePct:            normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct),
 		CopytradeSizingMode:                normalizeCopytradeSizingMode(c.CopytradeSizingMode),
@@ -999,6 +1033,7 @@ func (c *Config) applyRuntimeSettings(s RuntimeSettings) {
 	c.TakerCloseSizeShares = normalizeTakerCloseSizeShares(s.TakerCloseSizeShares)
 	c.CopytradeTarget = strings.TrimSpace(s.CopytradeTarget)
 	c.CopytradeUseMempool = s.CopytradeUseMempool
+	c.CopytradeWatcherMode = NormalizeCopytradeWatcherMode(s.CopytradeWatcherMode)
 	c.CopytradePollIntervalMs = normalizeCopytradePollIntervalMs(s.CopytradePollIntervalMs)
 	c.CopytradeMaxSlippagePct = normalizeCopytradeMaxSlippagePct(s.CopytradeMaxSlippagePct)
 	c.CopytradeSizingMode = normalizeCopytradeSizingMode(s.CopytradeSizingMode)
@@ -1079,6 +1114,7 @@ func (c *Config) SaveSettings() error {
 	envMap["TAKER_CLOSE_SIZE_SHARES"] = strconv.FormatFloat(normalizeTakerCloseSizeShares(c.TakerCloseSizeShares), 'f', -1, 64)
 	envMap["COPYTRADE_TARGET"] = strings.TrimSpace(c.CopytradeTarget)
 	envMap["COPYTRADE_USE_MEMPOOL"] = strconv.FormatBool(c.CopytradeUseMempool)
+	envMap["COPYTRADE_WATCHER_MODE"] = NormalizeCopytradeWatcherMode(c.CopytradeWatcherMode)
 	envMap["COPYTRADE_POLL_INTERVAL_MS"] = strconv.Itoa(normalizeCopytradePollIntervalMs(c.CopytradePollIntervalMs))
 	envMap["COPYTRADE_MAX_SLIPPAGE_PCT"] = strconv.FormatFloat(normalizeCopytradeMaxSlippagePct(c.CopytradeMaxSlippagePct), 'f', -1, 64)
 	envMap["COPYTRADE_SIZING_MODE"] = normalizeCopytradeSizingMode(c.CopytradeSizingMode)

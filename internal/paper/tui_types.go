@@ -102,7 +102,8 @@ type TUISettings struct {
 	PaperBinanceExecutionDelayMs       int     // Paper-only execution delay after Binance-gap signal is detected
 	PaperArbMode                       string  // taker, laddered-taker, binance-gap, copytrade, or maker
 	CopytradeTarget                    string  // wallet address, profile handle, or profile URL
-	CopytradeUseMempool                bool    // whether to watch mempool via Alchemy
+	CopytradeUseMempool                bool    // Deprecated: Use CopytradeWatcherMode instead.
+	CopytradeWatcherMode               string  // "all", "mempool", "onchain", or "public-api"
 	CopytradePollIntervalMs            int     // public-wallet poll interval for copytrade mode
 	CopytradeSizingMode                string  // "usdc" or "shares" when PaperArbMode == copytrade
 	CopytradeSizeUSDC                  float64 // fixed per-trade copytrade budget when sizing by USDC

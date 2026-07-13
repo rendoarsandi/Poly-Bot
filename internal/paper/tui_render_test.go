@@ -677,14 +677,14 @@ func TestIsRowVisibleShowsMaxAskPriceInTakerMode(t *testing.T) {
 	}
 }
 
-func TestIsRowVisibleShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
+func TestIsRowVisibleShowsCopytradeSlippageAndPriceRows(t *testing.T) {
 	cfg := TUISettings{PaperArbMode: "copytrade"}
 	if !isRowVisible(cfg, "Paper", settingsRowExecutionSlip) {
 		t.Fatalf("expected copytrade slippage row to remain visible in copytrade mode")
 	}
 	for _, idx := range []int{settingsRowMinAskPrice, settingsRowMaxAskPrice} {
-		if isRowVisible(cfg, "Paper", idx) {
-			t.Fatalf("expected price row %d to be hidden in copytrade mode", idx)
+		if !isRowVisible(cfg, "Paper", idx) {
+			t.Fatalf("expected price row %d to be visible in copytrade mode", idx)
 		}
 	}
 }
@@ -849,14 +849,12 @@ func TestRenderSettingsShowsRedeemGasSpeedInLiveMode(t *testing.T) {
 	}
 }
 
-func TestRenderSettingsShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
+func TestRenderSettingsShowsCopytradeSlippageAndPriceRows(t *testing.T) {
 	engine := NewEngine(1000.0)
 	orderBook := NewOrderBook()
 	tui := NewTUI(engine, orderBook)
 	tui.InitSettings(TUISettings{
 		PaperArbMode:            "copytrade",
-		CopytradeTarget:         "0xabc",
-		CopytradePollIntervalMs: 250,
 		CopytradeSizingMode:     core.CopytradeSizingModeShares,
 		CopytradeSizeShares:     5.5,
 		CopytradeMaxSlippagePct: 1,
@@ -871,8 +869,8 @@ func TestRenderSettingsShowsCopytradeSlippageAndHidesPriceRows(t *testing.T) {
 	if !strings.Contains(view, "1c") {
 		t.Fatalf("expected copytrade slippage to render in cents, got %q", view)
 	}
-	if strings.Contains(view, "Min Ask Price") || strings.Contains(view, "Max Ask Price") {
-		t.Fatalf("expected copytrade settings to hide generic price rows, got %q", view)
+	if !strings.Contains(view, "Min Ask Price") || !strings.Contains(view, "Max Ask Price") {
+		t.Fatalf("expected copytrade settings to show min/max ask price rows, got %q", view)
 	}
 }
 
@@ -2009,4 +2007,3 @@ func TestRenderAccountStatusTakerCloseSizingModes(t *testing.T) {
 		t.Fatalf("expected UI to show 'Close $5.00 cap' when taker-close is active with USDC sizing, got %q", renderedUSDC)
 	}
 }
-

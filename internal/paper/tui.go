@@ -1096,8 +1096,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
-				case settingsRowCopytradeUseMempool:
-					m.tui.settings.CopytradeUseMempool = !m.tui.settings.CopytradeUseMempool
+				case settingsRowCopytradeWatcherMode:
+					m.tui.settings.CopytradeWatcherMode = cycleCopytradeWatcherMode(m.tui.settings.CopytradeWatcherMode, -1)
 					changed = true
 				case settingsRowCopytradePoll:
 					m.tui.settings.CopytradePollIntervalMs -= 100
@@ -1405,8 +1405,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					changed = true
 				case settingsRowCopytradeTarget:
 					// Use Enter to edit this free-form field.
-				case settingsRowCopytradeUseMempool:
-					m.tui.settings.CopytradeUseMempool = !m.tui.settings.CopytradeUseMempool
+				case settingsRowCopytradeWatcherMode:
+					m.tui.settings.CopytradeWatcherMode = cycleCopytradeWatcherMode(m.tui.settings.CopytradeWatcherMode, 1)
 					changed = true
 				case settingsRowCopytradePoll:
 					m.tui.settings.CopytradePollIntervalMs += 100
@@ -5821,12 +5821,19 @@ func (m tuiModel) renderSettings(w int) string {
 			bar: "",
 		},
 		{
-			label: settingsRowLabel(cfg, settingsRowCopytradeUseMempool),
+			label: settingsRowLabel(cfg, settingsRowCopytradeWatcherMode),
 			value: func() string {
-				if cfg.CopytradeUseMempool {
-					return styleGreen.Render("  ON ")
+				mode := core.NormalizeCopytradeWatcherMode(cfg.CopytradeWatcherMode)
+				switch mode {
+				case "all":
+					return styleGreen.Render(" mempool+onchain ")
+				case "mempool":
+					return styleCyan.Render(" mempool-only ")
+				case "onchain":
+					return styleCyan.Render(" onchain-only ")
+				default:
+					return styleYellow.Render(" public-api ")
 				}
-				return styleMuted.Render(" OFF ")
 			}(),
 			bar: "",
 		},

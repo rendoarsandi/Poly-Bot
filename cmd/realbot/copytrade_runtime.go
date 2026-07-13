@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -172,11 +171,14 @@ func (w *realbotCopytradeWatcherSet) attach(poller *realbotCopytradePoller) {
 	poller.minedWatcher = w.minedWatcher
 }
 
-func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbotCopytradeWatcherSet, wallet, chainWSURL, pendingWSURL string, polygonClient *api.PolygonClient, restClient *api.RestClient, trackedMarkets []*api.Market, logf func(string, ...interface{})) *realbotCopytradeWatcherSet {
+func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbotCopytradeWatcherSet, wallet string, watcherMode string, chainWSURL, pendingWSURL string, polygonClient *api.PolygonClient, restClient *api.RestClient, trackedMarkets []*api.Market, logf func(string, ...interface{})) *realbotCopytradeWatcherSet {
 	wallet = strings.TrimSpace(wallet)
 	chainWSURL = strings.TrimSpace(chainWSURL)
 	pendingWSURL = strings.TrimSpace(pendingWSURL)
-	minedWatcherMode := api.NormalizeCopytradeMinedWatcherMode(os.Getenv("COPYTRADE_MINED_WATCHER_MODE"))
+	watcherMode = core.NormalizeCopytradeWatcherMode(watcherMode)
+	useMempool := watcherMode == "mempool" || watcherMode == "all"
+	useOnchain := watcherMode == "onchain" || watcherMode == "all"
+
 	if wallet == "" {
 		if current != nil {
 			current.stop()
@@ -205,7 +207,7 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 	}
 
 	pendingSupported := api.SupportsPolymarketPendingWSURL(pendingWSURL)
-	if api.ShouldEnableCopytradeMinedWatcher(minedWatcherMode, pendingWSURL) {
+	if useOnchain {
 		if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, wallet); watcher != nil {
 			watcher.PrimeTrackedMarkets(trackedMarkets)
 			watcher.Start(watcherCtx, logf)
@@ -213,27 +215,27 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 			logf("⛓️ Copytrade onchain watcher enabled for %s", wallet)
 		}
 	} else {
-		switch {
-		case minedWatcherMode == api.CopytradeMinedWatcherModeOff:
-			logf("ℹ️ Copytrade onchain watcher disabled by COPYTRADE_MINED_WATCHER_MODE=off")
-		case pendingSupported:
-			logf("ℹ️ Copytrade onchain watcher skipped: pending watcher available, reducing Polygon RPC usage")
-		default:
-			logf("ℹ️ Copytrade onchain watcher skipped")
-		}
-	}
-	if pendingSupported {
-		if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, wallet); watcher != nil {
-			watcher.PrimeTrackedMarkets(trackedMarkets)
-			watcher.Start(watcherCtx, logf)
-			next.pendingWatcher = watcher
-			logf("🛰️ Copytrade mempool watcher enabled for %s", wallet)
-		}
-	} else if pendingWSURL != "" {
-		logf("ℹ️ Copytrade mempool watcher skipped: pending filtering requires Alchemy; using standard Polygon WS for onchain watcher only")
+		logf("ℹ️ Copytrade onchain watcher disabled by copytradeWatcherMode setting")
 	}
 
-	if next.pendingWatcher == nil && next.minedWatcher == nil {
+	if useMempool {
+		if pendingSupported {
+			if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, wallet); watcher != nil {
+				watcher.PrimeTrackedMarkets(trackedMarkets)
+				watcher.Start(watcherCtx, logf)
+				next.pendingWatcher = watcher
+				logf("🛰️ Copytrade mempool watcher enabled for %s", wallet)
+			}
+		} else if pendingWSURL != "" {
+			logf("ℹ️ Copytrade mempool watcher skipped: pending filtering requires Alchemy")
+		} else {
+			logf("ℹ️ Copytrade mempool watcher skipped: pending URL not configured")
+		}
+	} else {
+		logf("ℹ️ Copytrade mempool watcher disabled by copytradeWatcherMode setting")
+	}
+
+	if next.pendingWatcher == nil && next.minedWatcher == nil && watcherMode != "public-api" {
 		next.stop()
 		return nil
 	}
@@ -666,16 +668,20 @@ func (p *realbotCopytradePoller) minedSignalsForCondition(conditionID string, si
 	return trades
 }
 
-func realbotCopytradeHasOnchainWatcher(p *realbotCopytradePoller) bool {
+func realbotCopytradeHasWatcher(p *realbotCopytradePoller) bool {
 	return p != nil && ((p.pendingWatcher != nil && p.pendingWatcher.Enabled()) || (p.minedWatcher != nil && p.minedWatcher.Enabled()))
+}
+
+func realbotCopytradeHasOnchainWatcher(p *realbotCopytradePoller) bool {
+	return p != nil && p.minedWatcher != nil && p.minedWatcher.Enabled()
 }
 
 func realbotCopytradeHasPendingWatcher(p *realbotCopytradePoller) bool {
 	return p != nil && p.pendingWatcher != nil && p.pendingWatcher.Enabled()
 }
 
-func realbotCopytradeShouldUsePublicActivityAPI(p *realbotCopytradePoller) bool {
-	return !realbotCopytradeHasOnchainWatcher(p)
+func realbotCopytradeShouldUsePublicActivityAPI(p *realbotCopytradePoller, watcherMode string) bool {
+	return core.NormalizeCopytradeWatcherMode(watcherMode) == "public-api" || !realbotCopytradeHasWatcher(p)
 }
 
 func (p *realbotCopytradePoller) cachedSnapshotForCondition(conditionID string) realbotCopytradeMarketSnapshot {

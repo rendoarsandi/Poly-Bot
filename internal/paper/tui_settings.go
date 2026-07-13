@@ -28,7 +28,7 @@ const (
 	settingsRowBinanceExecutionDelay
 	settingsRowPaperArbMode
 	settingsRowCopytradeTarget
-	settingsRowCopytradeUseMempool
+	settingsRowCopytradeWatcherMode
 	settingsRowCopytradePoll
 	settingsRowExecutionSlip
 	settingsRowSplitMinMargin
@@ -184,14 +184,14 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 	if kalshi {
 		// Kalshi uses its own scheduling and does not support split inventory.
 		switch idx {
-		case settingsRowTimeframe, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowCopytradeTarget, settingsRowCopytradeUseMempool, settingsRowCopytradePoll:
+		case settingsRowTimeframe, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowCopytradeTarget, settingsRowCopytradeWatcherMode, settingsRowCopytradePoll:
 			return false
 		}
 	}
 
 	if copytrade {
 		switch idx {
-		case settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMinAskPrice, settingsRowMaxAskPrice, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
+		case settingsRowMinMargin, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowMakerMergeBuffer, settingsRowMakerQuoteGap, settingsRowMakerTargetMult, settingsRowMakerCapMult, settingsRowMakerMinQuoteValue, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice:
 			return false
 		}
 	}
@@ -212,7 +212,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 
 	if binanceGap {
 		switch idx {
-		case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowCopytradeTarget, settingsRowCopytradeUseMempool, settingsRowCopytradePoll:
+		case settingsRowExecutionSlip, settingsRowSplitMinMargin, settingsRowSplitStrategy, settingsRowSplitInitialCap, settingsRowSplitReplenishCap, settingsRowTakerCloseMarket, settingsRowTakerCloseTime, settingsRowTakerCloseSlippage, settingsRowTakerCloseMinPrice, settingsRowCopytradeTarget, settingsRowCopytradeWatcherMode, settingsRowCopytradePoll:
 			return false
 		}
 	}
@@ -231,7 +231,7 @@ func isRowVisible(cfg TUISettings, mode string, idx int) bool {
 		return laddered
 	case settingsRowLadderSlippage, settingsRowLadderPnLGuardMode, settingsRowLadderWorstPnLFloor, settingsRowLadderHedgeBypass:
 		return laddered
-	case settingsRowCopytradeTarget, settingsRowCopytradeUseMempool, settingsRowCopytradePoll:
+	case settingsRowCopytradeTarget, settingsRowCopytradeWatcherMode, settingsRowCopytradePoll:
 		return copytrade
 	case settingsRowBinanceExecutionDelay:
 		return binanceGap && paperMode
@@ -259,7 +259,7 @@ func isStructuralSetting(idx int) bool {
 		settingsRowPaperArbMode,
 		settingsRowExchange,
 		settingsRowExecutionBackend,
-		settingsRowCopytradeUseMempool:
+		settingsRowCopytradeWatcherMode:
 		return true
 	default:
 		return false
@@ -273,7 +273,7 @@ func settingsRequireRestart(prev, next TUISettings) bool {
 		!strings.EqualFold(strings.TrimSpace(prev.PaperArbMode), strings.TrimSpace(next.PaperArbMode)) ||
 		!strings.EqualFold(strings.TrimSpace(prev.Exchange), strings.TrimSpace(next.Exchange)) ||
 		!strings.EqualFold(strings.TrimSpace(prev.ExecutionBackend), strings.TrimSpace(next.ExecutionBackend)) ||
-		prev.CopytradeUseMempool != next.CopytradeUseMempool
+		prev.CopytradeWatcherMode != next.CopytradeWatcherMode
 }
 
 func settingsRowEditable(cfg TUISettings, mode string, idx int) bool {
@@ -386,8 +386,8 @@ func settingsRowLabel(cfg TUISettings, idx int) string {
 		return "Max Exec Slip %"
 	case settingsRowCopytradeTarget:
 		return "Copytrade Target"
-	case settingsRowCopytradeUseMempool:
-		return "Use Mempool Watcher"
+	case settingsRowCopytradeWatcherMode:
+		return "Copytrade Watcher"
 	case settingsRowCopytradePoll:
 		return "Copytrade Poll"
 	case settingsRowSplitMinMargin:
@@ -581,6 +581,7 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 	if s.CopytradePollIntervalMs > 30000 {
 		s.CopytradePollIntervalMs = 30000
 	}
+	s.CopytradeWatcherMode = core.NormalizeCopytradeWatcherMode(s.CopytradeWatcherMode)
 	switch strings.ToLower(strings.TrimSpace(s.CopytradeSizingMode)) {
 	case core.CopytradeSizingModeShares:
 		s.CopytradeSizingMode = core.CopytradeSizingModeShares
@@ -660,6 +661,20 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 		s.TakerCloseMarketSlippage = s.TakerCloseMarketMinPrice
 	}
 	return s
+}
+
+func cycleCopytradeWatcherMode(mode string, delta int) string {
+	modes := []string{"all", "mempool", "onchain", "public-api"}
+	current := core.NormalizeCopytradeWatcherMode(mode)
+	idx := 0
+	for i, candidate := range modes {
+		if strings.EqualFold(current, candidate) {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(modes)) % len(modes)
+	return modes[idx]
 }
 
 func cycleCopytradeSizingMode(mode string, delta int) string {

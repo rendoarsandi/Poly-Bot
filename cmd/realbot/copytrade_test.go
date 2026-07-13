@@ -14,7 +14,7 @@ import (
 func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 
-	if !realbotCopytradeShouldUsePublicActivityAPI(nil) {
+	if !realbotCopytradeShouldUsePublicActivityAPI(nil, "all") {
 		t.Fatal("expected nil poller to allow public activity api")
 	}
 
@@ -26,8 +26,13 @@ func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 			wallet,
 		),
 	}
-	if realbotCopytradeShouldUsePublicActivityAPI(minedOnly) {
-		t.Fatal("expected mined-only watcher to disable public activity api")
+	// With "all", if minedWatcher is active, it shouldn't use public API.
+	if realbotCopytradeShouldUsePublicActivityAPI(minedOnly, "all") {
+		t.Fatal("expected mined watcher to disable public activity api under mode all")
+	}
+	// With "public-api", even if minedOnly is set, it should still allow public API.
+	if !realbotCopytradeShouldUsePublicActivityAPI(minedOnly, "public-api") {
+		t.Fatal("expected public-api mode to enable public activity api")
 	}
 
 	pending := &realbotCopytradePoller{
@@ -38,8 +43,8 @@ func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 			wallet,
 		),
 	}
-	if realbotCopytradeShouldUsePublicActivityAPI(pending) {
-		t.Fatal("expected pending watcher to disable public activity api")
+	if realbotCopytradeShouldUsePublicActivityAPI(pending, "all") {
+		t.Fatal("expected pending watcher to disable public activity api under mode all")
 	}
 }
 
@@ -732,19 +737,27 @@ func TestRealbotUIIntervalUsesSlowerCadenceForCopytrade(t *testing.T) {
 	}
 }
 
-func TestRealbotTUISettingsRoundTripIncludesCopytradeUseMempool(t *testing.T) {
+func TestRealbotTUISettingsRoundTripIncludesCopytradeWatcherMode(t *testing.T) {
 	cfg := &core.Config{
-		CopytradeUseMempool: true,
+		CopytradeUseMempool:  true,
+		CopytradeWatcherMode: "mempool",
 	}
 
 	settings := realbotTUISettingsFromConfig(cfg)
 	if !settings.CopytradeUseMempool {
 		t.Fatal("expected settings to preserve true CopytradeUseMempool")
 	}
+	if settings.CopytradeWatcherMode != "mempool" {
+		t.Fatalf("expected settings to preserve CopytradeWatcherMode, got %s", settings.CopytradeWatcherMode)
+	}
 
 	settings.CopytradeUseMempool = false
+	settings.CopytradeWatcherMode = "public-api"
 	applyRealbotTUISettings(cfg, settings)
 	if cfg.CopytradeUseMempool {
 		t.Fatal("expected config to update to false CopytradeUseMempool")
+	}
+	if cfg.CopytradeWatcherMode != "public-api" {
+		t.Fatalf("expected config to update to public-api, got %s", cfg.CopytradeWatcherMode)
 	}
 }

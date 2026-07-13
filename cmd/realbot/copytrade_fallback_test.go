@@ -92,6 +92,7 @@ func TestRealbotHandleCopytradeMarket_RESTFallback(t *testing.T) {
 
 	liveCfg := paper.TUISettings{
 		PaperArbMode:            "copytrade",
+		CopytradeWatcherMode:    "public-api",
 		CopytradePollIntervalMs: 100,
 		CopytradeSizeUSDC:       10.0,
 		CopytradeSizingMode:     "usdc",
