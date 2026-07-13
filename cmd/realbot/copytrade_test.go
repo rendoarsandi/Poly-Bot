@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"Market-bot/internal/api"
 	"Market-bot/internal/core"
 	"Market-bot/internal/paper"
+	"Market-bot/internal/trading"
 )
 
 func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
@@ -759,5 +761,63 @@ func TestRealbotTUISettingsRoundTripIncludesCopytradeWatcherMode(t *testing.T) {
 	}
 	if cfg.CopytradeWatcherMode != "public-api" {
 		t.Fatalf("expected config to update to public-api, got %s", cfg.CopytradeWatcherMode)
+	}
+}
+
+func TestRealbotHandleCopytradeMarket_WatchersDownWarning(t *testing.T) {
+	engine := paper.NewEngine(100.0)
+	trader := trading.NewEmbeddedPaperRealTrader(&core.Config{ExecutionBackend: core.ExecutionBackendPaper}, engine)
+	tui := paper.NewTUI(engine, nil)
+
+	market := &api.Market{
+		ConditionID: "cond-1",
+		Slug:        "test-market",
+		Tokens: []api.Token{
+			{TokenID: "token-up", Outcome: "Up"},
+		},
+	}
+
+	outcomes := []string{"Up"}
+	tokenBids := map[string]float64{"Up": 0.44}
+	tokenAsks := map[string]float64{"Up": 0.46}
+	tokenFullBids := map[string][]paper.MarketLevel{"Up": {{Price: 0.44, Size: 100}}}
+	tokenFullAsks := map[string][]paper.MarketLevel{"Up": {{Price: 0.46, Size: 100}}}
+	quoteState := map[string]realbotQuoteState{
+		"Up": {UpdatedAt: time.Now()},
+	}
+
+	liveCfg := paper.TUISettings{
+		PaperArbMode:         "copytrade",
+		CopytradeWatcherMode: "mempool",
+	}
+
+	poller := newRealbotCopytradePoller("0x1111111111111111111111111111111111111111", []string{"cond-1"})
+	state := newRealbotCopytradeState()
+	restClient := api.NewRestClient("polymarket")
+
+	realbotHandleCopytradeMarket(
+		context.Background(),
+		"market-1",
+		market,
+		outcomes,
+		tokenBids,
+		tokenAsks,
+		tokenFullBids,
+		tokenFullAsks,
+		quoteState,
+		map[string]int{"Up": 0},
+		trader,
+		engine,
+		tui,
+		restClient,
+		liveCfg,
+		poller,
+		state,
+		newRealbotEntryGate(),
+		func(d time.Duration) {},
+	)
+
+	if state.lastError != "watchers_down" {
+		t.Fatalf("expected state.lastError to be 'watchers_down', got %q", state.lastError)
 	}
 }

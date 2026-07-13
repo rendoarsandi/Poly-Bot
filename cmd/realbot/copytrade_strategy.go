@@ -79,6 +79,12 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 	}
 	// If the user did not choose public-api but watchers are down, abort copytrading rather than silently falling back.
 	if core.NormalizeCopytradeWatcherMode(liveCfg.CopytradeWatcherMode) != "public-api" && !realbotCopytradeHasWatcher(poller) {
+		if state.lastError != "watchers_down" {
+			state.lastError = "watchers_down"
+			if tui != nil {
+				tui.LogEvent("⚠️ Copytrade suspended: Watchers are inactive and public-api fallback is disabled")
+			}
+		}
 		return
 	}
 

@@ -335,7 +335,7 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 		return fmt.Errorf("pending websocket subscribe failed: %w", err)
 	}
 	if w.logf != nil {
-		w.logf("🛰️ Copytrade mempool watcher using Alchemy filter: from %s", w.targetWallet)
+		w.logf("🛰️ Copytrade mempool watcher active: scanning CTF/NegRisk exchanges for %s", w.targetWallet)
 	}
 
 	var wg sync.WaitGroup
@@ -351,6 +351,9 @@ func (w *PolymarketPendingWatcher) runSession(ctx context.Context) error {
 			Result PendingTransaction `json:"result"`
 		}
 		if err := json.Unmarshal(paramsRaw, &params); err != nil {
+			return nil
+		}
+		if !strings.Contains(params.Result.Input, polymarketMatchOrdersSelector[2:]) {
 			return nil
 		}
 		wg.Add(1)
