@@ -766,6 +766,10 @@ func decodePendingUintArray(words []string, base int) []*big.Int {
 	if err != nil || count <= 0 {
 		return nil
 	}
+	maxCount := len(words) - base - 1
+	if count > maxCount {
+		count = maxCount
+	}
 	result := make([]*big.Int, 0, count)
 	for i := 0; i < count; i++ {
 		idx := base + 1 + i

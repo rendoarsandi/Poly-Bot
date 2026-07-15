@@ -28,11 +28,29 @@ func main() {
 		os.Exit(2)
 	}
 
-	wallet := strings.TrimSpace(flag.Arg(0))
+	target := strings.TrimSpace(flag.Arg(0))
 	client := api.NewRestClient("polymarket")
 
 	ctx, cancel := context.WithTimeout(context.Background(), *requestTimeout)
 	defer cancel()
+
+	var wallet string
+	var resolveErr error
+	if api.IsWalletAddress(api.NormalizeWalletAddress(target)) {
+		wallet = api.NormalizeWalletAddress(target)
+	} else {
+		resolvedWallet, _, err := client.ResolvePublicProfileTarget(ctx, target)
+		if err != nil {
+			resolveErr = err
+		} else {
+			wallet = resolvedWallet
+		}
+	}
+
+	if wallet == "" {
+		fmt.Fprintf(os.Stderr, "failed to resolve wallet address for target %q: %v\n", target, resolveErr)
+		os.Exit(1)
+	}
 
 	snapshot := client.GetPublicActivitySnapshot(ctx, wallet, nil, *tradeLimit, *sizeThreshold, *positionLimit)
 	if snapshot.TradesErr != nil {
@@ -40,8 +58,7 @@ func main() {
 		os.Exit(1)
 	}
 	if snapshot.PositionsErr != nil {
-		fmt.Fprintf(os.Stderr, "position fetch failed: %v\n", snapshot.PositionsErr)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "warning: position fetch failed: %v (continuing with trade history analysis)\n", snapshot.PositionsErr)
 	}
 
 	report := analysis.AnalyzePublicWallet(wallet, snapshot.Trades, snapshot.Positions)

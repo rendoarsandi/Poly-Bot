@@ -98,3 +98,39 @@ func TestGetPublicActivitySnapshotWithFallbackMarksCachedPositions(t *testing.T)
 		t.Fatalf("expected cached position size 3, got %+v", snapshot.Positions)
 	}
 }
+
+func TestGetPublicPositions_RetryOnTransientError(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusTooManyRequests) // transient 429
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	targetURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server url: %v", err)
+	}
+	originalClient := httpClient
+	httpClient = &http.Client{
+		Transport: rewriteRoundTripper{
+			base:   server.Client().Transport,
+			target: targetURL,
+		},
+	}
+	defer func() { httpClient = originalClient }()
+
+	client := NewRestClient("")
+	_, err = client.GetPublicPositions(context.Background(), "0x1111111111111111111111111111111111111111", nil, 0.01, 10)
+	if err != nil {
+		t.Fatalf("expected success on second attempt after transient error, got: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}

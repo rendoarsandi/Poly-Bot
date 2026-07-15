@@ -119,12 +119,7 @@ func (c *RestClient) GetPublicPositions(ctx context.Context, user string, market
 	q.Set("_nc", fmt.Sprintf("%d", time.Now().UnixNano()))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := doGETWithRetry(ctx, u.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get public positions: %w", err)
 	}
@@ -178,12 +173,7 @@ func (c *RestClient) GetPublicTradesPage(ctx context.Context, user string, marke
 	q.Set("_nc", fmt.Sprintf("%d", time.Now().UnixNano()))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := doGETWithRetry(ctx, u.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get public trades: %w", err)
 	}
@@ -328,12 +318,7 @@ func (c *RestClient) SearchPublicProfiles(ctx context.Context, query string, lim
 	q.Set("optimized", "true")
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := doGETWithRetry(ctx, u.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to search public profiles: %w", err)
 	}
