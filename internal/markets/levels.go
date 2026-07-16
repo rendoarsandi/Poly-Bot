@@ -114,18 +114,5 @@ func RefreshTopOfBookFromDepth(outcomes []string, bidDepth, askDepth map[string]
 
 // BestBidAskFromPriceLevels returns the best bid and best ask from raw API price levels.
 func BestBidAskFromPriceLevels(bids, asks []api.PriceLevel) (float64, float64) {
-	bestBid, bestAsk := 0.0, 0.0
-	for _, b := range bids {
-		p, err := strconv.ParseFloat(b.Price, 64)
-		if err == nil && p > 0 && p <= 1.0 && p > bestBid {
-			bestBid = p
-		}
-	}
-	for _, a := range asks {
-		p, err := strconv.ParseFloat(a.Price, 64)
-		if err == nil && p > 0 && p <= 1.0 && (bestAsk == 0 || p < bestAsk) {
-			bestAsk = p
-		}
-	}
-	return bestBid, bestAsk
+	return api.BestBidAskFromPriceLevels(bids, asks)
 }

@@ -183,14 +183,14 @@ func ParseBestBidAsk(data []byte) (*BestBidAskUpdate, error) {
 func BestBidAskFromPriceLevels(bids, asks []PriceLevel) (float64, float64) {
 	bestBid, bestAsk := 0.0, 0.0
 	for _, b := range bids {
-		p, _ := strconv.ParseFloat(b.Price, 64)
-		if p > bestBid {
+		p, err := strconv.ParseFloat(b.Price, 64)
+		if err == nil && p > 0 && p <= 1.0 && p > bestBid {
 			bestBid = p
 		}
 	}
 	for _, a := range asks {
-		p, _ := strconv.ParseFloat(a.Price, 64)
-		if p > 0 && (bestAsk == 0 || p < bestAsk) {
+		p, err := strconv.ParseFloat(a.Price, 64)
+		if err == nil && p > 0 && p <= 1.0 && (bestAsk == 0 || p < bestAsk) {
 			bestAsk = p
 		}
 	}
