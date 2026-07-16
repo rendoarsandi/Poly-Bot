@@ -1378,3 +1378,55 @@ func TestRealbotLadderedInventoryCapAllowsHedgeUnderFloor(t *testing.T) {
 		t.Fatal("expected hedge to be blocked when bypass is disabled")
 	}
 }
+
+func TestRealbotLadderedClampQtyForGuard_PriceBounds(t *testing.T) {
+	engine := paper.NewEngine(100)
+	qty := realbotLadderedClampQtyForGuard(engine, "BTC", []string{"Down", "Up"}, 0, 5.0, 1.0, core.LadderedTakerPnLGuardMaxProfit, 0, 10.0)
+	if qty != 0 {
+		t.Fatalf("expected quantity clamped to 0 when price >= 1.0, got %f", qty)
+	}
+
+	qty2 := realbotLadderedClampQtyForGuard(engine, "BTC", []string{"Down", "Up"}, 0, 5.0, 1.05, core.LadderedTakerPnLGuardMaxProfit, 0, 10.0)
+	if qty2 != 0 {
+		t.Fatalf("expected quantity clamped to 0 when price > 1.0, got %f", qty2)
+	}
+}
+
+func TestRealbotHandleLadderedStrategy_ZeroBidsAsks(t *testing.T) {
+	engine := paper.NewEngine(100)
+	tui := paper.NewTUI(engine, nil)
+	lastPairUpdate := time.Now()
+	entries := []realbotLadderedEntry{}
+	nextLadderedEntrySeq := uint64(0)
+	panicBuyCooldown := time.Now()
+	lastTrade := time.Now()
+	lastDustRecoveryNotice := time.Now()
+	entryExecutionInFlight := false
+
+	tokenBids := map[string]float64{"Down": 0.05, "Up": 0.0}
+	tokenAsks := map[string]float64{"Down": 0.0, "Up": 0.60}
+
+	handled := realbotHandleLadderedStrategy(realbotPanicBuyStrategyArgs{
+		ctx:            context.Background(),
+		marketID:       "BTC",
+		outcomes:       []string{"Up", "Down"},
+		tokenToOutcome: map[string]string{"up-token": "Up", "down-token": "Down"},
+		tokenBids:      tokenBids,
+		tokenAsks:      tokenAsks,
+		tui:            tui,
+		engine:         engine,
+		arbMode:        paperArbModeLaddered,
+	}, &realbotPanicBuyStrategyState{
+		lastPairUpdate:         &lastPairUpdate,
+		ladderedEntries:        &entries,
+		nextLadderedEntrySeq:   &nextLadderedEntrySeq,
+		panicBuyCooldown:       &panicBuyCooldown,
+		lastTrade:              &lastTrade,
+		lastDustRecoveryNotice: &lastDustRecoveryNotice,
+		entryExecutionInFlight: &entryExecutionInFlight,
+	})
+
+	if !handled {
+		t.Fatal("expected zero bids/asks to immediately skip and return true")
+	}
+}

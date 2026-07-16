@@ -343,7 +343,15 @@ func realbotStartLadderedOneHourCloseMonitor(ctx context.Context, ladderState *r
 	}
 
 	go func(initial realbotPendingLadderCloseOrder) {
-		defer ladderState.stopMonitor(marketID)
+		defer func() {
+			if current, ok := ladderState.get(marketID); ok && current.OrderID != "" {
+				cancelCtx, cancelFunc := context.WithTimeout(context.Background(), 3*time.Second)
+				_ = trader.CancelOrder(cancelCtx, current.OrderID)
+				cancelFunc()
+				trader.ResetConfirmedFill(current.OrderID)
+			}
+			ladderState.stopMonitor(marketID)
+		}()
 		deadline := initial.SubmittedAt.Add(realbotLadderedOneHourCloseMonitorTTL)
 		if initial.SubmittedAt.IsZero() {
 			deadline = time.Now().Add(realbotLadderedOneHourCloseMonitorTTL)

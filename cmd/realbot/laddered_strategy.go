@@ -586,6 +586,9 @@ func realbotLadderedClampQtyForGuard(engine *paper.Engine, marketID string, outc
 	if engine == nil || len(outcomes) != 2 || side < 0 || side > 1 || requestedQty <= 0 || price <= 0 {
 		return requestedQty
 	}
+	if price >= 1.0 {
+		return 0
+	}
 	if !strings.EqualFold(strings.TrimSpace(guardMode), core.LadderedTakerPnLGuardMaxProfit) {
 		return requestedQty
 	}
@@ -729,7 +732,7 @@ func realbotHandleLadderedStrategy(args realbotPanicBuyStrategyArgs, state *real
 		return true
 	}
 
-	if ask1 <= bid1 || ask2 <= bid2 {
+	if ask1 <= bid1 || ask2 <= bid2 || bid1 <= 0 || bid2 <= 0 || ask1 <= 0 || ask2 <= 0 {
 		return true
 	}
 
