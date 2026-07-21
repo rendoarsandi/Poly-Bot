@@ -176,8 +176,7 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 	chainWSURL = strings.TrimSpace(chainWSURL)
 	pendingWSURL = strings.TrimSpace(pendingWSURL)
 	watcherMode = core.NormalizeCopytradeWatcherMode(watcherMode)
-	useMempool := watcherMode == "mempool" || watcherMode == "all"
-	useOnchain := watcherMode == "onchain" || watcherMode == "all"
+	useOnchain := watcherMode == "onchain"
 
 	if wallet == "" {
 		if current != nil {
@@ -206,7 +205,6 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 		cancel:       cancel,
 	}
 
-	pendingSupported := api.SupportsPolymarketPendingWSURL(pendingWSURL)
 	if useOnchain {
 		if watcher := api.NewPolymarketMinedWatcher(chainWSURL, polygonClient, restClient, wallet); watcher != nil {
 			watcher.PrimeTrackedMarkets(trackedMarkets)
@@ -218,24 +216,7 @@ func ensureRealbotCopytradeWatcherSet(parentCtx context.Context, current *realbo
 		logf("ℹ️ Copytrade onchain watcher disabled by copytradeWatcherMode setting")
 	}
 
-	if useMempool {
-		if pendingSupported {
-			if watcher := api.NewPolymarketPendingWatcher(pendingWSURL, restClient, polygonClient, wallet); watcher != nil {
-				watcher.PrimeTrackedMarkets(trackedMarkets)
-				watcher.Start(watcherCtx, logf)
-				next.pendingWatcher = watcher
-				logf("🛰️ Copytrade mempool watcher enabled for %s", wallet)
-			}
-		} else if pendingWSURL != "" {
-			logf("ℹ️ Copytrade mempool watcher skipped: pending filtering requires Alchemy")
-		} else {
-			logf("ℹ️ Copytrade mempool watcher skipped: pending URL not configured")
-		}
-	} else {
-		logf("ℹ️ Copytrade mempool watcher disabled by copytradeWatcherMode setting")
-	}
-
-	if next.pendingWatcher == nil && next.minedWatcher == nil && watcherMode != "public-api" {
+	if next.minedWatcher == nil && watcherMode != "public-api" {
 		next.stop()
 		return nil
 	}

@@ -407,31 +407,13 @@ func normalizeCopytradeSizingMode(mode string) string {
 
 func NormalizeCopytradeWatcherMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		// Read legacy environment variables
-		useMempool := os.Getenv("COPYTRADE_USE_MEMPOOL") != "false"
-		minedMode := strings.ToLower(strings.TrimSpace(os.Getenv("COPYTRADE_MINED_WATCHER_MODE")))
-		useOnchain := minedMode == "" || minedMode == "fallback" || minedMode == "always" || minedMode == "on" || minedMode == "true" || minedMode == "1" || minedMode == "enabled"
-
-		if !useMempool && !useOnchain {
-			return "public-api"
-		} else if useMempool && !useOnchain {
-			return "mempool"
-		} else if !useMempool && useOnchain {
-			return "onchain"
-		} else {
-			return "all"
-		}
-	}
 	switch mode {
-	case "mempool", "pending":
-		return "mempool"
 	case "onchain", "mined":
 		return "onchain"
 	case "public-api", "public", "rest", "api":
 		return "public-api"
 	default:
-		return "all"
+		return "public-api"
 	}
 }
 

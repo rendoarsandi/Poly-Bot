@@ -16,7 +16,7 @@ import (
 func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 	wallet := "0x0000000000000000000000000000000000000001"
 
-	if !realbotCopytradeShouldUsePublicActivityAPI(nil, "all") {
+	if !realbotCopytradeShouldUsePublicActivityAPI(nil, "public-api") {
 		t.Fatal("expected nil poller to allow public activity api")
 	}
 
@@ -28,25 +28,13 @@ func TestRealbotCopytradeShouldUsePublicActivityAPI(t *testing.T) {
 			wallet,
 		),
 	}
-	// With "all", if minedWatcher is active, it shouldn't use public API.
-	if realbotCopytradeShouldUsePublicActivityAPI(minedOnly, "all") {
-		t.Fatal("expected mined watcher to disable public activity api under mode all")
+	// With "onchain", if minedWatcher is active, it shouldn't use public API.
+	if realbotCopytradeShouldUsePublicActivityAPI(minedOnly, "onchain") {
+		t.Fatal("expected mined watcher to disable public activity api under mode onchain")
 	}
 	// With "public-api", even if minedOnly is set, it should still allow public API.
 	if !realbotCopytradeShouldUsePublicActivityAPI(minedOnly, "public-api") {
 		t.Fatal("expected public-api mode to enable public activity api")
-	}
-
-	pending := &realbotCopytradePoller{
-		pendingWatcher: api.NewPolymarketPendingWatcher(
-			"https://polygon-mainnet.g.alchemy.com/v2/test",
-			&api.RestClient{},
-			&api.PolygonClient{},
-			wallet,
-		),
-	}
-	if realbotCopytradeShouldUsePublicActivityAPI(pending, "all") {
-		t.Fatal("expected pending watcher to disable public activity api under mode all")
 	}
 }
 
@@ -788,7 +776,7 @@ func TestRealbotHandleCopytradeMarket_WatchersDownWarning(t *testing.T) {
 
 	liveCfg := paper.TUISettings{
 		PaperArbMode:         "copytrade",
-		CopytradeWatcherMode: "mempool",
+		CopytradeWatcherMode: "onchain",
 	}
 
 	poller := newRealbotCopytradePoller("0x1111111111111111111111111111111111111111", []string{"cond-1"})

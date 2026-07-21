@@ -664,8 +664,11 @@ func normalizeTUISettings(s TUISettings) TUISettings {
 }
 
 func cycleCopytradeWatcherMode(mode string, delta int) string {
-	modes := []string{"all", "mempool", "onchain", "public-api"}
+	modes := []string{"public-api", "onchain"}
 	current := core.NormalizeCopytradeWatcherMode(mode)
+	if current == "mempool" || current == "all" {
+		current = "public-api"
+	}
 	idx := 0
 	for i, candidate := range modes {
 		if strings.EqualFold(current, candidate) {
