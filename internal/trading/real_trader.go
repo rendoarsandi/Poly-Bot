@@ -884,9 +884,10 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 // resetDailyLossIfNewDayLocked resets the daily loss tracker if the day has rolled over.
 // Caller must hold t.mu.
 func (t *RealTrader) resetDailyLossIfNewDayLocked() {
-	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
+	now := time.Now().Truncate(24 * time.Hour)
+	if now != t.startOfDay {
 		t.dailyLoss = 0
-		t.startOfDay = time.Now().Truncate(24 * time.Hour)
+		t.startOfDay = now
 	}
 }
 

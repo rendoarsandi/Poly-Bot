@@ -223,10 +223,11 @@ func (c *UserWSClient) handleEvent(evt map[string]interface{}) {
 		if len(c.deliveredTradeOrder) >= 4096 {
 			// Evict oldest 2048 items to preserve deduplication of recent trades
 			toRemove := c.deliveredTradeOrder[:2048]
-			c.deliveredTradeOrder = c.deliveredTradeOrder[2048:]
 			for _, id := range toRemove {
 				delete(c.deliveredTrades, id)
 			}
+			copy(c.deliveredTradeOrder, c.deliveredTradeOrder[2048:])
+			c.deliveredTradeOrder = c.deliveredTradeOrder[:len(c.deliveredTradeOrder)-2048]
 		}
 		c.deliveredTrades[fill.TradeID] = struct{}{}
 		c.deliveredTradeOrder = append(c.deliveredTradeOrder, fill.TradeID)

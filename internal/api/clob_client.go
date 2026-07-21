@@ -733,6 +733,9 @@ func (c *CLOBClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
 	orders := make([]OpenOrder, 0)
 
 	for nextCursor != openOrdersEndCursor {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		timestamp, signature := c.auth.SignL2Request("GET", path, "")
 		reqURL := c.BaseURL + path
 		if nextCursor != "" {
@@ -1022,6 +1025,9 @@ func (c *CLOBClient) GetTradeHistory(ctx context.Context) ([]TradeHistory, error
 	nextCursor := openOrdersInitialCursor
 
 	for nextCursor != openOrdersEndCursor {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		timestamp, signature := c.auth.SignL2Request("GET", path, "")
 		reqURL := c.BaseURL + path
 		if nextCursor != "" {
