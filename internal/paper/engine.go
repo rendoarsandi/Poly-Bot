@@ -246,7 +246,12 @@ func (e *Engine) ClearMarketData() {
 		}
 	}
 
-	// Clear split inventory references since they are recreated per round
+	// Clear split inventory references and underlying state since they are recreated per round
+	for _, inv := range e.splitInventories {
+		if inv != nil {
+			inv.ClearAll()
+		}
+	}
 	e.splitInventories = nil
 }
 

@@ -88,12 +88,17 @@ func (rm *RiskManager) Evaluate() (RiskAction, string) {
 		return RiskActionKillSwitch, "kill switch already triggered"
 	}
 
-	// Check drawdown - always triggers kill switch when enabled
+	// Check active drawdown - triggers kill switch when enabled
 	stats := rm.engine.GetStats()
-	if !rm.config.DisableKillSwitch && stats.MaxDrawdown > rm.config.KillSwitchDrawdown*100 {
-		rm.triggerKillSwitch(fmt.Sprintf("max drawdown %.2f%% exceeded threshold %.2f%%",
-			stats.MaxDrawdown, rm.config.KillSwitchDrawdown*100))
-		return RiskActionKillSwitch, "max drawdown exceeded"
+	equity := rm.engine.GetEquity()
+	currentDD := 0.0
+	if stats.PeakBalance > 0 && stats.PeakBalance > equity {
+		currentDD = (stats.PeakBalance - equity) / stats.PeakBalance * 100.0
+	}
+	if !rm.config.DisableKillSwitch && currentDD > rm.config.KillSwitchDrawdown*100 {
+		rm.triggerKillSwitch(fmt.Sprintf("active drawdown %.2f%% exceeded threshold %.2f%%",
+			currentDD, rm.config.KillSwitchDrawdown*100))
+		return RiskActionKillSwitch, "active drawdown exceeded"
 	}
 
 	// Get exposure info

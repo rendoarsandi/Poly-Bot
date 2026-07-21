@@ -881,7 +881,63 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 	return results, nil
 }
 
+// checkSafetyLimits verifies the trade doesn't exceed safety limits
+func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Reset daily loss if new day
+	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
+		t.dailyLoss = 0
+		t.startOfDay = time.Now().Truncate(24 * time.Hour)
+	}
+
+	// Check max trade size
+	if t.config.MaxTradeSize > 0 && tradeAmount > t.config.MaxTradeSize {
+		return fmt.Errorf("trade amount $%.2f exceeds max trade size $%.2f", tradeAmount, t.config.MaxTradeSize)
+	}
+
+	// Check daily loss limit
+	if t.config.MaxDailyLoss > 0 && t.dailyLoss >= t.config.MaxDailyLoss {
+		return fmt.Errorf("daily loss limit of $%.2f reached", t.config.MaxDailyLoss)
+	}
+
+	return nil
+}
+
+// RecordLoss records a loss for daily tracking.
+// Positive amount = loss, negative amount = gain (reduces daily loss counter).
+func (t *RealTrader) RecordLoss(amount float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Reset daily loss if new day (mirrors checkSafetyLimits)
+	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
+		t.dailyLoss = 0
+		t.startOfDay = time.Now().Truncate(24 * time.Hour)
+	}
+
+	t.dailyLoss += amount
+	if t.dailyLoss < 0 {
+		t.dailyLoss = 0 // Don't let gains create negative loss
+	}
+}
+
+// Address returns the wallet address
+func (t *RealTrader) Address() string {
+	if t.paperEngine != nil {
+		return "0x0000000000000000000000000000000000000000"
+	}
+	if t.client == nil {
+		return ""
+	}
+	return t.client.Address()
+}
+
 func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
+	if price <= 0 || size <= 0 {
+		return nil, fmt.Errorf("price and size must be > 0 (got price=%.4f, size=%.4f)", price, size)
+	}
 	if t.paperEngine != nil {
 		return t.simulatePaperOrder(api.SideBuy, tokenID, outcome, price, size, feeRateBps)
 	}
@@ -955,6 +1011,9 @@ func (t *RealTrader) Buy(ctx context.Context, tokenID, outcome string, price, si
 }
 
 func (t *RealTrader) Sell(ctx context.Context, tokenID, outcome string, price, size float64, orderType api.OrderType, tif api.TimeInForce, feeRateBps int) (*TradeResult, error) {
+	if price <= 0 || size <= 0 {
+		return nil, fmt.Errorf("price and size must be > 0 (got price=%.4f, size=%.4f)", price, size)
+	}
 	if t.paperEngine != nil {
 		return t.simulatePaperOrder(api.SideSell, tokenID, outcome, price, size, feeRateBps)
 	}
@@ -1596,6 +1655,9 @@ func (t *RealTrader) submitOnChainTx(ctx context.Context, txName string, txFunc 
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, shares float64, numOutcomes int) (string, error) {
+	if shares <= 0 {
+		return "", fmt.Errorf("shares must be > 0 (got %.4f)", shares)
+	}
 	if t.paperEngine != nil {
 		return fmt.Sprintf("paper-merge-%d", time.Now().UnixNano()), nil
 	}
@@ -1628,6 +1690,9 @@ func (t *RealTrader) MergeOnChain(ctx context.Context, conditionID string, share
 // Returns txHash only after transaction is confirmed on-chain.
 // Retries up to 3 times on failure with exponential backoff.
 func (t *RealTrader) SplitOnChain(ctx context.Context, conditionID string, usdcAmount float64, numOutcomes int) (string, error) {
+	if usdcAmount <= 0 {
+		return "", fmt.Errorf("usdcAmount must be > 0 (got %.4f)", usdcAmount)
+	}
 	if t.paperEngine != nil {
 		return fmt.Sprintf("paper-split-%d", time.Now().UnixNano()), nil
 	}
@@ -1864,53 +1929,6 @@ func (t *RealTrader) ApproveTrading(ctx context.Context) (bool, error) {
 	}
 
 	return sentTx, nil
-}
-
-// checkSafetyLimits verifies the trade doesn't exceed safety limits
-func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
-	// Reset daily loss if new day
-	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
-		t.dailyLoss = 0
-		t.startOfDay = time.Now().Truncate(24 * time.Hour)
-	}
-
-	// Check max trade size
-	if t.config.MaxTradeSize > 0 && tradeAmount > t.config.MaxTradeSize {
-		return fmt.Errorf("trade amount $%.2f exceeds max trade size $%.2f", tradeAmount, t.config.MaxTradeSize)
-	}
-
-	// Check daily loss limit
-	if t.config.MaxDailyLoss > 0 && t.dailyLoss >= t.config.MaxDailyLoss {
-		return fmt.Errorf("daily loss limit of $%.2f reached", t.config.MaxDailyLoss)
-	}
-
-	return nil
-}
-
-// RecordLoss records a loss for daily tracking.
-// Positive amount = loss, negative amount = gain (reduces daily loss counter).
-func (t *RealTrader) RecordLoss(amount float64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Reset daily loss if new day (mirrors checkSafetyLimits)
-	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
-		t.dailyLoss = 0
-		t.startOfDay = time.Now().Truncate(24 * time.Hour)
-	}
-
-	t.dailyLoss += amount
-	if t.dailyLoss < 0 {
-		t.dailyLoss = 0 // Don't let gains create negative loss
-	}
-}
-
-// Address returns the wallet address
-func (t *RealTrader) Address() string {
-	if t.paperEngine != nil {
-		return "paper"
-	}
-	return t.client.Address()
 }
 
 // GetUSDCeBalance returns the wallet's USDC.e (legacy) on-chain balance.

@@ -258,15 +258,16 @@ func AnalyzePublicWallet(wallet string, trades []api.PublicTrade, positions []ap
 		report.PrimaryFamily = familySummaries[0].Family
 		report.PrimaryFamilyTradePct = float64(familySummaries[0].TradeCount) / float64(report.TradeCount)
 	}
+	totalBothOutcomeVWAPSum := 0.0
+	totalVWAPSum := 0.0
+	totalDistinctPerSide := 0.0
+	totalSides := 0
 
-	var totalDistinctPerSide float64
-	var totalSides int
-	var totalVWAPSum float64
 	for _, group := range markets {
 		outcomes := make([]OutcomeSummary, 0, len(group.outcomes))
-		var avgDistinct float64
-		var vwapSum float64
-		var buyShares []float64
+		avgDistinct := 0.0
+		vwapSum := 0.0
+
 		for _, out := range group.outcomes {
 			vwap := 0.0
 			if out.totalShares > 0 {
@@ -293,7 +294,6 @@ func AnalyzePublicWallet(wallet string, trades []api.PublicTrade, positions []ap
 			vwapSum += vwap
 			totalDistinctPerSide += float64(distinct)
 			totalSides++
-			buyShares = append(buyShares, out.buyShares)
 		}
 		sort.Slice(outcomes, func(i, j int) bool {
 			if outcomes[i].TradeCount == outcomes[j].TradeCount {
@@ -304,14 +304,15 @@ func AnalyzePublicWallet(wallet string, trades []api.PublicTrade, positions []ap
 		bothOutcomes := len(outcomes) >= 2
 		if bothOutcomes {
 			report.BothOutcomeConditionCount++
+			totalBothOutcomeVWAPSum += vwapSum
 		}
 		if len(outcomes) > 0 {
 			avgDistinct /= float64(len(outcomes))
 			totalVWAPSum += vwapSum
 		}
 		netImbalance := 0.0
-		if len(buyShares) >= 2 {
-			netImbalance = math.Abs(buyShares[0] - buyShares[1])
+		if len(outcomes) >= 2 {
+			netImbalance = math.Abs(outcomes[0].BuyShares - outcomes[1].BuyShares)
 		}
 		marketSummaries = append(marketSummaries, MarketSummary{
 			ConditionID:          group.conditionID,
@@ -340,7 +341,11 @@ func AnalyzePublicWallet(wallet string, trades []api.PublicTrade, positions []ap
 	report.Markets = marketSummaries
 	if report.ConditionCount > 0 {
 		report.BothOutcomeConditionPct = float64(report.BothOutcomeConditionCount) / float64(report.ConditionCount)
-		report.AvgOutcomeVWAPSum = totalVWAPSum / float64(report.ConditionCount)
+		if report.BothOutcomeConditionCount > 0 {
+			report.AvgOutcomeVWAPSum = totalBothOutcomeVWAPSum / float64(report.BothOutcomeConditionCount)
+		} else {
+			report.AvgOutcomeVWAPSum = totalVWAPSum / float64(report.ConditionCount)
+		}
 	}
 	if totalSides > 0 {
 		report.AvgDistinctPricesPerSide = totalDistinctPerSide / float64(totalSides)
@@ -360,8 +365,10 @@ func slugFamily(slug string) string {
 		return slug
 	}
 	last := parts[len(parts)-1]
-	if _, err := strconv.ParseInt(last, 10, 64); err == nil {
-		return strings.Join(parts[:len(parts)-1], "-")
+	if val, err := strconv.ParseInt(last, 10, 64); err == nil {
+		if val > 1000000000 || (val >= 2000 && val <= 2100) {
+			return strings.Join(parts[:len(parts)-1], "-")
+		}
 	}
 	return slug
 }

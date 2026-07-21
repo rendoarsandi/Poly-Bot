@@ -729,11 +729,11 @@ func (o *OpenOrder) UnmarshalJSON(data []byte) error {
 // GetOpenOrders retrieves all open orders
 func (c *CLOBClient) GetOpenOrders(ctx context.Context) ([]OpenOrder, error) {
 	path := "/data/orders"
-	timestamp, signature := c.auth.SignL2Request("GET", path, "")
 	nextCursor := openOrdersInitialCursor
 	orders := make([]OpenOrder, 0)
 
 	for nextCursor != openOrdersEndCursor {
+		timestamp, signature := c.auth.SignL2Request("GET", path, "")
 		reqURL := c.BaseURL + path
 		if nextCursor != "" {
 			values := url.Values{}
@@ -1018,11 +1018,11 @@ type TradeHistory struct {
 // GetTradeHistory retrieves trade history
 func (c *CLOBClient) GetTradeHistory(ctx context.Context) ([]TradeHistory, error) {
 	path := "/data/trades"
-	timestamp, signature := c.auth.SignL2Request("GET", path, "")
 	trades := make([]TradeHistory, 0)
 	nextCursor := openOrdersInitialCursor
 
 	for nextCursor != openOrdersEndCursor {
+		timestamp, signature := c.auth.SignL2Request("GET", path, "")
 		reqURL := c.BaseURL + path
 		if nextCursor != "" {
 			values := url.Values{}

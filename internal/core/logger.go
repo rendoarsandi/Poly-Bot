@@ -25,6 +25,7 @@ type CSVLogger struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+	isClosed bool
 }
 
 func NewCSVLogger(filename string) (*CSVLogger, error) {
@@ -122,6 +123,12 @@ func sanitizeForCSV(s string) string {
 }
 
 func (l *CSVLogger) Log(level, asset, event, details string, equity float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.isClosed {
+		return
+	}
+
 	entry := LogEntry{
 		Timestamp: time.Now().Format("2006-01-02 15:04:05.000"),
 		Level:     level,
@@ -140,6 +147,10 @@ func (l *CSVLogger) Log(level, asset, event, details string, equity float64) {
 
 func (l *CSVLogger) Close() {
 	l.stopOnce.Do(func() {
+		l.mu.Lock()
+		l.isClosed = true
+		l.mu.Unlock()
+
 		close(l.stopCh)
 		l.wg.Wait()
 		l.file.Close()

@@ -45,22 +45,24 @@ type UserWSClient struct {
 	onFill         func(fill OrderFillData)
 	onAssetBalance func(assetID string, balance string)
 
-	mu                sync.Mutex
-	listenStarted     bool
-	authRecorded      bool
-	authSent          bool
-	deliveredTrades   map[string]struct{}
-	subscribedMarkets map[string]struct{}
+	mu                  sync.Mutex
+	listenStarted       bool
+	authRecorded        bool
+	authSent            bool
+	deliveredTrades     map[string]struct{}
+	deliveredTradeOrder []string
+	subscribedMarkets   map[string]struct{}
 }
 
 func NewUserWSClient(apiKey, apiSec, apiPass string) *UserWSClient {
 	return &UserWSClient{
-		manager:           NewWSManager("polymarket", "", "", "wss://ws-subscriptions-clob.polymarket.com/ws/user"),
-		apiKey:            apiKey,
-		apiSec:            apiSec,
-		apiPass:           apiPass,
-		deliveredTrades:   make(map[string]struct{}),
-		subscribedMarkets: make(map[string]struct{}),
+		manager:             NewWSManager("polymarket", "", "", "wss://ws-subscriptions-clob.polymarket.com/ws/user"),
+		apiKey:              apiKey,
+		apiSec:              apiSec,
+		apiPass:             apiPass,
+		deliveredTrades:     make(map[string]struct{}),
+		deliveredTradeOrder: make([]string, 0, 4096),
+		subscribedMarkets:   make(map[string]struct{}),
 	}
 }
 
@@ -218,10 +220,16 @@ func (c *UserWSClient) handleEvent(evt map[string]interface{}) {
 			c.mu.Unlock()
 			return
 		}
-		if len(c.deliveredTrades) >= 4096 {
-			c.deliveredTrades = make(map[string]struct{})
+		if len(c.deliveredTradeOrder) >= 4096 {
+			// Evict oldest 2048 items to preserve deduplication of recent trades
+			toRemove := c.deliveredTradeOrder[:2048]
+			c.deliveredTradeOrder = c.deliveredTradeOrder[2048:]
+			for _, id := range toRemove {
+				delete(c.deliveredTrades, id)
+			}
 		}
 		c.deliveredTrades[fill.TradeID] = struct{}{}
+		c.deliveredTradeOrder = append(c.deliveredTradeOrder, fill.TradeID)
 	}
 	c.mu.Unlock()
 
@@ -340,6 +348,7 @@ func (c *UserWSClient) Close() error {
 	c.authSent = false
 	c.listenStarted = false
 	c.deliveredTrades = make(map[string]struct{})
+	c.deliveredTradeOrder = make([]string, 0, 4096)
 	c.mu.Unlock()
 	return c.manager.Close()
 }

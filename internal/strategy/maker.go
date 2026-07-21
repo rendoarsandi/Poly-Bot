@@ -32,7 +32,7 @@ func ComputeMakerInventorySkew(positionShares, peerShares, targetShares float64)
 }
 
 func ComputeMakerSkewedQuote(isBuy bool, bid, ask, skew, quoteGap float64, params MakerParams) (float64, bool) {
-	if ask <= 0 || ask-bid <= params.QuoteStep*2 {
+	if ask <= 0 || ask <= bid {
 		return 0, false
 	}
 	if quoteGap <= 0 {
@@ -76,13 +76,7 @@ func ComputeMakerPairBuyPrices(bid1, ask1, bid2, ask2, maxPairCost, inventoryDel
 	}
 
 	minPrice1 := params.QuoteStep
-	if bid1 > 0 {
-		minPrice1 = roundToStep(bid1+params.QuoteStep, params.QuoteStep)
-	}
 	minPrice2 := params.QuoteStep
-	if bid2 > 0 {
-		minPrice2 = roundToStep(bid2+params.QuoteStep, params.QuoteStep)
-	}
 	maxPrice1 := roundToStep(ask1-params.QuoteStep, params.QuoteStep)
 	maxPrice2 := roundToStep(ask2-params.QuoteStep, params.QuoteStep)
 	if maxPrice1 < minPrice1 || maxPrice2 < minPrice2 {
@@ -293,6 +287,9 @@ func ComputeMakerProtectedSellQuote(bid, ask, avgCost, minEdge, skew, quoteGap f
 	}
 
 	price = roundToStep(clampFloat64(price, minPrice, maxPrice), params.QuoteStep)
+	if avgCost > 0 && skew < skewThreshold && price < avgCost+minEdge {
+		return 0, false
+	}
 	return price, true
 }
 

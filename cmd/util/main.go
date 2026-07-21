@@ -382,7 +382,8 @@ func main() {
 		inputChan <- text
 	}()
 
-	fmt.Print("\033[?25l") // Hide cursor
+	fmt.Print("\033[?25l")       // Hide cursor
+	defer fmt.Print("\033[?25h") // Guarantee cursor restoration on return/panic
 	go utilbotRunQuotePump(ctx, client, tokenMap, tokenToOutcome, wsMsgChan, quoteStore)
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -687,7 +688,9 @@ func executeBoth(ctx context.Context, trader *trading.RealTrader, restClient *ap
 	var confirm string
 	_, _ = fmt.Scanln(&confirm)
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-		log.Fatal("Cancelled.")
+		fmt.Print("\033[?25h") // Restore cursor
+		fmt.Println("Cancelled.")
+		return
 	}
 	if side == "BUY" {
 		latestSnapshot := quoteStore.Snapshot(outcomes)

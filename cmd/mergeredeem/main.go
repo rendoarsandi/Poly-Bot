@@ -127,10 +127,6 @@ func main() {
 		}
 		minQty := mergeablePairs(balances)
 		remainingBalances := append([]float64(nil), balances...)
-		if minQty > 0 {
-			remainingBalances[0] -= minQty
-			remainingBalances[1] -= minQty
-		}
 
 		marketLabelPrinted := false
 		printMarketHeader := func() {
@@ -139,8 +135,11 @@ func main() {
 			}
 			foundAny = true
 			fmt.Printf("\n📈 Market: %s\n", m.Slug)
-			fmt.Printf("   • %s: %.6f shares\n", outcomes[0], balances[0])
-			fmt.Printf("   • %s: %.6f shares\n", outcomes[1], balances[1])
+			for i, out := range outcomes {
+				if i < len(balances) {
+					fmt.Printf("   • %s: %.6f shares\n", out, balances[i])
+				}
+			}
 			marketLabelPrinted = true
 		}
 
@@ -158,16 +157,23 @@ func main() {
 					fmt.Printf("   ❌ Merge failed: %v\n", err)
 				} else {
 					fmt.Printf("   ✅ Merge successful! Tx: %s\n", tx)
-					balances[0] -= minQty
-					balances[1] -= minQty
-					remainingBalances[0] = balances[0]
-					remainingBalances[1] = balances[1]
+					for i := range balances {
+						balances[i] -= minQty
+						remainingBalances[i] = balances[i]
+					}
 				}
 			}
 		}
 
 		// Logic 2: REDEEM
-		if remainingBalances[0] >= 0.01 || remainingBalances[1] >= 0.01 {
+		hasRemaining := false
+		for _, bal := range remainingBalances {
+			if bal >= 0.01 {
+				hasRemaining = true
+				break
+			}
+		}
+		if hasRemaining {
 			decision, err := resolveRedeemDecision(ctx, trader, polygon, m, remainingBalances)
 			if err != nil {
 				printMarketHeader()
