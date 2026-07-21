@@ -881,16 +881,21 @@ func (t *RealTrader) ExecuteBatch(ctx context.Context, reqs []*api.OrderRequest)
 	return results, nil
 }
 
+// resetDailyLossIfNewDayLocked resets the daily loss tracker if the day has rolled over.
+// Caller must hold t.mu.
+func (t *RealTrader) resetDailyLossIfNewDayLocked() {
+	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
+		t.dailyLoss = 0
+		t.startOfDay = time.Now().Truncate(24 * time.Hour)
+	}
+}
+
 // checkSafetyLimits verifies the trade doesn't exceed safety limits
 func (t *RealTrader) checkSafetyLimits(tradeAmount float64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Reset daily loss if new day
-	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
-		t.dailyLoss = 0
-		t.startOfDay = time.Now().Truncate(24 * time.Hour)
-	}
+	t.resetDailyLossIfNewDayLocked()
 
 	// Check max trade size
 	if t.config.MaxTradeSize > 0 && tradeAmount > t.config.MaxTradeSize {
@@ -911,11 +916,7 @@ func (t *RealTrader) RecordLoss(amount float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Reset daily loss if new day (mirrors checkSafetyLimits)
-	if time.Now().Truncate(24*time.Hour) != t.startOfDay {
-		t.dailyLoss = 0
-		t.startOfDay = time.Now().Truncate(24 * time.Hour)
-	}
+	t.resetDailyLossIfNewDayLocked()
 
 	t.dailyLoss += amount
 	if t.dailyLoss < 0 {
