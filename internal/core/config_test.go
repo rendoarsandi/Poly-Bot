@@ -536,9 +536,8 @@ func TestNormalizeBinanceSignalPolyAdverseMoveCentsAllowsDisable(t *testing.T) {
 	}
 }
 
-func TestConfigValidate(t *testing.T) {
-	// 1. Valid config should pass validation
-	cfg := &Config{
+func validConfig() *Config {
+	return &Config{
 		BaseBalance:              1000.0,
 		BaseTradeSize:            50.0,
 		PaperBalance:             100.0,
@@ -560,49 +559,54 @@ func TestConfigValidate(t *testing.T) {
 		MakerInventoryCapMult:    5.0,
 		MakerMinQuoteValue:       10.0,
 	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	// 1. Valid config should pass validation
+	cfg := validConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid config to pass, got: %v", err)
 	}
 
 	// 2. Negative values
-	badCfg := *cfg
+	badCfg := validConfig()
 	badCfg.BaseBalance = -10
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for negative BaseBalance")
 	}
 
-	badCfg = *cfg
+	badCfg = validConfig()
 	badCfg.MinMarginPercent = -1
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for negative MinMarginPercent")
 	}
 
-	badCfg = *cfg
+	badCfg = validConfig()
 	badCfg.MaxExposure = -100
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for negative MaxExposure")
 	}
 
-	badCfg = *cfg
+	badCfg = validConfig()
 	badCfg.MinAskPrice = -0.05
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for negative MinAskPrice")
 	}
 
-	badCfg = *cfg
+	badCfg = validConfig()
 	badCfg.MaxAskPrice = 1.05
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for MaxAskPrice > 1.0")
 	}
 
-	badCfg = *cfg
+	badCfg = validConfig()
 	badCfg.MinAskPrice = 0.85
 	badCfg.MaxAskPrice = 0.75
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for MinAskPrice > MaxAskPrice")
 	}
 
-	badCfg = *cfg
+	badCfg = validConfig()
 	badCfg.SplitInitialCapPct = 1.2
 	if err := badCfg.Validate(); err == nil {
 		t.Error("expected error for SplitInitialCapPct > 1.0")
