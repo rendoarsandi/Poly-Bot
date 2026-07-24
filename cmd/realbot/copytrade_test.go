@@ -809,3 +809,61 @@ func TestRealbotHandleCopytradeMarket_WatchersDownWarning(t *testing.T) {
 		t.Fatalf("expected state.lastError to be 'watchers_down', got %q", state.lastError)
 	}
 }
+
+func TestRealbotCanUseLocalCopytradeSellQuoteRejectsHigherDepthBestBid(t *testing.T) {
+	now := time.Now()
+	outcome := "Up"
+	tokenBids := map[string]float64{"Up": 0.40}
+	tokenAsks := map[string]float64{"Up": 0.46}
+	tokenFullBids := map[string][]paper.MarketLevel{"Up": {{Price: 0.50, Size: 100}}}
+	quoteState := map[string]realbotQuoteState{
+		"Up": {UpdatedAt: now, Source: "ws"},
+	}
+
+	_, reason, ok := realbotCanUseLocalCopytradeSellQuote(now, outcome, tokenBids, tokenAsks, tokenFullBids, quoteState, 5*time.Second)
+	if ok {
+		t.Fatalf("expected depth mismatch (bid 0.40 vs bestBid 0.50) to be rejected, but got ok=true")
+	}
+	if reason == "" {
+		t.Fatalf("expected rejection reason, got empty string")
+	}
+}
+
+func TestRealbotCopytradeFreshTradesPrunesSeenTradeKeysCount(t *testing.T) {
+	state := newRealbotCopytradeState()
+	state.startedAt = time.Unix(1000, 0)
+	trade := api.PublicTrade{
+		ConditionID: "cond-1",
+		Outcome:     "Up",
+		Side:        "BUY",
+		Size:        5,
+		Timestamp:   1001,
+		SignalID:    "signal-1",
+	}
+
+	// First pass seeds seenTradeKeys and seenTradeKeysCount
+	got1 := realbotCopytradeFreshTrades(state, []api.PublicTrade{trade}, "cond-1", "shares")
+	if len(got1) != 1 {
+		t.Fatalf("expected 1 trade on initial pass, got %d", len(got1))
+	}
+	if len(state.seenTradeKeysCount) != 1 {
+		t.Fatalf("expected 1 entry in seenTradeKeysCount, got %d", len(state.seenTradeKeysCount))
+	}
+
+	// Manually set timestamp in past (> 15 minutes ago) to trigger expiration
+	for k := range state.seenTradeKeys {
+		state.seenTradeKeys[k] = time.Now().Add(-20 * time.Minute)
+	}
+
+	// Next call to fresh trades should prune both maps
+	got2 := realbotCopytradeFreshTrades(state, nil, "cond-1", "shares")
+	if len(got2) != 0 {
+		t.Fatalf("expected 0 fresh trades, got %d", len(got2))
+	}
+	if len(state.seenTradeKeys) != 0 {
+		t.Fatalf("expected empty seenTradeKeys after pruning, got %d", len(state.seenTradeKeys))
+	}
+	if len(state.seenTradeKeysCount) != 0 {
+		t.Fatalf("expected empty seenTradeKeysCount after pruning, got %d", len(state.seenTradeKeysCount))
+	}
+}

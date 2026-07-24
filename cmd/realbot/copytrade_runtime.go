@@ -717,7 +717,23 @@ func (p *realbotCopytradePoller) snapshotForCondition(ctx context.Context, restC
 		wallet := p.wallet
 		conditionIDs := append([]string(nil), p.conditionIDs...)
 		pollStartedAt := time.Now()
+		cachedPositions := append([]api.Position(nil), p.lastSnapshot.Positions...)
+		cachedPositionsValid := p.lastSnapshot.PositionsErr == nil && realbotCopytradeCanReusePositions(p.lastPositionsRefreshAt, pollEvery)
 		p.mu.Unlock()
+
+		done := false
+		defer func() {
+			if !done {
+				p.mu.Lock()
+				waitCh := p.waitCh
+				p.fetching = false
+				p.waitCh = nil
+				if waitCh != nil {
+					close(waitCh)
+				}
+				p.mu.Unlock()
+			}
+		}()
 
 		tradeLimit := len(conditionIDs) * 64
 		if tradeLimit < 128 {
@@ -735,8 +751,6 @@ func (p *realbotCopytradePoller) snapshotForCondition(ctx context.Context, restC
 		}
 		tradeTimeout := realbotCopytradeTradeFetchTimeout(pollEvery)
 		positionTimeout := realbotCopytradePositionFetchTimeout(pollEvery)
-		cachedPositions := append([]api.Position(nil), p.lastSnapshot.Positions...)
-		cachedPositionsValid := p.lastSnapshot.PositionsErr == nil && realbotCopytradeCanReusePositions(p.lastPositionsRefreshAt, pollEvery)
 		snapshot := restClient.GetPublicActivitySnapshotWithFallback(
 			ctx,
 			wallet,
@@ -780,8 +794,11 @@ func (p *realbotCopytradePoller) snapshotForCondition(ctx context.Context, restC
 		p.fetching = false
 		p.waitCh = nil
 		filtered := p.cachedSnapshotForCondition(conditionID)
+		done = true
 		p.mu.Unlock()
-		close(waitCh)
+		if waitCh != nil {
+			close(waitCh)
+		}
 
 		return filtered, nil
 	}
@@ -1199,7 +1216,7 @@ func realbotCopytradeQueueRetryTrades(state *realbotCopytradeState, retries []ap
 }
 
 func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.PublicTrade, conditionID string, sizingMode string) []api.PublicTrade {
-	if state == nil || len(trades) == 0 {
+	if state == nil {
 		return nil
 	}
 	conditionID = strings.TrimSpace(conditionID)
@@ -1207,7 +1224,20 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 	for key, seenAt := range state.seenTradeKeys {
 		if now.Sub(seenAt) > 15*time.Minute {
 			delete(state.seenTradeKeys, key)
+			if idx := strings.LastIndex(key, "#"); idx != -1 {
+				baseKey := key[:idx]
+				if count, exists := state.seenTradeKeysCount[baseKey]; exists {
+					if count <= 1 {
+						delete(state.seenTradeKeysCount, baseKey)
+					} else {
+						state.seenTradeKeysCount[baseKey]--
+					}
+				}
+			}
 		}
+	}
+	if len(trades) == 0 {
+		return nil
 	}
 
 	filtered := make([]api.PublicTrade, 0, len(trades))
@@ -1242,6 +1272,16 @@ func realbotCopytradeFreshTrades(state *realbotCopytradeState, trades []api.Publ
 
 			if trade.Size <= 0.01 && !strings.EqualFold(sizingMode, core.CopytradeSizingModeShares) && !strings.EqualFold(sizingMode, core.CopytradeSizingModeUSDC) {
 				continue
+			}
+
+			effectiveTS := realbotCopytradeEffectiveTimestamp(trade)
+			if effectiveTS > 0 && !state.startedAt.IsZero() {
+				tradeAt := time.Unix(effectiveTS, 0)
+				startTs := realbotCopytradeBootstrapStartTimestamp(state.startedAt)
+				startAt := time.Unix(startTs, 0)
+				if !now.Before(tradeAt) && tradeAt.Before(startAt.Add(-realbotCopytradeRetryMaxAge)) {
+					continue
+				}
 			}
 
 			fresh = append(fresh, trade)

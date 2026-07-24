@@ -56,7 +56,7 @@ func realbotCanUseLocalCopytradeSellQuote(now time.Time, outcome string, tokenBi
 	if !ok || bestBid <= 0 || bestBid >= 1.0 {
 		return 0, fmt.Sprintf("invalid local bid depth for %s", outcome), false
 	}
-	if bid-bestBid > 0.0005 {
+	if math.Abs(bid-bestBid) > 0.0005 {
 		return 0, fmt.Sprintf("local bid %.3f mismatches depth %.3f for %s", bid, bestBid, outcome), false
 	}
 	state, ok := quoteState[outcome]
@@ -88,10 +88,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		return
 	}
 
-	pollEvery := time.Duration(liveCfg.CopytradePollIntervalMs) * time.Millisecond
-	if pollEvery <= 0 {
-		pollEvery = 2 * time.Second
-	}
+	pollEvery := realbotCopytradePollEvery(liveCfg)
 	polledTrades := make([]api.PublicTrade, 0)
 	targetDeltas := make(map[string]float64)
 
@@ -99,33 +96,33 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		snapshot, err := poller.snapshotForCondition(ctx, restClient, pollEvery, market.ConditionID)
 		if err != nil {
 			state.lastError = fmt.Sprintf("snapshot: %v", err)
-			return
-		}
-		if snapshot.TradesErr != nil {
-			state.lastError = fmt.Sprintf("trades: %v", snapshot.TradesErr)
-		} else if snapshot.PositionsErr != nil {
-			state.lastError = fmt.Sprintf("positions: %v", snapshot.PositionsErr)
 		} else {
-			state.lastError = ""
-		}
+			if snapshot.TradesErr != nil {
+				state.lastError = fmt.Sprintf("trades: %v", snapshot.TradesErr)
+			} else if snapshot.PositionsErr != nil {
+				state.lastError = fmt.Sprintf("positions: %v", snapshot.PositionsErr)
+			} else {
+				state.lastError = ""
+			}
 
-		var freshTrades []api.PublicTrade
-		if len(snapshot.Trades) > 0 {
-			preparedTrades := realbotPrepareCopytradeTrades(snapshot.Trades, "public", liveCfg)
-			freshTrades = realbotCopytradeFreshTrades(state, preparedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
-		}
+			var freshTrades []api.PublicTrade
+			if len(snapshot.Trades) > 0 {
+				preparedTrades := realbotPrepareCopytradeTrades(snapshot.Trades, "public", liveCfg)
+				freshTrades = realbotCopytradeFreshTrades(state, preparedTrades, market.ConditionID, liveCfg.CopytradeSizingMode)
+			}
 
-		syncTrades, deltas := realbotCopytradePositionSyncTrades(
-			state,
-			market.ConditionID,
-			outcomes,
-			snapshot.Positions,
-			snapshot.PositionsPolledAt,
-			freshTrades,
-			liveCfg.CopytradeSizingMode,
-		)
-		polledTrades = append(freshTrades, syncTrades...)
-		targetDeltas = deltas
+			syncTrades, deltas := realbotCopytradePositionSyncTrades(
+				state,
+				market.ConditionID,
+				outcomes,
+				snapshot.Positions,
+				snapshot.PositionsPolledAt,
+				freshTrades,
+				liveCfg.CopytradeSizingMode,
+			)
+			polledTrades = append(freshTrades, syncTrades...)
+			targetDeltas = deltas
+		}
 	} else {
 		shouldPoll := state.lastTradeFetch.IsZero() || time.Since(state.lastTradeFetch) >= pollEvery
 		if shouldPoll {
@@ -146,7 +143,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 		if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModePercent) {
 			snapshot, err := poller.snapshotForCondition(ctx, restClient, pollEvery, market.ConditionID)
 			if err == nil && snapshot.PositionsErr == nil {
-				_, deltas := realbotCopytradePositionSyncTrades(
+				syncTrades, deltas := realbotCopytradePositionSyncTrades(
 					state,
 					market.ConditionID,
 					outcomes,
@@ -155,6 +152,9 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 					polledTrades,
 					liveCfg.CopytradeSizingMode,
 				)
+				if len(syncTrades) > 0 {
+					polledTrades = append(polledTrades, syncTrades...)
+				}
 				targetDeltas = deltas
 			}
 		}
@@ -235,81 +235,79 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				continue
 			}
 
-			submitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice, liveCfg.CopytradeMaxSlippagePct)
-			if submitPrice <= 0 || submitPrice >= 1.0 {
-				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: invalid slippage cap from ask $%.3f", ask))
+			func() {
 				if entryGate != nil {
-					entryGate.Release()
+					defer entryGate.Release()
 				}
-				continue
-			}
-
-			budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
-			requestedQty := normalizeMarketBuyShares(budgetShares)
-			buyReq := directMarketOrderSignalRequest{
-				Side:           api.SideBuy,
-				TokenID:        tokenID,
-				Outcome:        outcome,
-				Price:          submitPrice,
-				Size:           requestedQty,
-				FeeRateBps:     feeRate,
-				InitialBalance: trader.GetLivePositionSize(tokenID),
-				ExactShares:    true,
-			}
-			if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
-				buyReq.Size = realbotNormalizedCopytradeUSDCBudget(liveCfg)
-				buyReq.ExactShares = false
-				requestedQty = directRequestedShareCap(buyReq)
-			}
-			if requestedQty < minOnChainActionShares {
-				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: actionable size %s is below %.2f share at cap $%.3f", formatShareQty(requestedQty), minOnChainActionShares, submitPrice))
-				if entryGate != nil {
-					entryGate.Release()
+				submitPrice := realbotDirectionalBuyLimitPrice(ask, liveCfg.MaxAskPrice, liveCfg.CopytradeMaxSlippagePct)
+				if submitPrice <= 0 || submitPrice >= 1.0 {
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: invalid slippage cap from ask $%.3f", ask))
+					return
 				}
-				continue
-			}
 
-			tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
-			exec := executeMarketOrderRequestWithSignals(tradeCtx, trader, buyReq, 2500*time.Millisecond)
-			tradeCancel()
-			logDirectExecutionAudit(tui, marketID, "Copytrade BUY", requestedQty, submitPrice, exec)
-			if entryGate != nil {
-				entryGate.Release()
-			}
-			if !exec.Success {
-				if exec.Err != nil {
-					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %v", exec.Err))
-				} else if exec.Result != nil && exec.Result.Message != "" {
-					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %s", exec.Result.Message))
-				} else {
-					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", "failed: execution did not succeed")
+				budgetShares := core.CalculateCopytradeSharesForMode(tradeSize, submitPrice, liveCfg.CopytradeSizeUSDC, liveCfg.CopytradeSizeShares, liveCfg.CopytradeSizePercent, liveCfg.MaxTradeSize, liveCfg.CopytradeSizingMode)
+				requestedQty := normalizeMarketBuyShares(budgetShares)
+				buyReq := directMarketOrderSignalRequest{
+					Side:           api.SideBuy,
+					TokenID:        tokenID,
+					Outcome:        outcome,
+					Price:          submitPrice,
+					Size:           requestedQty,
+					FeeRateBps:     feeRate,
+					InitialBalance: trader.GetLivePositionSize(tokenID),
+					ExactShares:    true,
 				}
-				continue
-			}
-
-			execQty := attributedBuyFill(exec, requestedQty, 0, false)
-			if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
-				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: lacked confirmed fill")
-				continue
-			}
-
-			execPrice := venueExecutionEffectivePrice(exec)
-			if execPrice <= 0 {
-				execPrice = ask
-			}
-			execCost := reportedBuyCost(exec, execPrice, execQty, requestedQty)
-			if realbotShouldMirrorExecutionIntoEngine(trader) {
-				trader.RecordExecutionBuy(tokenID, execQty, execCost)
-				if _, buyErr := realbotMirrorLiveBuyIntoEngine(engine, marketID, outcome, execCost, execQty); buyErr != nil {
-					tui.LogEvent("[%s] ⚠️ Copytrade local buy sync failed for %s: %v", marketID, outcome, buyErr)
+				if strings.EqualFold(liveCfg.CopytradeSizingMode, core.CopytradeSizingModeUSDC) {
+					buyReq.Size = realbotNormalizedCopytradeUSDCBudget(liveCfg)
+					buyReq.ExactShares = false
+					requestedQty = directRequestedShareCap(buyReq)
 				}
-			}
-			state.managed[outcome] = true
-			tui.RecordOrderWithMode(marketID, outcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "copytrade", "FILLED")
-			realbotLogCopytradeSignalResult(tui, marketID, trade, "✅", fmt.Sprintf("bought %s at $%.3f", formatShareQty(execQty), execPrice))
-			if refreshWalletTruth != nil {
-				refreshWalletTruth(5 * time.Second)
-			}
+				if requestedQty < minOnChainActionShares {
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", fmt.Sprintf("skipped: actionable size %s is below %.2f share at cap $%.3f", formatShareQty(requestedQty), minOnChainActionShares, submitPrice))
+					return
+				}
+
+				tradeCtx, tradeCancel := context.WithTimeout(ctx, 4*time.Second)
+				exec := executeMarketOrderRequestWithSignals(tradeCtx, trader, buyReq, 2500*time.Millisecond)
+				tradeCancel()
+				logDirectExecutionAudit(tui, marketID, "Copytrade BUY", requestedQty, submitPrice, exec)
+				if !exec.Success {
+					if exec.Err != nil {
+						realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %v", exec.Err))
+					} else if exec.Result != nil && exec.Result.Message != "" {
+						realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", fmt.Sprintf("failed: %s", exec.Result.Message))
+					} else {
+						realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", "failed: execution did not succeed")
+					}
+					requeueTrade(trade)
+					return
+				}
+
+				execQty := attributedBuyFill(exec, requestedQty, 0, false)
+				if !hasConfirmedExecutedQty(api.SideBuy, execQty) {
+					realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: lacked confirmed fill")
+					requeueTrade(trade)
+					return
+				}
+
+				execPrice := venueExecutionEffectivePrice(exec)
+				if execPrice <= 0 {
+					execPrice = ask
+				}
+				execCost := reportedBuyCost(exec, execPrice, execQty, requestedQty)
+				if realbotShouldMirrorExecutionIntoEngine(trader) {
+					trader.RecordExecutionBuy(tokenID, execQty, execCost)
+					if _, buyErr := realbotMirrorLiveBuyIntoEngine(engine, marketID, outcome, execCost, execQty); buyErr != nil {
+						tui.LogEvent("[%s] ⚠️ Copytrade local buy sync failed for %s: %v", marketID, outcome, buyErr)
+					}
+				}
+				state.managed[outcome] = true
+				tui.RecordOrderWithMode(marketID, outcome, "BUY", execQty, execPrice, execCost, 0.0, 0.0, "copytrade", "FILLED")
+				realbotLogCopytradeSignalResult(tui, marketID, trade, "✅", fmt.Sprintf("bought %s at $%.3f", formatShareQty(execQty), execPrice))
+				if refreshWalletTruth != nil {
+					refreshWalletTruth(5 * time.Second)
+				}
+			}()
 			continue
 		}
 
@@ -385,12 +383,14 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 				} else {
 					realbotLogCopytradeSignalResult(tui, marketID, trade, "❌", "failed: execution did not succeed")
 				}
+				requeueTrade(trade)
 				continue
 			}
 
 			execQty := attributedSellFill(exec, requestedQty)
 			if !hasConfirmedExecutedQty(api.SideSell, execQty) {
 				realbotLogCopytradeSignalResult(tui, marketID, trade, "⛔", "skipped: lacked confirmed fill")
+				requeueTrade(trade)
 				continue
 			}
 
@@ -409,7 +409,7 @@ func realbotHandleCopytradeMarket(ctx context.Context, marketID string, market *
 			tui.RecordOrderWithMode(marketID, outcome, "SELL", execQty, execPrice, execProceeds, 0.0, profit, "copytrade", "FILLED")
 			realbotLogCopytradeSignalResult(tui, marketID, trade, "✅", fmt.Sprintf("sold %s at $%.3f", formatShareQty(execQty), execPrice))
 			if positionSignal {
-				remainingSize := normalizeMarketSellShares(tradeSize - execQty)
+				remainingSize := normalizeMarketSellShares(requestedQty - execQty)
 				if remainingSize >= minOnChainActionShares {
 					requeueTrade(api.PublicTrade{
 						ConditionID: strings.TrimSpace(trade.ConditionID),
